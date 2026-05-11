@@ -1,0 +1,163 @@
+package com.aiplayer.recipe;
+
+import com.aiplayer.planning.PlanSchema;
+import com.aiplayer.planning.PlanStep;
+import com.aiplayer.snapshot.WorldSnapshot;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class SurvivalRecipePlanningTest {
+    private final RecipeResolver recipeResolver = new RecipeResolver();
+    private final WorldSnapshot emptySnapshot = WorldSnapshot.empty("");
+
+    @Test
+    void ironShovelExpandsToOreSmeltingAndToolChain() {
+        RecipePlan plan = recipeResolver.resolve(null, emptySnapshot, "minecraft:iron_shovel", 1);
+
+        assertTrue(plan.isSuccess(), plan.getFailureReason());
+        assertHasCraft(plan, "minecraft:iron_shovel", "crafting_table");
+        assertHasCraft(plan, "minecraft:iron_ingot", "furnace");
+        assertHasCraft(plan, "minecraft:stone_pickaxe", "crafting_table");
+        assertHasCraft(plan, "minecraft:furnace", "crafting_table");
+        assertHasGather(plan, "minecraft:raw_iron", "iron_ore");
+        assertHasGather(plan, "minecraft:coal", "coal_ore");
+        assertBefore(plan, "minecraft:stone_pickaxe", "minecraft:furnace");
+        assertBefore(plan, "minecraft:stone_pickaxe", "minecraft:raw_iron");
+    }
+
+    @Test
+    void ironPickaxeUsesOreSourcesNotStorageBlocks() {
+        RecipePlan plan = recipeResolver.resolve(null, emptySnapshot, "minecraft:iron_pickaxe", 1);
+
+        assertTrue(plan.isSuccess(), plan.getFailureReason());
+        assertHasCraft(plan, "minecraft:iron_pickaxe", "crafting_table");
+        assertHasCraft(plan, "minecraft:iron_ingot", "furnace");
+        assertHasGather(plan, "minecraft:raw_iron", "iron_ore");
+        assertHasGather(plan, "minecraft:coal", "coal_ore");
+        assertNoNode(plan, "minecraft:raw_iron_block");
+        assertNoNode(plan, "minecraft:coal_block");
+        assertBefore(plan, "minecraft:stone_pickaxe", "minecraft:furnace");
+        assertBefore(plan, "minecraft:stone_pickaxe", "minecraft:raw_iron");
+    }
+
+    @Test
+    void diamondPickaxeEnsuresIronPickaxeBeforeDiamondMining() {
+        RecipePlan plan = recipeResolver.resolve(null, emptySnapshot, "minecraft:diamond_pickaxe", 1);
+
+        assertTrue(plan.isSuccess(), plan.getFailureReason());
+        assertHasCraft(plan, "minecraft:iron_pickaxe", "crafting_table");
+        assertHasGather(plan, "minecraft:diamond", "diamond_ore");
+        assertBefore(plan, "minecraft:iron_pickaxe", "minecraft:diamond");
+    }
+
+    @Test
+    void explicitBaseSourcesTakePriorityOverGenericBlockSources() {
+        assertTrue(recipeResolver.shouldPreferBaseSource("minecraft:raw_iron"));
+        assertTrue(recipeResolver.shouldPreferBaseSource("minecraft:coal"));
+        assertTrue(SurvivalRecipeBook.isGenericBlockSource("minecraft:raw_iron_block", "block:minecraft:raw_iron_block"));
+        assertTrue(SurvivalRecipeBook.isGenericBlockSource("minecraft:coal_block", "block:minecraft:coal_block"));
+        assertFalse(recipeResolver.isReachableBlockInSnapshot(emptySnapshot, "minecraft:raw_iron_block"));
+    }
+
+    @Test
+    void cookedBeefExpandsToCowFuelAndFurnace() {
+        RecipePlan plan = recipeResolver.resolve(null, emptySnapshot, "minecraft:cooked_beef", 1);
+
+        assertTrue(plan.isSuccess(), plan.getFailureReason());
+        assertHasCraft(plan, "minecraft:cooked_beef", "furnace");
+        assertHasCraft(plan, "minecraft:furnace", "crafting_table");
+        assertHasGather(plan, "minecraft:beef", "mob:minecraft:cow");
+        assertHasGather(plan, "minecraft:coal", "coal_ore");
+    }
+
+    @Test
+    void waterBucketExpandsToBucketAndFillWaterStep() {
+        RecipePlan plan = recipeResolver.resolve(null, emptySnapshot, "minecraft:water_bucket", 1);
+
+        assertTrue(plan.isSuccess(), plan.getFailureReason());
+        assertHasCraft(plan, "minecraft:bucket", "crafting_table");
+        assertHasCraft(plan, "minecraft:water_bucket", "water_source");
+        PlanSchema schema = PlanSchema.fromRecipePlan("make_item", plan);
+        List<PlanStep> steps = schema.getPlan();
+
+        assertTrue(
+            steps.stream().anyMatch(step ->
+                "fill_water".equals(step.getStep())
+                    && "minecraft:water_bucket".equals(step.getItem())
+                    && "water_source".equals(step.getResource())),
+            "water_bucket should become a fill_water execution step"
+        );
+    }
+
+    @Test
+    void genericWoodRequirementsAcceptOtherWoodTypes() {
+        MissingMaterialResolver materials = MissingMaterialResolver.fromItems(
+            Map.of("minecraft:spruce_log", 2, "minecraft:birch_planks", 3),
+            Map.of("minecraft:dark_oak_log", 1, "minecraft:acacia_planks", 4)
+        );
+
+        MissingMaterialResolver.TakeResult logs = materials.takeForIngredient("minecraft:oak_log", 3);
+        MissingMaterialResolver.TakeResult planks = materials.takeForIngredient("minecraft:oak_planks", 5);
+
+        assertEquals(2, logs.fromBackpack());
+        assertEquals(1, logs.fromChest());
+        assertEquals(0, logs.missing());
+        assertEquals(3, planks.fromBackpack());
+        assertEquals(2, planks.fromChest());
+        assertEquals(0, planks.missing());
+    }
+
+    private static void assertHasCraft(RecipePlan plan, String item, String station) {
+        assertTrue(
+            plan.getRecipeChain().stream().anyMatch(node ->
+                "craft".equals(node.getType())
+                    && item.equals(node.getOutput().getItem())
+                    && station.equals(node.getStation())),
+            "Expected craft node for " + item + " at " + station + " in\n" + plan.toUserText()
+        );
+    }
+
+    private static void assertHasGather(RecipePlan plan, String item, String source) {
+        assertTrue(
+            plan.getRecipeChain().stream().anyMatch(node ->
+                "gather".equals(node.getType())
+                    && item.equals(node.getOutput().getItem())
+                    && source.equals(node.getSource())),
+            "Expected gather node for " + item + " from " + source + " in\n" + plan.toUserText()
+        );
+    }
+
+    private static void assertNoNode(RecipePlan plan, String item) {
+        assertTrue(
+            plan.getRecipeChain().stream().noneMatch(node -> item.equals(node.getOutput().getItem())),
+            "Did not expect node for " + item + " in\n" + plan.toUserText()
+        );
+    }
+
+    private static void assertBefore(RecipePlan plan, String firstItem, String secondItem) {
+        int firstIndex = indexOf(plan, firstItem);
+        int secondIndex = indexOf(plan, secondItem);
+        assertTrue(firstIndex >= 0, "Expected node for " + firstItem + " in\n" + plan.toUserText());
+        assertTrue(secondIndex >= 0, "Expected node for " + secondItem + " in\n" + plan.toUserText());
+        assertTrue(
+            firstIndex < secondIndex,
+            "Expected " + firstItem + " before " + secondItem + " in\n" + plan.toUserText()
+        );
+    }
+
+    private static int indexOf(RecipePlan plan, String item) {
+        List<RecipeNode> chain = plan.getRecipeChain();
+        for (int i = 0; i < chain.size(); i++) {
+            if (item.equals(chain.get(i).getOutput().getItem())) {
+                return i;
+            }
+        }
+        return -1;
+    }
+}

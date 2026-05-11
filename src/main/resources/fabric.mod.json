@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "aiplayer",
+  "version": "${version}",
+  "name": "AI 玩家 Fabric",
+  "description": "基于 DeepSeek 的 Minecraft Fabric AI 玩家模组。",
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "com.aiplayer.AiPlayerMod"
+    ],
+    "client": [
+      "com.aiplayer.client.AiPlayerClientMod"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=${loader_version}",
+    "fabric-api": "*",
+    "minecraft": "${minecraft_version}",
+    "java": ">=21"
+  }
+}

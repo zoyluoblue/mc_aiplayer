@@ -1,0 +1,108 @@
+plugins {
+    id 'fabric-loom' version '1.10-SNAPSHOT'
+    id 'maven-publish'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    withSourcesJar()
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings loom.officialMojangMappings()
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+
+    implementation "org.graalvm.polyglot:polyglot:23.1.0"
+    implementation "org.graalvm.polyglot:js-community:23.1.0"
+    include "org.graalvm.polyglot:polyglot:23.1.0"
+    include "org.graalvm.polyglot:js-community:23.1.0"
+    include "org.graalvm.js:js-language:23.1.0"
+    include "org.graalvm.regex:regex:23.1.0"
+    include "org.graalvm.truffle:truffle-api:23.1.0"
+    include "org.graalvm.truffle:truffle-runtime:23.1.0"
+    include "org.graalvm.truffle:truffle-compiler:23.1.0"
+    include "org.graalvm.sdk:collections:23.1.0"
+    include "org.graalvm.sdk:jniutils:23.1.0"
+    include "org.graalvm.sdk:nativeimage:23.1.0"
+    include "org.graalvm.sdk:word:23.1.0"
+    include "org.graalvm.shadowed:icu4j:23.1.0"
+
+    implementation "io.github.resilience4j:resilience4j-circuitbreaker:2.1.0"
+    implementation "io.github.resilience4j:resilience4j-retry:2.1.0"
+    implementation "io.github.resilience4j:resilience4j-ratelimiter:2.1.0"
+    implementation "io.github.resilience4j:resilience4j-bulkhead:2.1.0"
+    implementation "io.github.resilience4j:resilience4j-core:2.1.0"
+    include "io.github.resilience4j:resilience4j-circuitbreaker:2.1.0"
+    include "io.github.resilience4j:resilience4j-retry:2.1.0"
+    include "io.github.resilience4j:resilience4j-ratelimiter:2.1.0"
+    include "io.github.resilience4j:resilience4j-bulkhead:2.1.0"
+    include "io.github.resilience4j:resilience4j-core:2.1.0"
+
+    implementation "com.github.ben-manes.caffeine:caffeine:3.1.8"
+    implementation "commons-codec:commons-codec:1.16.0"
+    include "com.github.ben-manes.caffeine:caffeine:3.1.8"
+    include "commons-codec:commons-codec:1.16.0"
+
+    testImplementation "org.junit.jupiter:junit-jupiter-api:5.10.2"
+    testRuntimeOnly "org.junit.jupiter:junit-jupiter-engine:5.10.2"
+}
+
+processResources {
+    inputs.property "version", project.version
+    inputs.property "minecraft_version", project.minecraft_version
+    inputs.property "loader_version", project.loader_version
+
+    filesMatching("fabric.mod.json") {
+        expand(
+            "version": project.version,
+            "minecraft_version": project.minecraft_version,
+            "loader_version": project.loader_version
+        )
+    }
+}
+
+def copyAiConfig = tasks.register("copyAiConfig", Copy) {
+    def sourceFile = layout.projectDirectory.file("config/ai.json")
+    from(sourceFile)
+    into(layout.projectDirectory.dir("run/config"))
+    onlyIf {
+        sourceFile.asFile.exists()
+    }
+}
+
+tasks.matching { it.name == "runClient" }.configureEach {
+    dependsOn(copyAiConfig)
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 21
+    options.encoding = 'UTF-8'
+}
+
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+}
+
+publishing {
+    publications {
+        create("mavenJava", MavenPublication) {
+            artifactId = project.archives_base_name
+            from components.java
+        }
+    }
+}

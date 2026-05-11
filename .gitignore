@@ -1,24 +1,48 @@
-# Compiled class file
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE / editor files
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# Gradle
+.gradle/
+build/
+out/
+
+# Java / JVM generated files
 *.class
+hs_err_pid*
+replay_pid*
 
-# Log file
-*.log
-
-# BlueJ files
-*.ctxt
-
-# Mobile Tools for Java (J2ME)
-.mtj.tmp/
-
-# Package Files #
+# Packaged artifacts
 *.jar
 *.war
 *.nar
 *.ear
 *.zip
+*.tar
 *.tar.gz
 *.rar
+!gradle/wrapper/gradle-wrapper.jar
 
-# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
-hs_err_pid*
-replay_pid*
+# Minecraft / Fabric runClient workspace
+run/
+
+# Local logs and crash output
+log/
+logs/
+*.log
+*.log.*
+crash-reports/
+
+# Local API keys and runtime config
+config/ai.json
+config/*.local.json
+!config/ai.json.example
+*ai.json

@@ -1,6 +1,7 @@
 package com.aiplayer.entity;
 
 import com.aiplayer.action.ActionExecutor;
+import com.aiplayer.execution.ResourceGatherSession;
 import com.aiplayer.memory.AiPlayerMemory;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
@@ -48,17 +49,34 @@ public class AiPlayerEntity extends PathfinderMob {
         Items.OAK_DOOR, Items.SPRUCE_DOOR, Items.BIRCH_DOOR, Items.JUNGLE_DOOR,
         Items.ACACIA_DOOR, Items.DARK_OAK_DOOR, Items.MANGROVE_DOOR, Items.CHERRY_DOOR
     };
+    private static final Item[] PICKAXES = {
+        Items.NETHERITE_PICKAXE, Items.DIAMOND_PICKAXE, Items.IRON_PICKAXE, Items.STONE_PICKAXE, Items.WOODEN_PICKAXE
+    };
+    private static final Item[] AXES = {
+        Items.NETHERITE_AXE, Items.DIAMOND_AXE, Items.IRON_AXE, Items.STONE_AXE, Items.WOODEN_AXE
+    };
+    private static final Item[] SHOVELS = {
+        Items.NETHERITE_SHOVEL, Items.DIAMOND_SHOVEL, Items.IRON_SHOVEL, Items.STONE_SHOVEL, Items.WOODEN_SHOVEL
+    };
+    private static final Item[] WEAPONS = {
+        Items.NETHERITE_SWORD, Items.DIAMOND_SWORD, Items.IRON_SWORD, Items.STONE_SWORD, Items.WOODEN_SWORD,
+        Items.NETHERITE_AXE, Items.DIAMOND_AXE, Items.IRON_AXE, Items.STONE_AXE, Items.WOODEN_AXE
+    };
+    private static final int MIN_USABLE_TOOL_DURABILITY = 2;
     private static final EntityDataAccessor<String> AI_PLAYER_NAME = 
         SynchedEntityData.defineId(AiPlayerEntity.class, EntityDataSerializers.STRING);
     private static final EntityDataAccessor<String> OWNER_UUID =
         SynchedEntityData.defineId(AiPlayerEntity.class, EntityDataSerializers.STRING);
     private static final EntityDataAccessor<String> BACKPACK_SNAPSHOT =
         SynchedEntityData.defineId(AiPlayerEntity.class, EntityDataSerializers.STRING);
+    private static final EntityDataAccessor<Integer> WORK_ANIMATION_UNTIL_TICK =
+        SynchedEntityData.defineId(AiPlayerEntity.class, EntityDataSerializers.INT);
 
     private String aiPlayerName;
     private UUID ownerUuid;
     private AiPlayerMemory memory;
     private ActionExecutor actionExecutor;
+    private final ResourceGatherSession resourceGatherSession = new ResourceGatherSession();
     private final NonNullList<ItemStack> backpack = NonNullList.withSize(BACKPACK_SIZE, ItemStack.EMPTY);
     private int workSwingCooldown;
 
@@ -91,6 +109,7 @@ public class AiPlayerEntity extends PathfinderMob {
         builder.define(AI_PLAYER_NAME, "AiPlayer");
         builder.define(OWNER_UUID, "");
         builder.define(BACKPACK_SNAPSHOT, emptyBackpackSlots(CLIENT_BACKPACK_SLOTS));
+        builder.define(WORK_ANIMATION_UNTIL_TICK, 0);
     }
 
     @Override
@@ -123,12 +142,31 @@ public class AiPlayerEntity extends PathfinderMob {
         lookAtWorkTarget(pos.getX() + 0.5D, pos.getY() + 0.5D, pos.getZ() + 0.5D);
     }
 
+    public void lookAtWorkTarget(Entity entity) {
+        if (entity == null) {
+            return;
+        }
+        lookAtWorkTarget(entity.getX(), entity.getEyeY(), entity.getZ());
+    }
+
     public void swingWorkHand(InteractionHand hand) {
+        if (!this.level().isClientSide) {
+            this.entityData.set(WORK_ANIMATION_UNTIL_TICK, this.tickCount + 8);
+        }
         if (workSwingCooldown > 0) {
             return;
         }
         this.swing(hand, true);
-        workSwingCooldown = 6;
+        workSwingCooldown = 3;
+    }
+
+    public boolean isWorkAnimating() {
+        return this.tickCount <= this.entityData.get(WORK_ANIMATION_UNTIL_TICK);
+    }
+
+    public float getWorkAnimationProgress(float partialTick) {
+        float phase = ((this.tickCount + partialTick) % 8.0F) / 8.0F;
+        return Math.max(0.15F, phase);
     }
 
     public void setAiPlayerName(String name) {
@@ -179,6 +217,10 @@ public class AiPlayerEntity extends PathfinderMob {
         return this.actionExecutor;
     }
 
+    public ResourceGatherSession getResourceGatherSession() {
+        return resourceGatherSession;
+    }
+
     @Override
     public void addAdditionalSaveData(CompoundTag tag) {
         super.addAdditionalSaveData(tag);
@@ -199,6 +241,9 @@ public class AiPlayerEntity extends PathfinderMob {
                 stackTag.putInt("Slot", slot);
                 stackTag.putString("Item", itemKey(stack.getItem()));
                 stackTag.putInt("Count", stack.getCount());
+                if (stack.isDamageableItem()) {
+                    stackTag.putInt("Damage", stack.getDamageValue());
+                }
                 inventoryTag.add(stackTag);
             }
         }
@@ -228,7 +273,11 @@ public class AiPlayerEntity extends PathfinderMob {
                 Item item = itemFromKey(stackTag.getString("Item"));
                 int count = stackTag.getInt("Count");
                 if (slot >= 0 && slot < backpack.size() && item != Items.AIR && count > 0) {
-                    backpack.set(slot, new ItemStack(item, Math.min(count, item.getDefaultMaxStackSize())));
+                    ItemStack stack = new ItemStack(item, Math.min(count, item.getDefaultMaxStackSize()));
+                    if (stack.isDamageableItem() && stackTag.contains("Damage")) {
+                        stack.setDamageValue(Math.min(stackTag.getInt("Damage"), stack.getMaxDamage() - 1));
+                    }
+                    backpack.set(slot, stack);
                 }
             }
         }
@@ -372,6 +421,30 @@ public class AiPlayerEntity extends PathfinderMob {
         return inserted;
     }
 
+    public boolean hasBackpackSpaceFor(Item item) {
+        if (item == null || item == Items.AIR) {
+            return true;
+        }
+        for (ItemStack stack : backpack) {
+            if (stack.isEmpty()) {
+                return true;
+            }
+            if (stack.is(item) && stack.getCount() < stack.getMaxStackSize()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean isBackpackFull() {
+        for (ItemStack stack : backpack) {
+            if (stack.isEmpty() || stack.getCount() < stack.getMaxStackSize()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     public int insertItemStackIntoSlot(int slot, ItemStack source) {
         if (slot < 0 || slot >= backpack.size() || source == null || source.isEmpty()) {
             return 0;
@@ -498,7 +571,7 @@ public class AiPlayerEntity extends PathfinderMob {
     }
 
     public boolean craftWoodenPickaxe() {
-        if (hasItem(Items.WOODEN_PICKAXE, 1)) {
+        if (hasUsableToolFor("pickaxe")) {
             return true;
         }
         craftPlanksFromLogs(3);
@@ -511,7 +584,7 @@ public class AiPlayerEntity extends PathfinderMob {
     }
 
     public boolean craftWoodenAxe() {
-        if (hasItem(Items.WOODEN_AXE, 1)) {
+        if (hasUsableToolFor("axe")) {
             return true;
         }
         craftPlanksFromLogs(3);
@@ -524,7 +597,7 @@ public class AiPlayerEntity extends PathfinderMob {
     }
 
     public boolean craftStonePickaxe() {
-        if (hasItem(Items.STONE_PICKAXE, 1)) {
+        if (!firstOwnedUsableStack(Items.NETHERITE_PICKAXE, Items.DIAMOND_PICKAXE, Items.IRON_PICKAXE, Items.STONE_PICKAXE).isEmpty()) {
             return true;
         }
         craftSticks(2);
@@ -536,21 +609,77 @@ public class AiPlayerEntity extends PathfinderMob {
     }
 
     public ItemStack getBestToolStackFor(String toolType) {
-        Item item = switch (toolType) {
-            case "pickaxe" -> firstOwned(Items.NETHERITE_PICKAXE, Items.DIAMOND_PICKAXE, Items.IRON_PICKAXE, Items.STONE_PICKAXE, Items.WOODEN_PICKAXE);
-            case "axe" -> firstOwned(Items.NETHERITE_AXE, Items.DIAMOND_AXE, Items.IRON_AXE, Items.STONE_AXE, Items.WOODEN_AXE);
-            default -> Items.AIR;
-        };
-        return item == Items.AIR ? ItemStack.EMPTY : new ItemStack(item);
+        ItemStack stack = firstOwnedUsableStack(toolsFor(toolType));
+        return stack.isEmpty() ? ItemStack.EMPTY : stack.copy();
     }
 
-    private Item firstOwned(Item... items) {
-        for (Item item : items) {
-            if (hasItem(item, 1)) {
-                return item;
+    public boolean hasUsableToolFor(String toolType) {
+        return !firstOwnedUsableStack(toolsFor(toolType)).isEmpty();
+    }
+
+    public boolean damageBestTool(String toolType, int amount) {
+        if (amount <= 0) {
+            return true;
+        }
+        for (Item item : toolsFor(toolType)) {
+            for (int slot = 0; slot < backpack.size(); slot++) {
+                ItemStack stack = backpack.get(slot);
+                if (!stack.isEmpty() && stack.is(item) && isUsableToolStack(stack, amount)) {
+                    if (!stack.isDamageableItem()) {
+                        return true;
+                    }
+                    stack.setDamageValue(stack.getDamageValue() + amount);
+                    if (stack.getDamageValue() >= stack.getMaxDamage()) {
+                        backpack.set(slot, ItemStack.EMPTY);
+                    }
+                    syncBackpackData();
+                    return true;
+                }
             }
         }
-        return Items.AIR;
+        return false;
+    }
+
+    public int getBestToolRemainingDurability(String toolType) {
+        ItemStack stack = firstOwnedUsableStack(toolsFor(toolType));
+        if (stack.isEmpty()) {
+            return 0;
+        }
+        if (!stack.isDamageableItem()) {
+            return Integer.MAX_VALUE;
+        }
+        return Math.max(0, stack.getMaxDamage() - stack.getDamageValue());
+    }
+
+    private ItemStack firstOwnedUsableStack(Item... items) {
+        for (Item item : items) {
+            for (ItemStack stack : backpack) {
+                if (!stack.isEmpty() && stack.is(item) && isUsableToolStack(stack, MIN_USABLE_TOOL_DURABILITY)) {
+                    return stack;
+                }
+            }
+        }
+        return ItemStack.EMPTY;
+    }
+
+    private boolean isUsableToolStack(ItemStack stack, int requiredDurability) {
+        if (stack.isEmpty()) {
+            return false;
+        }
+        if (!stack.isDamageableItem()) {
+            return true;
+        }
+        return stack.getMaxDamage() - stack.getDamageValue() >= requiredDurability;
+    }
+
+    private Item[] toolsFor(String toolType) {
+        return switch (toolType) {
+            case "pickaxe" -> PICKAXES;
+            case "axe" -> AXES;
+            case "shovel" -> SHOVELS;
+            case "weapon", "sword" -> WEAPONS;
+            default -> new Item[0];
+        };
     }
 
     private boolean canMerge(ItemStack existing, ItemStack incoming) {

@@ -59,11 +59,15 @@ public final class SurvivalUtils {
             return false;
         }
         Item drop = getSurvivalDrop(state);
+        equipBestToolForBlock(aiPlayer, state.getBlock());
         aiPlayer.lookAtWorkTarget(pos);
         aiPlayer.swingWorkHand(InteractionHand.MAIN_HAND);
         boolean destroyed = aiPlayer.level().destroyBlock(pos, false);
-        if (destroyed && drop != Items.AIR) {
-            aiPlayer.addItem(drop, getDropCount(state));
+        if (destroyed) {
+            damageToolForBlock(aiPlayer, state.getBlock());
+            if (drop != Items.AIR) {
+                aiPlayer.addItem(drop, getDropCount(state));
+            }
         }
         return destroyed;
     }
@@ -76,9 +80,9 @@ public final class SurvivalUtils {
         if (item == Items.AIR || !aiPlayer.consumeItem(item, 1)) {
             return false;
         }
+        aiPlayer.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(item));
         aiPlayer.lookAtWorkTarget(pos);
         aiPlayer.swingWorkHand(InteractionHand.MAIN_HAND);
-        aiPlayer.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(item));
         aiPlayer.level().setBlock(pos, block.defaultBlockState(), 3);
         return true;
     }
@@ -117,6 +121,18 @@ public final class SurvivalUtils {
         if (block == Blocks.EMERALD_ORE || block == Blocks.DEEPSLATE_EMERALD_ORE) {
             return Items.EMERALD;
         }
+        if (block == Blocks.NETHER_QUARTZ_ORE) {
+            return Items.QUARTZ;
+        }
+        if (block == Blocks.NETHER_GOLD_ORE) {
+            return Items.GOLD_NUGGET;
+        }
+        if (block == Blocks.ANCIENT_DEBRIS) {
+            return Items.ANCIENT_DEBRIS;
+        }
+        if (block == Blocks.OBSIDIAN) {
+            return Items.OBSIDIAN;
+        }
         Item item = block.asItem();
         return item == null ? Items.AIR : item;
     }
@@ -128,6 +144,9 @@ public final class SurvivalUtils {
         }
         if (block == Blocks.LAPIS_ORE || block == Blocks.DEEPSLATE_LAPIS_ORE) {
             return 4;
+        }
+        if (block == Blocks.NETHER_GOLD_ORE) {
+            return 2;
         }
         return 1;
     }
@@ -150,10 +169,94 @@ public final class SurvivalUtils {
             block == Blocks.DIAMOND_ORE || block == Blocks.DEEPSLATE_DIAMOND_ORE ||
             block == Blocks.REDSTONE_ORE || block == Blocks.DEEPSLATE_REDSTONE_ORE ||
             block == Blocks.LAPIS_ORE || block == Blocks.DEEPSLATE_LAPIS_ORE ||
-            block == Blocks.EMERALD_ORE || block == Blocks.DEEPSLATE_EMERALD_ORE;
+            block == Blocks.EMERALD_ORE || block == Blocks.DEEPSLATE_EMERALD_ORE ||
+            block == Blocks.NETHER_QUARTZ_ORE || block == Blocks.NETHER_GOLD_ORE;
+    }
+
+    public static boolean isMiningResourceBlock(Block block) {
+        return isOre(block) || block == Blocks.OBSIDIAN || block == Blocks.ANCIENT_DEBRIS;
     }
 
     public static boolean requiresPickaxe(Block block) {
-        return isStone(block) || isOre(block);
+        return isStone(block) || isMiningResourceBlock(block);
+    }
+
+    public static String preferredToolForBlock(Block block) {
+        if (requiresPickaxe(block)) {
+            return "pickaxe";
+        }
+        if (isLog(block)) {
+            return "axe";
+        }
+        if (requiresShovel(block)) {
+            return "shovel";
+        }
+        return null;
+    }
+
+    public static void equipBestToolForBlock(AiPlayerEntity aiPlayer, Block block) {
+        String toolType = preferredToolForBlock(block);
+        if (toolType == null) {
+            aiPlayer.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+            return;
+        }
+        aiPlayer.setItemInHand(InteractionHand.MAIN_HAND, aiPlayer.getBestToolStackFor(toolType));
+    }
+
+    public static void damageToolForBlock(AiPlayerEntity aiPlayer, Block block) {
+        String toolType = preferredToolForBlock(block);
+        if (toolType != null) {
+            aiPlayer.damageBestTool(toolType, 1);
+        }
+    }
+
+    public static int getBreakDelay(AiPlayerEntity aiPlayer, Block block) {
+        if (block == Blocks.OBSIDIAN) {
+            return 160;
+        }
+        if (block == Blocks.ANCIENT_DEBRIS) {
+            return 80;
+        }
+        String toolType = preferredToolForBlock(block);
+        if (toolType == null) {
+            return 24;
+        }
+        ItemStack tool = aiPlayer.getBestToolStackFor(toolType);
+        int delay = switch (toolType) {
+            case "pickaxe" -> tool.isEmpty() ? 100 : delayForToolTier(tool, 48, 36, 28, 22, 20);
+            case "axe" -> tool.isEmpty() ? 60 : delayForToolTier(tool, 32, 28, 22, 18, 16);
+            case "shovel" -> tool.isEmpty() ? 30 : delayForToolTier(tool, 18, 14, 10, 8, 7);
+            default -> 24;
+        };
+        if (block == Blocks.DEEPSLATE || block == Blocks.DEEPSLATE_COAL_ORE || block == Blocks.DEEPSLATE_IRON_ORE ||
+            block == Blocks.DEEPSLATE_COPPER_ORE || block == Blocks.DEEPSLATE_GOLD_ORE || block == Blocks.DEEPSLATE_DIAMOND_ORE ||
+            block == Blocks.DEEPSLATE_REDSTONE_ORE || block == Blocks.DEEPSLATE_LAPIS_ORE || block == Blocks.DEEPSLATE_EMERALD_ORE) {
+            return delay + 12;
+        }
+        return delay;
+    }
+
+    public static boolean requiresShovel(Block block) {
+        return block == Blocks.DIRT || block == Blocks.GRASS_BLOCK || block == Blocks.COARSE_DIRT ||
+            block == Blocks.PODZOL || block == Blocks.ROOTED_DIRT || block == Blocks.MUD ||
+            block == Blocks.SAND || block == Blocks.RED_SAND || block == Blocks.GRAVEL ||
+            block == Blocks.CLAY || block == Blocks.SNOW_BLOCK || block == Blocks.SNOW;
+    }
+
+    private static int delayForToolTier(ItemStack tool, int wooden, int stone, int iron, int diamond, int netherite) {
+        Item item = tool.getItem();
+        if (item == Items.NETHERITE_PICKAXE || item == Items.NETHERITE_AXE || item == Items.NETHERITE_SHOVEL) {
+            return netherite;
+        }
+        if (item == Items.DIAMOND_PICKAXE || item == Items.DIAMOND_AXE || item == Items.DIAMOND_SHOVEL) {
+            return diamond;
+        }
+        if (item == Items.IRON_PICKAXE || item == Items.IRON_AXE || item == Items.IRON_SHOVEL) {
+            return iron;
+        }
+        if (item == Items.STONE_PICKAXE || item == Items.STONE_AXE || item == Items.STONE_SHOVEL) {
+            return stone;
+        }
+        return wooden;
     }
 }

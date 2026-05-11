@@ -33,12 +33,14 @@ public final class WorldSnapshot {
     private static final int MAX_CHESTS = 10;
     private static final int MAX_BLOCKS = 80;
     private static final int MAX_ENTITIES = 40;
+    private static final int MAX_CAVES = 8;
 
     private final String playerCommand;
     private final AiState ai;
     private final WorldState world;
     private final List<ChestSnapshot> nearbyChests;
     private final List<BlockSnapshot> nearbyBlocks;
+    private final List<CaveSnapshot> nearbyCaves;
     private final List<EntitySnapshot> nearbyEntities;
 
     private WorldSnapshot(
@@ -47,6 +49,7 @@ public final class WorldSnapshot {
         WorldState world,
         List<ChestSnapshot> nearbyChests,
         List<BlockSnapshot> nearbyBlocks,
+        List<CaveSnapshot> nearbyCaves,
         List<EntitySnapshot> nearbyEntities
     ) {
         this.playerCommand = playerCommand;
@@ -54,6 +57,7 @@ public final class WorldSnapshot {
         this.world = world;
         this.nearbyChests = List.copyOf(nearbyChests);
         this.nearbyBlocks = List.copyOf(nearbyBlocks);
+        this.nearbyCaves = List.copyOf(nearbyCaves);
         this.nearbyEntities = List.copyOf(nearbyEntities);
     }
 
@@ -64,6 +68,7 @@ public final class WorldSnapshot {
             WorldState.capture(aiPlayer),
             scanChests(aiPlayer),
             scanBlocks(aiPlayer),
+            scanCaves(aiPlayer),
             scanEntities(aiPlayer)
         );
     }
@@ -92,6 +97,7 @@ public final class WorldSnapshot {
             new WorldState("minecraft:overworld", "unknown", 0L, "day", 0),
             List.of(),
             List.of(),
+            List.of(),
             List.of()
         );
     }
@@ -114,6 +120,10 @@ public final class WorldSnapshot {
 
     public List<BlockSnapshot> getNearbyBlocks() {
         return nearbyBlocks;
+    }
+
+    public List<CaveSnapshot> getNearbyCaves() {
+        return nearbyCaves;
     }
 
     public List<EntitySnapshot> getNearbyEntities() {
@@ -189,6 +199,21 @@ public final class WorldSnapshot {
             .toList();
     }
 
+    private static List<CaveSnapshot> scanCaves(AiPlayerEntity aiPlayer) {
+        Level level = aiPlayer.level();
+        BlockPos center = aiPlayer.blockPosition();
+        return BlockPos.betweenClosedStream(
+                center.offset(-BLOCK_HORIZONTAL_RADIUS, -BLOCK_VERTICAL_RADIUS, -BLOCK_HORIZONTAL_RADIUS),
+                center.offset(BLOCK_HORIZONTAL_RADIUS, BLOCK_VERTICAL_RADIUS, BLOCK_HORIZONTAL_RADIUS)
+            )
+            .map(BlockPos::immutable)
+            .filter(pos -> isCaveEntrance(level, pos))
+            .sorted(Comparator.comparingDouble(pos -> pos.distSqr(center)))
+            .limit(MAX_CAVES)
+            .map(pos -> CaveSnapshot.capture(aiPlayer, pos))
+            .toList();
+    }
+
     private static boolean isReachable(AiPlayerEntity aiPlayer, BlockPos pos) {
         if (aiPlayer.blockPosition().closerThan(pos, 5.0)) {
             return true;
@@ -199,12 +224,33 @@ public final class WorldSnapshot {
     private static boolean isKeyBlock(Block block) {
         return SurvivalUtils.isLog(block)
             || SurvivalUtils.isStone(block)
-            || SurvivalUtils.isOre(block)
+            || SurvivalUtils.isMiningResourceBlock(block)
             || block == Blocks.CRAFTING_TABLE
             || block == Blocks.FURNACE
             || block == Blocks.CHEST
             || block == Blocks.TRAPPED_CHEST
             || block == Blocks.WATER;
+    }
+
+    private static boolean isCaveEntrance(Level level, BlockPos pos) {
+        if (!level.getBlockState(pos).isAir() || !level.getBlockState(pos.above()).isAir()) {
+            return false;
+        }
+        Block support = level.getBlockState(pos.below()).getBlock();
+        if (support == Blocks.AIR || support == Blocks.WATER || support == Blocks.LAVA || support == Blocks.BEDROCK) {
+            return false;
+        }
+        int airNeighbors = 0;
+        int exposedWalls = 0;
+        for (net.minecraft.core.Direction direction : net.minecraft.core.Direction.values()) {
+            Block block = level.getBlockState(pos.relative(direction)).getBlock();
+            if (block == Blocks.AIR) {
+                airNeighbors++;
+            } else if (SurvivalUtils.isStone(block) || SurvivalUtils.isMiningResourceBlock(block)) {
+                exposedWalls++;
+            }
+        }
+        return airNeighbors >= 2 && exposedWalls >= 2;
     }
 
     private static String blockKey(Block block) {
@@ -436,6 +482,81 @@ public final class WorldSnapshot {
 
         public double getDistance() {
             return distance;
+        }
+    }
+
+    public static final class CaveSnapshot {
+        private final int[] position;
+        private final boolean reachable;
+        private final double distance;
+        private final int connectedAir;
+        private final int exposedWalls;
+        private final int visibleOres;
+
+        private CaveSnapshot(
+            BlockPos pos,
+            boolean reachable,
+            double distance,
+            int connectedAir,
+            int exposedWalls,
+            int visibleOres
+        ) {
+            this.position = position(pos);
+            this.reachable = reachable;
+            this.distance = Math.round(distance * 10.0) / 10.0;
+            this.connectedAir = connectedAir;
+            this.exposedWalls = exposedWalls;
+            this.visibleOres = visibleOres;
+        }
+
+        private static CaveSnapshot capture(AiPlayerEntity aiPlayer, BlockPos pos) {
+            Level level = aiPlayer.level();
+            int connectedAir = 0;
+            int exposedWalls = 0;
+            int visibleOres = 0;
+            for (BlockPos nearby : BlockPos.betweenClosed(pos.offset(-4, -2, -4), pos.offset(4, 3, 4))) {
+                Block block = level.getBlockState(nearby).getBlock();
+                if (block == Blocks.AIR) {
+                    connectedAir++;
+                } else if (SurvivalUtils.isMiningResourceBlock(block)) {
+                    visibleOres++;
+                    exposedWalls++;
+                } else if (SurvivalUtils.isStone(block)) {
+                    exposedWalls++;
+                }
+            }
+            return new CaveSnapshot(
+                pos,
+                WorldSnapshot.isReachable(aiPlayer, pos),
+                Math.sqrt(pos.distSqr(aiPlayer.blockPosition())),
+                connectedAir,
+                exposedWalls,
+                visibleOres
+            );
+        }
+
+        public int[] getPosition() {
+            return position;
+        }
+
+        public boolean isReachable() {
+            return reachable;
+        }
+
+        public double getDistance() {
+            return distance;
+        }
+
+        public int getConnectedAir() {
+            return connectedAir;
+        }
+
+        public int getExposedWalls() {
+            return exposedWalls;
+        }
+
+        public int getVisibleOres() {
+            return visibleOres;
         }
     }
 

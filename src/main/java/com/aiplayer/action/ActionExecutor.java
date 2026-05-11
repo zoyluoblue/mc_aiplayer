@@ -239,7 +239,11 @@ public class ActionExecutor {
         String normalizedTaskId = taskId == null || taskId.isBlank() ? "task-unknown" : taskId;
         for (Task task : tasks) {
             if (task != null) {
-                stamped.add(task.withParameter("task_id", normalizedTaskId));
+                Task stampedTask = task.withParameter("task_id", normalizedTaskId);
+                if (pendingCommand != null && !pendingCommand.isBlank()) {
+                    stampedTask = stampedTask.withParameter("source_command", pendingCommand);
+                }
+                stamped.add(stampedTask);
             }
         }
         return stamped;
@@ -247,6 +251,28 @@ public class ActionExecutor {
 
     private String createTaskId() {
         return "task-" + UUID.randomUUID().toString().substring(0, 8);
+    }
+
+    public void startLocalTask(String goal, Task task) {
+        if (task == null) {
+            return;
+        }
+        if (planningFuture != null && !planningFuture.isDone()) {
+            planningFuture.cancel(false);
+        }
+        isPlanning = false;
+        planningFuture = null;
+        pendingCommand = null;
+        pendingTaskId = null;
+        stopCurrentAction();
+
+        String taskId = createTaskId();
+        currentGoal = goal == null || goal.isBlank() ? task.getAction() : goal;
+        aiPlayer.getMemory().setCurrentGoal(currentGoal);
+        taskQueue.add(task.withParameter("task_id", taskId).withParameter("source_command", currentGoal));
+        activeTaskId = "task-unknown";
+        AiPlayerMod.info("planning", "[taskId={}] AiPlayer '{}' queued local task: goal={}, task={}",
+            taskId, aiPlayer.getAiPlayerName(), currentGoal, task);
     }
 
         private BaseAction createAction(Task task) {
@@ -302,6 +328,14 @@ public class ActionExecutor {
 
     public String getCurrentGoal() {
         return currentGoal;
+    }
+
+    public String getCurrentActionDescription() {
+        return currentAction == null ? "" : currentAction.getDescription();
+    }
+
+    public String getActiveTaskId() {
+        return activeTaskId;
     }
 
         public EventBus getEventBus() {

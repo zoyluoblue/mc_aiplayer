@@ -2,6 +2,9 @@ package com.aiplayer.llm;
 
 import com.aiplayer.AiPlayerMod;
 import com.aiplayer.action.Task;
+import com.aiplayer.agent.AgentIntent;
+import com.aiplayer.agent.AgentIntentParser;
+import com.aiplayer.agent.AgentIntentType;
 import com.aiplayer.config.AiPlayerConfig;
 import com.aiplayer.entity.AiPlayerEntity;
 import com.aiplayer.llm.async.AsyncLLMClient;
@@ -16,6 +19,7 @@ import com.aiplayer.planning.PlanValidator;
 import com.aiplayer.planning.PlanningPromptBuilder;
 import com.aiplayer.recipe.RecipePlan;
 import com.aiplayer.recipe.RecipeResolver;
+import com.aiplayer.recipe.MiningResource;
 import com.aiplayer.recipe.SurvivalRecipeBook;
 import com.aiplayer.snapshot.SnapshotSerializer;
 import com.aiplayer.snapshot.WorldSnapshot;
@@ -35,12 +39,14 @@ public class TaskPlanner {
     private final LLMCache llmCache;
     private final RecipeResolver recipeResolver;
     private final PlanValidator planValidator;
+    private final AgentIntentParser intentParser;
     private static final Pattern NUMBER_PATTERN = Pattern.compile("(\\d+)");
 
     public TaskPlanner() {
         this.deepSeekClient = new DeepSeekClient();
         this.recipeResolver = new RecipeResolver();
         this.planValidator = new PlanValidator(recipeResolver);
+        this.intentParser = new AgentIntentParser(recipeResolver);
 
         this.llmCache = new LLMCache();
         LLMFallbackHandler fallbackHandler = new LLMFallbackHandler();
@@ -285,6 +291,9 @@ public class TaskPlanner {
             return task;
         }
         String action = task.getAction();
+        if ("mine".equals(action)) {
+            return normalizeMineTask(task);
+        }
         if (!"craft".equals(action) && !"make_item".equals(action)) {
             return task;
         }
@@ -303,28 +312,47 @@ public class TaskPlanner {
         return new Task("make_item", parameters);
     }
 
+    private Task normalizeMineTask(Task task) {
+        String block = task.getStringParameter("block", null);
+        if (block == null || block.isBlank()) {
+            return task;
+        }
+        String item = MiningResource.findByMineTarget(block)
+            .map(MiningResource.Profile::item)
+            .orElseGet(() -> {
+                String normalizedItem = recipeResolver.normalizeItemId(block);
+                return isKnownMakeItemTarget(normalizedItem) ? normalizedItem : null;
+            });
+        if (item == null) {
+            return task;
+        }
+        int quantity = task.getIntParameter("quantity", task.getIntParameter("count", 1));
+        Map<String, Object> parameters = new HashMap<>();
+        parameters.put("item", item);
+        parameters.put("quantity", Math.max(1, quantity));
+        return new Task("make_item", parameters);
+    }
+
+    private boolean isKnownMakeItemTarget(String item) {
+        return SurvivalRecipeBook.findLocal(item).isPresent()
+            || SurvivalRecipeBook.explicitBaseSource(item).isPresent();
+    }
+
     private MakeItemIntent findMakeItemIntent(String command, WorldSnapshot snapshot) {
         if (command == null || command.isBlank()) {
             return null;
         }
-        String normalized = compact(command);
-        String item = detectLocalMakeItemTarget(command, snapshot, recipeResolver);
-        if (item == null || isStructureIntent(normalized)) {
+        AgentIntent intent = intentParser.parse(command, snapshot);
+        if (intent.intentType() != AgentIntentType.MAKE_ITEM
+            && intent.intentType() != AgentIntentType.SMELT_ITEM
+            && intent.intentType() != AgentIntentType.FILL_WATER) {
             return null;
         }
-        if (!hasCraftingVerb(normalized) && !isItemAcquisitionIntent(normalized) && !isUtilityAcquisitionIntent(normalized, item)) {
-            return null;
-        }
-        int quantity = extractQuantity(command);
-        return new MakeItemIntent(item, quantity, "按生存流程制作 " + item + " x" + quantity);
+        return new MakeItemIntent(intent.targetItem(), intent.quantity(), "按生存流程制作 " + intent.targetItem() + " x" + intent.quantity());
     }
 
     static String detectLocalMakeItemTarget(String command, WorldSnapshot snapshot, RecipeResolver recipeResolver) {
-        if (command == null || command.isBlank()) {
-            return null;
-        }
-        String normalized = compact(command);
-        return itemFromCommand(normalized, snapshot, recipeResolver);
+        return new AgentIntentParser(recipeResolver).detectMakeItemTarget(command, snapshot);
     }
 
     private static String itemFromCommand(String normalized, WorldSnapshot snapshot, RecipeResolver recipeResolver) {
@@ -353,6 +381,7 @@ public class TaskPlanner {
     private static boolean hasCraftingVerb(String normalized) {
         return containsAny(normalized,
             "做", "制作", "制造", "合成", "打造", "烧", "烤", "煮", "烹饪", "打", "装",
+            "挖", "采", "采集", "收集", "取得", "获取", "找",
             "craft", "make", "cook", "smelt", "grill", "fill",
             "造一个", "造一把", "造个");
     }
@@ -372,6 +401,7 @@ public class TaskPlanner {
     private static boolean isItemAcquisitionIntent(String normalized) {
         return containsAny(normalized,
             "给我", "我要", "我想要", "拿", "取", "来一", "来个", "来把", "弄", "搞", "准备",
+            "挖", "采", "采集", "收集", "取得", "获取", "找",
             "give me", "get me", "i want", "bring me");
     }
 

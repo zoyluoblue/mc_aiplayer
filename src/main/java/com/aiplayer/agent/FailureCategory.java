@@ -1,0 +1,16 @@
+package com.aiplayer.agent;
+
+public enum FailureCategory {
+    MATERIAL_MISSING,
+    TOOL_MISSING,
+    RECIPE_MISSING,
+    TARGET_UNREACHABLE,
+    RESOURCE_NOT_FOUND,
+    MINING_ROUTE_FAILED,
+    PATH_STUCK,
+    DANGER,
+    INVENTORY_FULL,
+    STATION_MISSING,
+    ILLEGAL_DEEPSEEK_OUTPUT,
+    UNKNOWN
+}

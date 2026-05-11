@@ -1,5 +1,6 @@
 package com.aiplayer.memory;
 
+import com.aiplayer.agent.AgentSkillLibrary;
 import com.aiplayer.entity.AiPlayerEntity;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
@@ -15,6 +16,7 @@ public class AiPlayerMemory {
     private String currentGoal;
     private final Queue<String> taskQueue;
     private final LinkedList<String> recentActions;
+    private final AgentSkillLibrary skillLibrary;
     private static final int MAX_RECENT_ACTIONS = 20;
 
     public AiPlayerMemory(AiPlayerEntity aiPlayer) {
@@ -22,6 +24,7 @@ public class AiPlayerMemory {
         this.currentGoal = "";
         this.taskQueue = new LinkedList<>();
         this.recentActions = new LinkedList<>();
+        this.skillLibrary = new AgentSkillLibrary();
     }
 
     public String getCurrentGoal() {
@@ -51,6 +54,10 @@ public class AiPlayerMemory {
         return result;
     }
 
+    public AgentSkillLibrary getSkillLibrary() {
+        return skillLibrary;
+    }
+
     public void clearTaskQueue() {
         taskQueue.clear();
         currentGoal = "";
@@ -64,6 +71,7 @@ public class AiPlayerMemory {
             actionsList.add(StringTag.valueOf(action));
         }
         tag.put("RecentActions", actionsList);
+        tag.putString("SkillLibrary", skillLibrary.toJson());
     }
 
     public void loadFromNBT(CompoundTag tag) {
@@ -78,6 +86,8 @@ public class AiPlayerMemory {
                 recentActions.add(actionsList.getString(i));
             }
         }
+        if (tag.contains("SkillLibrary")) {
+            skillLibrary.loadJson(tag.getString("SkillLibrary"));
+        }
     }
 }
-

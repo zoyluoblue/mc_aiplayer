@@ -23,6 +23,14 @@ class TaskPlannerIntentTest {
             TaskPlanner.detectLocalMakeItemTarget("给我一把铁铲", snapshot, recipeResolver));
         assertEquals("minecraft:iron_pickaxe",
             TaskPlanner.detectLocalMakeItemTarget("我要一把铁镐", snapshot, recipeResolver));
+        assertEquals("minecraft:gold_ingot",
+            TaskPlanner.detectLocalMakeItemTarget("帮我挖两块金锭", snapshot, recipeResolver));
+        assertEquals("minecraft:obsidian",
+            TaskPlanner.detectLocalMakeItemTarget("帮我挖黑曜石", snapshot, recipeResolver));
+        assertEquals("minecraft:raw_iron",
+            TaskPlanner.detectLocalMakeItemTarget("自动挖矿", snapshot, recipeResolver));
+        assertEquals("minecraft:raw_iron",
+            TaskPlanner.detectLocalMakeItemTarget("挖一些矿", snapshot, recipeResolver));
     }
 
     @Test

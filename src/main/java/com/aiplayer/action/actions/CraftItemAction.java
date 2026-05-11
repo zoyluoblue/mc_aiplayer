@@ -131,8 +131,6 @@ public class CraftItemAction extends BaseAction {
     }
 
     private void gatherWoodForCrafting() {
-        aiPlayer.setItemInHand(InteractionHand.MAIN_HAND, aiPlayer.getBestToolStackFor("axe"));
-
         if (woodTarget == null || aiPlayer.level().getBlockState(woodTarget).isAir()) {
             Optional<BlockPos> found = SurvivalUtils.findNearestBlock(aiPlayer,
                 (pos, state) -> !rejectedTargets.contains(pos) && SurvivalUtils.isLog(state.getBlock()),
@@ -147,6 +145,7 @@ public class CraftItemAction extends BaseAction {
             resetTargetMovement();
         }
 
+        SurvivalUtils.equipBestToolForBlock(aiPlayer, aiPlayer.level().getBlockState(woodTarget).getBlock());
         if (!SurvivalUtils.moveNear(aiPlayer, woodTarget, 4.5D)) {
             woodBreakTicks = 0;
             trackMovementToTarget();
@@ -157,7 +156,7 @@ public class CraftItemAction extends BaseAction {
         aiPlayer.lookAtWorkTarget(woodTarget);
         aiPlayer.swingWorkHand(InteractionHand.MAIN_HAND);
         woodBreakTicks++;
-        int breakDelay = aiPlayer.getBestToolStackFor("axe").isEmpty() ? 60 : 24;
+        int breakDelay = SurvivalUtils.getBreakDelay(aiPlayer, aiPlayer.level().getBlockState(woodTarget).getBlock());
         if (woodBreakTicks < breakDelay) {
             return;
         }

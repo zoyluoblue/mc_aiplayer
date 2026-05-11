@@ -57,6 +57,45 @@ class SurvivalRecipePlanningTest {
     }
 
     @Test
+    void goldIngotExpandsThroughIronPickaxeRawGoldAndFuel() {
+        RecipePlan plan = recipeResolver.resolve(null, emptySnapshot, "minecraft:gold_ingot", 2);
+
+        assertTrue(plan.isSuccess(), plan.getFailureReason());
+        assertHasCraft(plan, "minecraft:iron_pickaxe", "crafting_table");
+        assertHasGather(plan, "minecraft:raw_gold", "gold_ore");
+        assertHasGather(plan, "minecraft:coal", "coal_ore");
+        assertHasCraft(plan, "minecraft:gold_ingot", "furnace");
+        assertBefore(plan, "minecraft:iron_pickaxe", "minecraft:raw_gold");
+        assertBefore(plan, "minecraft:raw_gold", "minecraft:gold_ingot");
+    }
+
+    @Test
+    void advancedMiningResourcesDeclareToolChains() {
+        RecipePlan emerald = recipeResolver.resolve(null, emptySnapshot, "minecraft:emerald", 1);
+        RecipePlan obsidian = recipeResolver.resolve(null, emptySnapshot, "minecraft:obsidian", 1);
+        RecipePlan quartz = recipeResolver.resolve(null, emptySnapshot, "minecraft:quartz", 1);
+        RecipePlan ancientDebris = recipeResolver.resolve(null, emptySnapshot, "minecraft:ancient_debris", 1);
+
+        assertTrue(emerald.isSuccess(), emerald.getFailureReason());
+        assertHasCraft(emerald, "minecraft:iron_pickaxe", "crafting_table");
+        assertHasGather(emerald, "minecraft:emerald", "emerald_ore");
+        assertBefore(emerald, "minecraft:iron_pickaxe", "minecraft:emerald");
+
+        assertTrue(obsidian.isSuccess(), obsidian.getFailureReason());
+        assertHasCraft(obsidian, "minecraft:diamond_pickaxe", "crafting_table");
+        assertHasGather(obsidian, "minecraft:obsidian", "block:minecraft:obsidian");
+        assertBefore(obsidian, "minecraft:diamond_pickaxe", "minecraft:obsidian");
+
+        assertTrue(quartz.isSuccess(), quartz.getFailureReason());
+        assertHasCraft(quartz, "minecraft:wooden_pickaxe", "crafting_table");
+        assertHasGather(quartz, "minecraft:quartz", "block:minecraft:nether_quartz_ore");
+
+        assertTrue(ancientDebris.isSuccess(), ancientDebris.getFailureReason());
+        assertHasCraft(ancientDebris, "minecraft:diamond_pickaxe", "crafting_table");
+        assertHasGather(ancientDebris, "minecraft:ancient_debris", "block:minecraft:ancient_debris");
+    }
+
+    @Test
     void explicitBaseSourcesTakePriorityOverGenericBlockSources() {
         assertTrue(recipeResolver.shouldPreferBaseSource("minecraft:raw_iron"));
         assertTrue(recipeResolver.shouldPreferBaseSource("minecraft:coal"));

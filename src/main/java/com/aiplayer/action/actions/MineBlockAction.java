@@ -3,6 +3,8 @@ package com.aiplayer.action.actions;
 import com.aiplayer.action.ActionResult;
 import com.aiplayer.action.Task;
 import com.aiplayer.entity.AiPlayerEntity;
+import com.aiplayer.recipe.MiningResource;
+import com.aiplayer.recipe.SurvivalRecipeBook;
 import com.aiplayer.util.SurvivalUtils;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -27,6 +29,7 @@ public class MineBlockAction extends BaseAction {
     private int miningDirectionZ;
     private int ticksRunning;
     private int breakTicks;
+    private MakeItemAction delegate;
     private static final int MAX_TICKS = 24000;
 
     public MineBlockAction(AiPlayerEntity aiPlayer, Task task) {
@@ -37,6 +40,12 @@ public class MineBlockAction extends BaseAction {
     protected void onStart() {
         String blockName = task.getStringParameter("block", "stone");
         targetQuantity = task.getIntParameter("quantity", 8);
+        String delegatedItem = itemForMiningTarget(blockName);
+        if (delegatedItem != null) {
+            targetBlock = MiningResource.findByMineTarget(blockName).map(this::blockFromProfile).orElse(Blocks.AIR);
+            startDelegate(delegatedItem);
+            return;
+        }
         targetBlock = parseBlock(blockName);
         minedCount = 0;
         ticksRunning = 0;
@@ -57,6 +66,13 @@ public class MineBlockAction extends BaseAction {
 
     @Override
     protected void onTick() {
+        if (delegate != null) {
+            delegate.tick();
+            if (delegate.isComplete()) {
+                result = delegate.getResult();
+            }
+            return;
+        }
         ticksRunning++;
         if (ticksRunning > MAX_TICKS) {
             result = ActionResult.failure("挖掘超时，已获得 " + minedCount + " 个目标方块");
@@ -87,6 +103,7 @@ public class MineBlockAction extends BaseAction {
             }
         }
 
+        SurvivalUtils.equipBestToolForBlock(aiPlayer, aiPlayer.level().getBlockState(currentTarget).getBlock());
         if (!SurvivalUtils.moveNear(aiPlayer, currentTarget, 3.0)) {
             breakTicks = 0;
             return;
@@ -109,12 +126,19 @@ public class MineBlockAction extends BaseAction {
 
     @Override
     protected void onCancel() {
+        if (delegate != null) {
+            delegate.cancel();
+            return;
+        }
         aiPlayer.getNavigation().stop();
         aiPlayer.setItemInHand(InteractionHand.MAIN_HAND, net.minecraft.world.item.ItemStack.EMPTY);
     }
 
     @Override
     public String getDescription() {
+        if (delegate != null) {
+            return delegate.getDescription();
+        }
         return "挖掘 " + targetQuantity + " 个 " + targetBlock.getName().getString() + "，已获得 " + minedCount;
     }
 
@@ -149,12 +173,13 @@ public class MineBlockAction extends BaseAction {
     }
 
     private boolean hasStoneOrBetterPickaxe() {
-        return aiPlayer.hasItem(Items.STONE_PICKAXE, 1) || hasIronOrBetterPickaxe();
+        return aiPlayer.getBestToolStackFor("pickaxe").is(Items.STONE_PICKAXE) || hasIronOrBetterPickaxe();
     }
 
     private boolean hasIronOrBetterPickaxe() {
-        return aiPlayer.hasItem(Items.IRON_PICKAXE, 1) || aiPlayer.hasItem(Items.DIAMOND_PICKAXE, 1) ||
-            aiPlayer.hasItem(Items.NETHERITE_PICKAXE, 1);
+        return aiPlayer.getBestToolStackFor("pickaxe").is(Items.IRON_PICKAXE) ||
+            aiPlayer.getBestToolStackFor("pickaxe").is(Items.DIAMOND_PICKAXE) ||
+            aiPlayer.getBestToolStackFor("pickaxe").is(Items.NETHERITE_PICKAXE);
     }
 
     private Optional<BlockPos> findNextTarget() {
@@ -176,11 +201,7 @@ public class MineBlockAction extends BaseAction {
     }
 
     private int getBreakDelay(BlockPos pos) {
-        Block block = aiPlayer.level().getBlockState(pos).getBlock();
-        if (SurvivalUtils.requiresPickaxe(block)) {
-            return 36;
-        }
-        return 60;
+        return SurvivalUtils.getBreakDelay(aiPlayer, aiPlayer.level().getBlockState(pos).getBlock());
     }
 
     private void chooseMiningDirection() {
@@ -226,6 +247,10 @@ public class MineBlockAction extends BaseAction {
     }
 
     private Block parseBlock(String blockName) {
+        MiningResource.Profile miningProfile = MiningResource.findByMineTarget(blockName).orElse(null);
+        if (miningProfile != null) {
+            return blockFromProfile(miningProfile);
+        }
         String normalized = blockName.toLowerCase(Locale.ROOT).replace(" ", "_");
         Map<String, String> resourceToOre = new HashMap<>() {{
             put("iron", "iron_ore");
@@ -252,6 +277,39 @@ public class MineBlockAction extends BaseAction {
             normalized = "minecraft:" + normalized;
         }
         ResourceLocation resourceLocation = ResourceLocation.parse(normalized);
+        return BuiltInRegistries.BLOCK.getValue(resourceLocation);
+    }
+
+    private String itemForMiningTarget(String blockName) {
+        MiningResource.Profile miningProfile = MiningResource.findByMineTarget(blockName).orElse(null);
+        if (miningProfile != null) {
+            return miningProfile.item();
+        }
+        String normalizedItem = SurvivalRecipeBook.normalizeItemId(blockName);
+        if (SurvivalRecipeBook.findLocal(normalizedItem).isPresent()
+            || SurvivalRecipeBook.explicitBaseSource(normalizedItem).isPresent()) {
+            return normalizedItem;
+        }
+        return null;
+    }
+
+    private void startDelegate(String item) {
+        Map<String, Object> parameters = new HashMap<>();
+        parameters.put("item", item);
+        parameters.put("quantity", Math.max(1, targetQuantity));
+        parameters.put("task_id", task.getTaskId());
+        delegate = new MakeItemAction(aiPlayer, new Task("make_item", parameters));
+        delegate.start();
+        if (delegate.isComplete()) {
+            result = delegate.getResult();
+        }
+    }
+
+    private Block blockFromProfile(MiningResource.Profile profile) {
+        if (profile.blockIds().isEmpty()) {
+            return Blocks.AIR;
+        }
+        ResourceLocation resourceLocation = ResourceLocation.parse(profile.blockIds().getFirst());
         return BuiltInRegistries.BLOCK.getValue(resourceLocation);
     }
 }

@@ -128,7 +128,6 @@ public class BuildStructureAction extends BaseAction {
         }
 
         aiPlayer.craftWoodenAxe();
-        aiPlayer.setItemInHand(InteractionHand.MAIN_HAND, aiPlayer.getBestToolStackFor("axe"));
 
         if (woodTarget == null || aiPlayer.level().getBlockState(woodTarget).isAir()) {
             Optional<BlockPos> found = SurvivalUtils.findNearestBlock(aiPlayer, state -> SurvivalUtils.isLog(state.getBlock()), 32, 12);
@@ -140,6 +139,7 @@ public class BuildStructureAction extends BaseAction {
             woodBreakTicks = 0;
         }
 
+        SurvivalUtils.equipBestToolForBlock(aiPlayer, aiPlayer.level().getBlockState(woodTarget).getBlock());
         if (!SurvivalUtils.moveNear(aiPlayer, woodTarget, 3.0)) {
             woodBreakTicks = 0;
             return;
@@ -148,7 +148,7 @@ public class BuildStructureAction extends BaseAction {
         aiPlayer.lookAtWorkTarget(woodTarget);
         aiPlayer.swingWorkHand(InteractionHand.MAIN_HAND);
         woodBreakTicks++;
-        int delay = aiPlayer.getBestToolStackFor("axe").isEmpty() ? 60 : 24;
+        int delay = SurvivalUtils.getBreakDelay(aiPlayer, aiPlayer.level().getBlockState(woodTarget).getBlock());
         if (woodBreakTicks < delay) {
             return;
         }

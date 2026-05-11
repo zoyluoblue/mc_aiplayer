@@ -174,12 +174,14 @@ public class AiPlayerGUI {
         graphics.drawString(mc.font, "§7Alt/Option+2 关闭", panelX + PANEL_PADDING, panelY + 20, 0xFF888888);
 
         int buttonY = panelY + 36;
-        int buttonWidth = (PANEL_WIDTH - PANEL_PADDING * 2 - BUTTON_GAP * 2) / 3;
+        int buttonWidth = (PANEL_WIDTH - PANEL_PADDING * 2 - BUTTON_GAP * 3) / 4;
         int backpackButtonX = panelX + PANEL_PADDING;
-        int stopButtonX = backpackButtonX + buttonWidth + BUTTON_GAP;
-        int recallButtonX = stopButtonX + buttonWidth + BUTTON_GAP;
+        int statusButtonX = backpackButtonX + buttonWidth + BUTTON_GAP;
+        int locationButtonX = statusButtonX + buttonWidth + BUTTON_GAP;
+        int recallButtonX = locationButtonX + buttonWidth + BUTTON_GAP;
         drawButton(graphics, mc.font, backpackButtonX, buttonY, buttonWidth, BUTTON_HEIGHT, showBackpack ? "关闭背包" : "背包", isInside(mouseX, mouseY, backpackButtonX, buttonY, buttonWidth, BUTTON_HEIGHT));
-        drawButton(graphics, mc.font, stopButtonX, buttonY, buttonWidth, BUTTON_HEIGHT, "停止", isInside(mouseX, mouseY, stopButtonX, buttonY, buttonWidth, BUTTON_HEIGHT));
+        drawButton(graphics, mc.font, statusButtonX, buttonY, buttonWidth, BUTTON_HEIGHT, "状态", isInside(mouseX, mouseY, statusButtonX, buttonY, buttonWidth, BUTTON_HEIGHT));
+        drawButton(graphics, mc.font, locationButtonX, buttonY, buttonWidth, BUTTON_HEIGHT, "定位", isInside(mouseX, mouseY, locationButtonX, buttonY, buttonWidth, BUTTON_HEIGHT));
         drawButton(graphics, mc.font, recallButtonX, buttonY, buttonWidth, BUTTON_HEIGHT, "召回", isInside(mouseX, mouseY, recallButtonX, buttonY, buttonWidth, BUTTON_HEIGHT));
 
         if (showBackpack) {
@@ -510,17 +512,22 @@ public class AiPlayerGUI {
 
         if (button == 0) {
             int buttonY = 36;
-            int buttonWidth = (PANEL_WIDTH - PANEL_PADDING * 2 - BUTTON_GAP * 2) / 3;
+            int buttonWidth = (PANEL_WIDTH - PANEL_PADDING * 2 - BUTTON_GAP * 3) / 4;
             int backpackButtonX = panelX + PANEL_PADDING;
-            int stopButtonX = backpackButtonX + buttonWidth + BUTTON_GAP;
-            int recallButtonX = stopButtonX + buttonWidth + BUTTON_GAP;
+            int statusButtonX = backpackButtonX + buttonWidth + BUTTON_GAP;
+            int locationButtonX = statusButtonX + buttonWidth + BUTTON_GAP;
+            int recallButtonX = locationButtonX + buttonWidth + BUTTON_GAP;
             if (isInside(mouseX, mouseY, backpackButtonX, buttonY, buttonWidth, BUTTON_HEIGHT)) {
                 showBackpack = !showBackpack;
                 clearInventorySelection();
                 return;
             }
-            if (isInside(mouseX, mouseY, stopButtonX, buttonY, buttonWidth, BUTTON_HEIGHT)) {
-                sendStopCommand();
+            if (isInside(mouseX, mouseY, statusButtonX, buttonY, buttonWidth, BUTTON_HEIGHT)) {
+                sendStatusCommand();
+                return;
+            }
+            if (isInside(mouseX, mouseY, locationButtonX, buttonY, buttonWidth, BUTTON_HEIGHT)) {
+                sendLocationCommand();
                 return;
             }
             if (isInside(mouseX, mouseY, recallButtonX, buttonY, buttonWidth, BUTTON_HEIGHT)) {
@@ -606,6 +613,37 @@ public class AiPlayerGUI {
             return;
         }
 
+        if (lowerCommand.equals("status") || lowerCommand.equals("状态")) {
+            sendStatusCommand();
+            return;
+        }
+
+        if (lowerCommand.equals("location") || lowerCommand.equals("定位")) {
+            sendLocationCommand();
+            return;
+        }
+
+        if (lowerCommand.equals("mining status") || lowerCommand.equals("挖矿状态")) {
+            sendMiningStatusCommand();
+            return;
+        }
+
+        if (lowerCommand.equals("mining stop")) {
+            if (mc.player != null) {
+                mc.player.connection.sendCommand("ai mining stop");
+                addSystemMessage("已请求停止自动挖矿。");
+            }
+            return;
+        }
+
+        if (lowerCommand.equals("mining return")) {
+            if (mc.player != null) {
+                mc.player.connection.sendCommand("ai mining return");
+                addSystemMessage("已请求AI停止挖矿并正常返回。");
+            }
+            return;
+        }
+
         if (lowerCommand.startsWith("take ")) {
             if (mc.player != null) {
                 mc.player.connection.sendCommand("ai backpack take " + command.substring(5).trim());
@@ -633,6 +671,30 @@ public class AiPlayerGUI {
         if (mc.player != null) {
             mc.player.connection.sendCommand("ai stop");
             addSystemMessage("已请求AI停止当前任务并回到你身边。");
+        }
+    }
+
+    private static void sendMiningStatusCommand() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player != null) {
+            mc.player.connection.sendCommand("ai mining status");
+            addSystemMessage("已请求查看自动挖矿状态。");
+        }
+    }
+
+    private static void sendStatusCommand() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player != null) {
+            mc.player.connection.sendCommand("ai status");
+            addSystemMessage("已请求查看AI当前状态。");
+        }
+    }
+
+    private static void sendLocationCommand() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player != null) {
+            mc.player.connection.sendCommand("ai location");
+            addSystemMessage("已请求查看AI当前位置。");
         }
     }
 

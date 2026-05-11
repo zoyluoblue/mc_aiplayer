@@ -137,6 +137,10 @@ public final class SurvivalRecipeBook {
         alias("minecraft:redstone", "redstone", "红石");
         alias("minecraft:lapis_lazuli", "lapislazuli", "lapis", "青金石");
         alias("minecraft:emerald", "emerald", "绿宝石");
+        alias("minecraft:quartz", "netherquartz", "quartz", "下界石英", "石英", "石英矿");
+        alias("minecraft:gold_nugget", "goldnugget", "金粒", "下界金", "下界金矿");
+        alias("minecraft:obsidian", "obsidian", "黑曜石");
+        alias("minecraft:ancient_debris", "ancientdebris", "远古残骸");
         alias("minecraft:shield", "shield", "盾", "盾牌");
         alias("minecraft:bucket", "bucket", "桶", "铁桶");
         alias("minecraft:water_bucket", "waterbucket", "水桶", "一桶水", "桶水");
@@ -154,17 +158,9 @@ public final class SurvivalRecipeBook {
         registerArmorAliases("diamond", "diamond", "钻石");
 
         source("minecraft:cobblestone", "stone", "minecraft:wooden_pickaxe");
-        source("minecraft:coal", "coal_ore", "minecraft:wooden_pickaxe");
-        source("minecraft:raw_iron", "iron_ore", "minecraft:stone_pickaxe");
-        source("minecraft:raw_copper", "copper_ore", "minecraft:stone_pickaxe");
-        source("minecraft:raw_gold", "gold_ore", "minecraft:iron_pickaxe");
-        source("minecraft:diamond", "diamond_ore", "minecraft:iron_pickaxe");
-        source("minecraft:redstone", "redstone_ore", "minecraft:iron_pickaxe");
-        source("minecraft:lapis_lazuli", "lapis_ore", "minecraft:stone_pickaxe");
-        source("minecraft:emerald", "emerald_ore", "minecraft:iron_pickaxe");
-        source("minecraft:obsidian", "block:minecraft:obsidian", "minecraft:diamond_pickaxe");
-        source("minecraft:ancient_debris", "block:minecraft:ancient_debris", "minecraft:diamond_pickaxe");
-        source("minecraft:nether_quartz", "block:minecraft:nether_quartz_ore", "minecraft:wooden_pickaxe");
+        for (MiningResource.Profile profile : MiningResource.profiles()) {
+            source(profile.item(), profile.source(), profile.requiredTool());
+        }
         source("minecraft:glowstone_dust", "block:minecraft:glowstone", null, 4);
         source("minecraft:clay_ball", "block:minecraft:clay", null, 4);
         source("minecraft:flint", "block:minecraft:gravel", null);

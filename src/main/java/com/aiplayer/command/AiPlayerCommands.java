@@ -4,11 +4,13 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.aiplayer.AiPlayerMod;
+import com.aiplayer.action.Task;
 import com.aiplayer.entity.AiPlayerEntity;
 import com.aiplayer.entity.AiPlayerManager;
 import com.aiplayer.planning.PlanParser;
 import com.aiplayer.planning.PlanSchema;
 import com.aiplayer.planning.PlanValidator;
+import com.aiplayer.recipe.AutoMiningTarget;
 import com.aiplayer.recipe.RecipePlan;
 import com.aiplayer.recipe.RecipeResolver;
 import com.aiplayer.snapshot.SnapshotSerializer;
@@ -28,6 +30,7 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -81,6 +84,10 @@ public class AiPlayerCommands {
                                 .executes(context -> takeBackpackSlotToPlayerSlot(context, IntegerArgumentType.getInteger(context, "count"))))))))
             .then(Commands.literal("snapshot")
                 .executes(AiPlayerCommands::showSnapshot))
+            .then(Commands.literal("status")
+                .executes(AiPlayerCommands::showAiStatus))
+            .then(Commands.literal("location")
+                .executes(AiPlayerCommands::showAiLocation))
             .then(Commands.literal("recipe")
                 .then(Commands.argument("item", StringArgumentType.word())
                     .executes(context -> showRecipe(context, 1))
@@ -91,6 +98,18 @@ public class AiPlayerCommands {
                     .executes(context -> showPlan(context, 1))
                     .then(Commands.argument("count", IntegerArgumentType.integer(1, 64))
                         .executes(context -> showPlan(context, IntegerArgumentType.getInteger(context, "count"))))))
+            .then(Commands.literal("mining")
+                .then(Commands.literal("status")
+                    .executes(AiPlayerCommands::showMiningStatus))
+                .then(Commands.literal("stop")
+                    .executes(AiPlayerCommands::stopMining))
+                .then(Commands.literal("return")
+                    .executes(AiPlayerCommands::returnMining))
+                .then(Commands.literal("start")
+                    .then(Commands.argument("target", StringArgumentType.word())
+                        .executes(context -> startMining(context, 1))
+                        .then(Commands.argument("count", IntegerArgumentType.integer(1, 64))
+                            .executes(context -> startMining(context, IntegerArgumentType.getInteger(context, "count")))))))
             .then(Commands.literal("stop")
                 .executes(AiPlayerCommands::stopAi))
             .then(Commands.literal("recall")
@@ -114,8 +133,14 @@ public class AiPlayerCommands {
             /ai backpack take <item> [count] - 从 AI 背包取出物品
             /ai backpack put <item> [count] - 把你的物品放入 AI 背包
             /ai snapshot - 查看 AI 最近一次可观察状态 JSON
+            /ai status - 查看 AI 当前状态和阶段
+            /ai location - 查看 AI 当前坐标和距离
             /ai recipe <item> [count] - 查看目标物品的递归配方链
             /ai plan <item> [count] - 查看验证后的高层执行计划
+            /ai mining start <target> [count] - 启动自动挖矿目标，例如 iron、diamond、gold、obsidian
+            /ai mining status - 查看当前自动挖矿状态
+            /ai mining stop - 停止当前自动挖矿任务
+            /ai mining return - 停止挖矿并让 AI 正常走回你身边
             """), false);
         return 1;
     }
@@ -481,6 +506,212 @@ public class AiPlayerCommands {
             return 0;
         }
         sendLongMessage(source, PlanParser.toJson(validation.plan()));
+        return 1;
+    }
+
+    private static int startMining(CommandContext<CommandSourceStack> context, int count) {
+        CommandSourceStack source = context.getSource();
+        ServerPlayer player = getPlayer(source);
+        if (player == null) {
+            source.sendFailure(Component.literal("该命令必须由玩家执行。"));
+            return 0;
+        }
+
+        AiPlayerEntity aiPlayer = AiPlayerMod.getAiPlayerManager().getAiPlayerByOwner(player.getUUID());
+        if (aiPlayer == null) {
+            source.sendFailure(Component.literal("你还没有召唤 AI 玩家。"));
+            return 0;
+        }
+
+        String target = StringArgumentType.getString(context, "target");
+        AutoMiningTarget miningTarget = AutoMiningTarget.resolve(target, count);
+        if (!miningTarget.supported()) {
+            source.sendFailure(Component.literal(miningTarget.message()
+                + " 可用目标包括 iron、coal、gold、diamond、redstone、lapis、emerald、copper、obsidian、ancient_debris。"));
+            return 0;
+        }
+
+        Map<String, Object> parameters = new HashMap<>();
+        parameters.put("item", miningTarget.item());
+        parameters.put("quantity", miningTarget.quantity());
+        parameters.put("mining_target", miningTarget.profile().key());
+        parameters.put("auto_mining", true);
+        Task task = new Task("make_item", parameters);
+        aiPlayer.getActionExecutor().startLocalTask(
+            "自动挖矿：" + miningTarget.profile().displayName() + " x" + miningTarget.quantity(),
+            task
+        );
+
+        source.sendSuccess(() -> Component.literal("已启动自动挖矿：%s -> %s x%d。维度：%s，最低工具：%s。"
+            .formatted(
+                miningTarget.profile().displayName(),
+                formatItemName(miningTarget.item()),
+                miningTarget.quantity(),
+                miningTarget.dimension(),
+                formatItemName(miningTarget.requiredTool())
+            )), true);
+        return 1;
+    }
+
+    private static int showMiningStatus(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        ServerPlayer player = getPlayer(source);
+        if (player == null) {
+            source.sendFailure(Component.literal("该命令必须由玩家执行。"));
+            return 0;
+        }
+        AiPlayerEntity aiPlayer = getOwnedAiPlayer(player);
+        if (aiPlayer == null) {
+            source.sendFailure(Component.literal("你还没有召唤 AI 玩家。"));
+            return 0;
+        }
+
+        BlockPos pos = aiPlayer.blockPosition();
+        String goal = aiPlayer.getActionExecutor().getCurrentGoal();
+        String action = aiPlayer.getActionExecutor().getCurrentActionDescription();
+        String taskId = aiPlayer.getActionExecutor().getActiveTaskId();
+        String message = """
+            AI 挖矿状态：
+            - taskId: %s
+            - 目标: %s
+            - 动作: %s
+            - 执行中: %s，规划中: %s
+            - 位置: %s，Y=%d
+            - 主手: %s
+            - 背包: %s
+            """.formatted(
+            taskId,
+            goal == null || goal.isBlank() ? "无" : goal,
+            action == null || action.isBlank() ? "无" : action,
+            aiPlayer.getActionExecutor().isExecuting(),
+            aiPlayer.getActionExecutor().isPlanning(),
+            pos.toShortString(),
+            pos.getY(),
+            itemKey(aiPlayer.getMainHandItem().getItem()),
+            new TreeMap<>(aiPlayer.getInventorySnapshot())
+        );
+        source.sendSuccess(() -> Component.literal(message), false);
+        return 1;
+    }
+
+    private static int showAiStatus(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        ServerPlayer player = getPlayer(source);
+        if (player == null) {
+            source.sendFailure(Component.literal("该命令必须由玩家执行。"));
+            return 0;
+        }
+        AiPlayerEntity aiPlayer = getOwnedAiPlayer(player);
+        if (aiPlayer == null) {
+            source.sendFailure(Component.literal("你还没有召唤 AI 玩家。"));
+            return 0;
+        }
+
+        BlockPos pos = aiPlayer.blockPosition();
+        String goal = aiPlayer.getActionExecutor().getCurrentGoal();
+        String action = aiPlayer.getActionExecutor().getCurrentActionDescription();
+        String agentState = aiPlayer.getActionExecutor().getStateMachine().getCurrentState().getDisplayName();
+        String message = """
+            AI 当前状态：
+            - 名称: %s
+            - 阶段: %s
+            - 目标: %s
+            - 当前动作: %s
+            - 执行中: %s，规划中: %s
+            - 位置: %s，Y=%d
+            - 主手: %s
+            - 背包: %s
+            """.formatted(
+            aiPlayer.getAiPlayerName(),
+            agentState,
+            goal == null || goal.isBlank() ? "无" : goal,
+            action == null || action.isBlank() ? "无" : action,
+            aiPlayer.getActionExecutor().isExecuting(),
+            aiPlayer.getActionExecutor().isPlanning(),
+            pos.toShortString(),
+            pos.getY(),
+            itemKey(aiPlayer.getMainHandItem().getItem()),
+            new TreeMap<>(aiPlayer.getInventorySnapshot())
+        );
+        source.sendSuccess(() -> Component.literal(message), false);
+        return 1;
+    }
+
+    private static int showAiLocation(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        ServerPlayer player = getPlayer(source);
+        if (player == null) {
+            source.sendFailure(Component.literal("该命令必须由玩家执行。"));
+            return 0;
+        }
+        AiPlayerEntity aiPlayer = getOwnedAiPlayer(player);
+        if (aiPlayer == null) {
+            source.sendFailure(Component.literal("你还没有召唤 AI 玩家。"));
+            return 0;
+        }
+
+        BlockPos aiPos = aiPlayer.blockPosition();
+        BlockPos playerPos = player.blockPosition();
+        double distance = Math.sqrt(aiPlayer.distanceToSqr(player));
+        String dimension = aiPlayer.level().dimension().location().toString();
+        String message = """
+            AI 当前位置：
+            - 名称: %s
+            - 维度: %s
+            - 坐标: X=%d, Y=%d, Z=%d
+            - 与你距离: %.1f 格
+            - 你的坐标: X=%d, Y=%d, Z=%d
+            """.formatted(
+            aiPlayer.getAiPlayerName(),
+            dimension,
+            aiPos.getX(),
+            aiPos.getY(),
+            aiPos.getZ(),
+            distance,
+            playerPos.getX(),
+            playerPos.getY(),
+            playerPos.getZ()
+        );
+        source.sendSuccess(() -> Component.literal(message), false);
+        return 1;
+    }
+
+    private static int stopMining(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        ServerPlayer player = getPlayer(source);
+        if (player == null) {
+            source.sendFailure(Component.literal("该命令必须由玩家执行。"));
+            return 0;
+        }
+        AiPlayerEntity aiPlayer = getOwnedAiPlayer(player);
+        if (aiPlayer == null) {
+            source.sendFailure(Component.literal("你还没有召唤 AI 玩家。"));
+            return 0;
+        }
+        aiPlayer.getActionExecutor().stopCurrentAction();
+        aiPlayer.getMemory().clearTaskQueue();
+        source.sendSuccess(() -> Component.literal("已停止自动挖矿，已获得物品仍保留在 %s 背包中。"
+            .formatted(aiPlayer.getAiPlayerName())), true);
+        return 1;
+    }
+
+    private static int returnMining(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        ServerPlayer player = getPlayer(source);
+        if (player == null) {
+            source.sendFailure(Component.literal("该命令必须由玩家执行。"));
+            return 0;
+        }
+        AiPlayerEntity aiPlayer = getOwnedAiPlayer(player);
+        if (aiPlayer == null) {
+            source.sendFailure(Component.literal("你还没有召唤 AI 玩家。"));
+            return 0;
+        }
+        aiPlayer.getActionExecutor().stopCurrentAction();
+        aiPlayer.getMemory().clearTaskQueue();
+        aiPlayer.getNavigation().moveTo(player, 1.1D);
+        source.sendSuccess(() -> Component.literal("已停止自动挖矿，%s 正在按正常移动回到你身边。"
+            .formatted(aiPlayer.getAiPlayerName())), true);
         return 1;
     }
 

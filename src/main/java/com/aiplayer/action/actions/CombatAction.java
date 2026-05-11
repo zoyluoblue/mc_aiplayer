@@ -77,14 +77,15 @@ public class CombatAction extends BaseAction {
         lastX = currentX;
         lastZ = currentZ;
         
+        aiPlayer.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND, aiPlayer.getBestToolStackFor("weapon"));
+        aiPlayer.lookAtWorkTarget(target);
         if (distance <= ATTACK_RANGE) {
-            if (aiPlayer.level() instanceof net.minecraft.server.level.ServerLevel serverLevel) {
-                aiPlayer.doHurtTarget(serverLevel, target);
-            }
-            aiPlayer.swing(net.minecraft.world.InteractionHand.MAIN_HAND, true);
-            if (ticksRunning % 7 == 0) {
+            aiPlayer.getNavigation().stop();
+            aiPlayer.swingWorkHand(net.minecraft.world.InteractionHand.MAIN_HAND);
+            if (ticksRunning % 10 == 0) {
                 if (aiPlayer.level() instanceof net.minecraft.server.level.ServerLevel serverLevel) {
                     aiPlayer.doHurtTarget(serverLevel, target);
+                    aiPlayer.damageBestTool("weapon", 1);
                 }
             }
         }

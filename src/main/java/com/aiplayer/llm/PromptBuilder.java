@@ -10,7 +10,7 @@ import java.util.Map;
 public class PromptBuilder {
     
     public static String buildSystemPrompt() {
-        return """
+        return SurvivalPrompt.sharedContext() + "\n" + """
             You are a Minecraft AI agent. Respond ONLY with valid JSON, no extra text.
             
             FORMAT (strict JSON):
@@ -18,24 +18,24 @@ public class PromptBuilder {
             
             ACTIONS:
             - attack: {"target": "hostile"} (for any mob/monster)
-            - gather: {"resource": "wood", "quantity": 24} (resources: tree, wood, stone, coal, iron, copper, gold, diamond)
+            - gather: {"resource": "wood", "quantity": 24} (resources: tree, wood, stone)
             - make_item: {"item": "minecraft:wooden_pickaxe", "quantity": 1} (any vanilla item ID with a resolvable crafting, smelting, blasting, smoking, campfire, stonecutting, or smithing recipe)
             - craft: internal low-level craft only when all materials are already in inventory; prefer make_item for user item-making requests
             - build: {"structure": "house", "dimensions": [5, 3, 5]}
-            - mine: {"block": "iron", "quantity": 8} (resources: iron, diamond, coal, gold, copper, redstone, emerald)
+            - mine: legacy low-level mining action; prefer make_item for coal, copper, iron, gold, diamond, redstone, lapis, emerald, quartz, obsidian, and ancient_debris
             - follow: {"player": "NAME"}
             - pathfind: {"x": 0, "y": 0, "z": 0}
             
             RULES:
             1. ALWAYS use "hostile" for attack target (mobs, monsters, creatures)
             2. The AI player is a survival player with an empty inventory at first
-            3. The AI can only use survival actions represented by gather, craft, mine, build, follow, and attack
+            3. The AI can only use survival actions represented by gather, make_item, craft, mine, build, follow, and attack
             4. For building from zero, gather wood first, then build a small survival house
-            5. For stone or ore mining from zero, gather wood first, then gather stone when needed, then mine
+            5. For stone or ore mining from zero, use make_item for the target material; local code will resolve tools and mining chain
             6. Keep early builds small: 5x3x5 or 7x4x7
             7. User commands are usually Simplified Chinese; understand Chinese tasks naturally
             8. Mining and building should be broken into realistic survival steps
-            9. Prefer gather/build/mine tasks over a single impossible instant task
+            9. Prefer make_item for item/resource goals, because it recursively validates recipes, tools, furnaces, and mining sources
             10. If the user asks to chop one tree, use gather resource "tree" with quantity 1
             11. If the user asks to make any item, use make_item with a minecraft item ID and quantity
             12. Keep "reasoning" and "plan" in Simplified Chinese, but keep JSON keys and action names in English
@@ -67,10 +67,10 @@ public class PromptBuilder {
             {"reasoning": "钻石镐需要钻石、木棍和工作台，不足时先完成木镐、石镐、铁镐，再挖钻石", "plan": "按生存进阶链制作钻石镐", "tasks": [{"action": "make_item", "parameters": {"item": "minecraft:diamond_pickaxe", "quantity": 1}}]}
             
             Input: "帮我挖铁"
-            {"reasoning": "需要先做基础工具", "plan": "先收集木头和石头，再尝试挖铁", "tasks": [{"action": "gather", "parameters": {"resource": "wood", "quantity": 16}}, {"action": "gather", "parameters": {"resource": "stone", "quantity": 3}}, {"action": "mine", "parameters": {"block": "iron", "quantity": 8}}]}
+            {"reasoning": "铁矿需要石镐，不足时本地生存链会递归补齐工具", "plan": "按生存流程取得生铁", "tasks": [{"action": "make_item", "parameters": {"item": "minecraft:raw_iron", "quantity": 8}}]}
             
             Input: "找钻石"
-            {"reasoning": "钻石矿需要铁镐，不足时先递归制作铁镐", "plan": "先按生存链做铁镐，再挖取钻石", "tasks": [{"action": "make_item", "parameters": {"item": "minecraft:iron_pickaxe", "quantity": 1}}, {"action": "mine", "parameters": {"block": "diamond", "quantity": 8}}]}
+            {"reasoning": "钻石矿需要铁镐，不足时本地生存链会递归补齐铁镐", "plan": "按生存流程取得钻石", "tasks": [{"action": "make_item", "parameters": {"item": "minecraft:diamond", "quantity": 8}}]}
             
             Input: "清理附近怪物"
             {"reasoning": "攻击附近敌对生物", "plan": "清理敌对生物", "tasks": [{"action": "attack", "parameters": {"target": "hostile"}}]}
@@ -91,6 +91,9 @@ public class PromptBuilder {
         prompt.append("Nearby Blocks: ").append(worldKnowledge.getNearbyBlocksSummary()).append("\n");
         prompt.append("Biome: ").append(worldKnowledge.getBiomeName()).append("\n");
         prompt.append("Inventory: ").append(formatInventory(aiPlayer)).append("\n");
+        prompt.append("Relevant Skill Memory: ")
+            .append(aiPlayer.getMemory().getSkillLibrary().toPromptSummary("", command, 3, aiPlayer.tickCount))
+            .append("\n");
         
         prompt.append("\n=== PLAYER COMMAND ===\n");
         prompt.append("\"").append(command).append("\"\n");
@@ -105,6 +108,7 @@ public class PromptBuilder {
         prompt.append("\n=== STRUCTURED WORLD SNAPSHOT JSON ===\n");
         prompt.append(SnapshotSerializer.toCompactJson(snapshot)).append("\n");
         prompt.append("\nUse the JSON snapshot as the authoritative current state. Do not assume inventory, chests, blocks, entities, or tools that are not present there.\n");
+        prompt.append("Skill memory is previous successful high-level experience only. Use it as a hint, but current snapshot, local recipes, and allowed actions remain authoritative.\n");
         return prompt.toString();
     }
 

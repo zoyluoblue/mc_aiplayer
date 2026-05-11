@@ -103,6 +103,7 @@ public class GatherResourceAction extends BaseAction {
             resetTargetMovement();
         }
 
+        SurvivalUtils.equipBestToolForBlock(aiPlayer, aiPlayer.level().getBlockState(targetPos).getBlock());
         if (!SurvivalUtils.moveNear(aiPlayer, targetPos, getInteractionRange())) {
             breakTicks = 0;
             trackMovementToTarget();
@@ -223,11 +224,8 @@ public class GatherResourceAction extends BaseAction {
     }
 
     private int getBreakDelay() {
-        if (isTreeResource() || isWoodResource()) {
-            return aiPlayer.getBestToolStackFor("axe").isEmpty() ? 60 : 24;
-        }
-        if (isStoneResource() || isOreResource()) {
-            return aiPlayer.getBestToolStackFor("pickaxe").isEmpty() ? 100 : 36;
+        if (targetPos != null) {
+            return SurvivalUtils.getBreakDelay(aiPlayer, aiPlayer.level().getBlockState(targetPos).getBlock());
         }
         return 24;
     }
@@ -333,13 +331,13 @@ public class GatherResourceAction extends BaseAction {
     }
 
     private boolean hasStoneOrBetterPickaxe() {
-        return aiPlayer.hasItem(Items.STONE_PICKAXE, 1) || hasIronOrBetterPickaxe();
+        return aiPlayer.getBestToolStackFor("pickaxe").is(Items.STONE_PICKAXE) || hasIronOrBetterPickaxe();
     }
 
     private boolean hasIronOrBetterPickaxe() {
-        return aiPlayer.hasItem(Items.IRON_PICKAXE, 1)
-            || aiPlayer.hasItem(Items.DIAMOND_PICKAXE, 1)
-            || aiPlayer.hasItem(Items.NETHERITE_PICKAXE, 1);
+        return aiPlayer.getBestToolStackFor("pickaxe").is(Items.IRON_PICKAXE)
+            || aiPlayer.getBestToolStackFor("pickaxe").is(Items.DIAMOND_PICKAXE)
+            || aiPlayer.getBestToolStackFor("pickaxe").is(Items.NETHERITE_PICKAXE);
     }
 
     private String requiredToolMessage() {
@@ -434,11 +432,11 @@ public class GatherResourceAction extends BaseAction {
             return;
         }
         Block block = aiPlayer.level().getBlockState(digTarget).getBlock();
-        aiPlayer.setItemInHand(InteractionHand.MAIN_HAND, aiPlayer.getBestToolStackFor("pickaxe"));
+        SurvivalUtils.equipBestToolForBlock(aiPlayer, block);
         aiPlayer.lookAtWorkTarget(digTarget);
         aiPlayer.swingWorkHand(InteractionHand.MAIN_HAND);
         breakTicks++;
-        if (breakTicks < (SurvivalUtils.requiresPickaxe(block) ? 36 : 20)) {
+        if (breakTicks < SurvivalUtils.getBreakDelay(aiPlayer, block)) {
             return;
         }
         if (!SurvivalUtils.breakBlock(aiPlayer, digTarget)) {

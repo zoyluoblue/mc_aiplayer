@@ -89,7 +89,7 @@ public final class FailureRecoveryAdvisor {
         return switch (category) {
             case MATERIAL_MISSING -> local(category, "rebuild_recipe_chain", "make_item", "材料不足，重新观察背包和箱子后递归补齐材料", prompt);
             case TOOL_MISSING -> local(category, "craft_required_tool", "make_item", "工具不足，先制作或切换所需工具", prompt);
-            case TARGET_UNREACHABLE, PATH_STUCK -> local(category, "reject_target_and_try_alternative", "move_near", "目标不可达或路径卡住，跳过当前目标并换路线", prompt);
+            case TARGET_UNREACHABLE, PATH_STUCK -> local(category, "stop_and_return", "return_to_owner", "目标不可达或路径卡住，记录原因并结束任务，回到玩家身边", prompt);
             case RESOURCE_NOT_FOUND -> local(category, "prospect_or_ask_user", "gather_resource", "附近资源不足，继续探矿或请求玩家移动/提供材料", prompt);
             case MINING_ROUTE_FAILED -> local(category, "continue_downward_or_shift_mining_layer", "gather_resource", "挖矿路线失败，继续下探、换矿层或换分支后再搜索", prompt);
             case STATION_MISSING -> local(category, "craft_and_place_station", "craft", "缺少工作站，先制作并放置可交互工作站", prompt);

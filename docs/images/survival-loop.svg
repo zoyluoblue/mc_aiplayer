@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="560" viewBox="0 0 1120 560" role="img" aria-labelledby="title desc">
+  <title id="title">观察、规划、执行、复盘循环</title>
+  <desc id="desc">AI 玩家通过观察、配方解析、DeepSeek 规划、本地验证、生存执行和重新观察形成闭环。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#577068"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-15%" width="120%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#213b36" flood-opacity="0.13"/>
+    </filter>
+  </defs>
+  <rect width="1120" height="560" rx="28" fill="#f3f7f7"/>
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans SC','Microsoft YaHei',Arial,sans-serif">
+    <text x="560" y="58" text-anchor="middle" font-size="32" font-weight="700" fill="#263733">基本原理</text>
+    <text x="560" y="91" text-anchor="middle" font-size="17" fill="#63736f">大模型参与决策，本地代码守住 Minecraft 生存事实</text>
+    <g fill="none" stroke="#577068" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)">
+      <path d="M335 183 C425 112 572 112 660 183"/>
+      <path d="M775 258 C818 325 798 407 730 451"/>
+      <path d="M610 478 C512 520 380 482 335 390"/>
+      <path d="M266 303 C240 260 245 224 273 191"/>
+    </g>
+    <g filter="url(#shadow)">
+      <rect x="222" y="140" width="210" height="108" rx="18" fill="#ffffff"/>
+      <rect x="660" y="140" width="240" height="108" rx="18" fill="#ffffff"/>
+      <rect x="690" y="342" width="230" height="108" rx="18" fill="#ffffff"/>
+      <rect x="214" y="342" width="246" height="108" rx="18" fill="#ffffff"/>
+      <rect x="436" y="238" width="250" height="120" rx="20" fill="#ffffff"/>
+    </g>
+    <g>
+      <text x="327" y="179" text-anchor="middle" font-size="22" font-weight="700" fill="#263733">Observe</text>
+      <text x="327" y="210" text-anchor="middle" font-size="15" fill="#63736f">背包、箱子、方块、实体</text>
+      <text x="327" y="232" text-anchor="middle" font-size="15" fill="#63736f">坐标、维度、当前任务</text>
+    </g>
+    <g>
+      <text x="780" y="176" text-anchor="middle" font-size="22" font-weight="700" fill="#263733">RecipeResolver</text>
+      <text x="780" y="207" text-anchor="middle" font-size="15" fill="#63736f">原版配方递归</text>
+      <text x="780" y="229" text-anchor="middle" font-size="15" fill="#63736f">扣减已有材料和箱子材料</text>
+    </g>
+    <g>
+      <text x="805" y="378" text-anchor="middle" font-size="22" font-weight="700" fill="#263733">DeepSeek Planner</text>
+      <text x="805" y="409" text-anchor="middle" font-size="15" fill="#63736f">理解意图，生成高层计划</text>
+      <text x="805" y="431" text-anchor="middle" font-size="15" fill="#63736f">不编造物品和配方</text>
+    </g>
+    <g>
+      <text x="337" y="378" text-anchor="middle" font-size="22" font-weight="700" fill="#263733">Validate + Execute</text>
+      <text x="337" y="409" text-anchor="middle" font-size="15" fill="#63736f">校验白名单、生存边界和路径</text>
+      <text x="337" y="431" text-anchor="middle" font-size="15" fill="#63736f">只执行一个小步骤</text>
+    </g>
+    <g>
+      <rect x="475" y="268" width="172" height="60" rx="14" fill="#dbeadf"/>
+      <text x="561" y="294" text-anchor="middle" font-size="20" font-weight="700" fill="#263733">Replan</text>
+      <text x="561" y="318" text-anchor="middle" font-size="14" fill="#63736f">完成一步或失败后重新观察</text>
+    </g>
+    <g fill="#3b504b" font-size="16">
+      <text x="120" y="510">世界交互在 server thread 执行</text>
+      <text x="720" y="510">DeepSeek HTTP 请求异步执行，不能阻塞游戏线程</text>
+    </g>
+  </g>
+</svg>

@@ -41,6 +41,13 @@ logs/
 *.log.*
 crash-reports/
 
+# Local regression notes and test data
+docs/mining-regression.md
+test-data/
+testdata/
+fixtures/
+*.testdata
+
 # Local API keys and runtime config
 config/ai.json
 config/*.local.json

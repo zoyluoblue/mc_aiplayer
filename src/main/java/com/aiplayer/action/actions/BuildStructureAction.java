@@ -2,7 +2,13 @@ package com.aiplayer.action.actions;
 
 import com.aiplayer.action.ActionResult;
 import com.aiplayer.action.Task;
+import com.aiplayer.AiPlayerMod;
 import com.aiplayer.entity.AiPlayerEntity;
+import com.aiplayer.execution.interaction.BlockPlacementRules;
+import com.aiplayer.execution.interaction.InteractionActionType;
+import com.aiplayer.execution.interaction.InteractionFailureKey;
+import com.aiplayer.execution.interaction.InteractionFailureMemory;
+import com.aiplayer.execution.interaction.InteractionTarget;
 import com.aiplayer.structure.BlockPlacement;
 import com.aiplayer.util.SurvivalUtils;
 import net.minecraft.core.BlockPos;
@@ -11,6 +17,7 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -24,8 +31,15 @@ public class BuildStructureAction extends BaseAction {
     private int actionTicks;
     private BlockPos woodTarget;
     private int woodBreakTicks;
+    private InteractionTarget activePlacementTarget;
+    private final InteractionFailureMemory placementFailures = new InteractionFailureMemory();
+    private int placementMoveTicksWithoutProgress;
+    private double closestPlacementDistanceSq;
     private static final int MAX_TICKS = 120000;
     private static final int PLACE_DELAY = 10;
+    private static final int PLACE_MOVE_STUCK_TICKS = 160;
+    private static final int PLACEMENT_FAILURE_TTL_TICKS = 1200;
+    private static final double PLACE_REACH = 4.5D;
 
     public BuildStructureAction(AiPlayerEntity aiPlayer, Task task) {
         super(aiPlayer, task);
@@ -38,6 +52,8 @@ public class BuildStructureAction extends BaseAction {
         ticksRunning = 0;
         actionTicks = 0;
         woodBreakTicks = 0;
+        activePlacementTarget = null;
+        resetPlacementMovement();
 
         int width = Math.min(Math.max(task.getIntParameter("width", 5), 5), 7);
         int height = Math.min(Math.max(task.getIntParameter("height", 3), 3), 4);
@@ -70,22 +86,37 @@ public class BuildStructureAction extends BaseAction {
         }
 
         BlockPlacement placement = buildPlan.get(currentBlockIndex);
+        if (activePlacementTarget == null || !activePlacementTarget.targetBlock().equals(placement.pos)) {
+            activePlacementTarget = placementTarget(placement.pos, "build_" + structureType);
+            actionTicks = 0;
+            resetPlacementMovement();
+        }
+
+        InteractionFailureKey rejected = placementFailures.rejectionFor(activePlacementTarget, ticksRunning).orElse(null);
+        if (rejected != null) {
+            result = ActionResult.failure("建造失败：放置目标已被拒绝；" + rejected.summary());
+            return;
+        }
+
         BlockState currentState = aiPlayer.level().getBlockState(placement.pos);
         if (!currentState.isAir() && currentState.getBlock() == placement.block) {
             currentBlockIndex++;
-            return;
-        }
-        if (!currentState.isAir() && currentState.getBlock() != Blocks.SHORT_GRASS && currentState.getBlock() != Blocks.TALL_GRASS) {
-            currentBlockIndex++;
+            activePlacementTarget = null;
             return;
         }
 
-        if (!SurvivalUtils.moveNear(aiPlayer, placement.pos, 4.0)) {
-            actionTicks = 0;
+        if (!moveToPlacementTarget(activePlacementTarget)) {
             return;
         }
 
-        aiPlayer.lookAtWorkTarget(placement.pos);
+        String invalidReason = BlockPlacementRules.validate(aiPlayer, activePlacementTarget, placement.block);
+        if (invalidReason != null) {
+            rejectPlacementTarget(activePlacementTarget, invalidReason);
+            result = ActionResult.failure("建造失败：" + invalidReason + "；" + activePlacementTarget.summary());
+            return;
+        }
+
+        aiPlayer.lookAtWorkTarget(activePlacementTarget.targetBlock());
         aiPlayer.swingWorkHand(InteractionHand.MAIN_HAND);
         actionTicks++;
         if (actionTicks < PLACE_DELAY) {
@@ -93,9 +124,17 @@ public class BuildStructureAction extends BaseAction {
         }
 
         if (SurvivalUtils.placeBlock(aiPlayer, placement.pos, placement.block)) {
+            if (aiPlayer.level().getBlockState(placement.pos).getBlock() != placement.block) {
+                rejectPlacementTarget(activePlacementTarget, "world_state_mismatch");
+                result = ActionResult.failure("建造失败：世界方块未变为目标方块；" + activePlacementTarget.summary());
+                return;
+            }
             currentBlockIndex++;
             actionTicks = 0;
+            activePlacementTarget = null;
         } else {
+            rejectPlacementTarget(activePlacementTarget, "place_failed");
+            result = ActionResult.failure("建造失败：place_failed；" + activePlacementTarget.summary());
             actionTicks = 0;
         }
     }
@@ -242,6 +281,53 @@ public class BuildStructureAction extends BaseAction {
             }
         }
         return blocks;
+    }
+
+    private InteractionTarget placementTarget(BlockPos pos, String reason) {
+        return new InteractionTarget(
+            pos.immutable(),
+            null,
+            PLACE_REACH,
+            "hand",
+            InteractionActionType.PLACE_BLOCK,
+            reason
+        );
+    }
+
+    private boolean moveToPlacementTarget(InteractionTarget target) {
+        if (SurvivalUtils.moveNear(aiPlayer, target.targetBlock(), target.reachRange())) {
+            aiPlayer.getNavigation().stop();
+            aiPlayer.setSprinting(false);
+            resetPlacementMovement();
+            return true;
+        }
+        aiPlayer.lookAtWorkTarget(target.targetBlock());
+        actionTicks = 0;
+        double distanceSq = aiPlayer.position().distanceToSqr(Vec3.atCenterOf(target.targetBlock()));
+        if (distanceSq + 0.5D < closestPlacementDistanceSq) {
+            closestPlacementDistanceSq = distanceSq;
+            placementMoveTicksWithoutProgress = 0;
+            return false;
+        }
+        placementMoveTicksWithoutProgress++;
+        if (placementMoveTicksWithoutProgress > PLACE_MOVE_STUCK_TICKS || aiPlayer.getNavigation().isStuck()) {
+            rejectPlacementTarget(target, "movement_stuck");
+            result = ActionResult.failure("建造失败：放置目标不可达；" + target.summary());
+        }
+        return false;
+    }
+
+    private void resetPlacementMovement() {
+        placementMoveTicksWithoutProgress = 0;
+        closestPlacementDistanceSq = Double.MAX_VALUE;
+    }
+
+    private void rejectPlacementTarget(InteractionTarget target, String reason) {
+        placementFailures.remember(target, reason, ticksRunning, PLACEMENT_FAILURE_TTL_TICKS);
+        AiPlayerMod.info("actions", "AiPlayer '{}' build placement target rejected: {}; reason={}",
+            aiPlayer.getAiPlayerName(),
+            target.summary(),
+            reason);
     }
 
     private net.minecraft.world.entity.player.Player findNearestPlayer() {

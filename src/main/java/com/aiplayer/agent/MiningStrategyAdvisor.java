@@ -26,8 +26,6 @@ public final class MiningStrategyAdvisor {
     private static final Set<String> ALLOWED_STRATEGY_ACTIONS = Set.of(
         "continue_current_step",
         "switch_to_stair_descent",
-        "reject_current_target",
-        "try_alternative_target",
         "rebuild_plan",
         "observe_and_replan",
         "request_user_help"
@@ -118,12 +116,11 @@ public final class MiningStrategyAdvisor {
         return SurvivalPrompt.sharedContext() + "\n" + """
             你是 Minecraft 生存 AI 的挖矿策略顾问。只输出 JSON。
             你只能基于上下文里提供的事实给下一步策略建议。
+            矿点坐标、配方、工具要求和材料数量由本地代码扫描和验证；你只能建议是否继续、下挖、重建计划、复盘或请求协助。
             不要输出具体坐标，不要假设地下有矿，不要编造背包或箱子材料。
             允许的 strategy action 只有：
             - continue_current_step：继续当前 step
             - switch_to_stair_descent：切换到阶梯式下挖或继续下探
-            - reject_current_target：跳过当前疑似不可达目标
-            - try_alternative_target：重新找附近可达目标
             - rebuild_plan：重新观察并用本地 RecipeResolver 重建路线
             - observe_and_replan：重新观察后复盘
             - request_user_help：请求玩家移动、给材料或改变目标
@@ -191,6 +188,12 @@ public final class MiningStrategyAdvisor {
             .toList());
         context.put("relevantSkillMemory", relevantSkills == null ? List.of() : relevantSkills);
         context.put("miningProfile", miningProfileContext(currentStep, targetItem));
+        context.put("prospectingRules", List.of(
+            "本地 OreProspector 负责扫描已加载区块中的真实矿石方块",
+            "本地 StageMiningPlan 负责把矿点转换为阶梯下挖、横挖、暴露矿物和采集阶段",
+            "DeepSeek 不直接决定坐标，只判断当前阶段是否应继续、重扫、重建计划或请求玩家协助",
+            "遇到不可达、环境危险、目标被挖掉或目标位于当前层上方时，本地代码会终止任务并返回玩家身边"
+        ));
         context.put("unknownFacts", List.of(
             "地下未暴露矿物未知，需要实际探矿确认",
             "扫描范围外箱子内容未知",

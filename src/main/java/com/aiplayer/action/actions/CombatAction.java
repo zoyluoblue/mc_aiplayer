@@ -3,6 +3,7 @@ package com.aiplayer.action.actions;
 import com.aiplayer.action.ActionResult;
 import com.aiplayer.action.Task;
 import com.aiplayer.entity.AiPlayerEntity;
+import com.aiplayer.util.SurvivalUtils;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.monster.Monster;
@@ -60,7 +61,7 @@ public class CombatAction extends BaseAction {
         double distance = aiPlayer.distanceTo(target);
         
         aiPlayer.setSprinting(true);
-        aiPlayer.getNavigation().moveTo(target, 1.2);
+        aiPlayer.getNavigation().moveTo(target, SurvivalUtils.TASK_RUN_SPEED);
         
         double currentX = aiPlayer.getX();
         double currentZ = aiPlayer.getZ();

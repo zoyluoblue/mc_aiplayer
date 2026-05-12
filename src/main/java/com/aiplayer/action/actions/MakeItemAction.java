@@ -204,7 +204,7 @@ public class MakeItemAction extends BaseAction {
             rebuildSession(stepResult.getMessage());
             return;
         }
-        result = ActionResult.failure(stepResult.getMessage());
+        result = ActionResult.failure(stepResult.getMessage(), stepResult.requiresReplan());
     }
 
     @Override
@@ -272,7 +272,8 @@ public class MakeItemAction extends BaseAction {
         if (step == null) {
             return false;
         }
-        return "gather_stone".equals(step.getStep())
+        return "gather_tree".equals(step.getStep())
+            || "gather_stone".equals(step.getStep())
             || ("gather".equals(step.getStep()) && step.getResource() != null
                 && (step.getResource().endsWith("_ore") || step.getResource().startsWith("block:")));
     }

@@ -94,6 +94,11 @@ public final class PlanValidator {
         if (step.getCount() <= 0) {
             errors.add(stepName + " 的 count 必须大于 0");
         }
+        if ("craft_station".equals(stepName)) {
+            if (step.getStation() == null || step.getStation().isBlank() || "inventory".equals(step.getStation())) {
+                errors.add("craft_station 必须声明有效 station");
+            }
+        }
         if (step.getItem() != null && !step.getItem().isBlank()) {
             String item = recipeResolver.normalizeItemId(step.getItem());
             if (!isKnownItem(item)) {
@@ -136,6 +141,9 @@ public final class PlanValidator {
             if (a.getCount() != b.getCount()) {
                 return false;
             }
+            if (!safeEquals(normalizeStation(a.getStation()), normalizeStation(b.getStation()))) {
+                return false;
+            }
         }
         return true;
     }
@@ -151,6 +159,10 @@ public final class PlanValidator {
             case "gather_stone" -> "gather_stone";
             default -> step;
         };
+    }
+
+    private String normalizeStation(String station) {
+        return station == null || station.isBlank() ? null : station;
     }
 
     private boolean isKnownItem(String item) {

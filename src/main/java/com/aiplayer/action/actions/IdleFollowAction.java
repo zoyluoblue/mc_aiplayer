@@ -4,10 +4,12 @@ import com.aiplayer.AiPlayerMod;
 import com.aiplayer.action.ActionResult;
 import com.aiplayer.action.Task;
 import com.aiplayer.entity.AiPlayerEntity;
+import com.aiplayer.util.SurvivalUtils;
 import net.minecraft.world.entity.player.Player;
 
 import java.util.HashMap;
 import java.util.List;
+import java.util.UUID;
 
 public class IdleFollowAction extends BaseAction {
     private Player targetPlayer;
@@ -47,19 +49,23 @@ public class IdleFollowAction extends BaseAction {
         }
         double distance = aiPlayer.distanceTo(targetPlayer);
         if (distance > FOLLOW_DISTANCE) {
-            aiPlayer.getNavigation().moveTo(targetPlayer, 1.0);
+            aiPlayer.setSprinting(true);
+            aiPlayer.getNavigation().moveTo(targetPlayer, SurvivalUtils.TASK_RUN_SPEED);
         } else if (distance < MIN_DISTANCE) {
             aiPlayer.getNavigation().stop();
+            aiPlayer.setSprinting(false);
         } else {
             if (!aiPlayer.getNavigation().isDone()) {
                 aiPlayer.getNavigation().stop();
             }
+            aiPlayer.setSprinting(false);
         }
     }
 
     @Override
     protected void onCancel() {
         aiPlayer.getNavigation().stop();
+        aiPlayer.setSprinting(false);
     }
 
     @Override
@@ -73,6 +79,16 @@ public class IdleFollowAction extends BaseAction {
         if (players.isEmpty()) {
             targetPlayer = null;
             return;
+        }
+
+        UUID ownerUuid = aiPlayer.getOwnerUuid();
+        if (ownerUuid != null) {
+            for (Player player : players) {
+                if (player.getUUID().equals(ownerUuid) && player.isAlive() && !player.isRemoved() && !player.isSpectator()) {
+                    targetPlayer = player;
+                    return;
+                }
+            }
         }
         
         Player nearest = null;

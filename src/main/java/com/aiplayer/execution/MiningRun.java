@@ -2,6 +2,8 @@ package com.aiplayer.execution;
 
 import com.aiplayer.AiPlayerMod;
 import com.aiplayer.entity.AiPlayerEntity;
+import com.aiplayer.mining.OreProspectResult;
+import com.aiplayer.mining.StageMiningPlan;
 import com.aiplayer.recipe.MiningResource;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -254,6 +256,44 @@ public final class MiningRun {
             plan.toLogText());
     }
 
+    public void recordProspectResult(OreProspectResult result) {
+        if (result == null) {
+            return;
+        }
+        scans++;
+        totalCandidates += Math.max(0, result.candidates());
+        totalRejected += Math.max(0, result.rejected());
+        mergeRejectedReasons(result.rejectionReasons());
+        if (result.executable()) {
+            totalReachable++;
+        }
+        markMode(result.found() ? "ore_prospect_found" : "ore_prospect_scan", result.orePos());
+        AiPlayerMod.info("mining", "[taskId={}] mining prospect result: ai={}, target={}, {}",
+            taskId,
+            aiName,
+            target,
+            result.toLogText());
+    }
+
+    public void recordStageMiningPlan(StageMiningPlan plan) {
+        if (plan == null || !routePlans.add(plan.toLogText())) {
+            return;
+        }
+        transitionTo(switch (plan.stage()) {
+            case DESCEND -> MiningState.DESCEND;
+            case TUNNEL -> MiningState.BRANCH_TUNNEL;
+            case EXPOSE, MINE, COLLECT -> MiningState.MINING;
+            case APPROACH -> MiningState.TRAVEL_TO_ORE;
+            case REPROSPECT, PROSPECT -> MiningState.CAVE_SCAN;
+            default -> MiningState.PREPARE_TOOLS;
+        }, "stage_plan:" + plan.stage(), plan.orePos());
+        AiPlayerMod.info("mining", "[taskId={}] mining stage plan: ai={}, target={}, {}",
+            taskId,
+            aiName,
+            target,
+            plan.toLogText());
+    }
+
     public void recordBranchProgress(Direction direction, int y, int blocks, String reason) {
         String key = (direction == null ? "unknown" : direction.getName()) + "@Y" + y;
         branchBlocksByDirection.put(key, Math.max(branchBlocksByDirection.getOrDefault(key, 0), blocks));
@@ -410,4 +450,5 @@ public final class MiningRun {
     private static String positionText(BlockPos pos) {
         return pos == null ? "none" : pos.toShortString();
     }
+
 }

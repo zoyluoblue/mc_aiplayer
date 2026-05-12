@@ -44,11 +44,6 @@ public record MiningStrategyAdvice(
             || accepted && containsAny(strategy, "stair", "downward", "lower", "下挖", "阶梯", "下探");
     }
 
-    public boolean rejectCurrentTarget() {
-        return accepted && containsAny(action, "reject_current_target", "try_alternative_target", "switch_target")
-            || accepted && containsAny(strategy, "alternative", "switch_target", "换目标", "跳过当前");
-    }
-
     public boolean rebuildPlan() {
         return accepted && (needsRebuild || containsAny(action, "rebuild_plan", "replan", "observe_and_replan"));
     }

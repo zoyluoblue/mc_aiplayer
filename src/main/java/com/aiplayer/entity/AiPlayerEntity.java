@@ -13,9 +13,11 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.*;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
@@ -91,7 +93,7 @@ public class AiPlayerEntity extends PathfinderMob {
     public static AttributeSupplier.Builder createAttributes() {
         return Mob.createMobAttributes()
             .add(Attributes.MAX_HEALTH, 20.0D)
-            .add(Attributes.MOVEMENT_SPEED, 0.25D)
+            .add(Attributes.MOVEMENT_SPEED, 0.32D)
             .add(Attributes.ATTACK_DAMAGE, 8.0D)
             .add(Attributes.FOLLOW_RANGE, 48.0D);
     }
@@ -117,11 +119,19 @@ public class AiPlayerEntity extends PathfinderMob {
         super.tick();
         
         if (!this.level().isClientSide) {
+            if (this.getHealth() < this.getMaxHealth()) {
+                this.setHealth(this.getMaxHealth());
+            }
             if (workSwingCooldown > 0) {
                 workSwingCooldown--;
             }
             actionExecutor.tick();
         }
+    }
+
+    @Override
+    public boolean isInvulnerableTo(ServerLevel level, DamageSource source) {
+        return true;
     }
 
     public void lookAtWorkTarget(double x, double y, double z) {

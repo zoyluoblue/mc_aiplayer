@@ -17,6 +17,8 @@ import java.util.function.BiPredicate;
 import java.util.function.Predicate;
 
 public final class SurvivalUtils {
+    public static final double TASK_RUN_SPEED = 1.35D;
+
     private SurvivalUtils() {
     }
 
@@ -28,6 +30,7 @@ public final class SurvivalUtils {
                 center.offset(horizontalRadius, verticalRadius, horizontalRadius)
             )
             .map(BlockPos::immutable)
+            .filter(level::hasChunkAt)
             .filter(pos -> predicate.test(level.getBlockState(pos)))
             .min(Comparator.comparingDouble(pos -> pos.distSqr(center)));
     }
@@ -40,6 +43,7 @@ public final class SurvivalUtils {
                 center.offset(horizontalRadius, verticalRadius, horizontalRadius)
             )
             .map(BlockPos::immutable)
+            .filter(level::hasChunkAt)
             .filter(pos -> predicate.test(pos, level.getBlockState(pos)))
             .min(Comparator.comparingDouble(pos -> pos.distSqr(center)));
     }
@@ -47,9 +51,11 @@ public final class SurvivalUtils {
     public static boolean moveNear(AiPlayerEntity aiPlayer, BlockPos pos, double range) {
         if (aiPlayer.blockPosition().closerThan(pos, range)) {
             aiPlayer.getNavigation().stop();
+            aiPlayer.setSprinting(false);
             return true;
         }
-        aiPlayer.getNavigation().moveTo(pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5, 1.0);
+        aiPlayer.setSprinting(true);
+        aiPlayer.getNavigation().moveTo(pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5, TASK_RUN_SPEED);
         return false;
     }
 
@@ -133,6 +139,9 @@ public final class SurvivalUtils {
         if (block == Blocks.OBSIDIAN) {
             return Items.OBSIDIAN;
         }
+        if (isLeaves(block)) {
+            return Items.AIR;
+        }
         Item item = block.asItem();
         return item == null ? Items.AIR : item;
     }
@@ -155,6 +164,13 @@ public final class SurvivalUtils {
         return block == Blocks.OAK_LOG || block == Blocks.SPRUCE_LOG || block == Blocks.BIRCH_LOG ||
             block == Blocks.JUNGLE_LOG || block == Blocks.ACACIA_LOG || block == Blocks.DARK_OAK_LOG ||
             block == Blocks.MANGROVE_LOG || block == Blocks.CHERRY_LOG;
+    }
+
+    public static boolean isLeaves(Block block) {
+        return block == Blocks.OAK_LEAVES || block == Blocks.SPRUCE_LEAVES || block == Blocks.BIRCH_LEAVES ||
+            block == Blocks.JUNGLE_LEAVES || block == Blocks.ACACIA_LEAVES || block == Blocks.DARK_OAK_LEAVES ||
+            block == Blocks.MANGROVE_LEAVES || block == Blocks.CHERRY_LEAVES || block == Blocks.AZALEA_LEAVES ||
+            block == Blocks.FLOWERING_AZALEA_LEAVES;
     }
 
     public static boolean isStone(Block block) {

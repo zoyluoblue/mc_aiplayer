@@ -15,6 +15,7 @@ import com.aiplayer.recipe.RecipePlan;
 import com.aiplayer.recipe.RecipeResolver;
 import com.aiplayer.snapshot.SnapshotSerializer;
 import com.aiplayer.snapshot.WorldSnapshot;
+import com.aiplayer.util.SurvivalUtils;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
@@ -709,7 +710,8 @@ public class AiPlayerCommands {
         }
         aiPlayer.getActionExecutor().stopCurrentAction();
         aiPlayer.getMemory().clearTaskQueue();
-        aiPlayer.getNavigation().moveTo(player, 1.1D);
+        aiPlayer.setSprinting(true);
+        aiPlayer.getNavigation().moveTo(player, SurvivalUtils.TASK_RUN_SPEED);
         source.sendSuccess(() -> Component.literal("已停止自动挖矿，%s 正在按正常移动回到你身边。"
             .formatted(aiPlayer.getAiPlayerName())), true);
         return 1;

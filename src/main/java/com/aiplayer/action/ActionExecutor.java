@@ -171,6 +171,12 @@ public class ActionExecutor {
                 ActionResult result = currentAction.getResult();
                 AiPlayerMod.info("action", "[taskId={}] AiPlayer '{}' - Action completed: {} (Success: {})", 
                     activeTaskId, aiPlayer.getAiPlayerName(), result.getMessage(), result.isSuccess());
+                boolean terminalFailure = !result.isSuccess() && !result.requiresReplanning();
+                if (terminalFailure) {
+                    taskQueue.clear();
+                    AiPlayerMod.info("action", "[taskId={}] AiPlayer '{}' terminal action failure, clearing remaining tasks and returning to owner by idle follow: {}",
+                        activeTaskId, aiPlayer.getAiPlayerName(), result.getMessage());
+                }
                 
                 aiPlayer.getMemory().addAction(currentAction.getDescription());
                 
@@ -182,6 +188,17 @@ public class ActionExecutor {
                 
                 currentAction = null;
                 activeTaskId = "task-unknown";
+                if (taskQueue.isEmpty()) {
+                    currentGoal = null;
+                    aiPlayer.getMemory().setCurrentGoal("");
+                    if (result.isSuccess()) {
+                        AiPlayerMod.info("player", "AiPlayer '{}' completed task queue and will return to owner by idle follow",
+                            aiPlayer.getAiPlayerName());
+                    } else if (terminalFailure) {
+                        AiPlayerMod.info("player", "AiPlayer '{}' stopped task queue and will return to owner by idle follow",
+                            aiPlayer.getAiPlayerName());
+                    }
+                }
             } else {
                 if (ticksSinceLastAction % 100 == 0) {
                     AiPlayerMod.info("action", "[taskId={}] AiPlayer '{}' - Ticking action: {}", 
@@ -298,7 +315,7 @@ public class ActionExecutor {
             case "craft" -> new CraftItemAction(aiPlayer, task);
             case "attack" -> new CombatAction(aiPlayer, task);
             case "follow" -> new FollowPlayerAction(aiPlayer, task);
-            case "gather" -> new GatherResourceAction(aiPlayer, task);
+            case "gather" -> createGatherAction(task);
             case "build" -> new BuildStructureAction(aiPlayer, task);
             case "make_item" -> new MakeItemAction(aiPlayer, task);
             default -> {
@@ -306,6 +323,14 @@ public class ActionExecutor {
                 yield null;
             }
         };
+    }
+
+    private BaseAction createGatherAction(Task task) {
+        String resource = task.getStringParameter("resource", "").toLowerCase(java.util.Locale.ROOT);
+        if (resource.contains("tree") || resource.contains("树")) {
+            return new GatherTreeAction(aiPlayer, task);
+        }
+        return new GatherResourceAction(aiPlayer, task);
     }
 
     public void stopCurrentAction() {

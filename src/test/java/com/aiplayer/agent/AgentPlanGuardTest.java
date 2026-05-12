@@ -56,4 +56,26 @@ class AgentPlanGuardTest {
 
         assertTrue(result.valid(), result.violations().toString());
     }
+
+    @Test
+    void rejectsCraftStationWithoutStation() {
+        RecipeResolver resolver = new RecipeResolver();
+        AgentPlanGuard guard = new AgentPlanGuard(new PlanValidator(resolver));
+        PlanStep missingStation = new PlanStep();
+        missingStation.setStep("craft_station");
+        missingStation.setItem("minecraft:iron_ingot");
+        missingStation.setCount(1);
+        PlanSchema bad = new PlanSchema(
+            "make_item",
+            new PlanTarget("minecraft:iron_ingot", 1),
+            List.of(missingStation),
+            "each_step",
+            "bad"
+        );
+
+        AgentPlanGuard.GuardResult result = guard.validate(bad, null, WorldSnapshot.empty(""), null);
+
+        assertFalse(result.valid());
+        assertTrue(result.violations().stream().anyMatch(violation -> violation.reason().contains("station")));
+    }
 }

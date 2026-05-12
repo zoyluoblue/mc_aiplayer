@@ -34,4 +34,10 @@ class SurvivalToolRulesTest {
         assertTrue(SurvivalUtils.requiresShovel(Blocks.CLAY));
         assertTrue(SurvivalUtils.requiresShovel(Blocks.SNOW_BLOCK));
     }
+
+    @Test
+    void leavesDoNotDropLeafBlocksInBasicSurvivalSimulation() {
+        assertTrue(SurvivalUtils.isLeaves(Blocks.OAK_LEAVES));
+        assertEquals(net.minecraft.world.item.Items.AIR, SurvivalUtils.getSurvivalDrop(Blocks.OAK_LEAVES.defaultBlockState()));
+    }
 }

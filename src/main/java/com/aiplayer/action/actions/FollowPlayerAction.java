@@ -3,6 +3,7 @@ package com.aiplayer.action.actions;
 import com.aiplayer.action.ActionResult;
 import com.aiplayer.action.Task;
 import com.aiplayer.entity.AiPlayerEntity;
+import com.aiplayer.util.SurvivalUtils;
 import net.minecraft.world.entity.player.Player;
 
 import java.util.List;
@@ -48,15 +49,18 @@ public class FollowPlayerAction extends BaseAction {
         
         double distance = aiPlayer.distanceTo(targetPlayer);
         if (distance > 3.0) {
-            aiPlayer.getNavigation().moveTo(targetPlayer, 1.0);
+            aiPlayer.setSprinting(true);
+            aiPlayer.getNavigation().moveTo(targetPlayer, SurvivalUtils.TASK_RUN_SPEED);
         } else if (distance < 2.0) {
             aiPlayer.getNavigation().stop();
+            aiPlayer.setSprinting(false);
         }
     }
 
     @Override
     protected void onCancel() {
         aiPlayer.getNavigation().stop();
+        aiPlayer.setSprinting(false);
     }
 
     @Override

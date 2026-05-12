@@ -28,6 +28,6 @@ class FailureRecoveryTest {
         );
 
         assertEquals(FailureAdviceSource.LOCAL_FALLBACK, advice.source());
-        assertTrue(advice.userMessage().contains("换路线") || advice.userMessage().contains("跳过"));
+        assertTrue(advice.userMessage().contains("结束任务") || advice.userMessage().contains("回到玩家身边"));
     }
 }

@@ -38,6 +38,7 @@ class MiningStrategyAdvisorTest {
         assertTrue(prompt.contains("minecraft:gold_ingot"));
         assertTrue(prompt.contains("allowedStrategyActions"));
         assertTrue(prompt.contains("miningProfile"));
+        assertTrue(prompt.contains("prospectingRules"));
         assertTrue(prompt.contains("nearbyCaves"));
         assertFalse(prompt.toLowerCase().contains("api_key"));
     }

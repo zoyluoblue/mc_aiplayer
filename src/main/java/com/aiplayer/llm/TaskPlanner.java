@@ -17,9 +17,10 @@ import com.aiplayer.planning.PlanParser;
 import com.aiplayer.planning.PlanSchema;
 import com.aiplayer.planning.PlanValidator;
 import com.aiplayer.planning.PlanningPromptBuilder;
+import com.aiplayer.recipe.CraftingTree;
 import com.aiplayer.recipe.RecipePlan;
 import com.aiplayer.recipe.RecipeResolver;
-import com.aiplayer.recipe.MiningResource;
+import com.aiplayer.recipe.MiningGoalResolver;
 import com.aiplayer.recipe.SurvivalRecipeBook;
 import com.aiplayer.snapshot.SnapshotSerializer;
 import com.aiplayer.snapshot.WorldSnapshot;
@@ -228,6 +229,15 @@ public class TaskPlanner {
 
     private void logRecipePlan(AiPlayerEntity aiPlayer, WorldSnapshot snapshot, String targetItem, int count, String taskId) {
         RecipePlan recipePlan = recipeResolver.resolve(aiPlayer, snapshot, targetItem, count);
+        CraftingTree tree = recipePlan.toCraftingTree();
+        AiPlayerMod.info("recipe", "[taskId={}] Crafting tree for AiPlayer '{}': graphId={}, target={} x{}, success={}, steps={}",
+            taskId,
+            aiPlayer.getAiPlayerName(),
+            tree.graphId(),
+            tree.target().item(),
+            tree.target().count(),
+            tree.success(),
+            tree.steps().size());
         if (recipePlan.isSuccess()) {
             AiPlayerMod.info("recipe", "[taskId={}] Recipe plan for AiPlayer '{}': {}",
                 taskId, aiPlayer.getAiPlayerName(), recipePlan.toUserText());
@@ -294,6 +304,9 @@ public class TaskPlanner {
         if ("mine".equals(action)) {
             return normalizeMineTask(task);
         }
+        if ("gather".equals(action)) {
+            return normalizeGatherTask(task, recipeResolver);
+        }
         if (!"craft".equals(action) && !"make_item".equals(action)) {
             return task;
         }
@@ -302,8 +315,18 @@ public class TaskPlanner {
         if (item == null || item.isBlank()) {
             return task;
         }
+        return normalizeMakeOrCraftTask(task, snapshot, recipeResolver);
+    }
+
+    static Task normalizeMakeOrCraftTask(Task task, WorldSnapshot snapshot, RecipeResolver recipeResolver) {
+        String item = task.getStringParameter("item", null);
+        if (item == null || item.isBlank()) {
+            return task;
+        }
         int quantity = task.getIntParameter("quantity", task.getIntParameter("count", 1));
-        String normalizedItem = recipeResolver.isGenericWoodenDoor(item)
+        MiningGoalResolver.Goal miningGoal = MiningGoalResolver.resolve(item).orElse(null);
+        String normalizedItem = miningGoal != null ? miningGoal.finalItem()
+            : recipeResolver.isGenericWoodenDoor(item)
             ? recipeResolver.chooseWoodenDoorTarget(snapshot)
             : recipeResolver.normalizeItemId(item);
         Map<String, Object> parameters = new HashMap<>();
@@ -312,19 +335,52 @@ public class TaskPlanner {
         return new Task("make_item", parameters);
     }
 
-    private Task normalizeMineTask(Task task) {
-        String block = task.getStringParameter("block", null);
-        if (block == null || block.isBlank()) {
+    static Task normalizeGatherTask(Task task, RecipeResolver recipeResolver) {
+        String resource = firstNonBlank(
+            task.getStringParameter("resource", null),
+            task.getStringParameter("item", null),
+            task.getStringParameter("source", null),
+            task.getStringParameter("target", null)
+        );
+        if (resource == null) {
             return task;
         }
-        String item = MiningResource.findByMineTarget(block)
-            .map(MiningResource.Profile::item)
+        MiningGoalResolver.Goal miningGoal = MiningGoalResolver.resolve(resource)
+            .or(() -> MiningGoalResolver.resolveItemOrSource(task.getStringParameter("item", null), resource))
+            .orElse(null);
+        if (miningGoal == null) {
+            return task;
+        }
+        int quantity = task.getIntParameter("quantity", task.getIntParameter("count", 1));
+        Map<String, Object> parameters = new HashMap<>();
+        parameters.put("item", miningGoal.finalItem());
+        parameters.put("quantity", Math.max(1, quantity));
+        return new Task("make_item", parameters);
+    }
+
+    private Task normalizeMineTask(Task task) {
+        return normalizeMineTask(task, recipeResolver);
+    }
+
+    static Task normalizeMineTask(Task task, RecipeResolver recipeResolver) {
+        String target = firstNonBlank(
+            task.getStringParameter("block", null),
+            task.getStringParameter("target", null),
+            task.getStringParameter("blockType", null),
+            task.getStringParameter("item", null),
+            task.getStringParameter("source", null)
+        );
+        if (target == null) {
+            return new Task("invalid_mining_target", Map.of("reason", "mine task missing block/target/blockType/item/source"));
+        }
+        String item = MiningGoalResolver.resolve(target)
+            .map(MiningGoalResolver.Goal::finalItem)
             .orElseGet(() -> {
-                String normalizedItem = recipeResolver.normalizeItemId(block);
+                String normalizedItem = recipeResolver.normalizeItemId(target);
                 return isKnownMakeItemTarget(normalizedItem) ? normalizedItem : null;
             });
         if (item == null) {
-            return task;
+            return new Task("invalid_mining_target", Map.of("target", target, "reason", "unknown mining target"));
         }
         int quantity = task.getIntParameter("quantity", task.getIntParameter("count", 1));
         Map<String, Object> parameters = new HashMap<>();
@@ -333,7 +389,19 @@ public class TaskPlanner {
         return new Task("make_item", parameters);
     }
 
-    private boolean isKnownMakeItemTarget(String item) {
+    private static String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private static boolean isKnownMakeItemTarget(String item) {
         return SurvivalRecipeBook.findLocal(item).isPresent()
             || SurvivalRecipeBook.explicitBaseSource(item).isPresent();
     }

@@ -13,6 +13,7 @@ import com.aiplayer.agent.StepExecutionEvent;
 import com.aiplayer.entity.AiPlayerEntity;
 import com.aiplayer.execution.ExecutionStep;
 import com.aiplayer.execution.GoalChecker;
+import com.aiplayer.execution.MilestoneTaskState;
 import com.aiplayer.execution.ReplanPolicy;
 import com.aiplayer.execution.ResourceGatherSession;
 import com.aiplayer.execution.StepExecutor;
@@ -20,7 +21,9 @@ import com.aiplayer.execution.StepResult;
 import com.aiplayer.execution.TaskSession;
 import com.aiplayer.planning.PlanSchema;
 import com.aiplayer.planning.PlanValidator;
+import com.aiplayer.recipe.MiningGoalResolver;
 import com.aiplayer.recipe.MiningResource;
+import com.aiplayer.recipe.CraftingTree;
 import com.aiplayer.recipe.RecipePlan;
 import com.aiplayer.recipe.RecipeResolver;
 import com.aiplayer.snapshot.WorldSnapshot;
@@ -57,6 +60,8 @@ public class MakeItemAction extends BaseAction {
     private List<StepExecutionEvent> taskEvents = new ArrayList<>();
     private List<ExecutionStep> latestPlanSteps = List.of();
     private List<String> retrievedSkillSummaries = List.of();
+    private CraftingTree craftingTree;
+    private MilestoneTaskState milestoneState;
     private long stepStartedAtTick;
     private int quantity;
     private int ticksSinceLastPlan;
@@ -74,7 +79,10 @@ public class MakeItemAction extends BaseAction {
     @Override
     protected void onStart() {
         taskId = task.getTaskId();
-        targetItem = recipeResolver.normalizeItemId(task.getStringParameter("item", "minecraft:oak_door").toLowerCase(Locale.ROOT));
+        String requestedItem = task.getStringParameter("item", "minecraft:oak_door").toLowerCase(Locale.ROOT);
+        targetItem = MiningGoalResolver.resolve(requestedItem)
+            .map(MiningGoalResolver.Goal::finalItem)
+            .orElseGet(() -> recipeResolver.normalizeItemId(requestedItem));
         quantity = task.getIntParameter("quantity", 1);
         sourceCommand = task.getStringParameter("source_command", "");
         failureReplans = 0;
@@ -82,6 +90,9 @@ public class MakeItemAction extends BaseAction {
         skillCommitted = false;
         taskEvents = new ArrayList<>();
         latestPlanSteps = List.of();
+        craftingTree = null;
+        milestoneState = MilestoneTaskState.create(targetItem, quantity);
+        updateMilestoneState("start", null);
         miningStrategyRequest = null;
         pendingMiningStrategyAdvice = null;
         stepExecutor = new StepExecutor(aiPlayer, resourceGatherSession, taskId);
@@ -94,8 +105,8 @@ public class MakeItemAction extends BaseAction {
             AiPlayerMod.info("planning", "[taskId={}] AiPlayer '{}' retrieved {} skill memories for target {}: {}",
                 taskId, aiPlayer.getAiPlayerName(), retrievedSkillSummaries.size(), targetItem, retrievedSkillSummaries);
         }
-        AiPlayerMod.info("make_item", "[taskId={}] AiPlayer '{}' make_item start: target={} x{}, pos={}, mainHand={}, backpack={}",
-            taskId, aiPlayer.getAiPlayerName(), targetItem, quantity, positionText(), mainHandText(), inventoryText());
+        AiPlayerMod.info("make_item", "[taskId={}] AiPlayer '{}' make_item start: target={} x{}, pos={}, mainHand={}, backpack={}, {}",
+            taskId, aiPlayer.getAiPlayerName(), targetItem, quantity, positionText(), mainHandText(), inventoryText(), milestoneText());
         if (goalChecker.isComplete(aiPlayer, targetItem, quantity)) {
             completeSuccessfully("目标已完成：" + targetItem + " x" + quantity);
             return;
@@ -110,6 +121,7 @@ public class MakeItemAction extends BaseAction {
         }
         ticksSinceLastPlan++;
         ticksSinceMiningStrategyReport++;
+        updateMilestoneState("tick", session == null ? null : session.currentStep());
         if (goalChecker.isComplete(aiPlayer, targetItem, quantity)) {
             completeSuccessfully("已完成制作目标：" + targetItem + " x" + quantity);
             return;
@@ -156,19 +168,22 @@ public class MakeItemAction extends BaseAction {
         if (stepResult.isRunning()) {
             return;
         }
-        AiPlayerMod.info("make_item", "[taskId={}] AiPlayer '{}' step end: index={}/{}, status={}, replanAllowed={}, step={}, message={}, pos={}, mainHand={}, backpack={}",
+        AiPlayerMod.info("make_item", "[taskId={}] AiPlayer '{}' step end: index={}/{}, treeNode={}, status={}, replanAllowed={}, step={}, message={}, pos={}, mainHand={}, backpack={}, {}",
             taskId,
             aiPlayer.getAiPlayerName(),
             session.getCurrentStepIndex() + 1,
             session.getStepCount(),
+            currentTreeNodeText(),
             stepResult.getStatus(),
             stepResult.requiresReplan(),
             step.describe(),
             stepResult.getMessage(),
             positionText(),
             mainHandText(),
-            inventoryText());
+            inventoryText(),
+            milestoneText());
         recordStepEvent(step, stepResult);
+        recordMilestoneStepResult(step, stepResult);
         if (stepResult.isSuccess()) {
             failureReplans = 0;
             observeAfterStep();
@@ -190,14 +205,16 @@ public class MakeItemAction extends BaseAction {
             null,
             retrievedSkillSummaries
         );
-        AiPlayerMod.info("planning", "[taskId={}] AiPlayer '{}' failure review: source={}, category={}, strategy={}, action={}, message={}",
+        recordMilestoneRecoveryAction(advice.action());
+        AiPlayerMod.info("planning", "[taskId={}] AiPlayer '{}' failure review: source={}, category={}, strategy={}, action={}, message={}, {}",
             taskId,
             aiPlayer.getAiPlayerName(),
             advice.source(),
             advice.category(),
             advice.strategy(),
             advice.action(),
-            advice.userMessage());
+            advice.userMessage(),
+            milestoneText());
         if (stepResult.requiresReplan() && replanPolicy.shouldReplanAfterFailure(session)
             && replanPolicy.shouldReplanAfterFailureCount(failureReplans)) {
             failureReplans++;
@@ -222,50 +239,183 @@ public class MakeItemAction extends BaseAction {
         ExecutionStep step = session.currentStep();
         String stepText = step == null ? "检查目标是否完成" : step.describe();
         return "制作 " + targetItem + " " + goalChecker.countItem(aiPlayer, targetItem) + "/" + quantity
+            + "，阶段 " + milestoneUserText()
             + "，step " + (session.getCurrentStepIndex() + 1) + "/" + session.getStepCount()
             + "：" + stepText;
+    }
+
+    @Override
+    public String getStatusDetails() {
+        String miningDetails = stepExecutor == null ? "" : stepExecutor.getStatusDetails();
+        String milestone = milestoneText();
+        String treeStatus = craftingTreeStatusText();
+        String prefix = treeStatus.isBlank() ? milestone : milestone + "\n" + treeStatus;
+        if (miningDetails == null || miningDetails.isBlank()) {
+            return prefix;
+        }
+        return prefix + "\n" + miningDetails;
     }
 
     private void rebuildSession(String reason) {
         ticksSinceLastPlan = 0;
         WorldSnapshot snapshot = WorldSnapshot.capture(aiPlayer, reason);
         RecipePlan recipePlan = recipeResolver.resolve(aiPlayer, snapshot, targetItem, quantity);
+        craftingTree = recipePlan.toCraftingTree();
+        logCraftingTree("rebuild:" + reason, craftingTree);
         if (!recipePlan.isSuccess()) {
-            AiPlayerMod.warn("make_item", "[taskId={}] AiPlayer '{}' make_item plan failed: target={} x{}, reason={}, pos={}, backpack={}",
-                taskId, aiPlayer.getAiPlayerName(), targetItem, quantity, recipePlan.getFailureReason(), positionText(), inventoryText());
+            AiPlayerMod.warn("make_item", "[taskId={}] AiPlayer '{}' make_item plan failed: graphId={}, target={} x{}, reason={}, pos={}, backpack={}",
+                taskId, aiPlayer.getAiPlayerName(), craftingTree.graphId(), targetItem, quantity, recipePlan.getFailureReason(), positionText(), inventoryText());
             result = ActionResult.failure(recipePlan.getFailureReason());
             return;
         }
         PlanSchema plan = PlanSchema.fromRecipePlan("make_item", recipePlan);
         PlanValidator.ValidationResult validation = planValidator.validate(plan, aiPlayer, snapshot, recipePlan);
         if (!validation.valid()) {
-            AiPlayerMod.warn("make_item", "[taskId={}] AiPlayer '{}' make_item validation failed: target={} x{}, reason={}, pos={}, backpack={}",
-                taskId, aiPlayer.getAiPlayerName(), targetItem, quantity, validation.toUserText(), positionText(), inventoryText());
+            AiPlayerMod.warn("make_item", "[taskId={}] AiPlayer '{}' make_item validation failed: graphId={}, target={} x{}, reason={}, pos={}, backpack={}",
+                taskId, aiPlayer.getAiPlayerName(), craftingTree.graphId(), targetItem, quantity, validation.toUserText(), positionText(), inventoryText());
             result = ActionResult.failure(validation.toUserText());
             return;
         }
         session = new TaskSession("make_item", targetItem, quantity, validation.plan(), snapshot);
         latestPlanSteps = session.getSteps();
         stepExecutor = new StepExecutor(aiPlayer, resourceGatherSession, taskId);
+        updateMilestoneState("rebuild:" + reason, session.currentStep());
         lastLoggedStepIndex = -1;
         lastLoggedStepDescription = null;
         ticksSinceMiningStrategyReport = 0;
-        AiPlayerMod.info("make_item", "[taskId={}] AiPlayer '{}' rebuilt make_item session because '{}': {} steps, target={} x{}, pos={}, mainHand={}, backpack={}",
+        AiPlayerMod.info("make_item", "[taskId={}] AiPlayer '{}' rebuilt make_item session because '{}': graphId={}, currentNode={}, {} steps, target={} x{}, pos={}, mainHand={}, backpack={}, {}",
             taskId,
             aiPlayer.getAiPlayerName(),
             reason,
+            craftingTree.graphId(),
+            currentTreeNodeText(),
             session.getStepCount(),
             targetItem,
             quantity,
             positionText(),
             mainHandText(),
-            inventoryText());
+            inventoryText(),
+            milestoneText());
     }
 
     private void observeAfterStep() {
         if (session != null) {
             session.setLastSnapshot(WorldSnapshot.capture(aiPlayer, "after_step"));
         }
+        updateMilestoneState("after_step", session == null ? null : session.currentStep());
+    }
+
+    private void updateMilestoneState(String reason, ExecutionStep currentStep) {
+        if (milestoneState == null || !milestoneState.tracked()) {
+            return;
+        }
+        boolean changed = milestoneState.refresh(aiPlayer.getInventorySnapshot(), currentStep, reason);
+        if (changed) {
+            AiPlayerMod.info("make_item", "[taskId={}] AiPlayer '{}' milestone update: target={} x{}, pos={}, backpack={}, {}",
+                taskId,
+                aiPlayer.getAiPlayerName(),
+                targetItem,
+                quantity,
+                positionText(),
+                inventoryText(),
+            milestoneText());
+        }
+    }
+
+    private void logCraftingTree(String reason, CraftingTree tree) {
+        if (tree == null) {
+            return;
+        }
+        String dependency = tree.toDependencyText().replace("\n", " | ");
+        if (tree.success()) {
+            AiPlayerMod.info("recipe", "[taskId={}] AiPlayer '{}' crafting tree ready: reason={}, graphId={}, target={} x{}, steps={}, dependency={}",
+                taskId,
+                aiPlayer.getAiPlayerName(),
+                reason,
+                tree.graphId(),
+                tree.target().item(),
+                tree.target().count(),
+                tree.steps().size(),
+                dependency);
+        } else {
+            AiPlayerMod.warn("recipe", "[taskId={}] AiPlayer '{}' crafting tree failed: reason={}, graphId={}, target={} x{}, failure={}, dependency={}",
+                taskId,
+                aiPlayer.getAiPlayerName(),
+                reason,
+                tree.graphId(),
+                tree.target().item(),
+                tree.target().count(),
+                tree.failureReason(),
+                dependency);
+        }
+    }
+
+    private String craftingTreeStatusText() {
+        if (craftingTree == null) {
+            return "";
+        }
+        if (!craftingTree.success()) {
+            return "依赖图：" + craftingTree.graphId() + "，失败：" + craftingTree.failureReason();
+        }
+        return "依赖图：" + craftingTree.graphId() + "，当前节点：" + currentTreeNodeText();
+    }
+
+    private String currentTreeNodeText() {
+        if (craftingTree == null) {
+            return "none";
+        }
+        if (!craftingTree.success()) {
+            return "failed:" + craftingTree.failureReason();
+        }
+        if (session == null) {
+            return "target:" + craftingTree.target().item() + " x" + craftingTree.target().count();
+        }
+        int index = session.getCurrentStepIndex() + 1;
+        return craftingTree.stepByIndex(index)
+            .map(step -> step.id() + " " + step.action() + " -> " + step.output())
+            .orElse("target:" + craftingTree.target().item() + " x" + craftingTree.target().count());
+    }
+
+    private void recordMilestoneStepResult(ExecutionStep step, StepResult stepResult) {
+        if (milestoneState == null || !milestoneState.tracked()) {
+            return;
+        }
+        boolean changed = milestoneState.recordStepResult(step, stepResult, aiPlayer.getInventorySnapshot());
+        if (changed || stepResult == null || !stepResult.isRunning()) {
+            AiPlayerMod.info("make_item", "[taskId={}] AiPlayer '{}' milestone step result: step={}, status={}, message={}, {}",
+                taskId,
+                aiPlayer.getAiPlayerName(),
+                step == null ? "none" : step.describe(),
+                stepResult == null ? "unknown" : stepResult.getStatus(),
+                stepResult == null ? "" : stepResult.getMessage(),
+                milestoneText());
+        }
+    }
+
+    private void recordMilestoneRecoveryAction(String action) {
+        if (milestoneState == null || !milestoneState.tracked()) {
+            return;
+        }
+        milestoneState.recordRecoveryAction(action);
+        AiPlayerMod.info("make_item", "[taskId={}] AiPlayer '{}' milestone recovery action: action={}, {}",
+            taskId,
+            aiPlayer.getAiPlayerName(),
+            action == null || action.isBlank() ? "none" : action,
+            milestoneText());
+    }
+
+    private String milestoneText() {
+        if (milestoneState == null || !milestoneState.tracked()) {
+            return "milestone=none";
+        }
+        return milestoneState.toLogText();
+    }
+
+    private String milestoneUserText() {
+        if (milestoneState == null || !milestoneState.tracked()) {
+            return "无";
+        }
+        return milestoneState.toUserText();
     }
 
     private boolean isStatefulGatherStep(ExecutionStep step) {
@@ -360,11 +510,13 @@ public class MakeItemAction extends BaseAction {
         lastLoggedStepDescription = description;
         stepStartInventory = new TreeMap<>(aiPlayer.getInventorySnapshot());
         stepStartedAtTick = aiPlayer.tickCount;
-        AiPlayerMod.info("make_item", "[taskId={}] AiPlayer '{}' step start: index={}/{}, step={}, target={} x{}, currentTargetCount={}, pos={}, dimension={}, mainHand={}, backpack={}",
+        updateMilestoneState("step_start", step);
+        AiPlayerMod.info("make_item", "[taskId={}] AiPlayer '{}' step start: index={}/{}, treeNode={}, step={}, target={} x{}, currentTargetCount={}, pos={}, dimension={}, mainHand={}, backpack={}, {}",
             taskId,
             aiPlayer.getAiPlayerName(),
             index + 1,
             session.getStepCount(),
+            currentTreeNodeText(),
             description,
             targetItem,
             quantity,
@@ -372,7 +524,8 @@ public class MakeItemAction extends BaseAction {
             positionText(),
             aiPlayer.level().dimension().location(),
             mainHandText(),
-            inventoryText());
+            inventoryText(),
+            milestoneText());
     }
 
     private void recordStepEvent(ExecutionStep step, StepResult stepResult) {

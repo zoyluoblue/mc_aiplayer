@@ -432,18 +432,31 @@ public class AiPlayerEntity extends PathfinderMob {
     }
 
     public boolean hasBackpackSpaceFor(Item item) {
+        return hasBackpackSpaceFor(item, 1);
+    }
+
+    public boolean hasBackpackSpaceFor(Item item, int count) {
         if (item == null || item == Items.AIR) {
             return true;
         }
+        return availableBackpackSpaceFor(item) >= Math.max(1, count);
+    }
+
+    public int availableBackpackSpaceFor(Item item) {
+        if (item == null || item == Items.AIR) {
+            return Integer.MAX_VALUE;
+        }
+        int capacity = 0;
         for (ItemStack stack : backpack) {
             if (stack.isEmpty()) {
-                return true;
+                capacity += item.getDefaultMaxStackSize();
+                continue;
             }
             if (stack.is(item) && stack.getCount() < stack.getMaxStackSize()) {
-                return true;
+                capacity += stack.getMaxStackSize() - stack.getCount();
             }
         }
-        return false;
+        return capacity;
     }
 
     public boolean isBackpackFull() {
@@ -623,6 +636,11 @@ public class AiPlayerEntity extends PathfinderMob {
         return stack.isEmpty() ? ItemStack.EMPTY : stack.copy();
     }
 
+    public ItemStack getBestToolStackFor(String toolType, int requiredDurability) {
+        ItemStack stack = firstOwnedUsableStack(Math.max(1, requiredDurability), toolsFor(toolType));
+        return stack.isEmpty() ? ItemStack.EMPTY : stack.copy();
+    }
+
     public boolean hasUsableToolFor(String toolType) {
         return !firstOwnedUsableStack(toolsFor(toolType)).isEmpty();
     }
@@ -662,9 +680,13 @@ public class AiPlayerEntity extends PathfinderMob {
     }
 
     private ItemStack firstOwnedUsableStack(Item... items) {
+        return firstOwnedUsableStack(MIN_USABLE_TOOL_DURABILITY, items);
+    }
+
+    private ItemStack firstOwnedUsableStack(int requiredDurability, Item... items) {
         for (Item item : items) {
             for (ItemStack stack : backpack) {
-                if (!stack.isEmpty() && stack.is(item) && isUsableToolStack(stack, MIN_USABLE_TOOL_DURABILITY)) {
+                if (!stack.isEmpty() && stack.is(item) && isUsableToolStack(stack, requiredDurability)) {
                     return stack;
                 }
             }

@@ -36,7 +36,7 @@ public record ExposureTarget(
                 .thenComparingDouble(pos -> pos.distSqr(currentPos)))
             .map(pos -> new ExposureTarget(orePos, pos, level.getBlockState(pos).isAir(), true,
                 level.getBlockState(pos).isAir() ? "existing_air_neighbor" : "dig_neighbor_to_expose"))
-            .orElseGet(() -> new ExposureTarget(orePos, null, false, false, "no_valid_exposure_neighbor"));
+            .orElseGet(() -> fallbackNeighbor(level, currentPos, orePos));
     }
 
     public BlockPos routeTarget() {
@@ -71,5 +71,17 @@ public record ExposureTarget(
             return 2;
         }
         return 1;
+    }
+
+    private static ExposureTarget fallbackNeighbor(Level level, BlockPos currentPos, BlockPos orePos) {
+        return Direction.stream()
+            .map(orePos::relative)
+            .map(BlockPos::immutable)
+            .filter(level::hasChunkAt)
+            .min(Comparator
+                .comparingInt((BlockPos pos) -> Math.abs(pos.getY() - currentPos.getY()))
+                .thenComparingDouble(pos -> pos.distSqr(currentPos)))
+            .map(pos -> new ExposureTarget(orePos, pos, false, true, "fallback_neighbor_to_expose"))
+            .orElseGet(() -> new ExposureTarget(orePos, null, false, false, "no_loaded_exposure_neighbor"));
     }
 }

@@ -19,7 +19,7 @@ public final class RecipeResolver {
     private final BasicSourceResolver sourceResolver = new BasicSourceResolver();
 
     public RecipePlan resolve(AiPlayerEntity aiPlayer, WorldSnapshot snapshot, String targetItem, int count) {
-        String normalizedTarget = isGenericWoodenDoor(targetItem) ? chooseWoodenDoorTarget(snapshot) : normalizeItemId(targetItem);
+        String normalizedTarget = normalizeTargetItem(targetItem, snapshot);
         MaterialRequirement target = MaterialRequirement.of(normalizedTarget, count);
         MissingMaterialResolver materials = MissingMaterialResolver.fromSnapshot(snapshot);
         Map<String, Integer> initialAvailable = materials.availableItems();
@@ -35,6 +35,13 @@ public final class RecipeResolver {
             return RecipePlan.failure(target, result.message(), initialAvailable);
         }
         return RecipePlan.success(target, chain, missingBaseResources, initialAvailable);
+    }
+
+    public String normalizeTargetItem(String targetItem, WorldSnapshot snapshot) {
+        String candidate = isGenericWoodenDoor(targetItem) ? chooseWoodenDoorTarget(snapshot) : targetItem;
+        return MiningGoalResolver.resolve(candidate)
+            .map(MiningGoalResolver.Goal::finalItem)
+            .orElseGet(() -> normalizeItemId(candidate));
     }
 
     private ResolveResult satisfyTopLevel(

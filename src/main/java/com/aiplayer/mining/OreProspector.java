@@ -100,6 +100,14 @@ public final class OreProspector {
                     }
                     OreProspectClassification classification = classify(aiPlayer, pos);
                     mergeClassification(classificationCounts, classification);
+                    OreProspectSelectionPolicy.Rejection policyRejection =
+                        OreProspectSelectionPolicy.rejectionFor(target, center, pos, classification);
+                    if (policyRejection.rejected()) {
+                        rejectedCount++;
+                        mergeClassification(classificationCounts, OreProspectClassification.REJECTED);
+                        merge(rejectionReasons, policyRejection.reason());
+                        continue;
+                    }
                     if (classification == OreProspectClassification.REJECTED) {
                         rejectedCount++;
                         merge(rejectionReasons, "exposed_unreachable");

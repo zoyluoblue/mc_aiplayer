@@ -12,11 +12,14 @@ import com.aiplayer.snapshot.SnapshotSerializer;
 import com.aiplayer.snapshot.WorldSnapshot;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -24,11 +27,30 @@ import java.util.concurrent.CompletableFuture;
 public final class MiningStrategyAdvisor {
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
     private static final Set<String> ALLOWED_STRATEGY_ACTIONS = Set.of(
-        "continue_current_step",
-        "switch_to_stair_descent",
-        "rebuild_plan",
-        "observe_and_replan",
-        "request_user_help"
+        "continue_current_route",
+        "rescan",
+        "switch_layer",
+        "return_to_safe_point",
+        "ask_player_help"
+    );
+    private static final Set<String> FORBIDDEN_FACT_FIELDS = Set.of(
+        "x",
+        "y",
+        "z",
+        "pos",
+        "position",
+        "coordinate",
+        "coordinates",
+        "block",
+        "block_id",
+        "blockid",
+        "item_count",
+        "itemcount",
+        "recipe",
+        "crafting",
+        "break",
+        "place",
+        "command"
     );
 
     private final AsyncLLMClient client;
@@ -116,16 +138,17 @@ public final class MiningStrategyAdvisor {
         return SurvivalPrompt.sharedContext() + "\n" + """
             你是 Minecraft 生存 AI 的挖矿策略顾问。只输出 JSON。
             你只能基于上下文里提供的事实给下一步策略建议。
-            矿点坐标、配方、工具要求和材料数量由本地代码扫描和验证；你只能建议是否继续、下挖、重建计划、复盘或请求协助。
+            矿点坐标、配方、工具要求和材料数量由本地代码扫描和验证；你只能建议是否继续、重扫、换层、回退安全点或请求协助。
             不要输出具体坐标，不要假设地下有矿，不要编造背包或箱子材料。
             允许的 strategy action 只有：
-            - continue_current_step：继续当前 step
-            - switch_to_stair_descent：切换到阶梯式下挖或继续下探
-            - rebuild_plan：重新观察并用本地 RecipeResolver 重建路线
-            - observe_and_replan：重新观察后复盘
-            - request_user_help：请求玩家移动、给材料或改变目标
+            - continue_current_route：继续当前本地路线
+            - rescan：请求本地探矿重扫
+            - switch_layer：请求本地高度策略换层
+            - return_to_safe_point：请求本地回退到最近安全矿道点
+            - ask_player_help：请求玩家移动、给材料或改变目标
             JSON 格式：
-            {"strategy":"...","action":"continue_current_step","message":"...","reason":"...","needsRebuild":false,"needsUserHelp":false}
+            {"strategy":"...","action":"continue_current_route","message":"...","reason":"...","needsRebuild":false,"needsUserHelp":false}
+            不允许包含 x/y/z、position、block、recipe、break、place、command 等字段。
             输出必须是单个 JSON 对象，不要 Markdown。
             """;
     }
@@ -188,11 +211,21 @@ public final class MiningStrategyAdvisor {
             .toList());
         context.put("relevantSkillMemory", relevantSkills == null ? List.of() : relevantSkills);
         context.put("miningProfile", miningProfileContext(currentStep, targetItem));
+        context.put("miningReviewInputSchema", List.of(
+            "target",
+            "currentPhase",
+            "inventory",
+            "tool",
+            "candidateSummary",
+            "failureType",
+            "safePointSummary",
+            "attemptedRecoveryActions"
+        ));
         context.put("prospectingRules", List.of(
             "本地 OreProspector 负责扫描已加载区块中的真实矿石方块",
             "本地 StageMiningPlan 负责把矿点转换为阶梯下挖、横挖、暴露矿物和采集阶段",
-            "DeepSeek 不直接决定坐标，只判断当前阶段是否应继续、重扫、重建计划或请求玩家协助",
-            "遇到不可达、环境危险、目标被挖掉或目标位于当前层上方时，本地代码会终止任务并返回玩家身边"
+            "DeepSeek 不直接决定坐标，只判断当前阶段是否应继续、重扫、换层、回退安全点或请求玩家协助",
+            "遇到不可达、环境危险、目标被挖掉或目标位于当前层上方时，本地代码会先执行本地恢复策略"
         ));
         context.put("unknownFacts", List.of(
             "地下未暴露矿物未知，需要实际探矿确认",
@@ -247,8 +280,8 @@ public final class MiningStrategyAdvisor {
         }
         try {
             JsonObject object = JsonParser.parseString(json).getAsJsonObject();
-            String action = getString(object, "action", "continue_current_step");
-            String strategy = getString(object, "strategy", "continue_current_step");
+            String action = getString(object, "action", "continue_current_route");
+            String strategy = getString(object, "strategy", "continue_current_route");
             String message = getString(object, "message", "继续当前挖矿 step");
             String reason = getString(object, "reason", "");
             boolean needsRebuild = getBoolean(object, "needsRebuild", false);
@@ -256,8 +289,8 @@ public final class MiningStrategyAdvisor {
             if (!ALLOWED_STRATEGY_ACTIONS.contains(action)) {
                 return MiningStrategyAdvice.invalid("未声明的挖矿策略动作：" + action, json);
             }
-            if (containsForbidden(action) || containsForbidden(strategy) || containsForbidden(message)) {
-                return MiningStrategyAdvice.invalid("挖矿策略包含作弊能力", json);
+            if (containsForbiddenPayload(object)) {
+                return MiningStrategyAdvice.invalid("挖矿策略包含禁止的事实或执行字段", json);
             }
             return MiningStrategyAdvice.accepted(strategy, action, message, reason, needsRebuild, needsUserHelp, json);
         } catch (RuntimeException e) {
@@ -283,10 +316,47 @@ public final class MiningStrategyAdvisor {
         String text = value == null ? "" : value.toLowerCase();
         return text.contains("give")
             || text.contains("teleport")
+            || text.contains("/tp")
+            || text.contains(" tp")
+            || text.contains("tp ")
             || text.contains("setblock")
+            || text.contains("/setblock")
             || text.contains("creative")
             || text.contains("summon")
+            || text.contains("/summon")
             || text.contains("spawn_item")
             || text.contains("fill ");
+    }
+
+    private static boolean containsForbiddenPayload(JsonElement element) {
+        if (element == null || element.isJsonNull()) {
+            return false;
+        }
+        if (element.isJsonPrimitive() && element.getAsJsonPrimitive().isString()) {
+            return containsForbidden(element.getAsString());
+        }
+        if (element.isJsonArray()) {
+            JsonArray array = element.getAsJsonArray();
+            for (JsonElement child : array) {
+                if (containsForbiddenPayload(child)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (!element.isJsonObject()) {
+            return false;
+        }
+        JsonObject object = element.getAsJsonObject();
+        for (String key : object.keySet()) {
+            String normalizedKey = key.toLowerCase(Locale.ROOT);
+            if (FORBIDDEN_FACT_FIELDS.contains(normalizedKey) || containsForbidden(normalizedKey)) {
+                return true;
+            }
+            if (containsForbiddenPayload(object.get(key))) {
+                return true;
+            }
+        }
+        return false;
     }
 }

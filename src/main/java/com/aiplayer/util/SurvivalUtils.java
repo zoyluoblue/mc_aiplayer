@@ -1,6 +1,7 @@
 package com.aiplayer.util;
 
 import com.aiplayer.entity.AiPlayerEntity;
+import com.aiplayer.AiPlayerMod;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.Item;
@@ -60,27 +61,61 @@ public final class SurvivalUtils {
     }
 
     public static boolean breakBlock(AiPlayerEntity aiPlayer, BlockPos pos) {
+        return breakBlockDetailed(aiPlayer, pos).success();
+    }
+
+    public static BreakResult breakBlockDetailed(AiPlayerEntity aiPlayer, BlockPos pos) {
+        if (aiPlayer == null || pos == null) {
+            return BreakResult.failure(pos, null, "missing_target", null, Items.AIR, 0);
+        }
         BlockState state = aiPlayer.level().getBlockState(pos);
         if (state.isAir() || state.getBlock() == Blocks.BEDROCK) {
-            return false;
+            String reason = state.isAir() ? "target_air" : "unbreakable:bedrock";
+            return BreakResult.failure(pos, state.getBlock(), reason, null, Items.AIR, 0);
+        }
+        SurvivalInteractionValidator.ValidationResult validation = SurvivalInteractionValidator.canBreakBlock(aiPlayer, pos);
+        if (!validation.valid()) {
+            BlockPos blocker = "blocked_line_of_sight".equals(validation.reason())
+                ? SurvivalInteractionValidator.blockingBlockForBreak(aiPlayer, pos).orElse(null)
+                : null;
+            AiPlayerMod.debug("action", "Survival breakBlock rejected: ai={}, pos={}, block={}, reason={}, blocker={}",
+                aiPlayer.getAiPlayerName(),
+                pos.toShortString(),
+                state.getBlock(),
+                validation.reason(),
+                blocker == null ? "none" : blocker.toShortString());
+            return BreakResult.failure(pos, state.getBlock(), validation.reason(), blocker, Items.AIR, 0);
+        }
+        String requiredTool = requiredToolForDrop(state.getBlock());
+        if (requiredTool != null && !canHarvestBlock(aiPlayer, state.getBlock())) {
+            return BreakResult.failure(pos, state.getBlock(), "wrong_tool_tier:" + requiredTool, null, Items.AIR, 0);
         }
         Item drop = getSurvivalDrop(state);
+        int dropCount = getDropCount(state);
         equipBestToolForBlock(aiPlayer, state.getBlock());
         aiPlayer.lookAtWorkTarget(pos);
         aiPlayer.swingWorkHand(InteractionHand.MAIN_HAND);
         boolean destroyed = aiPlayer.level().destroyBlock(pos, false);
         if (destroyed) {
             damageToolForBlock(aiPlayer, state.getBlock());
+            int inserted = 0;
             if (drop != Items.AIR) {
-                aiPlayer.addItem(drop, getDropCount(state));
+                inserted = aiPlayer.addItem(drop, dropCount);
             }
+            return BreakResult.success(pos, state.getBlock(), drop, dropCount, inserted);
         }
-        return destroyed;
+        return BreakResult.failure(pos, state.getBlock(), "destroy_failed", null, drop, dropCount);
     }
 
     public static boolean placeBlock(AiPlayerEntity aiPlayer, BlockPos pos, Block block) {
         if (block == Blocks.AIR) {
             return true;
+        }
+        if (pos == null || !aiPlayer.level().getBlockState(pos).isAir()) {
+            return false;
+        }
+        if (!SurvivalInteractionValidator.canPlaceBlock(aiPlayer, pos).valid()) {
+            return false;
         }
         Item item = getPlacementItem(block);
         if (item == Items.AIR || !aiPlayer.consumeItem(item, 1)) {
@@ -197,6 +232,51 @@ public final class SurvivalUtils {
         return isStone(block) || isMiningResourceBlock(block);
     }
 
+    public static String requiredToolForDrop(Block block) {
+        if (block == Blocks.OBSIDIAN || block == Blocks.ANCIENT_DEBRIS) {
+            return "minecraft:diamond_pickaxe";
+        }
+        if (block == Blocks.GOLD_ORE || block == Blocks.DEEPSLATE_GOLD_ORE
+            || block == Blocks.DIAMOND_ORE || block == Blocks.DEEPSLATE_DIAMOND_ORE
+            || block == Blocks.REDSTONE_ORE || block == Blocks.DEEPSLATE_REDSTONE_ORE
+            || block == Blocks.EMERALD_ORE || block == Blocks.DEEPSLATE_EMERALD_ORE) {
+            return "minecraft:iron_pickaxe";
+        }
+        if (block == Blocks.IRON_ORE || block == Blocks.DEEPSLATE_IRON_ORE
+            || block == Blocks.COPPER_ORE || block == Blocks.DEEPSLATE_COPPER_ORE
+            || block == Blocks.LAPIS_ORE || block == Blocks.DEEPSLATE_LAPIS_ORE) {
+            return "minecraft:stone_pickaxe";
+        }
+        if (requiresPickaxe(block)) {
+            return "minecraft:wooden_pickaxe";
+        }
+        return null;
+    }
+
+    public static boolean canHarvestBlock(AiPlayerEntity aiPlayer, Block block) {
+        String requiredTool = requiredToolForDrop(block);
+        if (requiredTool == null) {
+            return true;
+        }
+        if (aiPlayer == null) {
+            return false;
+        }
+        return pickaxeMeetsRequirement(aiPlayer.getBestToolStackFor("pickaxe"), requiredTool);
+    }
+
+    public static boolean pickaxeMeetsRequirement(ItemStack tool, String requiredTool) {
+        if (tool == null || tool.isEmpty() || requiredTool == null || requiredTool.isBlank()) {
+            return false;
+        }
+        return switch (requiredTool) {
+            case "minecraft:wooden_pickaxe" -> isAnyPickaxe(tool);
+            case "minecraft:stone_pickaxe" -> isStoneOrBetterPickaxe(tool);
+            case "minecraft:iron_pickaxe" -> isIronOrBetterPickaxe(tool);
+            case "minecraft:diamond_pickaxe" -> isDiamondOrBetterPickaxe(tool);
+            default -> false;
+        };
+    }
+
     public static String preferredToolForBlock(Block block) {
         if (requiresPickaxe(block)) {
             return "pickaxe";
@@ -274,5 +354,83 @@ public final class SurvivalUtils {
             return stone;
         }
         return wooden;
+    }
+
+    private static boolean isAnyPickaxe(ItemStack tool) {
+        Item item = tool.getItem();
+        return item == Items.WOODEN_PICKAXE
+            || item == Items.STONE_PICKAXE
+            || item == Items.IRON_PICKAXE
+            || item == Items.GOLDEN_PICKAXE
+            || item == Items.DIAMOND_PICKAXE
+            || item == Items.NETHERITE_PICKAXE;
+    }
+
+    private static boolean isStoneOrBetterPickaxe(ItemStack tool) {
+        Item item = tool.getItem();
+        return item == Items.STONE_PICKAXE
+            || item == Items.IRON_PICKAXE
+            || item == Items.DIAMOND_PICKAXE
+            || item == Items.NETHERITE_PICKAXE;
+    }
+
+    private static boolean isIronOrBetterPickaxe(ItemStack tool) {
+        Item item = tool.getItem();
+        return item == Items.IRON_PICKAXE
+            || item == Items.DIAMOND_PICKAXE
+            || item == Items.NETHERITE_PICKAXE;
+    }
+
+    private static boolean isDiamondOrBetterPickaxe(ItemStack tool) {
+        Item item = tool.getItem();
+        return item == Items.DIAMOND_PICKAXE
+            || item == Items.NETHERITE_PICKAXE;
+    }
+
+    public record BreakResult(
+        boolean success,
+        BlockPos target,
+        Block block,
+        String reason,
+        BlockPos blocker,
+        Item drop,
+        int dropCount,
+        int insertedCount,
+        int uncollectedCount
+    ) {
+        static BreakResult success(BlockPos target, Block block, Item drop, int dropCount, int insertedCount) {
+            int safeDropCount = Math.max(0, dropCount);
+            int safeInserted = Math.max(0, Math.min(insertedCount, safeDropCount));
+            return new BreakResult(
+                true,
+                target == null ? null : target.immutable(),
+                block,
+                "success",
+                null,
+                drop,
+                safeDropCount,
+                safeInserted,
+                Math.max(0, safeDropCount - safeInserted)
+            );
+        }
+
+        static BreakResult failure(BlockPos target, Block block, String reason, BlockPos blocker, Item drop, int dropCount) {
+            int safeDropCount = Math.max(0, dropCount);
+            return new BreakResult(
+                false,
+                target == null ? null : target.immutable(),
+                block,
+                reason == null || reason.isBlank() ? "break_failed" : reason,
+                blocker == null ? null : blocker.immutable(),
+                drop,
+                safeDropCount,
+                0,
+                0
+            );
+        }
+
+        public String blockerText() {
+            return blocker == null ? "none" : blocker.toShortString();
+        }
     }
 }

@@ -57,6 +57,24 @@ class SurvivalRecipePlanningTest {
     }
 
     @Test
+    void oreBlockTargetsNormalizeToSurvivalDropsAtRecipeBoundary() {
+        RecipePlan diamondOre = recipeResolver.resolve(null, emptySnapshot, "minecraft:diamond_ore", 1);
+        RecipePlan goldOre = recipeResolver.resolve(null, emptySnapshot, "gold_ore", 2);
+
+        assertTrue(diamondOre.isSuccess(), diamondOre.getFailureReason());
+        assertEquals("minecraft:diamond", diamondOre.getTarget().getItem());
+        assertHasCraft(diamondOre, "minecraft:iron_pickaxe", "crafting_table");
+        assertHasGather(diamondOre, "minecraft:diamond", "diamond_ore");
+        assertNoNode(diamondOre, "minecraft:diamond_ore");
+
+        assertTrue(goldOre.isSuccess(), goldOre.getFailureReason());
+        assertEquals("minecraft:raw_gold", goldOre.getTarget().getItem());
+        assertHasCraft(goldOre, "minecraft:iron_pickaxe", "crafting_table");
+        assertHasGather(goldOre, "minecraft:raw_gold", "gold_ore");
+        assertNoNode(goldOre, "minecraft:gold_ore");
+    }
+
+    @Test
     void goldIngotExpandsThroughIronPickaxeRawGoldAndFuel() {
         RecipePlan plan = recipeResolver.resolve(null, emptySnapshot, "minecraft:gold_ingot", 2);
 

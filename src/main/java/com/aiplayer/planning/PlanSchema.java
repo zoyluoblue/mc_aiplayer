@@ -1,7 +1,5 @@
 package com.aiplayer.planning;
 
-import com.aiplayer.recipe.MaterialRequirement;
-import com.aiplayer.recipe.RecipeNode;
 import com.aiplayer.recipe.RecipePlan;
 
 import java.util.ArrayList;
@@ -27,17 +25,7 @@ public final class PlanSchema {
     }
 
     public static PlanSchema fromRecipePlan(String goal, RecipePlan recipePlan) {
-        List<PlanStep> steps = new ArrayList<>();
-        for (RecipeNode node : recipePlan.getRecipeChain()) {
-            MaterialRequirement output = node.getOutput();
-            switch (node.getType()) {
-                case "withdraw" -> steps.add(PlanStep.withdraw(output.getItem(), output.getCount(), node.getSource()));
-                case "gather" -> steps.add(PlanStep.gather(node.getSource(), output.getItem(), output.getCount()));
-                case "craft" -> steps.add(PlanStep.craft(output.getItem(), output.getCount(), node.getStation()));
-                default -> {
-                }
-            }
-        }
+        List<PlanStep> steps = new CraftingTreeActionRouter().toPlanSteps(recipePlan.toCraftingTree());
         return new PlanSchema(
             goal,
             new PlanTarget(recipePlan.getTarget().getItem(), recipePlan.getTarget().getCount()),

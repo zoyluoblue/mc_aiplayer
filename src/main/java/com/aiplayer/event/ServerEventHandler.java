@@ -1,7 +1,6 @@
 package com.aiplayer.event;
 
 import com.aiplayer.AiPlayerMod;
-import com.aiplayer.entity.AiPlayerEntity;
 import com.aiplayer.memory.StructureRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 
@@ -14,19 +13,8 @@ public class ServerEventHandler {
                 return;
             }
 
-            var level = handler.player.serverLevel();
-            AiPlayerMod.getAiPlayerManager().clearAllAiPlayers();
             StructureRegistry.clear();
-
-            int removedCount = 0;
-            for (var entity : level.getAllEntities()) {
-                if (entity instanceof AiPlayerEntity) {
-                    entity.discard();
-                    removedCount++;
-                }
-            }
-
-            AiPlayerMod.info("system", "Removed {} stale AI player entities on first player join", removedCount);
+            AiPlayerMod.info("system", "Preserved AI player entities on first player join");
             staleEntitiesCleared = true;
         });
     }

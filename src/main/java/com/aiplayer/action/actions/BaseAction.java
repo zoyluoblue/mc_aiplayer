@@ -46,5 +46,8 @@ public abstract class BaseAction {
     protected abstract void onCancel();
     
     public abstract String getDescription();
-}
 
+    public String getStatusDetails() {
+        return "";
+    }
+}

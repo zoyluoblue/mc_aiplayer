@@ -104,9 +104,10 @@ class MiningResourceTest {
         assertEquals("raw_gold", goldIngot.profile().key());
         assertEquals("minecraft:iron_pickaxe", goldIngot.requiredTool());
 
-        assertFalse(diamondOreBlock.supported());
+        assertTrue(diamondOreBlock.supported());
+        assertEquals("minecraft:diamond", diamondOreBlock.item());
         assertEquals("diamond", diamondOreBlock.profile().key());
-        assertTrue(diamondOreBlock.message().contains("精准采集"));
+        assertTrue(diamondOreBlock.message().contains("普通生存链"));
     }
 
     @Test

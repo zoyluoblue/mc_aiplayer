@@ -39,14 +39,15 @@ public record OreTargetScore(
         boolean sameOrLower = vertical <= 0;
 
         double value = Math.sqrt(candidate.distSqr(center));
-        value += Math.abs(vertical) * 4.0D;
-        value -= safeClassification.priority() * 10_000.0D;
+        value += horizontal * 14.0D;
+        value += Math.abs(vertical) * 18.0D;
+        value += classificationBias(safeClassification);
 
         if (basic && near) {
-            value -= 750.0D;
+            value -= 250.0D;
         }
         if (safeClassification == OreProspectClassification.EMBEDDED_HINT) {
-            value += 500.0D;
+            value += 180.0D;
         }
         if (vertical > 1) {
             value += vertical * 80.0D;
@@ -61,9 +62,6 @@ public record OreTargetScore(
     public boolean betterThan(OreTargetScore other) {
         if (other == null) {
             return true;
-        }
-        if (classification.priority() != other.classification.priority()) {
-            return classification.priority() > other.classification.priority();
         }
         return score < other.score;
     }
@@ -89,5 +87,15 @@ public record OreTargetScore(
             || item.equals("minecraft:raw_copper")
             || item.equals("minecraft:raw_iron")
             || item.equals("minecraft:cobblestone");
+    }
+
+    private static double classificationBias(OreProspectClassification classification) {
+        return switch (classification) {
+            case DIRECT_MINEABLE -> -700.0D;
+            case APPROACHABLE_EXPOSED -> -250.0D;
+            case EMBEDDED_HINT -> 120.0D;
+            case REJECTED -> 10_000.0D;
+            case NOT_FOUND -> 20_000.0D;
+        };
     }
 }

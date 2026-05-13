@@ -76,7 +76,16 @@ public final class RecipePlan {
         for (int i = 0; i < recipeChain.size(); i++) {
             builder.append(i + 1).append(". ").append(recipeChain.get(i).toUserText()).append("\n");
         }
+        builder.append("\n").append(toDependencyGraphText());
         return builder.toString().stripTrailing();
+    }
+
+    public String toDependencyGraphText() {
+        return toCraftingTree().toDependencyText();
+    }
+
+    public CraftingTree toCraftingTree() {
+        return CraftingTree.fromRecipePlan(this);
     }
 
     @Override

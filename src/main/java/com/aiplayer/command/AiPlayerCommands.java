@@ -571,6 +571,7 @@ public class AiPlayerCommands {
         String goal = aiPlayer.getActionExecutor().getCurrentGoal();
         String action = aiPlayer.getActionExecutor().getCurrentActionDescription();
         String taskId = aiPlayer.getActionExecutor().getActiveTaskId();
+        String details = aiPlayer.getActionExecutor().getCurrentActionStatusDetails();
         String message = """
             AI 挖矿状态：
             - taskId: %s
@@ -580,6 +581,7 @@ public class AiPlayerCommands {
             - 位置: %s，Y=%d
             - 主手: %s
             - 背包: %s
+            - 细节: %s
             """.formatted(
             taskId,
             goal == null || goal.isBlank() ? "无" : goal,
@@ -589,7 +591,8 @@ public class AiPlayerCommands {
             pos.toShortString(),
             pos.getY(),
             itemKey(aiPlayer.getMainHandItem().getItem()),
-            new TreeMap<>(aiPlayer.getInventorySnapshot())
+            new TreeMap<>(aiPlayer.getInventorySnapshot()),
+            details == null || details.isBlank() ? "无" : "\n" + details
         );
         source.sendSuccess(() -> Component.literal(message), false);
         return 1;
@@ -612,6 +615,7 @@ public class AiPlayerCommands {
         String goal = aiPlayer.getActionExecutor().getCurrentGoal();
         String action = aiPlayer.getActionExecutor().getCurrentActionDescription();
         String agentState = aiPlayer.getActionExecutor().getStateMachine().getCurrentState().getDisplayName();
+        String details = aiPlayer.getActionExecutor().getCurrentActionStatusDetails();
         String message = """
             AI 当前状态：
             - 名称: %s
@@ -622,6 +626,7 @@ public class AiPlayerCommands {
             - 位置: %s，Y=%d
             - 主手: %s
             - 背包: %s
+            - 细节: %s
             """.formatted(
             aiPlayer.getAiPlayerName(),
             agentState,
@@ -632,7 +637,8 @@ public class AiPlayerCommands {
             pos.toShortString(),
             pos.getY(),
             itemKey(aiPlayer.getMainHandItem().getItem()),
-            new TreeMap<>(aiPlayer.getInventorySnapshot())
+            new TreeMap<>(aiPlayer.getInventorySnapshot()),
+            details == null || details.isBlank() ? "无" : "\n" + details
         );
         source.sendSuccess(() -> Component.literal(message), false);
         return 1;

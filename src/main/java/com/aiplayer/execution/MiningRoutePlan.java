@@ -9,6 +9,7 @@ public record MiningRoutePlan(
     int targetY,
     String primaryRange,
     String fallbackRange,
+    String heightReason,
     Direction mainDirection,
     int branchSegmentLength,
     int maxBranchTurns,
@@ -23,25 +24,23 @@ public record MiningRoutePlan(
     ) {
         BlockPos entrance = start == null ? BlockPos.ZERO : start.immutable();
         Direction mainDirection = direction == null ? Direction.NORTH : direction;
-        int targetY = entrance.getY();
         String primaryRange = "any";
         String fallbackRange = "any";
         String routeHint = "local_search";
+        MiningHeightPolicy.Decision heightDecision = MiningHeightPolicy.decide(entrance.getY(), profile);
+        int targetY = heightDecision.targetY();
+        String heightReason = heightDecision.toLogText();
         if (profile != null) {
             primaryRange = profile.primaryRange() == null ? profile.preferredYText() : profile.primaryRange().text();
             fallbackRange = profile.fallbackRange() == null ? profile.preferredYText() : profile.fallbackRange().text();
             routeHint = profile.routeHint();
-            if (profile.primaryRange() != null) {
-                targetY = midpoint(profile.primaryRange().minY(), profile.primaryRange().maxY());
-            } else if (profile.hasPreferredYRange()) {
-                targetY = midpoint(profile.preferredMinY(), profile.preferredMaxY());
-            }
         }
         return new MiningRoutePlan(
             entrance,
             targetY,
             primaryRange,
             fallbackRange,
+            heightReason,
             mainDirection,
             branchSegmentLength,
             maxBranchTurns,
@@ -54,6 +53,7 @@ public record MiningRoutePlan(
             + ", targetY=" + targetY
             + ", primary=" + primaryRange
             + ", fallback=" + fallbackRange
+            + ", height={" + heightReason + "}"
             + ", direction=" + mainDirection.getName()
             + ", branchSegment=" + branchSegmentLength
             + ", maxTurns=" + maxBranchTurns
@@ -67,15 +67,11 @@ public record MiningRoutePlan(
             newTargetY,
             primaryRange,
             fallbackRange,
+            heightReason + suffix,
             mainDirection,
             branchSegmentLength,
             maxBranchTurns,
             routeHint + suffix
         );
-    }
-
-    private static int midpoint(int min, int max) {
-        long sum = (long) min + (long) max;
-        return (int) (sum / 2L);
     }
 }

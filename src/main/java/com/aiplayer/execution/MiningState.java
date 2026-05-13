@@ -8,6 +8,7 @@ public enum MiningState {
     BRANCH_TUNNEL("分支矿道"),
     MINING("采矿"),
     SUPPLY("补给"),
+    RECOVERING("恢复"),
     RETURNING("返回"),
     WAITING_FOR_PLAYER("等待玩家"),
     COMPLETED("完成");

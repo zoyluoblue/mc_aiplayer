@@ -13,10 +13,13 @@ import com.aiplayer.config.AiPlayerConfig;
 import com.aiplayer.entity.AiPlayerEntity;
 import com.aiplayer.plugin.ActionRegistry;
 import com.aiplayer.plugin.PluginManager;
+import com.aiplayer.recipe.MiningGoalResolver;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.LinkedList;
+import java.util.Map;
 import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -293,10 +296,11 @@ public class ActionExecutor {
     }
 
         private BaseAction createAction(Task task) {
-        String actionType = task.getAction();
+        Task executableTask = normalizeExecutionTask(task);
+        String actionType = executableTask.getAction();
         ActionRegistry registry = ActionRegistry.getInstance();
         if (registry.hasAction(actionType)) {
-            BaseAction action = registry.createAction(actionType, aiPlayer, task, actionContext);
+            BaseAction action = registry.createAction(actionType, aiPlayer, executableTask, actionContext);
             if (action != null) {
                 AiPlayerMod.debug("action", "Created action '{}' via registry (plugin: {})",
                     actionType, registry.getPluginForAction(actionType));
@@ -304,7 +308,24 @@ public class ActionExecutor {
             }
         }
         AiPlayerMod.debug("action", "Using built-in action factory for action: {}", actionType);
-        return createBuiltInAction(task);
+        return createBuiltInAction(executableTask);
+    }
+
+    private Task normalizeExecutionTask(Task task) {
+        if (task == null || !"gather".equals(task.getAction())) {
+            return task;
+        }
+        Task miningGatherTask = makeItemTaskForMiningGather(task);
+        if (miningGatherTask == null) {
+            return task;
+        }
+        AiPlayerMod.info("planning", "[taskId={}] AiPlayer '{}' rerouted gather mining target to make_item before action registry: resource={}, item={} x{}",
+            task.getTaskId(),
+            aiPlayer.getAiPlayerName(),
+            task.getStringParameter("resource", ""),
+            miningGatherTask.getStringParameter("item", ""),
+            miningGatherTask.getIntParameter("quantity", 1));
+        return miningGatherTask;
     }
 
     private BaseAction createBuiltInAction(Task task) {
@@ -330,7 +351,30 @@ public class ActionExecutor {
         if (resource.contains("tree") || resource.contains("树")) {
             return new GatherTreeAction(aiPlayer, task);
         }
+        Task miningGatherTask = makeItemTaskForMiningGather(task);
+        if (miningGatherTask != null) {
+            return new MakeItemAction(aiPlayer, miningGatherTask);
+        }
         return new GatherResourceAction(aiPlayer, task);
+    }
+
+    private Task makeItemTaskForMiningGather(Task task) {
+        String resource = task.getStringParameter("resource", "").toLowerCase(java.util.Locale.ROOT);
+        MiningGoalResolver.Goal miningGoal = MiningGoalResolver.resolve(resource)
+            .or(() -> MiningGoalResolver.resolveItemOrSource(task.getStringParameter("item", null), resource))
+            .orElse(null);
+        if (miningGoal == null) {
+            return null;
+        }
+        Map<String, Object> parameters = new HashMap<>();
+        parameters.put("item", miningGoal.finalItem());
+        parameters.put("quantity", Math.max(1, task.getIntParameter("quantity", task.getIntParameter("count", 1))));
+        parameters.put("task_id", task.getTaskId());
+        String sourceCommand = task.getStringParameter("source_command", "");
+        if (sourceCommand != null && !sourceCommand.isBlank()) {
+            parameters.put("source_command", sourceCommand);
+        }
+        return new Task("make_item", parameters);
     }
 
     public void stopCurrentAction() {
@@ -357,6 +401,10 @@ public class ActionExecutor {
 
     public String getCurrentActionDescription() {
         return currentAction == null ? "" : currentAction.getDescription();
+    }
+
+    public String getCurrentActionStatusDetails() {
+        return currentAction == null ? "" : currentAction.getStatusDetails();
     }
 
     public String getActiveTaskId() {

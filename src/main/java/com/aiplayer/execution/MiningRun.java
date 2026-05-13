@@ -42,6 +42,8 @@ public final class MiningRun {
     private int cavesFound;
     private int progressDecisions;
     private BlockPos lastDigTarget;
+    private String lastBreakFailureReason = "none";
+    private BlockPos lastBreakFailureBlocker;
     private MiningState state = MiningState.PREPARE_TOOLS;
     private boolean finished;
 
@@ -220,16 +222,34 @@ public final class MiningRun {
         int exposedAirNeighbors,
         Map<String, Integer> inventory
     ) {
+        recordDigResult(tick, mode, digTarget, block, success, exposedAirNeighbors, inventory, success ? "success" : "break_failed", null);
+    }
+
+    public void recordDigResult(
+        int tick,
+        String mode,
+        BlockPos digTarget,
+        Block block,
+        boolean success,
+        int exposedAirNeighbors,
+        Map<String, Integer> inventory,
+        String reason,
+        BlockPos blocker
+    ) {
         markMode(mode, digTarget);
         if (success) {
             blocksDug++;
             if (exposedAirNeighbors >= 3) {
                 cavesFound++;
             }
+            lastBreakFailureReason = "none";
+            lastBreakFailureBlocker = null;
         } else {
             failedBreaks++;
+            lastBreakFailureReason = reason == null || reason.isBlank() ? "break_failed" : reason;
+            lastBreakFailureBlocker = blocker == null ? null : blocker.immutable();
         }
-        AiPlayerMod.info("mining", "[taskId={}] mining dig result: ai={}, target={}, tick={}, mode={}, pos={}, block={}, success={}, exposedAirNeighbors={}, blocksDug={}, failedBreaks={}, cavesFound={}, backpack={}",
+        AiPlayerMod.info("mining", "[taskId={}] mining dig result: ai={}, target={}, tick={}, mode={}, pos={}, block={}, success={}, reason={}, blocker={}, exposedAirNeighbors={}, blocksDug={}, failedBreaks={}, cavesFound={}, backpack={}",
             taskId,
             aiName,
             target,
@@ -238,6 +258,8 @@ public final class MiningRun {
             positionText(digTarget),
             blockName(block),
             success,
+            reason == null || reason.isBlank() ? (success ? "success" : "break_failed") : reason,
+            positionText(blocker),
             exposedAirNeighbors,
             blocksDug,
             failedBreaks,
@@ -365,11 +387,28 @@ public final class MiningRun {
             + "，拒绝=" + totalRejected
             + "，拒绝原因=" + rejectedReasons
             + "，危险=" + dangerReasons
+            + "，最后破坏失败=" + lastBreakFailureReason
+            + "，最后遮挡=" + positionText(lastBreakFailureBlocker)
             + "，评分=" + progressScore()
             + "，决策=" + progressDecisions
             + "，已挖方块=" + blocksDug
             + "，破坏失败=" + failedBreaks
             + "，疑似洞穴=" + cavesFound;
+    }
+
+    public String statusFields() {
+        return "目标=" + target
+            + "，阶段=" + state.label()
+            + "，高度策略=" + heightStrategy
+            + "，路线=" + routeHint
+            + "，访问Y=" + visitedYText()
+            + "，候选=" + totalCandidates
+            + "，拒绝=" + totalRejected
+            + "，最近挖掘=" + (lastDigTarget == null ? "none" : lastDigTarget.toShortString())
+            + "，最后破坏失败=" + lastBreakFailureReason
+            + "，最后遮挡=" + positionText(lastBreakFailureBlocker)
+            + "，已挖方块=" + blocksDug
+            + "，恢复决策=" + progressDecisions;
     }
 
     public void finish(String status, String message, AiPlayerEntity aiPlayer) {

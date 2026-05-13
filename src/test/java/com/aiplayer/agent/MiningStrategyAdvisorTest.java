@@ -19,8 +19,9 @@ class MiningStrategyAdvisorTest {
         String prompt = MiningStrategyAdvisor.buildSystemPrompt();
 
         assertTrue(prompt.contains(SurvivalPrompt.sharedContext()));
-        assertTrue(prompt.contains("switch_to_stair_descent"));
-        assertTrue(prompt.contains("request_user_help"));
+        assertTrue(prompt.contains("switch_layer"));
+        assertTrue(prompt.contains("ask_player_help"));
+        assertTrue(prompt.contains("return_to_safe_point"));
     }
 
     @Test
@@ -38,6 +39,7 @@ class MiningStrategyAdvisorTest {
         assertTrue(prompt.contains("minecraft:gold_ingot"));
         assertTrue(prompt.contains("allowedStrategyActions"));
         assertTrue(prompt.contains("miningProfile"));
+        assertTrue(prompt.contains("miningReviewInputSchema"));
         assertTrue(prompt.contains("prospectingRules"));
         assertTrue(prompt.contains("nearbyCaves"));
         assertFalse(prompt.toLowerCase().contains("api_key"));
@@ -87,12 +89,12 @@ class MiningStrategyAdvisorTest {
     @Test
     void parsesValidStrategyAdvice() {
         MiningStrategyAdvice advice = MiningStrategyAdvisor.parseAdvice("""
-            {"strategy":"附近目标不可达，切换到阶梯式下挖","action":"switch_to_stair_descent","message":"继续阶梯下探","reason":"附近 stone 不可达","needsRebuild":false,"needsUserHelp":false}
+            {"strategy":"当前层没有进展，按本地高度策略换层","action":"switch_layer","message":"请求本地换层","reason":"当前层没有目标产出","needsRebuild":true,"needsUserHelp":false}
             """);
 
         assertTrue(advice.accepted());
         assertTrue(advice.switchToStairDescent());
-        assertFalse(advice.rebuildPlan());
+        assertTrue(advice.rebuildPlan());
     }
 
     @Test
@@ -102,5 +104,55 @@ class MiningStrategyAdvisorTest {
             """);
 
         assertFalse(advice.accepted());
+    }
+
+    @Test
+    void rejectsStrategyThatContainsCoordinatesOrBlockFacts() {
+        MiningStrategyAdvice advice = MiningStrategyAdvisor.parseAdvice("""
+            {"strategy":"去指定坐标挖矿","action":"rescan","message":"去这里","reason":"猜测有矿","x":10,"y":-20,"z":4}
+            """);
+
+        assertFalse(advice.accepted());
+    }
+
+    @Test
+    void rejectsNestedCoordinatesAndCommands() {
+        MiningStrategyAdvice nested = MiningStrategyAdvisor.parseAdvice("""
+            {"strategy":"重扫","action":"rescan","message":"重扫","reason":"ok","target":{"x":1,"y":-20,"z":3}}
+            """);
+        MiningStrategyAdvice array = MiningStrategyAdvisor.parseAdvice("""
+            {"strategy":"重扫","action":"rescan","message":"重扫","reason":"ok","steps":[{"command":"/setblock 0 0 0 gold_block"}]}
+            """);
+        MiningStrategyAdvice uppercaseCoordinates = MiningStrategyAdvisor.parseAdvice("""
+            {"strategy":"重扫","action":"rescan","message":"重扫","reason":"ok","target":{"X":1,"Y":-20,"Z":3}}
+            """);
+        MiningStrategyAdvice uppercaseCommand = MiningStrategyAdvisor.parseAdvice("""
+            {"strategy":"重扫","action":"rescan","message":"重扫","reason":"ok","Command":"/setblock 0 0 0 gold_block"}
+            """);
+
+        assertFalse(nested.accepted());
+        assertFalse(array.accepted());
+        assertFalse(uppercaseCoordinates.accepted());
+        assertFalse(uppercaseCommand.accepted());
+    }
+
+    @Test
+    void rejectsForbiddenCommandTextInReason() {
+        MiningStrategyAdvice advice = MiningStrategyAdvisor.parseAdvice("""
+            {"strategy":"重扫","action":"rescan","message":"重扫","reason":"可以 /tp 到矿点"}
+            """);
+
+        assertFalse(advice.accepted());
+    }
+
+    @Test
+    void returnToSafePointIsNotTreatedAsSwitchLayer() {
+        MiningStrategyAdvice advice = MiningStrategyAdvisor.parseAdvice("""
+            {"strategy":"回退最近安全点","action":"return_to_safe_point","message":"回退","reason":"路线阻断"}
+            """);
+
+        assertTrue(advice.accepted());
+        assertTrue(advice.returnToSafePoint());
+        assertFalse(advice.switchToStairDescent());
     }
 }

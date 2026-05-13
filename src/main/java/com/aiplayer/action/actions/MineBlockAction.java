@@ -3,6 +3,7 @@ package com.aiplayer.action.actions;
 import com.aiplayer.action.ActionResult;
 import com.aiplayer.action.Task;
 import com.aiplayer.entity.AiPlayerEntity;
+import com.aiplayer.recipe.MiningGoalResolver;
 import com.aiplayer.recipe.MiningResource;
 import com.aiplayer.recipe.SurvivalRecipeBook;
 import com.aiplayer.util.SurvivalUtils;
@@ -38,11 +39,18 @@ public class MineBlockAction extends BaseAction {
 
     @Override
     protected void onStart() {
-        String blockName = task.getStringParameter("block", "stone");
+        String blockName = miningTargetParameter();
+        if (blockName == null) {
+            result = ActionResult.failure("挖矿任务缺少目标：需要 block、target、blockType、item 或 source 参数");
+            return;
+        }
         targetQuantity = task.getIntParameter("quantity", 8);
         String delegatedItem = itemForMiningTarget(blockName);
         if (delegatedItem != null) {
-            targetBlock = MiningResource.findByMineTarget(blockName).map(this::blockFromProfile).orElse(Blocks.AIR);
+            targetBlock = MiningGoalResolver.resolve(blockName)
+                .map(MiningGoalResolver.Goal::profile)
+                .map(this::blockFromProfile)
+                .orElseGet(() -> MiningResource.findByMineTarget(blockName).map(this::blockFromProfile).orElse(Blocks.AIR));
             startDelegate(delegatedItem);
             return;
         }
@@ -281,14 +289,25 @@ public class MineBlockAction extends BaseAction {
     }
 
     private String itemForMiningTarget(String blockName) {
-        MiningResource.Profile miningProfile = MiningResource.findByMineTarget(blockName).orElse(null);
-        if (miningProfile != null) {
-            return miningProfile.item();
+        MiningGoalResolver.Goal goal = MiningGoalResolver.resolve(blockName).orElse(null);
+        if (goal != null) {
+            return goal.finalItem();
         }
         String normalizedItem = SurvivalRecipeBook.normalizeItemId(blockName);
         if (SurvivalRecipeBook.findLocal(normalizedItem).isPresent()
             || SurvivalRecipeBook.explicitBaseSource(normalizedItem).isPresent()) {
             return normalizedItem;
+        }
+        return null;
+    }
+
+    private String miningTargetParameter() {
+        String[] keys = {"block", "target", "blockType", "item", "source"};
+        for (String key : keys) {
+            String value = task.getStringParameter(key, null);
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
         }
         return null;
     }

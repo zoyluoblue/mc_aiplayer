@@ -51,7 +51,7 @@ public final class FailureRecoveryAdvisor {
     public FailureCategory classify(String failureMessage) {
         String text = failureMessage == null ? "" : failureMessage.toLowerCase(Locale.ROOT);
         if (containsAny(text, "材料不足", "缺少材料", "missing material")) return FailureCategory.MATERIAL_MISSING;
-        if (containsAny(text, "缺少镐", "缺少石镐", "缺少铁镐", "缺少工具", "tool")) return FailureCategory.TOOL_MISSING;
+        if (containsAny(text, "缺少镐", "缺少石镐", "缺少铁镐", "缺少工具", "tool_missing", "missing tool")) return FailureCategory.TOOL_MISSING;
         if (containsAny(text, "配方", "没有找到可用配方", "recipe")) return FailureCategory.RECIPE_MISSING;
         if (containsAny(text, "不可达", "无法到达", "unreachable")) return FailureCategory.TARGET_UNREACHABLE;
         if (containsAny(text, "分支矿道", "branch_blocked", "no_air_neighbor", "探矿超时", "下探", "矿层")) return FailureCategory.MINING_ROUTE_FAILED;

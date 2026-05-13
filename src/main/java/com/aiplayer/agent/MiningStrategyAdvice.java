@@ -24,12 +24,12 @@ public record MiningStrategyAdvice(
     }
 
     public static MiningStrategyAdvice unavailable(String reason) {
-        return new MiningStrategyAdvice(false, false, "disabled", "local_continue", "continue_current_step",
+        return new MiningStrategyAdvice(false, false, "disabled", "local_continue", "continue_current_route",
             "DeepSeek 挖矿策略不可用，本地继续执行", reason, false, false, "");
     }
 
     public static MiningStrategyAdvice invalid(String reason, String rawJson) {
-        return new MiningStrategyAdvice(true, false, "invalid", "local_continue", "continue_current_step",
+        return new MiningStrategyAdvice(true, false, "invalid", "local_continue", "continue_current_route",
             "DeepSeek 挖矿策略无效，本地继续执行", reason, false, false, rawJson);
     }
 
@@ -40,12 +40,16 @@ public record MiningStrategyAdvice(
     }
 
     public boolean switchToStairDescent() {
-        return accepted && containsAny(action, "switch_to_stair_descent", "stair_descent", "prospect_lower")
+        return accepted && containsAny(action, "switch_layer", "stair_descent", "prospect_lower")
             || accepted && containsAny(strategy, "stair", "downward", "lower", "下挖", "阶梯", "下探");
     }
 
+    public boolean returnToSafePoint() {
+        return accepted && containsAny(action, "return_to_safe_point");
+    }
+
     public boolean rebuildPlan() {
-        return accepted && (needsRebuild || containsAny(action, "rebuild_plan", "replan", "observe_and_replan"));
+        return accepted && (needsRebuild || containsAny(action, "rescan", "switch_layer", "replan", "observe_and_replan"));
     }
 
     private static boolean containsAny(String value, String... needles) {

@@ -14,6 +14,7 @@ import java.util.Set;
 public final class ResourceGatherSession {
     private static final double MAX_REUSE_DISTANCE_SQ = 64.0D * 64.0D;
     private static final int MAX_MINING_WAYPOINTS = 32;
+    private static final int MAX_SAFE_MINING_POINTS = 48;
 
     private final Map<String, ResourceState> states = new HashMap<>();
 
@@ -36,6 +37,7 @@ public final class ResourceGatherSession {
         private final Set<BlockPos> rejectedTargets = new HashSet<>();
         private final Map<BlockPos, RejectedTarget> rejectedTargetDetails = new HashMap<>();
         private final List<MiningWaypoint> miningWaypoints = new ArrayList<>();
+        private final List<SafeMiningPoint> safeMiningPoints = new ArrayList<>();
         private BlockPos anchor;
         private BlockPos lastStandPos;
         private BlockPos lastSuccessPos;
@@ -80,8 +82,12 @@ public final class ResourceGatherSession {
             return List.copyOf(miningWaypoints);
         }
 
+        public List<SafeMiningPoint> getSafeMiningPoints() {
+            return List.copyOf(safeMiningPoints);
+        }
+
         public boolean shouldReuseDownwardMode() {
-            return downwardMode && (successfulBreaks > 0 || !miningWaypoints.isEmpty());
+            return downwardMode && (successfulBreaks > 0 || !miningWaypoints.isEmpty() || !safeMiningPoints.isEmpty());
         }
 
         public Set<BlockPos> getRejectedTargets() {
@@ -146,6 +152,46 @@ public final class ResourceGatherSession {
             downwardMode = true;
         }
 
+        public void recordSafeMiningPoint(BlockPos standPos, String direction, String stage, int tick, String lastAction) {
+            if (standPos == null) {
+                return;
+            }
+            BlockPos safePos = standPos.immutable();
+            String safeDirection = direction == null || direction.isBlank() ? "unknown" : direction;
+            String safeStage = stage == null || stage.isBlank() ? "mining" : stage;
+            String safeAction = lastAction == null || lastAction.isBlank() ? "progress" : lastAction;
+            if (!safeMiningPoints.isEmpty()) {
+                SafeMiningPoint last = safeMiningPoints.get(safeMiningPoints.size() - 1);
+                if (last.pos().equals(safePos)) {
+                    safeMiningPoints.set(safeMiningPoints.size() - 1,
+                        new SafeMiningPoint(safePos, safePos.getY(), safeDirection, safeStage, Math.max(0, tick), safeAction));
+                    return;
+                }
+            }
+            safeMiningPoints.add(new SafeMiningPoint(safePos, safePos.getY(), safeDirection, safeStage, Math.max(0, tick), safeAction));
+            while (safeMiningPoints.size() > MAX_SAFE_MINING_POINTS) {
+                safeMiningPoints.remove(0);
+            }
+            recordProgress(safePos);
+            downwardMode = true;
+        }
+
+        public Optional<SafeMiningPoint> nearestSafeMiningPoint(BlockPos currentPos) {
+            return safeMiningPointsByDistance(currentPos).stream().findFirst();
+        }
+
+        public List<SafeMiningPoint> safeMiningPointsByDistance(BlockPos currentPos) {
+            if (safeMiningPoints.isEmpty()) {
+                return List.of();
+            }
+            BlockPos current = currentPos == null ? safeMiningPoints.get(safeMiningPoints.size() - 1).pos() : currentPos;
+            return safeMiningPoints.stream()
+                .sorted(Comparator
+                    .comparingDouble((SafeMiningPoint point) -> point.pos().distSqr(current))
+                    .thenComparing((SafeMiningPoint point) -> -point.tick()))
+                .toList();
+        }
+
         public Optional<BlockPos> nearestMiningWaypoint(BlockPos currentPos, int preferredY) {
             if (miningWaypoints.isEmpty()) {
                 return Optional.empty();
@@ -176,6 +222,7 @@ public final class ResourceGatherSession {
             rejectedTargets.clear();
             rejectedTargetDetails.clear();
             miningWaypoints.clear();
+            safeMiningPoints.clear();
             caveEntrance = null;
         }
 
@@ -191,5 +238,16 @@ public final class ResourceGatherSession {
     }
 
     public record MiningWaypoint(BlockPos pos, int y, String mode, int tick) {
+    }
+
+    public record SafeMiningPoint(BlockPos pos, int y, String direction, String stage, int tick, String lastAction) {
+        public String toLogText() {
+            return "pos=" + pos.toShortString()
+                + ",y=" + y
+                + ",direction=" + direction
+                + ",stage=" + stage
+                + ",tick=" + tick
+                + ",lastAction=" + lastAction;
+        }
     }
 }

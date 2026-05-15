@@ -41,8 +41,7 @@ logs/
 *.log.*
 crash-reports/
 
-# Local regression notes and test data
-docs/mining-regression.md
+# Local test data
 test-data/
 testdata/
 fixtures/

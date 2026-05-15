@@ -107,6 +107,36 @@ class OreProspectSelectionPolicyTest {
         assertTrue(nearEmbedded.betterThan(farExposed));
     }
 
+    @Test
+    void prefersNearEmbeddedGoldOverLongFarRoute() {
+        OreProspectTarget target = OreProspectTarget.forBlocks(
+            "raw_gold",
+            "minecraft:raw_gold",
+            "金矿",
+            "minecraft:iron_pickaxe",
+            "minecraft:overworld",
+            List.of("minecraft:gold_ore", "minecraft:deepslate_gold_ore"),
+            -64,
+            256
+        );
+        BlockPos center = new BlockPos(-44, 72, -18);
+
+        OreTargetScore farRoute = OreTargetScore.calculate(
+            target,
+            center,
+            new BlockPos(-109, 59, -7),
+            OreProspectClassification.APPROACHABLE_EXPOSED
+        );
+        OreTargetScore nearEmbedded = OreTargetScore.calculate(
+            target,
+            center,
+            new BlockPos(-34, 71, -14),
+            OreProspectClassification.EMBEDDED_HINT
+        );
+
+        assertTrue(nearEmbedded.betterThan(farRoute));
+    }
+
     private static OreProspectTarget ironTarget() {
         return OreProspectTarget.forBlocks(
             "raw_iron",

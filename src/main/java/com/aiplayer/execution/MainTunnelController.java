@@ -23,8 +23,26 @@ public final class MainTunnelController {
         this.lastSafeStand = start == null ? BlockPos.ZERO : start.immutable();
     }
 
+    private MainTunnelController(Snapshot snapshot) {
+        this.direction = directionFromName(snapshot == null ? null : snapshot.direction());
+        this.segmentLength = Math.max(1, snapshot == null ? 1 : snapshot.segmentLength());
+        this.maxTurns = Math.max(0, snapshot == null ? 0 : snapshot.maxTurns());
+        this.segmentBlocks = Math.max(0, snapshot == null ? 0 : snapshot.segmentBlocks());
+        this.totalBlocks = Math.max(0, snapshot == null ? 0 : snapshot.totalBlocks());
+        this.turns = Math.max(0, snapshot == null ? 0 : snapshot.turns());
+        this.actionsSinceRescan = Math.max(0, snapshot == null ? 0 : snapshot.actionsSinceRescan());
+        this.lastSafeStand = snapshot == null || snapshot.lastSafeStand() == null ? BlockPos.ZERO : snapshot.lastSafeStand().immutable();
+        this.lastReason = snapshot == null || snapshot.lastReason() == null || snapshot.lastReason().isBlank()
+            ? "restore"
+            : snapshot.lastReason();
+    }
+
     public static MainTunnelController start(Direction direction, int segmentLength, int maxTurns, BlockPos start) {
         return new MainTunnelController(direction, segmentLength, maxTurns, start);
+    }
+
+    public static MainTunnelController restore(Snapshot snapshot) {
+        return new MainTunnelController(snapshot);
     }
 
     public void recordAdvance(BlockPos stand) {
@@ -92,5 +110,47 @@ public final class MainTunnelController {
             + ", actionsSinceRescan=" + actionsSinceRescan
             + ", lastSafeStand=" + (lastSafeStand == null ? "none" : lastSafeStand.toShortString())
             + ", reason=" + lastReason;
+    }
+
+    public Snapshot snapshot() {
+        return new Snapshot(
+            direction.getName(),
+            segmentLength,
+            maxTurns,
+            segmentBlocks,
+            totalBlocks,
+            turns,
+            actionsSinceRescan,
+            lastSafeStand,
+            lastReason
+        );
+    }
+
+    private static Direction directionFromName(String name) {
+        if (name == null || name.isBlank()) {
+            return Direction.NORTH;
+        }
+        for (Direction direction : Direction.Plane.HORIZONTAL) {
+            if (direction.getName().equals(name)) {
+                return direction;
+            }
+        }
+        return Direction.NORTH;
+    }
+
+    public record Snapshot(
+        String direction,
+        int segmentLength,
+        int maxTurns,
+        int segmentBlocks,
+        int totalBlocks,
+        int turns,
+        int actionsSinceRescan,
+        BlockPos lastSafeStand,
+        String lastReason
+    ) {
+        public Snapshot {
+            lastSafeStand = lastSafeStand == null ? null : lastSafeStand.immutable();
+        }
     }
 }

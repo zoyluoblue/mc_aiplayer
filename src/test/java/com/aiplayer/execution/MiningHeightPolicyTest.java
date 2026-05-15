@@ -6,6 +6,7 @@ import net.minecraft.core.Direction;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MiningHeightPolicyTest {
@@ -161,5 +162,8 @@ class MiningHeightPolicyTest {
         assertEquals(-16, plan.targetY());
         assertTrue(plan.toLogText().contains("height={resource=raw_gold"));
         assertTrue(plan.toLogText().contains("reason=target_primary_midpoint"));
+        assertTrue(plan.toStatusText().contains("高度策略=当前高度不在主要矿层，正下探到主要矿层中线"));
+        assertTrue(plan.toStatusText().contains("方向=东"));
+        assertFalse(plan.toStatusText().contains("target_primary_midpoint"));
     }
 }

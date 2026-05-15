@@ -57,8 +57,14 @@ public class AiPlayerManager {
             AiPlayerMod.warn("player", "Owner '{}' already has an AI player", ownerUuid);
             return null;
         }
-        if (activeAiPlayers.containsKey(name)) {
+        AiPlayerEntity nameConflict = getAiPlayer(name);
+        if (nameConflict != null) {
             AiPlayerMod.warn("player", "AI player name '{}' already exists", name);
+            return null;
+        }
+        AiPlayerEntity inactiveNameRecord = activeAiPlayers.get(name);
+        if (inactiveNameRecord != null && !reclaimInactiveNameRecord(name, inactiveNameRecord, ownerUuid, "spawn_name_conflict")) {
+            AiPlayerMod.warn("player", "AI player name '{}' is reserved by an inactive record owned by {}", name, inactiveNameRecord.getOwnerUuid());
             return null;
         }
         int maxAiPlayers = AiPlayerConfig.MAX_ACTIVE_AI_PLAYERS.get();
@@ -118,7 +124,16 @@ public class AiPlayerManager {
     }
 
     public AiPlayerEntity getAiPlayerByOwner(UUID ownerUuid) {
+        if (ownerUuid == null) {
+            return null;
+        }
         AiPlayerEntity aiPlayer = aiPlayersByOwner.get(ownerUuid);
+        if (aiPlayer == null) {
+            aiPlayer = findIndexedAiPlayerByOwner(ownerUuid);
+            if (aiPlayer != null) {
+                aiPlayersByOwner.put(ownerUuid, aiPlayer);
+            }
+        }
         if (aiPlayer == null || isUsable(aiPlayer)) {
             return aiPlayer;
         }
@@ -130,33 +145,37 @@ public class AiPlayerManager {
         return recovered;
     }
 
-    public boolean removeAiPlayer(String name) {
-        AiPlayerEntity aiPlayer = activeAiPlayers.remove(name);
-        if (aiPlayer != null) {
-            UUID ownerUuid = aiPlayer.getOwnerUuid();
-            addManualRemoval(ownerUuid, aiPlayer.getUUID());
-            removeIndexes(aiPlayer);
-            discardLoadedAiPlayerCopies(aiPlayer, ownerUuid, name);
-            unforceAiPlayerChunk(aiPlayer);
-            aiPlayer.discard();
-            return true;
-        }
-        return false;
-    }
-
     public boolean removeAiPlayerByOwner(UUID ownerUuid) {
+        if (ownerUuid == null) {
+            return false;
+        }
         AiPlayerEntity aiPlayer = aiPlayersByOwner.remove(ownerUuid);
+        if (aiPlayer == null) {
+            aiPlayer = findIndexedAiPlayerByOwner(ownerUuid);
+        }
         if (aiPlayer != null) {
-            addManualRemoval(ownerUuid, aiPlayer.getUUID());
-            activeAiPlayers.remove(aiPlayer.getAiPlayerName());
-            aiPlayersByUUID.remove(aiPlayer.getUUID());
-            discardLoadedAiPlayerCopies(aiPlayer, ownerUuid, aiPlayer.getAiPlayerName());
-            unforceAiPlayerChunk(aiPlayer);
-            aiPlayer.discard();
+            removeAiPlayerRecord(aiPlayer, ownerUuid, aiPlayer.getAiPlayerName(), "remove_by_owner");
             return true;
         }
         addManualRemoval(ownerUuid, null);
         return false;
+    }
+
+    public boolean removeAiPlayerByNameForOwner(UUID ownerUuid, String name) {
+        if (name == null || name.isBlank()) {
+            return false;
+        }
+        AiPlayerEntity aiPlayer = activeAiPlayers.get(name);
+        if (aiPlayer == null) {
+            return false;
+        }
+        UUID actualOwner = aiPlayer.getOwnerUuid();
+        if (!AiPlayerOwnershipPolicy.canRemoveByName(actualOwner, ownerUuid)) {
+            AiPlayerMod.warn("player", "Owner '{}' attempted to remove AI player '{}' owned by '{}'", ownerUuid, name, actualOwner);
+            return false;
+        }
+        removeAiPlayerRecord(aiPlayer, actualOwner == null ? ownerUuid : actualOwner, name, "remove_by_name");
+        return true;
     }
 
     public void clearAllAiPlayers() {
@@ -203,6 +222,57 @@ public class AiPlayerManager {
         aiPlayersByOwner.entrySet().removeIf(entry -> entry.getValue() == aiPlayer);
     }
 
+    private AiPlayerEntity findIndexedAiPlayerByOwner(UUID ownerUuid) {
+        if (ownerUuid == null) {
+            return null;
+        }
+        for (AiPlayerEntity aiPlayer : activeAiPlayers.values()) {
+            if (isSameOwner(aiPlayer, ownerUuid)) {
+                return aiPlayer;
+            }
+        }
+        return null;
+    }
+
+    private boolean reclaimInactiveNameRecord(String name, AiPlayerEntity inactiveRecord, UUID requestedOwner, String reason) {
+        if (inactiveRecord == null || isUsable(inactiveRecord)) {
+            return false;
+        }
+        UUID recordOwner = inactiveRecord.getOwnerUuid();
+        if (!AiPlayerOwnershipPolicy.canReclaimInactiveName(recordOwner, requestedOwner)) {
+            return false;
+        }
+        removeAiPlayerRecord(inactiveRecord, recordOwner == null ? requestedOwner : recordOwner, name, reason);
+        AiPlayerMod.info("player", "Reclaimed inactive AI player name record: name={}, owner={}, reason={}",
+            name, recordOwner, reason);
+        return true;
+    }
+
+    private void removeAiPlayerRecord(AiPlayerEntity aiPlayer, UUID ownerUuid, String name, String reason) {
+        if (aiPlayer == null) {
+            return;
+        }
+        UUID actualOwner = aiPlayer.getOwnerUuid();
+        UUID tombstoneOwner = actualOwner;
+        UUID requesterOwner = ownerUuid;
+        addManualRemoval(tombstoneOwner, aiPlayer.getUUID());
+        activeAiPlayers.remove(name == null || name.isBlank() ? aiPlayer.getAiPlayerName() : name, aiPlayer);
+        activeAiPlayers.remove(aiPlayer.getAiPlayerName(), aiPlayer);
+        aiPlayersByUUID.remove(aiPlayer.getUUID());
+        if (tombstoneOwner != null) {
+            aiPlayersByOwner.remove(tombstoneOwner);
+        }
+        aiPlayersByOwner.entrySet().removeIf(entry -> entry.getValue() == aiPlayer);
+        discardLoadedAiPlayerCopies(aiPlayer, tombstoneOwner, requesterOwner, name == null || name.isBlank() ? aiPlayer.getAiPlayerName() : name);
+        unforceAiPlayerChunk(aiPlayer);
+        aiPlayer.discard();
+        AiPlayerMod.info("player", "Removed AI player record: name={}, uuid={}, owner={}, reason={}",
+            name == null || name.isBlank() ? aiPlayer.getAiPlayerName() : name,
+            aiPlayer.getUUID(),
+            tombstoneOwner,
+            reason);
+    }
+
     private void registerLoadedAiPlayers(ServerLevel level) {
         for (var entity : level.getAllEntities()) {
             if (!(entity instanceof AiPlayerEntity aiPlayer) || !isUsable(aiPlayer)) {
@@ -212,6 +282,16 @@ public class AiPlayerManager {
             if (isManuallyRemovedAiCopy(aiPlayer)) {
                 AiPlayerMod.info("player", "Discarding manually removed AI player copy: name={}, uuid={}, owner={}",
                     aiPlayer.getAiPlayerName(), aiPlayer.getUUID(), ownerUuid);
+                unforceAiPlayerChunk(aiPlayer);
+                aiPlayer.discard();
+                continue;
+            }
+            AiPlayerEntity existingByName = activeAiPlayers.get(aiPlayer.getAiPlayerName());
+            if (existingByName != null
+                && existingByName != aiPlayer
+                && !AiPlayerOwnershipPolicy.canReplaceNameIndex(existingByName.getOwnerUuid(), ownerUuid)) {
+                AiPlayerMod.warn("player", "Discarding loaded AI player copy because name index is owned: name={}, incomingUuid={}, incomingOwner={}, activeUuid={}, activeOwner={}",
+                    aiPlayer.getAiPlayerName(), aiPlayer.getUUID(), ownerUuid, existingByName.getUUID(), existingByName.getOwnerUuid());
                 unforceAiPlayerChunk(aiPlayer);
                 aiPlayer.discard();
                 continue;
@@ -235,7 +315,7 @@ public class AiPlayerManager {
 
     private void registerExistingAiPlayer(AiPlayerEntity aiPlayer, AiPlayerEntity previous) {
         if (previous != null) {
-            activeAiPlayers.remove(previous.getAiPlayerName());
+            activeAiPlayers.remove(previous.getAiPlayerName(), previous);
             aiPlayersByUUID.remove(previous.getUUID());
             unforceAiPlayerChunk(previous);
         }
@@ -265,6 +345,9 @@ public class AiPlayerManager {
         }
         AiPlayerEntity loaded = findLoadedAiPlayer(owner.serverLevel(), ownerUuid, name);
         if (loaded != null) {
+            if (loaded.getOwnerUuid() == null && ownerUuid != null) {
+                loaded.setOwnerUuid(ownerUuid);
+            }
             registerExistingAiPlayer(loaded, previous);
             return loaded;
         }
@@ -345,7 +428,7 @@ public class AiPlayerManager {
             for (var entity : serverLevel.getAllEntities()) {
                 if (entity instanceof AiPlayerEntity aiPlayer
                     && isUsable(aiPlayer)
-                    && (isSameOwner(aiPlayer, ownerUuid) || aiPlayer.getAiPlayerName().equals(name))) {
+                    && isRecoveryCandidate(aiPlayer, ownerUuid, name)) {
                     if (isManuallyRemovedAiCopy(aiPlayer)) {
                         AiPlayerMod.info("player", "Discarding tombstoned loaded AI player during recovery scan: name={}, uuid={}, owner={}",
                             aiPlayer.getAiPlayerName(), aiPlayer.getUUID(), aiPlayer.getOwnerUuid());
@@ -360,17 +443,33 @@ public class AiPlayerManager {
         return null;
     }
 
-    private void discardLoadedAiPlayerCopies(AiPlayerEntity reference, UUID ownerUuid, String name) {
+    private boolean isRecoveryCandidate(AiPlayerEntity aiPlayer, UUID ownerUuid, String name) {
+        if (isSameOwner(aiPlayer, ownerUuid)) {
+            return true;
+        }
+        return name != null
+            && aiPlayer.getAiPlayerName().equals(name)
+            && AiPlayerOwnershipPolicy.canReclaimInactiveName(aiPlayer.getOwnerUuid(), ownerUuid);
+    }
+
+    private void discardLoadedAiPlayerCopies(AiPlayerEntity reference, UUID ownerUuid, UUID requesterOwner, String name) {
         if (!(reference.level() instanceof ServerLevel level) || level.getServer() == null) {
             return;
         }
         for (ServerLevel serverLevel : level.getServer().getAllLevels()) {
             for (var entity : serverLevel.getAllEntities()) {
-                if (entity instanceof AiPlayerEntity aiPlayer
-                    && isUsable(aiPlayer)
-                    && (isSameOwner(aiPlayer, ownerUuid) || aiPlayer.getAiPlayerName().equals(name))) {
-                    activeAiPlayers.remove(aiPlayer.getAiPlayerName());
+                if (!(entity instanceof AiPlayerEntity aiPlayer) || !isUsable(aiPlayer)) {
+                    continue;
+                }
+                boolean sameReference = aiPlayer == reference;
+                boolean sameOwner = isSameOwner(aiPlayer, ownerUuid);
+                boolean removableNameCopy = name != null
+                    && aiPlayer.getAiPlayerName().equals(name)
+                    && AiPlayerOwnershipPolicy.canDiscardNamedCopy(ownerUuid, requesterOwner, aiPlayer.getOwnerUuid());
+                if (sameReference || sameOwner || removableNameCopy) {
+                    activeAiPlayers.remove(aiPlayer.getAiPlayerName(), aiPlayer);
                     aiPlayersByUUID.remove(aiPlayer.getUUID());
+                    aiPlayersByOwner.entrySet().removeIf(entry -> entry.getValue() == aiPlayer);
                     unforceAiPlayerChunk(aiPlayer);
                     aiPlayer.discard();
                 }

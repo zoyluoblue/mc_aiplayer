@@ -123,5 +123,12 @@ public final class MiningHeightPolicy {
                 + ", reason=" + reason
                 + ", currentInTargetRange=" + currentInTargetRange;
         }
+
+        public String statusText() {
+            return "目标Y=" + targetY
+                + "，矿层=" + minY + ".." + maxY
+                + "，原因=" + MiningStatusText.heightReason(reason)
+                + "，当前高度" + (currentInTargetRange ? "可用" : "需要调整");
+        }
     }
 }

@@ -84,5 +84,31 @@ public final class MiningToolGate {
                 + ", reason=" + reason
                 + ", nextMilestone=" + nextMilestone;
         }
+
+        public String toStatusText() {
+            return "需要工具=" + requiredTool
+                + "，当前工具=" + currentBestTool
+                + "，等级=" + currentTier + "/" + requiredTier
+                + "，耐久=" + durabilityText()
+                + "，状态=" + readableReason()
+                + "，下一步=" + nextMilestone;
+        }
+
+        private String durabilityText() {
+            if (durability == Integer.MAX_VALUE) {
+                return "无限";
+            }
+            return durability + "/" + minDurability;
+        }
+
+        private String readableReason() {
+            return switch (reason) {
+                case "ready" -> "就绪";
+                case "no_pickaxe_required" -> "无需镐";
+                case "missing_required_tool" -> "缺少所需等级工具";
+                case "low_tool_durability" -> "工具耐久不足";
+                default -> reason;
+            };
+        }
     }
 }

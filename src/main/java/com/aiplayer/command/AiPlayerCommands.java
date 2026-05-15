@@ -46,7 +46,9 @@ public class AiPlayerCommands {
                 .then(Commands.argument("name", StringArgumentType.string())
                     .executes(context -> spawnAi(context, StringArgumentType.getString(context, "name")))))
             .then(Commands.literal("remove")
-                .executes(AiPlayerCommands::removeAi))
+                .executes(AiPlayerCommands::removeAi)
+                .then(Commands.argument("name", StringArgumentType.string())
+                    .executes(AiPlayerCommands::removeAiByName)))
             .then(Commands.literal("list")
                 .executes(AiPlayerCommands::listAi))
             .then(Commands.literal("backpack")
@@ -129,6 +131,7 @@ public class AiPlayerCommands {
             /ai stop - 停止当前任务并让 AI 玩家回到你身边
             /ai recall - 立即召回 AI 玩家并停止所有任务
             /ai remove - 移除你的 AI 玩家
+            /ai remove <name> - 按名称清理你拥有的 AI 或无 owner 的旧占用记录
             /ai list - 查看你的 AI 玩家
             /ai backpack - 查看你的 AI 玩家背包
             /ai backpack take <item> [count] - 从 AI 背包取出物品
@@ -174,7 +177,8 @@ public class AiPlayerCommands {
             return 1;
         }
 
-        source.sendFailure(Component.literal("召唤失败：名称可能已被占用，或服务器已达到 AI 玩家数量上限。"));
+        source.sendFailure(Component.literal("召唤失败：名称可能已被占用，或服务器已达到 AI 玩家数量上限。"
+            + "如果 /ai list 看不到自己的 AI，可以先执行 /ai remove %s 清理旧占用记录。".formatted(name)));
         return 0;
     }
 
@@ -196,6 +200,24 @@ public class AiPlayerCommands {
         String name = aiPlayer.getAiPlayerName();
         manager.removeAiPlayerByOwner(player.getUUID());
         source.sendSuccess(() -> Component.literal("已移除 AI 玩家：%s。".formatted(name)), true);
+        return 1;
+    }
+
+    private static int removeAiByName(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        ServerPlayer player = getPlayer(source);
+        if (player == null) {
+            source.sendFailure(Component.literal("该命令必须由玩家执行。"));
+            return 0;
+        }
+
+        String name = StringArgumentType.getString(context, "name");
+        AiPlayerManager manager = AiPlayerMod.getAiPlayerManager();
+        if (!manager.removeAiPlayerByNameForOwner(player.getUUID(), name)) {
+            source.sendFailure(Component.literal("没有找到可由你移除的 AI 玩家或旧占用记录：%s。".formatted(name)));
+            return 0;
+        }
+        source.sendSuccess(() -> Component.literal("已移除 AI 玩家或旧占用记录：%s。".formatted(name)), true);
         return 1;
     }
 

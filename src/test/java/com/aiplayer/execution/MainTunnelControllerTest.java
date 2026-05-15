@@ -37,6 +37,22 @@ class MainTunnelControllerTest {
     }
 
     @Test
+    void thirtyActionsRequestRescanEvenBeforeLongSegmentCompletes() {
+        MainTunnelController controller = MainTunnelController.start(Direction.NORTH, 64, 1, BlockPos.ZERO);
+
+        for (int i = 1; i <= 29; i++) {
+            controller.recordAdvance(new BlockPos(0, 0, -i));
+        }
+        assertFalse(controller.shouldRescan());
+
+        controller.recordAdvance(new BlockPos(0, 0, -30));
+
+        assertTrue(controller.shouldRescan());
+        assertFalse(controller.segmentComplete());
+        assertTrue(controller.toLogText().contains("actionsSinceRescan=30"));
+    }
+
+    @Test
     void turnsClockwiseUntilLimit() {
         MainTunnelController controller = MainTunnelController.start(Direction.NORTH, 4, 1, BlockPos.ZERO);
 

@@ -68,18 +68,22 @@ class StairDescentControllerTest {
     }
 
     @Test
-    void clearancePhaseKeepsStairOrderAfterEachBreak() {
+    void clearancePhaseUsesUnifiedTwoHighPassageOrder() {
         assertEquals(
-            StairDescentController.ClearancePhase.CLEAR_ENTRY_HEAD,
+            StairDescentController.ClearancePhase.DIG_DOWN,
             StairDescentController.clearancePhase(false, false, false)
         );
         assertEquals(
-            StairDescentController.ClearancePhase.CLEAR_HORIZONTAL,
+            StairDescentController.ClearancePhase.DIG_DOWN,
             StairDescentController.clearancePhase(true, false, false)
         );
         assertEquals(
-            StairDescentController.ClearancePhase.DIG_DOWN,
-            StairDescentController.clearancePhase(true, true, false)
+            StairDescentController.ClearancePhase.CLEAR_HORIZONTAL,
+            StairDescentController.clearancePhase(false, false, true)
+        );
+        assertEquals(
+            StairDescentController.ClearancePhase.CLEAR_ENTRY_HEAD,
+            StairDescentController.clearancePhase(false, true, true)
         );
         assertEquals(
             StairDescentController.ClearancePhase.MOVE,

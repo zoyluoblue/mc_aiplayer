@@ -56,6 +56,8 @@ class MiningToolGateTest {
         assertFalse(result.enoughDurability());
         assertEquals("low_tool_durability", result.reason());
         assertEquals("replace_tool:minecraft:iron_pickaxe", result.nextMilestone());
+        assertTrue(result.toStatusText().contains("工具耐久不足"));
+        assertTrue(result.toStatusText().contains("耐久=4/12"));
     }
 
     @Test

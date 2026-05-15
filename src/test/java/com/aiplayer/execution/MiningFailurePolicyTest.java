@@ -43,4 +43,18 @@ class MiningFailurePolicyTest {
         assertEquals(1, decision.count());
         assertTrue(policy.summary().contains("move_stuck=1"));
     }
+
+    @Test
+    void countsRecoveryByTypeReasonAndTarget() {
+        MiningFailurePolicy policy = new MiningFailurePolicy();
+
+        MiningFailurePolicy.Decision firstTarget = policy.record(MiningFailureType.MOVE_STUCK, "movement_stuck", "10,64,10");
+        MiningFailurePolicy.Decision secondTarget = policy.record(MiningFailureType.MOVE_STUCK, "movement_stuck", "12,64,12");
+        MiningFailurePolicy.Decision firstTargetAgain = policy.record(MiningFailureType.MOVE_STUCK, "movement_stuck", "10,64,10");
+
+        assertEquals(1, firstTarget.count());
+        assertEquals(1, secondTarget.count());
+        assertEquals(2, firstTargetAgain.count());
+        assertTrue(policy.summary().contains("move_stuck|movement_stuck|10,64,10=2"));
+    }
 }

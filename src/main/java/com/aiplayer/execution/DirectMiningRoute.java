@@ -81,10 +81,63 @@ public record DirectMiningRoute(
         return verticalDelta < 0;
     }
 
+    public boolean withinNearField(int maxSteps) {
+        return maxSteps >= 0 && estimatedSteps <= maxSteps;
+    }
+
+    public String routeStage() {
+        if (targetStand == null || nextStand == null && targetAboveCurrentLayer()) {
+            return "REPROSPECT";
+        }
+        if (arrived()) {
+            return "EXPOSE_OR_MINE";
+        }
+        if (needsDescent()) {
+            return "DESCEND";
+        }
+        if (horizontalDistance > 0) {
+            return "TUNNEL";
+        }
+        return "APPROACH";
+    }
+
+    public String currentStepText() {
+        if (targetStand == null) {
+            return "missing_target_stand";
+        }
+        if (targetAboveCurrentLayer()) {
+            return "reprospect_target_above";
+        }
+        if (arrived()) {
+            return "expose_or_mine_ore";
+        }
+        if (nextStand == null) {
+            return "rebuild_route";
+        }
+        if (needsDescent()) {
+            return "clear_forward_and_down_to_" + nextStand.toShortString();
+        }
+        return "clear_forward_to_" + nextStand.toShortString();
+    }
+
+    public String statusText() {
+        return "路线阶段=" + MiningStatusText.routeStage(routeStage())
+            + "，当前矿点=" + (orePos == null ? "none" : orePos.toShortString())
+            + "，目标站位=" + (targetStand == null ? "none" : targetStand.toShortString())
+            + "，当前步=" + MiningStatusText.routeStep(currentStepText())
+            + "，下一方向=" + MiningStatusText.direction(nextDirection)
+            + "，下一站位=" + (nextStand == null ? "none" : nextStand.toShortString())
+            + "，剩余水平=" + horizontalDistance
+            + "，垂直差=" + verticalDelta
+            + "，预计步数=" + estimatedSteps;
+    }
+
     public String toLogText() {
         return "current=" + current.toShortString()
             + ", orePos=" + (orePos == null ? "none" : orePos.toShortString())
             + ", targetStand=" + (targetStand == null ? "none" : targetStand.toShortString())
+            + ", routeStage=" + routeStage()
+            + ", currentStep=" + currentStepText()
             + ", nextDirection=" + nextDirection.getName()
             + ", nextStand=" + (nextStand == null ? "none" : nextStand.toShortString())
             + ", horizontalDistance=" + horizontalDistance
@@ -103,13 +156,18 @@ public record DirectMiningRoute(
         if (isHorizontalOreNeighbor(orePos, routeTarget)) {
             candidates.add(routeTarget.immutable());
         }
+        if (isAboveOreNeighbor(orePos, routeTarget)) {
+            for (Direction direction : HORIZONTAL_DIRECTIONS) {
+                candidates.add(routeTarget.relative(direction).immutable());
+            }
+        }
         for (Direction direction : HORIZONTAL_DIRECTIONS) {
             candidates.add(orePos.relative(direction).immutable());
         }
         return candidates.stream()
             .distinct()
             .sorted(Comparator
-                .comparingInt((BlockPos pos) -> routeTarget != null && pos.equals(routeTarget) ? 0 : 1)
+                .comparingInt((BlockPos pos) -> routeTargetPriority(orePos, routeTarget, pos))
                 .thenComparingInt(pos -> Math.abs(pos.getY() - safeCurrent.getY()))
                 .thenComparingInt(pos -> Math.abs(pos.getX() - safeCurrent.getX()) + Math.abs(pos.getZ() - safeCurrent.getZ()))
                 .thenComparingInt(pos -> directionPenalty(orePos, pos, preferred))
@@ -187,12 +245,40 @@ public record DirectMiningRoute(
         return Direction.NORTH;
     }
 
-    private static boolean isHorizontalOreNeighbor(BlockPos orePos, BlockPos candidate) {
-        if (orePos == null || candidate == null || orePos.getY() != candidate.getY()) {
+    private static int routeTargetPriority(BlockPos orePos, BlockPos routeTarget, BlockPos candidate) {
+        if (routeTarget == null || candidate == null) {
+            return 1;
+        }
+        if (candidate.equals(routeTarget)) {
+            return 0;
+        }
+        if (isAboveOreNeighbor(orePos, routeTarget) && isHorizontalNeighbor(routeTarget, candidate)) {
+            return 0;
+        }
+        return 1;
+    }
+
+    private static boolean isHorizontalNeighbor(BlockPos origin, BlockPos candidate) {
+        if (origin == null || candidate == null || origin.getY() != candidate.getY()) {
             return false;
         }
-        int dx = Math.abs(candidate.getX() - orePos.getX());
-        int dz = Math.abs(candidate.getZ() - orePos.getZ());
+        int dx = Math.abs(candidate.getX() - origin.getX());
+        int dz = Math.abs(candidate.getZ() - origin.getZ());
         return dx + dz == 1;
+    }
+
+    private static boolean isHorizontalOreNeighbor(BlockPos orePos, BlockPos candidate) {
+        return isHorizontalNeighbor(orePos, candidate);
+    }
+
+    private static boolean isVerticalOreNeighbor(BlockPos orePos, BlockPos candidate) {
+        if (orePos == null || candidate == null || orePos.getX() != candidate.getX() || orePos.getZ() != candidate.getZ()) {
+            return false;
+        }
+        return Math.abs(candidate.getY() - orePos.getY()) == 1;
+    }
+
+    private static boolean isAboveOreNeighbor(BlockPos orePos, BlockPos candidate) {
+        return isVerticalOreNeighbor(orePos, candidate) && candidate.getY() > orePos.getY();
     }
 }

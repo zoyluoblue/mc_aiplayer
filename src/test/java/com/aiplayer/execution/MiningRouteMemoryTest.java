@@ -1,9 +1,12 @@
 package com.aiplayer.execution;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.nbt.CompoundTag;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MiningRouteMemoryTest {
@@ -79,5 +82,71 @@ class MiningRouteMemoryTest {
         assertEquals(48, state.getSafeMiningPoints().size());
         assertEquals(new BlockPos(12, 30, 0), state.getSafeMiningPoints().get(0).pos());
         assertEquals(new BlockPos(59, 30, 0), state.getSafeMiningPoints().get(47).pos());
+    }
+
+    @Test
+    void savesAndLoadsFishboneMiningSnapshot() {
+        ResourceGatherSession session = new ResourceGatherSession();
+        ResourceGatherSession.ResourceState state = session.miningState(new BlockPos(0, 64, 0));
+        MainTunnelController main = MainTunnelController.start(Direction.EAST, 32, 4, new BlockPos(0, 12, 0));
+        main.recordAdvance(new BlockPos(1, 12, 0));
+        BranchMiningPattern pattern = BranchMiningPattern.start(Direction.EAST, 3, 16);
+        pattern.recordMainAdvance();
+        pattern.recordMainAdvance();
+        pattern.recordMainAdvance();
+
+        state.recordFishboneSnapshot(new ResourceGatherSession.FishboneSnapshot(
+            main.snapshot(),
+            pattern.snapshot(),
+            "north",
+            new BlockPos(1, 12, 0),
+            5,
+            1,
+            2
+        ));
+
+        CompoundTag tag = new CompoundTag();
+        session.saveToNBT(tag);
+        ResourceGatherSession loaded = new ResourceGatherSession();
+        loaded.loadFromNBT(tag);
+
+        ResourceGatherSession.FishboneSnapshot snapshot = loaded.miningState(new BlockPos(0, 64, 0)).getFishboneSnapshot();
+        assertEquals("north", snapshot.branchDirection());
+        assertEquals(new BlockPos(1, 12, 0), snapshot.branchReturnTarget());
+        assertEquals(5, snapshot.branchTunnelBlocks());
+        assertEquals(1, snapshot.branchTunnelTurns());
+        assertEquals(2, snapshot.branchLayerShifts());
+        assertEquals(1, snapshot.mainTunnel().totalBlocks());
+        assertTrue(snapshot.branchPattern().branchPending());
+    }
+
+    @Test
+    void restoredFishboneSnapshotUsesLatestSafeStandAsAnchor() {
+        ResourceGatherSession session = new ResourceGatherSession();
+        ResourceGatherSession.ResourceState state = session.miningState(new BlockPos(0, 64, 0));
+        MainTunnelController main = MainTunnelController.start(Direction.EAST, 64, 4, new BlockPos(0, 12, 0));
+        for (int i = 1; i <= 80; i++) {
+            main.recordAdvance(new BlockPos(i, 12, 0));
+        }
+
+        state.recordFishboneSnapshot(new ResourceGatherSession.FishboneSnapshot(
+            main.snapshot(),
+            BranchMiningPattern.start(Direction.EAST, 3, 16).snapshot(),
+            "",
+            new BlockPos(1, 12, 0),
+            0,
+            0,
+            0
+        ));
+
+        CompoundTag tag = new CompoundTag();
+        session.saveToNBT(tag);
+        ResourceGatherSession loaded = new ResourceGatherSession();
+        loaded.loadFromNBT(tag);
+
+        ResourceGatherSession.FishboneSnapshot snapshot = loaded.miningState(new BlockPos(81, 12, 0)).getFishboneSnapshot();
+        assertNotNull(snapshot);
+        assertEquals(new BlockPos(80, 12, 0), snapshot.mainTunnel().lastSafeStand());
+        assertEquals(80, snapshot.mainTunnel().totalBlocks());
     }
 }

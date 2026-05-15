@@ -1,5 +1,6 @@
 package com.aiplayer.mining;
 
+import com.aiplayer.execution.MiningStatusText;
 import net.minecraft.core.BlockPos;
 
 public record StageMiningPlan(
@@ -69,7 +70,7 @@ public record StageMiningPlan(
         int dx = Math.abs(routeTarget.getX() - currentPos.getX());
         int dz = Math.abs(routeTarget.getZ() - currentPos.getZ());
         int dy = routeTarget.getY() - currentPos.getY();
-        return "阶段=" + stage
+        return "阶段=" + MiningStatusText.routeStage(stage.name())
             + "，目标=" + target.displayName()
             + "，矿点=" + orePos.toShortString()
             + "，暴露点=" + (exposureTarget == null ? "none" : exposureTarget.exposurePos() == null ? "none" : exposureTarget.exposurePos().toShortString())

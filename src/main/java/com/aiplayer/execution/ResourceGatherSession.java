@@ -1,6 +1,8 @@
 package com.aiplayer.execution;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -32,6 +34,41 @@ public final class ResourceGatherSession {
         return stateFor("mining", currentPos);
     }
 
+    public void saveToNBT(CompoundTag tag) {
+        if (tag == null) {
+            return;
+        }
+        ListTag stateTags = new ListTag();
+        for (Map.Entry<String, ResourceState> entry : states.entrySet()) {
+            ResourceState state = entry.getValue();
+            if (state.getFishboneSnapshot() == null) {
+                continue;
+            }
+            CompoundTag stateTag = new CompoundTag();
+            stateTag.putString("ResourceKey", entry.getKey());
+            stateTag.put("Fishbone", saveFishboneSnapshot(state.getFishboneSnapshot()));
+            stateTags.add(stateTag);
+        }
+        tag.put("States", stateTags);
+    }
+
+    public void loadFromNBT(CompoundTag tag) {
+        states.clear();
+        if (tag == null || !tag.contains("States")) {
+            return;
+        }
+        ListTag stateTags = tag.getList("States", 10);
+        for (int i = 0; i < stateTags.size(); i++) {
+            CompoundTag stateTag = stateTags.getCompound(i);
+            String key = stateTag.getString("ResourceKey");
+            if (key == null || key.isBlank() || !stateTag.contains("Fishbone")) {
+                continue;
+            }
+            ResourceState state = states.computeIfAbsent(key, ResourceState::new);
+            state.recordFishboneSnapshot(loadFishboneSnapshot(stateTag.getCompound("Fishbone")));
+        }
+    }
+
     public static final class ResourceState {
         private final String resourceKey;
         private final Set<BlockPos> rejectedTargets = new HashSet<>();
@@ -45,6 +82,7 @@ public final class ResourceGatherSession {
         private String lastResetReason = "new";
         private int successfulBreaks;
         private boolean downwardMode;
+        private FishboneSnapshot fishboneSnapshot;
 
         private ResourceState(String resourceKey) {
             this.resourceKey = resourceKey;
@@ -88,6 +126,10 @@ public final class ResourceGatherSession {
 
         public boolean shouldReuseDownwardMode() {
             return downwardMode && (successfulBreaks > 0 || !miningWaypoints.isEmpty() || !safeMiningPoints.isEmpty());
+        }
+
+        public FishboneSnapshot getFishboneSnapshot() {
+            return fishboneSnapshot;
         }
 
         public Set<BlockPos> getRejectedTargets() {
@@ -212,6 +254,16 @@ public final class ResourceGatherSession {
             recordMiningWaypoint(caveEntrance, "cave_entrance", tick);
         }
 
+        public void recordFishboneSnapshot(FishboneSnapshot snapshot) {
+            fishboneSnapshot = snapshot;
+            BlockPos snapshotAnchor = snapshotAnchor(snapshot);
+            if (snapshotAnchor != null) {
+                anchor = snapshotAnchor.immutable();
+                lastStandPos = anchor;
+            }
+            downwardMode = true;
+        }
+
         public void reset(BlockPos currentPos, String reason) {
             anchor = currentPos == null ? null : currentPos.immutable();
             lastStandPos = anchor;
@@ -224,6 +276,7 @@ public final class ResourceGatherSession {
             miningWaypoints.clear();
             safeMiningPoints.clear();
             caveEntrance = null;
+            fishboneSnapshot = null;
         }
 
         public boolean isValidFrom(BlockPos currentPos) {
@@ -231,6 +284,16 @@ public final class ResourceGatherSession {
                 return true;
             }
             return anchor.distSqr(currentPos) <= MAX_REUSE_DISTANCE_SQ;
+        }
+
+        private BlockPos snapshotAnchor(FishboneSnapshot snapshot) {
+            if (snapshot == null) {
+                return null;
+            }
+            if (snapshot.mainTunnel() != null && snapshot.mainTunnel().lastSafeStand() != null) {
+                return snapshot.mainTunnel().lastSafeStand();
+            }
+            return snapshot.branchReturnTarget();
         }
     }
 
@@ -249,5 +312,132 @@ public final class ResourceGatherSession {
                 + ",tick=" + tick
                 + ",lastAction=" + lastAction;
         }
+    }
+
+    public record FishboneSnapshot(
+        MainTunnelController.Snapshot mainTunnel,
+        BranchMiningPattern.Snapshot branchPattern,
+        String branchDirection,
+        BlockPos branchReturnTarget,
+        int branchTunnelBlocks,
+        int branchTunnelTurns,
+        int branchLayerShifts
+    ) {
+        public FishboneSnapshot {
+            branchReturnTarget = branchReturnTarget == null ? null : branchReturnTarget.immutable();
+            branchDirection = branchDirection == null ? "" : branchDirection;
+        }
+
+        public String toLogText() {
+            return "branchDirection=" + (branchDirection.isBlank() ? "none" : branchDirection)
+                + ", branchReturnTarget=" + (branchReturnTarget == null ? "none" : branchReturnTarget.toShortString())
+                + ", branchTunnelBlocks=" + branchTunnelBlocks
+                + ", branchTunnelTurns=" + branchTunnelTurns
+                + ", branchLayerShifts=" + branchLayerShifts
+                + ", mainTunnel={" + (mainTunnel == null ? "none" : mainTunnel.direction() + "/" + mainTunnel.segmentBlocks() + "/" + mainTunnel.totalBlocks()) + "}"
+                + ", branchPattern={" + (branchPattern == null ? "none" : branchPattern.mainDirection() + "/" + branchPattern.mainProgress() + "/" + branchPattern.branchIndex()) + "}";
+        }
+    }
+
+    private static CompoundTag saveFishboneSnapshot(FishboneSnapshot snapshot) {
+        CompoundTag tag = new CompoundTag();
+        if (snapshot == null) {
+            return tag;
+        }
+        tag.putString("BranchDirection", snapshot.branchDirection());
+        if (snapshot.branchReturnTarget() != null) {
+            tag.put("BranchReturnTarget", savePos(snapshot.branchReturnTarget()));
+        }
+        tag.putInt("BranchTunnelBlocks", snapshot.branchTunnelBlocks());
+        tag.putInt("BranchTunnelTurns", snapshot.branchTunnelTurns());
+        tag.putInt("BranchLayerShifts", snapshot.branchLayerShifts());
+        if (snapshot.mainTunnel() != null) {
+            tag.put("MainTunnel", saveMainTunnel(snapshot.mainTunnel()));
+        }
+        if (snapshot.branchPattern() != null) {
+            tag.put("BranchPattern", saveBranchPattern(snapshot.branchPattern()));
+        }
+        return tag;
+    }
+
+    private static FishboneSnapshot loadFishboneSnapshot(CompoundTag tag) {
+        if (tag == null) {
+            return null;
+        }
+        return new FishboneSnapshot(
+            tag.contains("MainTunnel") ? loadMainTunnel(tag.getCompound("MainTunnel")) : null,
+            tag.contains("BranchPattern") ? loadBranchPattern(tag.getCompound("BranchPattern")) : null,
+            tag.getString("BranchDirection"),
+            tag.contains("BranchReturnTarget") ? loadPos(tag.getCompound("BranchReturnTarget")) : null,
+            tag.getInt("BranchTunnelBlocks"),
+            tag.getInt("BranchTunnelTurns"),
+            tag.getInt("BranchLayerShifts")
+        );
+    }
+
+    private static CompoundTag saveMainTunnel(MainTunnelController.Snapshot snapshot) {
+        CompoundTag tag = new CompoundTag();
+        tag.putString("Direction", snapshot.direction());
+        tag.putInt("SegmentLength", snapshot.segmentLength());
+        tag.putInt("MaxTurns", snapshot.maxTurns());
+        tag.putInt("SegmentBlocks", snapshot.segmentBlocks());
+        tag.putInt("TotalBlocks", snapshot.totalBlocks());
+        tag.putInt("Turns", snapshot.turns());
+        tag.putInt("ActionsSinceRescan", snapshot.actionsSinceRescan());
+        if (snapshot.lastSafeStand() != null) {
+            tag.put("LastSafeStand", savePos(snapshot.lastSafeStand()));
+        }
+        tag.putString("LastReason", snapshot.lastReason());
+        return tag;
+    }
+
+    private static MainTunnelController.Snapshot loadMainTunnel(CompoundTag tag) {
+        return new MainTunnelController.Snapshot(
+            tag.getString("Direction"),
+            tag.getInt("SegmentLength"),
+            tag.getInt("MaxTurns"),
+            tag.getInt("SegmentBlocks"),
+            tag.getInt("TotalBlocks"),
+            tag.getInt("Turns"),
+            tag.getInt("ActionsSinceRescan"),
+            tag.contains("LastSafeStand") ? loadPos(tag.getCompound("LastSafeStand")) : null,
+            tag.getString("LastReason")
+        );
+    }
+
+    private static CompoundTag saveBranchPattern(BranchMiningPattern.Snapshot snapshot) {
+        CompoundTag tag = new CompoundTag();
+        tag.putString("MainDirection", snapshot.mainDirection());
+        tag.putInt("BranchInterval", snapshot.branchInterval());
+        tag.putInt("BranchLength", snapshot.branchLength());
+        tag.putInt("MainProgress", snapshot.mainProgress());
+        tag.putInt("BranchIndex", snapshot.branchIndex());
+        tag.putBoolean("BranchPending", snapshot.branchPending());
+        tag.putString("NextSide", snapshot.nextSide());
+        return tag;
+    }
+
+    private static BranchMiningPattern.Snapshot loadBranchPattern(CompoundTag tag) {
+        return new BranchMiningPattern.Snapshot(
+            tag.getString("MainDirection"),
+            tag.getInt("BranchInterval"),
+            tag.getInt("BranchLength"),
+            tag.getInt("MainProgress"),
+            tag.getInt("BranchIndex"),
+            tag.getBoolean("BranchPending"),
+            tag.getString("NextSide")
+        );
+    }
+
+    private static CompoundTag savePos(BlockPos pos) {
+        CompoundTag tag = new CompoundTag();
+        tag.putInt("X", pos.getX());
+        tag.putInt("Y", pos.getY());
+        tag.putInt("Z", pos.getZ());
+        return tag;
+    }
+
+    private static BlockPos loadPos(CompoundTag tag) {
+        return new BlockPos(tag.getInt("X"), tag.getInt("Y"), tag.getInt("Z"));
     }
 }

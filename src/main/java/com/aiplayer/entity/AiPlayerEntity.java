@@ -1,6 +1,8 @@
 package com.aiplayer.entity;
 
+import com.aiplayer.AiPlayerMod;
 import com.aiplayer.action.ActionExecutor;
+import com.aiplayer.action.ActionRecoveryState;
 import com.aiplayer.execution.ResourceGatherSession;
 import com.aiplayer.memory.AiPlayerMemory;
 import net.minecraft.nbt.CompoundTag;
@@ -78,6 +80,9 @@ public class AiPlayerEntity extends PathfinderMob {
     private UUID ownerUuid;
     private AiPlayerMemory memory;
     private ActionExecutor actionExecutor;
+    private ActionRecoveryState pendingActionRecoveryState = ActionRecoveryState.empty();
+    private String pendingActionRecoveryReason = "";
+    private String lastAppliedActionRecoveryFingerprint = "";
     private final ResourceGatherSession resourceGatherSession = new ResourceGatherSession();
     private final NonNullList<ItemStack> backpack = NonNullList.withSize(BACKPACK_SIZE, ItemStack.EMPTY);
     private int workSwingCooldown;
@@ -125,6 +130,7 @@ public class AiPlayerEntity extends PathfinderMob {
             if (workSwingCooldown > 0) {
                 workSwingCooldown--;
             }
+            applyPendingActionRecovery();
             actionExecutor.tick();
         }
     }
@@ -242,6 +248,10 @@ public class AiPlayerEntity extends PathfinderMob {
         CompoundTag memoryTag = new CompoundTag();
         this.memory.saveToNBT(memoryTag);
         tag.put("Memory", memoryTag);
+
+        CompoundTag resourceSessionTag = new CompoundTag();
+        this.resourceGatherSession.saveToNBT(resourceSessionTag);
+        tag.put("ResourceGatherSession", resourceSessionTag);
         
         ListTag inventoryTag = new ListTag();
         for (int slot = 0; slot < backpack.size(); slot++) {
@@ -258,6 +268,7 @@ public class AiPlayerEntity extends PathfinderMob {
             }
         }
         tag.put("AiPlayerInventory", inventoryTag);
+        this.actionExecutor.saveRecoveryState(tag);
     }
 
     @Override
@@ -272,6 +283,10 @@ public class AiPlayerEntity extends PathfinderMob {
         
         if (tag.contains("Memory")) {
             this.memory.loadFromNBT(tag.getCompound("Memory"));
+        }
+
+        if (tag.contains("ResourceGatherSession")) {
+            this.resourceGatherSession.loadFromNBT(tag.getCompound("ResourceGatherSession"));
         }
         
         clearBackpack();
@@ -292,6 +307,48 @@ public class AiPlayerEntity extends PathfinderMob {
             }
         }
         syncBackpackData();
+        queueActionRecoveryState(tag, "nbt_load");
+    }
+
+    public void queueActionRecoveryState(CompoundTag tag, String reason) {
+        if (tag == null || !tag.contains("ActionRecovery")) {
+            pendingActionRecoveryState = ActionRecoveryState.empty();
+            pendingActionRecoveryReason = "";
+            return;
+        }
+        ActionRecoveryState state = ActionRecoveryState.fromTag(tag.getCompound("ActionRecovery"));
+        if (state.emptyState()) {
+            pendingActionRecoveryState = ActionRecoveryState.empty();
+            pendingActionRecoveryReason = "";
+            return;
+        }
+        pendingActionRecoveryState = state;
+        pendingActionRecoveryReason = reason == null || reason.isBlank() ? "recovery" : reason;
+    }
+
+    public boolean applyPendingActionRecovery() {
+        if (pendingActionRecoveryState == null || pendingActionRecoveryState.emptyState()) {
+            return false;
+        }
+        String fingerprint = pendingActionRecoveryState.fingerprint();
+        String reason = pendingActionRecoveryReason == null || pendingActionRecoveryReason.isBlank()
+            ? "recovery"
+            : pendingActionRecoveryReason;
+        if (fingerprint.equals(lastAppliedActionRecoveryFingerprint)) {
+            pendingActionRecoveryState = ActionRecoveryState.empty();
+            pendingActionRecoveryReason = "";
+            return false;
+        }
+        boolean applied = actionExecutor.restoreRecoveryStateIfIdle(pendingActionRecoveryState, reason);
+        if (applied) {
+            lastAppliedActionRecoveryFingerprint = fingerprint;
+        } else {
+            AiPlayerMod.debug("action", "[taskId={}] AiPlayer '{}' discarded pending recovery after {} because current executor state is newer",
+                pendingActionRecoveryState.activeTaskId(), getAiPlayerName(), reason);
+        }
+        pendingActionRecoveryState = ActionRecoveryState.empty();
+        pendingActionRecoveryReason = "";
+        return applied;
     }
 
     public void sendChatMessage(String message) {
@@ -466,6 +523,16 @@ public class AiPlayerEntity extends PathfinderMob {
             }
         }
         return true;
+    }
+
+    public int emptyBackpackSlots() {
+        int empty = 0;
+        for (ItemStack stack : backpack) {
+            if (stack.isEmpty()) {
+                empty++;
+            }
+        }
+        return empty;
     }
 
     public int insertItemStackIntoSlot(int slot, ItemStack source) {

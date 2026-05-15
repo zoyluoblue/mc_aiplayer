@@ -14,6 +14,8 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
 
 import java.util.Map;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.TreeMap;
 import java.util.TreeSet;
 
@@ -32,6 +34,7 @@ public final class MiningRun {
     private final TreeMap<String, Integer> branchBlocksByDirection = new TreeMap<>();
     private final TreeSet<String> modes = new TreeSet<>();
     private final TreeSet<String> routePlans = new TreeSet<>();
+    private final Deque<String> recentRouteDecisions = new ArrayDeque<>();
 
     private int scans;
     private int totalCandidates;
@@ -184,6 +187,7 @@ public final class MiningRun {
             positionText(targetPos),
             safeReason,
             rejectedReasons);
+        recordRouteDecision(tick, "target_rejected", safeReason, targetPos);
     }
 
     public void recordDigAttempt(
@@ -248,6 +252,7 @@ public final class MiningRun {
             failedBreaks++;
             lastBreakFailureReason = reason == null || reason.isBlank() ? "break_failed" : reason;
             lastBreakFailureBlocker = blocker == null ? null : blocker.immutable();
+            recordRouteDecision(tick, "break_failed", lastBreakFailureReason, digTarget);
         }
         AiPlayerMod.info("mining", "[taskId={}] mining dig result: ai={}, target={}, tick={}, mode={}, pos={}, block={}, success={}, reason={}, blocker={}, exposedAirNeighbors={}, blocksDug={}, failedBreaks={}, cavesFound={}, backpack={}",
             taskId,
@@ -355,6 +360,7 @@ public final class MiningRun {
 
     public void recordProgressDecision(int tick, String decision, String reason) {
         progressDecisions++;
+        recordRouteDecision(tick, decision, reason, null);
         AiPlayerMod.info("mining", "[taskId={}] mining progress decision: ai={}, target={}, tick={}, score={}, decision={}, reason={}, decisions={}, scans={}, blocksDug={}, reachable={}, rejected={}, dangers={}",
             taskId,
             aiName,
@@ -389,6 +395,7 @@ public final class MiningRun {
             + "，危险=" + dangerReasons
             + "，最后破坏失败=" + lastBreakFailureReason
             + "，最后遮挡=" + positionText(lastBreakFailureBlocker)
+            + "，最近决策=" + recentRouteDecisions
             + "，评分=" + progressScore()
             + "，决策=" + progressDecisions
             + "，已挖方块=" + blocksDug
@@ -399,16 +406,28 @@ public final class MiningRun {
     public String statusFields() {
         return "目标=" + target
             + "，阶段=" + state.label()
-            + "，高度策略=" + heightStrategy
-            + "，路线=" + routeHint
+            + "，高度策略=" + MiningStatusText.code(heightStrategy)
+            + "，路线=" + MiningStatusText.routeHint(routeHint)
             + "，访问Y=" + visitedYText()
             + "，候选=" + totalCandidates
+            + "，可达=" + totalReachable
             + "，拒绝=" + totalRejected
             + "，最近挖掘=" + (lastDigTarget == null ? "none" : lastDigTarget.toShortString())
-            + "，最后破坏失败=" + lastBreakFailureReason
+            + "，最后破坏失败=" + MiningStatusText.code(lastBreakFailureReason)
             + "，最后遮挡=" + positionText(lastBreakFailureBlocker)
             + "，已挖方块=" + blocksDug
             + "，恢复决策=" + progressDecisions;
+    }
+
+    public void recordRouteDecision(int tick, String decision, String reason, BlockPos pos) {
+        String entry = "tick=" + Math.max(0, tick)
+            + ", decision=" + (decision == null || decision.isBlank() ? "unknown" : decision)
+            + ", reason=" + (reason == null || reason.isBlank() ? "unknown" : reason)
+            + ", pos=" + positionText(pos);
+        recentRouteDecisions.addLast(entry);
+        while (recentRouteDecisions.size() > 5) {
+            recentRouteDecisions.removeFirst();
+        }
     }
 
     public void finish(String status, String message, AiPlayerEntity aiPlayer) {

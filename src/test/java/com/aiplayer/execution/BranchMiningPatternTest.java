@@ -47,4 +47,21 @@ class BranchMiningPatternTest {
 
         assertEquals(32, pattern.branchLength());
     }
+
+    @Test
+    void restoresPendingBranchSnapshot() {
+        BranchMiningPattern pattern = BranchMiningPattern.start(Direction.NORTH, 3, 24);
+        pattern.recordMainAdvance();
+        pattern.recordMainAdvance();
+        pattern.recordMainAdvance();
+
+        BranchMiningPattern restored = BranchMiningPattern.restore(pattern.snapshot());
+
+        assertTrue(restored.isBranchTurn());
+        assertEquals(Direction.NORTH, restored.mainDirection());
+        assertEquals(Direction.WEST, restored.nextDirection());
+        assertEquals(0, restored.branchIndex());
+        restored.recordBranchComplete();
+        assertEquals(Direction.NORTH, restored.nextDirection());
+    }
 }

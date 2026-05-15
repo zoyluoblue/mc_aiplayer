@@ -12,6 +12,8 @@ import com.aiplayer.mining.OreProspectResult;
 import com.aiplayer.mining.OreProspectSelectionPolicy;
 import com.aiplayer.mining.OreProspectTarget;
 import com.aiplayer.mining.OreProspector;
+import com.aiplayer.mining.OreTargetScore;
+import com.aiplayer.mining.ProspectMiningLayerPolicy;
 import com.aiplayer.mining.StageMiningPlan;
 import com.aiplayer.recipe.MaterialRequirement;
 import com.aiplayer.recipe.MiningResource;
@@ -83,10 +85,12 @@ public final class StepExecutor {
     private static final int GENERIC_BLOCK_PROSPECT_SCAN_BLOCK_BUDGET = 60_000;
     private static final int GENERIC_BLOCK_PROSPECT_MAX_RETRIES = 3;
     private static final int GUIDED_TUNNEL_MAX_BLOCKS = 180;
+    private static final int NEAR_FIELD_DIRECT_MAX_STEPS = 10;
     private static final int PROSPECT_RESCAN_BLOCK_INTERVAL = 30;
     private static final int PROSPECT_RESCAN_DISTANCE_INTERVAL = 30;
     private static final int PROSPECT_RESCAN_ACTION_INTERVAL = 30;
     private static final int PROSPECT_ABOVE_LAYER_REPLAN_LIMIT = 3;
+    private static final int EMBEDDED_HINT_REBIND_STEP_MARGIN = 8;
     private static final int TREE_NEAR_SEARCH_RADIUS = 32;
     private static final int TREE_NEAR_VERTICAL_RADIUS = 12;
     private static final int TREE_EXTENDED_SEARCH_RADIUS = 96;
@@ -126,6 +130,7 @@ public final class StepExecutor {
     private final GoalChecker goalChecker = new GoalChecker();
     private final MiningFailurePolicy miningFailurePolicy = new MiningFailurePolicy();
     private final MiningCandidateCooldown miningCandidateCooldown = new MiningCandidateCooldown();
+    private final MiningAnimationState miningAnimationState = new MiningAnimationState();
     private final String taskId;
     private ExecutionStep activeStep;
     private ResourceGatherSession.ResourceState activeResourceState;
@@ -157,6 +162,7 @@ public final class StepExecutor {
     private MainTunnelController mainTunnelController;
     private BranchMiningPattern branchMiningPattern;
     private Direction branchDirection;
+    private BlockPos branchReturnTarget;
     private int branchTunnelBlocks;
     private int branchTunnelTurns;
     private int branchLayerShifts;
@@ -165,6 +171,9 @@ public final class StepExecutor {
     private int descentDetourTotalBlocks;
     private int descentDetourTurns;
     private boolean miningSupplyCheckDone;
+    private MiningInventoryCapacity.Report lastMiningCapacityFailure;
+    private MiningFailureClassifier.Classification lastMiningFailureClassification;
+    private MiningFailurePolicy.Decision lastMiningFailureDecision;
     private int nextDangerCheckTick;
     private int lastMiningProgressDecisionTick;
     private BlockPos lastEmbeddedMiningTarget;
@@ -188,6 +197,7 @@ public final class StepExecutor {
     private String pendingProspectRescanOldPlan;
     private String pendingProspectRescanOldScore;
     private BlockPos pendingProspectRescanOldOrePos;
+    private String pendingProspectBindingDecision;
     private boolean pendingProspectSoftRescan;
     private BlockPos lastGuidedProgressPos;
     private StairStepPhase stairStepPhase;
@@ -196,6 +206,10 @@ public final class StepExecutor {
     private BlockPos stairHorizontalTarget;
     private BlockPos stairVerticalTarget;
     private BlockPos stairStandTarget;
+    private StairStepPhase lastStairStepPhase;
+    private String lastStairStepFailureReason;
+    private BlockPos lastStairStepStand;
+    private Direction lastStairStepDirection;
     private BlockPos pendingSupportPlacement;
     private BlockPos pendingSupportStand;
     private BlockPos pendingSupportHorizontalTarget;
@@ -303,24 +317,49 @@ public final class StepExecutor {
 
     public String getStatusDetails() {
         List<String> details = new ArrayList<>();
+        if (isMiningRunStep(activeStep)) {
+            details.add("挖矿执行：" + compactStatusText(miningExecutionStatusText(), STATUS_DETAIL_SECTION_MAX_CHARS));
+            details.add("危险策略：" + compactStatusText(miningDangerPolicyText(), STATUS_DETAIL_SECTION_MAX_CHARS));
+            details.add("工具门禁：" + compactStatusText(miningToolStatusText(), STATUS_DETAIL_SECTION_MAX_CHARS));
+            details.add("背包容量：" + compactStatusText(miningInventoryStatusText(), STATUS_DETAIL_SECTION_MAX_CHARS));
+        }
         if (miningRun != null) {
             details.add("挖矿状态：" + compactStatusText(miningRun.statusFields(), STATUS_DETAIL_SECTION_MAX_CHARS));
-            details.add("挖矿摘要：" + compactStatusText(miningRun.summary(), 640));
         }
         if (miningRoutePlan != null) {
-            details.add("路线计划：" + compactStatusText(miningRoutePlan.toLogText(), STATUS_DETAIL_SECTION_MAX_CHARS));
+            details.add("路线计划：" + compactStatusText(miningRoutePlan.toStatusText(), STATUS_DETAIL_SECTION_MAX_CHARS));
+        }
+        if (stageMiningPlan != null) {
+            details.add("阶段计划：" + compactStatusText(stageMiningPlan.statusText(aiPlayer.blockPosition()), STATUS_DETAIL_SECTION_MAX_CHARS));
         }
         if (directMiningRoute != null) {
-            details.add("直达路线：" + compactStatusText(directMiningRoute.toLogText(), STATUS_DETAIL_SECTION_MAX_CHARS));
+            details.add("直达路线：" + compactStatusText(directMiningRoute.statusText(), STATUS_DETAIL_SECTION_MAX_CHARS));
         }
         if (stairDescentController != null) {
             details.add("阶梯下探：" + compactStatusText(stairDescentController.toLogText(), STATUS_DETAIL_SECTION_MAX_CHARS));
+        }
+        if (stairStepPhase != null) {
+            details.add("阶梯状态：" + stairStepPhase.statusText(stairStandTarget, stairStepDirection));
+        } else if (lastStairStepPhase != null) {
+            details.add("阶梯状态：" + StairStepPhase.RESCAN.statusText(lastStairStepStand, lastStairStepDirection)
+                + "，上一阶段=" + lastStairStepPhase.code()
+                + "，原因=" + (lastStairStepFailureReason == null ? "unknown" : lastStairStepFailureReason));
         }
         if (mainTunnelController != null) {
             details.add("主矿道：" + compactStatusText(mainTunnelController.toLogText(), STATUS_DETAIL_SECTION_MAX_CHARS));
         }
         if (branchMiningPattern != null) {
             details.add("鱼骨分支：" + compactStatusText(branchMiningPattern.toLogText(), STATUS_DETAIL_SECTION_MAX_CHARS));
+        }
+        if (branchReturnTarget != null) {
+            details.add("鱼骨返回点：" + branchReturnTarget.toShortString());
+        }
+        if (miningAnimationState.hasTarget()) {
+            details.add("挖掘动作：" + miningAnimationState.statusText());
+        }
+        if (lastMiningFailureClassification != null) {
+            details.add("最近失败分类：" + lastMiningFailureClassification.toLogText()
+                + (lastMiningFailureDecision == null ? "" : "，恢复=" + lastMiningFailureDecision.toLogText()));
         }
         if (pendingSupportPlacement != null) {
             details.add("待补支撑：" + pendingSupportPlacement.toShortString()
@@ -329,13 +368,14 @@ public final class StepExecutor {
         if (currentTunnelStep != null) {
             details.add("通道阶段：" + currentTunnelStep.displayName()
                 + "，目标=" + (currentTunnelStep.target() == null ? "none" : currentTunnelStep.target().toShortString())
-                + "，原因=" + currentTunnelStep.reason());
+                + "，原因=" + MiningStatusText.heightReason(currentTunnelStep.reason()));
         }
         if (activeMiningProfile != null && activeMiningProfile.prospectable()) {
             details.add("探矿冷却：" + miningCandidateCooldown.summary(ticks));
             details.add("探矿重扫计数：" + prospectRescanProgressText());
+            details.add("下次重扫：" + prospectRescanRemainingText());
             if (pendingProspectRescanReason != null) {
-                details.add("最近重扫：" + pendingProspectRescanReason);
+                details.add("最近重扫：" + MiningStatusText.heightReason(pendingProspectRescanReason));
             }
             if (lastProspectResult != null) {
                 details.add("探矿候选：候选=" + lastProspectResult.candidates()
@@ -350,6 +390,79 @@ public final class StepExecutor {
         return compactStatusText(String.join("\n", details), STATUS_DETAIL_MAX_CHARS);
     }
 
+    private String miningExecutionStatusText() {
+        String currentStep = activeStep == null ? "unknown" : activeStep.describe();
+        String orePos = stageMiningPlan == null || stageMiningPlan.orePos() == null ? "none" : stageMiningPlan.orePos().toShortString();
+        String routeStage = directMiningRoute != null
+            ? directMiningRoute.routeStage()
+            : stageMiningPlan == null ? "PREPARE" : stageMiningPlan.stage().name();
+        String stepText = currentTunnelStep != null
+            ? currentTunnelStep.displayName() + "@" + (currentTunnelStep.target() == null ? "none" : currentTunnelStep.target().toShortString())
+            : directMiningRoute == null ? "none" : MiningStatusText.routeStep(directMiningRoute.currentStepText());
+        return "当前step=" + currentStep
+            + "，当前矿点=" + orePos
+            + "，路线目标=" + directRouteTargetText()
+            + "，路线阶段=" + MiningStatusText.routeStage(routeStage)
+            + "，当前步=" + stepText
+            + "，预计步数=" + (directMiningRoute == null ? "unknown" : directMiningRoute.estimatedSteps())
+            + "，行动tick=" + ticks
+            + "，重扫行动计数=" + guidedActionsSinceProspect
+            + "，下次重扫=" + prospectRescanRemainingText();
+    }
+
+    private String directRouteTargetText() {
+        if (directMiningRoute != null) {
+            return directMiningRoute.targetStand() == null ? "none" : directMiningRoute.targetStand().toShortString();
+        }
+        if (stageMiningPlan != null && stageMiningPlan.routeTarget() != null) {
+            return stageMiningPlan.routeTarget().toShortString();
+        }
+        return "none";
+    }
+
+    private String miningDangerPolicyText() {
+        String recent = lastIgnoredMiningDangerPos == null
+            ? "none"
+            : lastIgnoredMiningDangerReason + "@" + lastIgnoredMiningDangerPos.toShortString() + " tick=" + lastIgnoredMiningDangerTick;
+        return "无敌模式：敌对生物、摔落、燃烧、岩浆等伤害不会终止路线；硬阻断仍检查工具、不可破坏方块、区块加载、世界边界、背包容量和目标变化；最近忽略=" + recent;
+    }
+
+    private String miningToolStatusText() {
+        if (activeMiningProfile == null || activeMiningProfile.requiredTool() == null) {
+            return "当前目标无需专用镐或尚未识别矿物工具要求";
+        }
+        return evaluateMiningToolGate(activeMiningProfile.requiredTool()).toStatusText();
+    }
+
+    private String miningInventoryStatusText() {
+        Item expectedItem = expectedMiningInventoryItem();
+        int expectedCount = activeStep == null ? 1 : remainingMiningCapacityCount(activeStep);
+        MiningInventoryCapacity.Report report = miningCapacityReport(expectedItem, expectedCount);
+        String status = report.toStatusText();
+        if (lastMiningCapacityFailure != null && !lastMiningCapacityFailure.enough()) {
+            status += "；最近失败=" + lastMiningCapacityFailure.toStatusText();
+        }
+        return status;
+    }
+
+    private Item expectedMiningInventoryItem() {
+        if (activeMiningProfile != null) {
+            return itemFromId(activeMiningProfile.item());
+        }
+        if (activeStep != null) {
+            return itemFromId(activeStep.getItem());
+        }
+        return Items.AIR;
+    }
+
+    private int remainingMiningCapacityCount(ExecutionStep step) {
+        if (step == null) {
+            return 1;
+        }
+        int currentCount = goalChecker.countItem(aiPlayer, step.getItem());
+        return MiningInventoryCapacity.remainingNeeded(startCount, step.getCount(), currentCount);
+    }
+
     private String compactStatusText(String text, int maxChars) {
         if (text == null || text.isBlank() || maxChars <= 0) {
             return "";
@@ -357,7 +470,7 @@ public final class StepExecutor {
         if (text.length() <= maxChars) {
             return text;
         }
-        return text.substring(0, Math.max(0, maxChars - 18)) + "...（已截断）";
+        return text.substring(0, Math.max(0, maxChars - 14)) + "...（更多细节见日志）";
     }
 
     private void startStep(ExecutionStep step) {
@@ -387,6 +500,7 @@ public final class StepExecutor {
         moveTicksWithoutProgress = 0;
         closestTargetDistanceSq = Double.MAX_VALUE;
         branchDirection = null;
+        branchReturnTarget = null;
         branchTunnelBlocks = 0;
         branchTunnelTurns = 0;
         branchLayerShifts = 0;
@@ -395,6 +509,10 @@ public final class StepExecutor {
         descentDetourTotalBlocks = 0;
         descentDetourTurns = 0;
         miningSupplyCheckDone = false;
+        lastMiningCapacityFailure = null;
+        lastMiningFailureClassification = null;
+        lastMiningFailureDecision = null;
+        miningAnimationState.clear();
         nextDangerCheckTick = 0;
         lastMiningProgressDecisionTick = 0;
         lastEmbeddedMiningTarget = null;
@@ -414,6 +532,7 @@ public final class StepExecutor {
         clearPendingProspectRescanLog();
         lastGuidedProgressPos = null;
         clearStairStepPlan();
+        clearLastStairStepFailure();
         clearPendingSupportPlacement();
         clearPendingOcclusionClearance();
         clearBreakFailureMemory();
@@ -487,8 +606,10 @@ public final class StepExecutor {
                 3,
                 miningRoutePlan.branchSegmentLength()
             );
+            restoreFishboneSnapshotIfPresent();
             descentDirection = stairDescentController.direction();
             miningRun.recordRoutePlan(miningRoutePlan);
+            recordFishboneSnapshot("start");
             recordSafeMiningPoint("route_start", "start");
             seedNearbyCaveEntrance(activeMiningProfile);
             reuseMiningWaypointIfUseful();
@@ -545,8 +666,7 @@ public final class StepExecutor {
             return validationResult;
         }
         resetMovement();
-        aiPlayer.lookAtWorkTarget(targetPos);
-        aiPlayer.swingWorkHand(InteractionHand.MAIN_HAND);
+        prepareMiningBreakAnimation(targetPos, aiPlayer.level().getBlockState(targetPos).getBlock(), "base_resource");
         breakTicks++;
         int breakDelay = SurvivalUtils.getBreakDelay(aiPlayer, aiPlayer.level().getBlockState(targetPos).getBlock());
         if (breakTicks < breakDelay) {
@@ -1194,8 +1314,10 @@ public final class StepExecutor {
         if (aiPlayer.getBestToolStackFor("pickaxe").isEmpty()) {
             return StepResult.failure("缺少镐，无法挖石头");
         }
-        if (!ensureMiningInventorySpace(itemFromId(step.getItem()), "采集石头")) {
-            return miningTerminalFailure("inventory_full", "AI 背包已满，无法继续采集石头，请先取出材料或给附近箱子留出存放流程");
+        Item expectedItem = itemFromId(step.getItem());
+        int remainingCount = MiningInventoryCapacity.remainingNeeded(startCount, step.getCount(), currentCount);
+        if (!ensureMiningInventorySpace(expectedItem, remainingCount, "采集石头")) {
+            return miningTerminalFailure("inventory_full", miningCapacityFailureText(expectedItem, remainingCount, "采集石头"));
         }
         StepResult occlusionClearance = tickPendingOcclusionClearance();
         if (occlusionClearance != null) {
@@ -1250,8 +1372,7 @@ public final class StepExecutor {
         setMiningState(MiningState.MINING, "mine_stone");
         Block targetBlock = aiPlayer.level().getBlockState(targetPos).getBlock();
         recordMiningDigAttempt(targetPos, targetBlock);
-        aiPlayer.lookAtWorkTarget(targetPos);
-        aiPlayer.swingWorkHand(InteractionHand.MAIN_HAND);
+        prepareMiningBreakAnimation(targetPos, targetBlock, "stone_visible");
         breakTicks++;
         if (breakTicks < 36) {
             return StepResult.running("正在挖石头");
@@ -1350,14 +1471,22 @@ public final class StepExecutor {
             return stopMiningTask("unsafe_descent_target:" + targetDanger,
                 "下挖目标存在环境风险：" + targetDanger + "，位置 " + digTarget.toShortString());
         }
+        if (!ensureMiningDropCapacity(block, "stone_descent:" + currentMiningDigMode())) {
+            breakTicks = 0;
+            descentMoveTarget = null;
+            descentMoveMode = null;
+            resetMovement();
+            return miningFailure("inventory_full_for_drop:stone_descent:" + currentMiningDigMode(),
+                miningDropCapacityFailureText(block, "阶梯下挖方块掉落") + "；阶段="
+                    + (stairStepPhase == null ? "unknown" : stairStepPhase)
+                    + "，挖掘点 " + digTarget.toShortString());
+        }
         recordMiningDigAttempt(digTarget, block);
-        SurvivalUtils.equipBestToolForBlock(aiPlayer, block);
         if (ticks % 40 == 0) {
             AiPlayerMod.debug("make_item", "AiPlayer '{}' downward stone search target={} block={} dug={} noProgressTicks={}",
                 aiPlayer.getAiPlayerName(), digTarget, block, downwardDigBlocks, ticksWithoutItemProgress);
         }
-        aiPlayer.lookAtWorkTarget(digTarget);
-        aiPlayer.swingWorkHand(InteractionHand.MAIN_HAND);
+        prepareMiningBreakAnimation(digTarget, block, "stone_descent");
         breakTicks++;
         if (breakTicks < SurvivalUtils.getBreakDelay(aiPlayer, block)) {
             return StepResult.running("正在向下挖找石头");
@@ -1412,11 +1541,11 @@ public final class StepExecutor {
     }
 
     private StepResult moveToCompletedStairStep() {
-        if (stairStepPhase == StairStepPhase.MOVE && stairStandTarget != null && canStandAt(stairStandTarget)) {
+        if (stairStepPhase == StairStepPhase.MOVE_TO_STEP && stairStandTarget != null && canStandAt(stairStandTarget)) {
             setDescentMoveTarget(stairStandTarget, isProspectingForOre() ? "prospect_stair_step_move" : "stone_stair_step_move");
             return StepResult.running("阶梯横挖和下挖已完成，正在移动到下一阶");
         }
-        if (stairStepPhase == StairStepPhase.MOVE && stairStandTarget != null && !canStandAt(stairStandTarget)) {
+        if (stairStepPhase == StairStepPhase.MOVE_TO_STEP && stairStandTarget != null && !canStandAt(stairStandTarget)) {
             rejectCurrentStairStep("stand_no_longer_valid");
             return StepResult.running("阶梯站位失效，正在换方向继续下挖");
         }
@@ -1796,8 +1925,7 @@ public final class StepExecutor {
             return trackMovement(step);
         }
         resetMovement();
-        aiPlayer.lookAtWorkTarget(targetPos);
-        aiPlayer.swingWorkHand(InteractionHand.MAIN_HAND);
+        prepareMiningBreakAnimation(targetPos, aiPlayer.level().getBlockState(targetPos).getBlock(), "base_resource");
         breakTicks++;
         if (breakTicks < genericBreakDelay(aiPlayer.level().getBlockState(targetPos).getBlock())) {
             return StepResult.running("正在采集 " + blockId);
@@ -1935,8 +2063,10 @@ public final class StepExecutor {
             }
         }
         prepareMiningSupplies(profile);
-        if (!ensureMiningInventorySpace(itemFromId(step.getItem()), "采集" + resourceName)) {
-            return miningTerminalFailure("inventory_full", "AI 背包已满，无法继续采集 " + resourceName + "，请先取出材料或在附近提供箱子");
+        Item expectedItem = itemFromId(step.getItem());
+        int remainingCount = MiningInventoryCapacity.remainingNeeded(startCount, step.getCount(), currentCount);
+        if (!ensureMiningInventorySpace(expectedItem, remainingCount, "采集" + resourceName)) {
+            return miningTerminalFailure("inventory_full", miningCapacityFailureText(expectedItem, remainingCount, "采集" + resourceName));
         }
         StepResult occlusionClearance = tickPendingOcclusionClearance();
         if (occlusionClearance != null) {
@@ -2007,14 +2137,13 @@ public final class StepExecutor {
         if (validationResult != null) {
             return validationResult;
         }
-        aiPlayer.lookAtWorkTarget(targetPos);
-        aiPlayer.swingWorkHand(InteractionHand.MAIN_HAND);
-        breakTicks++;
         Block targetBlock = aiPlayer.level().getBlockState(targetPos).getBlock();
         if (!ensureMiningDropCapacity(targetBlock, "visible_ore:" + resourceName)) {
-            return miningTerminalFailure("inventory_full_for_drop", "AI 背包无法完整容纳本次 " + resourceName
-                + " 掉落，请先取出材料或提供箱子");
+            return miningTerminalFailure("inventory_full_for_drop", miningDropCapacityFailureText(targetBlock, "挖取可见 " + resourceName + " 掉落"));
         }
+        recordMiningDigAttempt(targetPos, targetBlock);
+        prepareMiningBreakAnimation(targetPos, targetBlock, "visible_ore");
+        breakTicks++;
         if (breakTicks < SurvivalUtils.getBreakDelay(aiPlayer, targetBlock)) {
             return StepResult.running("正在挖 " + resourceName);
         }
@@ -2127,8 +2256,115 @@ public final class StepExecutor {
                 activeStep == null ? "unknown" : activeStep.describe(),
                 lastEmbeddedMiningTarget.toShortString(),
                 Math.round(scan.embeddedSelectionDistance));
+            if (scan.selectedInteractionTarget == null) {
+                maybeRebindProspectToEmbeddedHint(lastEmbeddedMiningTarget, resourceName, scan.embeddedSelectionDistance);
+            }
         }
         return Optional.ofNullable(scan.selectedInteractionTarget);
+    }
+
+    private boolean maybeRebindProspectToEmbeddedHint(BlockPos hint, String oreName, double hintDistanceSq) {
+        if (hint == null || activeMiningProfile == null || !activeMiningProfile.prospectable()) {
+            return false;
+        }
+        if (!miningBlocks(activeMiningProfile).contains(aiPlayer.level().getBlockState(hint).getBlock())) {
+            return false;
+        }
+        if (stageMiningPlan != null && hint.equals(stageMiningPlan.orePos())) {
+            return false;
+        }
+        OreProspectTarget prospectTarget = OreProspectTarget.fromProfile(
+            activeMiningProfile,
+            aiPlayer.level().getMinY(),
+            aiPlayer.level().getMinY() + aiPlayer.level().getHeight() - 1
+        );
+        OreProspectSelectionPolicy.Rejection policyRejection = OreProspectSelectionPolicy.rejectionFor(
+            prospectTarget,
+            aiPlayer.blockPosition(),
+            hint,
+            com.aiplayer.mining.OreProspectClassification.EMBEDDED_HINT
+        );
+        if (policyRejection.rejected()) {
+            cooldownProspectCandidate(hint, "embedded_hint_rejected:" + policyRejection.reason());
+            return false;
+        }
+        ExposureTarget exposureTarget = ExposureTarget.create(aiPlayer.level(), aiPlayer.blockPosition(), hint);
+        if (!exposureTarget.valid()) {
+            cooldownProspectCandidate(hint, "embedded_hint_no_exposure:" + exposureTarget.reason());
+            return false;
+        }
+        Direction preferred = descentDirection == null ? horizontalDirectionFromYaw() : descentDirection;
+        DirectMiningRoute candidateRoute = DirectMiningRoute.create(
+            aiPlayer.blockPosition(),
+            hint,
+            exposureTarget.routeTarget(),
+            preferred
+        );
+        int currentSteps = currentDirectRouteRemainingSteps();
+        if (stageMiningPlan != null
+            && currentSteps < Integer.MAX_VALUE
+            && candidateRoute.estimatedSteps() + EMBEDDED_HINT_REBIND_STEP_MARGIN >= currentSteps) {
+            return false;
+        }
+        OreTargetScore score = OreTargetScore.calculate(
+            prospectTarget,
+            aiPlayer.blockPosition(),
+            hint,
+            com.aiplayer.mining.OreProspectClassification.EMBEDDED_HINT
+        );
+        lastProspectResult = OreProspectResult.found(
+            prospectTarget,
+            hint,
+            false,
+            "可见扫描发现更近的隐藏矿点",
+            0,
+            0,
+            1,
+            0,
+            hintDistanceSq,
+            hint.getY() - aiPlayer.blockPosition().getY(),
+            com.aiplayer.mining.OreProspectClassification.EMBEDDED_HINT,
+            score,
+            Map.of(com.aiplayer.mining.OreProspectClassification.EMBEDDED_HINT.name(), 1),
+            Map.of()
+        );
+        targetPos = null;
+        descentMoveTarget = null;
+        descentMoveMode = null;
+        activeInteractionTarget = null;
+        breakTicks = 0;
+        clearStairStepPlan();
+        resetMovement();
+        stageMiningPlan = StageMiningPlan.create(prospectTarget, aiPlayer.blockPosition(), hint, exposureTarget, ticks);
+        clearAboveLayerRecovery();
+        guidedTunnelBlocks = 0;
+        resetGuidedProspectProgress();
+        directMiningRoute = candidateRoute;
+        logProspectRescanSelection(oreName, lastProspectResult);
+        logDirectMiningRoute("embedded_hint_rebind");
+        descentDirection = directMiningRoute.nextDirection();
+        if (miningRun != null) {
+            miningRun.recordStageMiningPlan(stageMiningPlan);
+        }
+        AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' rebinds prospect route to nearer embedded hint: ore={}, hint={}, candidateSteps={}, previousSteps={}, score={}",
+            taskId,
+            aiPlayer.getAiPlayerName(),
+            oreName,
+            hint.toShortString(),
+            candidateRoute.estimatedSteps(),
+            currentSteps == Integer.MAX_VALUE ? "unknown" : currentSteps,
+            score.toLogText());
+        return true;
+    }
+
+    private int currentDirectRouteRemainingSteps() {
+        if (directMiningRoute != null) {
+            return directMiningRoute.estimatedSteps();
+        }
+        if (stageMiningPlan == null || stageMiningPlan.routeTarget() == null) {
+            return Integer.MAX_VALUE;
+        }
+        return manhattanDistance(aiPlayer.blockPosition(), stageMiningPlan.routeTarget());
     }
 
     private boolean isMiningCandidate(BlockPos pos, Block block, List<Block> blocks) {
@@ -2204,9 +2440,28 @@ public final class StepExecutor {
             return StepResult.running(resourceName + " 所在区块未加载，正在重新寻找");
         }
         Block block = aiPlayer.level().getBlockState(target).getBlock();
-        if (!targetBlocks.contains(block) || !hasAirNeighbor(target)) {
+        if (!targetBlocks.contains(block)) {
             rejectInteractionTarget(interactionTarget, "target_changed:" + blockId(block));
             return StepResult.running(resourceName + " 目标已变化，正在重新寻找");
+        }
+        if (!hasAirNeighbor(target)) {
+            if ("prospect_target".equals(mode) && stageMiningPlan != null && target.equals(stageMiningPlan.orePos())) {
+                activeInteractionTarget = null;
+                breakTicks = 0;
+                stageMiningPlan = stageMiningPlan.withStage(StageMiningPlan.Stage.EXPOSE, aiPlayer.blockPosition());
+                if (miningRun != null) {
+                    miningRun.recordStageMiningPlan(stageMiningPlan);
+                    miningRun.recordRouteDecision(ticks, "target_not_exposed", "prospect_target:" + blockId(block), target);
+                }
+                AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' prospect target is still embedded: target={}, block={}, action=return_to_expose_stage",
+                    taskId,
+                    aiPlayer.getAiPlayerName(),
+                    target.toShortString(),
+                    blockId(block));
+                return StepResult.running(resourceName + " 仍被周围方块包住，先清理相邻暴露面");
+            }
+            rejectInteractionTarget(interactionTarget, "target_not_exposed:" + blockId(block));
+            return StepResult.running(resourceName + " 目标尚未暴露，正在重新寻找可挖面");
         }
         if (interactionTarget.hasStandPos() && !aiPlayer.blockPosition().equals(interactionTarget.standPos())) {
             rejectInteractionTarget(interactionTarget, "stand_not_reached");
@@ -2380,8 +2635,10 @@ public final class StepExecutor {
             return softRescanResult;
         }
         if (stageMiningPlan != null && !isCurrentProspectTargetValid()) {
-            rejectCurrentProspectAndRescan("prospect_target_invalid", oreName);
-            return StepResult.running("探矿目标已不存在或不再是可挖的 " + oreName + "，已重新探矿");
+            String invalidReason = currentProspectTargetInvalidReason();
+            rejectCurrentProspectAndRescan(invalidReason, oreName);
+            return StepResult.running("探矿目标已不存在或不再是可挖的 " + oreName
+                + "，原因 " + invalidReason + "，已重新探矿");
         }
         if (stageMiningPlan == null) {
             if (ticks < nextProspectScanTick) {
@@ -2478,11 +2735,14 @@ public final class StepExecutor {
         if (directMiningRoute == null) {
             return;
         }
-        if (!"prospect_selected".equals(reason) && ticks - lastDirectMiningRouteLogTick < 40) {
+        boolean forceLog = "prospect_selected".equals(reason)
+            || "embedded_hint_rebind".equals(reason)
+            || "soft_rescan_rebind".equals(reason);
+        if (!forceLog && ticks - lastDirectMiningRouteLogTick < 40) {
             return;
         }
         lastDirectMiningRouteLogTick = ticks;
-        AiPlayerMod.info("mining", "[taskId={}] direct_route: ai={}, reason={}, {}",
+        AiPlayerMod.info("mining", "[taskId={}] direct_route: ai={}, category=direct_route, reason={}, {}",
             taskId,
             aiPlayer.getAiPlayerName(),
             reason == null || reason.isBlank() ? "unknown" : reason,
@@ -2509,6 +2769,17 @@ public final class StepExecutor {
 
     private String prospectRescanProgressText() {
         return ProspectRescanCounter.statusText(
+            guidedBlocksSinceProspect,
+            guidedDistanceSinceProspect,
+            guidedActionsSinceProspect,
+            PROSPECT_RESCAN_BLOCK_INTERVAL,
+            PROSPECT_RESCAN_DISTANCE_INTERVAL,
+            PROSPECT_RESCAN_ACTION_INTERVAL
+        );
+    }
+
+    private String prospectRescanRemainingText() {
+        return ProspectRescanCounter.remainingStatusText(
             guidedBlocksSinceProspect,
             guidedDistanceSinceProspect,
             guidedActionsSinceProspect,
@@ -2592,6 +2863,7 @@ public final class StepExecutor {
         );
         if (policyRejection.rejected()) {
             cooldownProspectCandidate(rescanResult.orePos(), "soft_rescan_rejected:" + policyRejection.reason());
+            pendingProspectBindingDecision = "new_candidate_policy_rejected_keep_current_route";
             logProspectRescanSelection(oreName, rescanResult);
             resetGuidedProspectProgress();
             return StepResult.running("本轮重探候选不适合当前路线，继续当前矿点：" + policyRejection.reason());
@@ -2599,18 +2871,48 @@ public final class StepExecutor {
         ProspectRescanCounter.Binding binding = ProspectRescanCounter.binding(pendingProspectRescanOldOrePos, rescanResult.orePos());
         if (binding.keepCurrentRoute()) {
             lastProspectResult = rescanResult;
+            pendingProspectBindingDecision = binding.decision();
             logProspectRescanSelection(oreName, rescanResult);
             resetGuidedProspectProgress();
             return StepResult.running("重探仍选择当前矿点，保留当前路线继续推进：" + stageMiningPlan.statusText(aiPlayer.blockPosition()));
         }
         ExposureTarget exposureTarget = ExposureTarget.create(aiPlayer.level(), aiPlayer.blockPosition(), rescanResult.orePos());
         if (!exposureTarget.valid()) {
+            pendingProspectBindingDecision = ProspectRescanCounter.binding(
+                pendingProspectRescanOldOrePos,
+                rescanResult.orePos(),
+                stageMiningPlan.horizontalDistance(),
+                stageMiningPlan.verticalDelta(),
+                0,
+                0,
+                false
+            ).decision();
             cooldownProspectCandidate(rescanResult.orePos(), "soft_rescan_no_exposure:" + exposureTarget.reason());
             logProspectRescanSelection(oreName, rescanResult);
             resetGuidedProspectProgress();
             return StepResult.running("本轮重探的新矿点没有可用暴露路线，继续当前矿点：" + exposureTarget.reason());
         }
+        StageMiningPlan newPlan = StageMiningPlan.create(prospectTarget, aiPlayer.blockPosition(), rescanResult.orePos(), exposureTarget, ticks);
+        binding = ProspectRescanCounter.binding(
+            pendingProspectRescanOldOrePos,
+            rescanResult.orePos(),
+            stageMiningPlan.horizontalDistance(),
+            stageMiningPlan.verticalDelta(),
+            newPlan.horizontalDistance(),
+            newPlan.verticalDelta(),
+            exposureTarget.valid()
+        );
+        if (binding.keepCurrentRoute()) {
+            pendingProspectBindingDecision = binding.decision();
+            logProspectRescanSelection(oreName, rescanResult);
+            resetGuidedProspectProgress();
+            return StepResult.running("本轮重探的新矿点路线成本更高，保留当前路线继续推进："
+                + "binding=" + binding.decision()
+                + "，old=" + stageMiningPlan.statusText(aiPlayer.blockPosition())
+                + "，new=" + newPlan.statusText(aiPlayer.blockPosition()));
+        }
         lastProspectResult = rescanResult;
+        pendingProspectBindingDecision = binding.decision();
         targetPos = null;
         descentMoveTarget = null;
         descentMoveMode = null;
@@ -2618,7 +2920,7 @@ public final class StepExecutor {
         breakTicks = 0;
         clearStairStepPlan();
         resetMovement();
-        stageMiningPlan = StageMiningPlan.create(prospectTarget, aiPlayer.blockPosition(), rescanResult.orePos(), exposureTarget, ticks);
+        stageMiningPlan = newPlan;
         logProspectRescanSelection(oreName, rescanResult);
         clearAboveLayerRecovery();
         guidedTunnelBlocks = 0;
@@ -2634,6 +2936,7 @@ public final class StepExecutor {
 
     private void requestProspectRescan(String reason, String oreName) {
         rememberPendingProspectRescan(reason);
+        rememberStairStepRescan(reason);
         pendingProspectSoftRescan = false;
         AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' requests prospect rescan for {}: reason={}, blocksSince={}, distanceSince={}, actionsSince={}, pos={}, oldPlan={}, oldScore={}",
             taskId,
@@ -2677,6 +2980,7 @@ public final class StepExecutor {
             ? "none"
             : lastProspectResult.selectedScore().toLogText();
         pendingProspectRescanOldOrePos = stageMiningPlan == null ? null : stageMiningPlan.orePos().immutable();
+        pendingProspectBindingDecision = null;
     }
 
     private void logProspectRescanSelection(String oreName, OreProspectResult result) {
@@ -2684,11 +2988,14 @@ public final class StepExecutor {
             return;
         }
         BlockPos newOrePos = result == null ? null : result.orePos();
-        boolean switched = pendingProspectRescanOldOrePos != null
+        boolean candidateChanged = pendingProspectRescanOldOrePos != null
             && newOrePos != null
             && !pendingProspectRescanOldOrePos.equals(newOrePos);
-        String bindingDecision = ProspectRescanCounter.bindingDecision(pendingProspectRescanOldOrePos, newOrePos);
-        AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' prospect rescan selected for {}: reason={}, oldPlan={}, oldScore={}, newCandidate={}, newScore={}, switched={}, binding={}",
+        String bindingDecision = pendingProspectBindingDecision == null
+            ? ProspectRescanCounter.bindingDecision(pendingProspectRescanOldOrePos, newOrePos)
+            : pendingProspectBindingDecision;
+        boolean routeRebound = bindingDecision.contains("_rebind");
+        AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' prospect rescan selected for {}: reason={}, oldPlan={}, oldScore={}, newCandidate={}, newScore={}, candidateChanged={}, routeRebound={}, binding={}",
             taskId,
             aiPlayer.getAiPlayerName(),
             oreName,
@@ -2697,7 +3004,8 @@ public final class StepExecutor {
             pendingProspectRescanOldScore,
             newOrePos == null ? "none" : newOrePos.toShortString(),
             result == null || result.selectedScore() == null ? "none" : result.selectedScore().toLogText(),
-            switched,
+            candidateChanged,
+            routeRebound,
             bindingDecision);
         clearPendingProspectRescanLog();
     }
@@ -2707,6 +3015,7 @@ public final class StepExecutor {
         pendingProspectRescanOldPlan = null;
         pendingProspectRescanOldScore = null;
         pendingProspectRescanOldOrePos = null;
+        pendingProspectBindingDecision = null;
         pendingProspectSoftRescan = false;
     }
 
@@ -2900,6 +3209,31 @@ public final class StepExecutor {
         }
         Block block = aiPlayer.level().getBlockState(stageMiningPlan.orePos()).getBlock();
         return miningBlocks(activeMiningProfile).contains(block) && !rejectedTargets.contains(stageMiningPlan.orePos());
+    }
+
+    private String currentProspectTargetInvalidReason() {
+        if (stageMiningPlan == null) {
+            return "prospect_target_invalid:missing_plan";
+        }
+        BlockPos orePos = stageMiningPlan.orePos();
+        Block block = aiPlayer.level().getBlockState(orePos).getBlock();
+        if (block == Blocks.AIR) {
+            return "target_removed_before_mine";
+        }
+        if (rejectedTargets.contains(orePos)) {
+            return "prospect_target_rejected:" + rejectedTargetReason(orePos);
+        }
+        return "prospect_target_changed:" + blockId(block);
+    }
+
+    private boolean isNearFieldProspectTarget(BlockPos orePos) {
+        if (orePos == null) {
+            return false;
+        }
+        if (directMiningRoute != null && orePos.equals(directMiningRoute.orePos())) {
+            return directMiningRoute.withinNearField(NEAR_FIELD_DIRECT_MAX_STEPS);
+        }
+        return manhattanDistance(aiPlayer.blockPosition(), orePos) <= NEAR_FIELD_DIRECT_MAX_STEPS;
     }
 
     private StepResult executeStageMiningPlan(ExecutionStep step, String oreName) {
@@ -3099,7 +3433,21 @@ public final class StepExecutor {
                 routeTarget
             );
         }
-        if (canStandAt(nextStand) && !rejectedTargets.contains(nextStand)) {
+        boolean nextStandRejected = rejectedTargets.contains(nextStand);
+        if (nextStandRejected) {
+            rejectCurrentProspectAndRescan(
+                "guided_tunnel_rejected_stand:" + rejectedTargetReason(nextStand),
+                oreName
+            );
+            return StepResult.running("探矿路线站位已失败，正在重新探矿");
+        }
+        if (ProspectRouteAdvancePolicy.shouldMoveToNextStand(
+            directMiningRoute,
+            aiPlayer.blockPosition(),
+            nextStand,
+            canStandAt(nextStand),
+            nextStandRejected
+        )) {
             setDescentMoveTarget(nextStand, "prospect_guided_step");
             return StepResult.running("正在靠近探矿目标：" + stageMiningPlan.statusText(aiPlayer.blockPosition()));
         }
@@ -3135,11 +3483,12 @@ public final class StepExecutor {
             return stopMiningTask("unsafe_guided_tunnel:" + targetDanger,
                 "探矿路线存在环境风险：" + targetDanger + "，挖掘点 " + digTarget.toShortString());
         }
+        if (!ensureMiningDropCapacity(block, "prospect_guided_tunnel:" + oreName)) {
+            return miningFailure("inventory_full_for_drop", miningDropCapacityFailureText(block, "探矿通道方块掉落"));
+        }
 
         recordMiningDigAttempt(digTarget, block);
-        SurvivalUtils.equipBestToolForBlock(aiPlayer, block);
-        aiPlayer.lookAtWorkTarget(digTarget);
-        aiPlayer.swingWorkHand(InteractionHand.MAIN_HAND);
+        prepareMiningBreakAnimation(digTarget, block, "prospect_guided_tunnel");
         breakTicks++;
         if (breakTicks < SurvivalUtils.getBreakDelay(aiPlayer, block)) {
             return StepResult.running("正在按探矿指引挖向 " + oreName + "：" + stageMiningPlan.statusText(aiPlayer.blockPosition()));
@@ -3215,13 +3564,10 @@ public final class StepExecutor {
         }
         Block block = aiPlayer.level().getBlockState(orePos).getBlock();
         if (!ensureMiningDropCapacity(block, "prospect_target:" + oreName)) {
-            return miningFailure("inventory_full_for_drop", "AI 背包无法完整容纳本次 " + oreName
-                + " 掉落，请先取出材料或提供箱子");
+            return miningFailure("inventory_full_for_drop", miningDropCapacityFailureText(block, "挖取 " + oreName + " 掉落"));
         }
         recordMiningDigAttempt(orePos, block);
-        SurvivalUtils.equipBestToolForBlock(aiPlayer, block);
-        aiPlayer.lookAtWorkTarget(orePos);
-        aiPlayer.swingWorkHand(InteractionHand.MAIN_HAND);
+        prepareMiningBreakAnimation(orePos, block, "prospect_target");
         breakTicks++;
         if (breakTicks < SurvivalUtils.getBreakDelay(aiPlayer, block)) {
             return StepResult.running("正在挖探矿发现的 " + oreName);
@@ -3286,7 +3632,7 @@ public final class StepExecutor {
         if (tunnelStep.needsClearance()) {
             return TunnelTarget.clearance(tunnelStep);
         }
-        if (orePos != null && isOnProspectMiningLayer(orePos) && hasAirNeighbor(orePos) && aiPlayer.blockPosition().closerThan(orePos, 5.0D)) {
+        if (orePos != null && isOnProspectMiningLayer(orePos) && hasAirNeighbor(orePos) && isNearFieldProspectTarget(orePos)) {
             return TunnelTarget.mineOre(orePos);
         }
         return TunnelTarget.blocked(new MiningTunnelStepper.Plan(
@@ -3301,7 +3647,7 @@ public final class StepExecutor {
         if (orePos == null || hasAirNeighbor(orePos) || !isOnProspectMiningLayer(orePos)) {
             return null;
         }
-        if (!aiPlayer.blockPosition().closerThan(orePos, 5.0D)) {
+        if (!isNearFieldProspectTarget(orePos)) {
             return null;
         }
         List<BlockPos> candidates = new ArrayList<>();
@@ -3328,8 +3674,7 @@ public final class StepExecutor {
     }
 
     private boolean isOnProspectMiningLayer(BlockPos orePos) {
-        int currentY = aiPlayer.blockPosition().getY();
-        return orePos != null && currentY <= orePos.getY() && currentY >= orePos.getY() - 1;
+        return ProspectMiningLayerPolicy.canWorkOreFromCurrentLayer(aiPlayer.blockPosition().getY(), orePos);
     }
 
     private Direction directionToward(BlockPos target) {
@@ -3422,10 +3767,19 @@ public final class StepExecutor {
             : miningRoutePlan == null ? BRANCH_TUNNEL_SEGMENT_BLOCKS : miningRoutePlan.branchSegmentLength();
         if (sideBranchActive && branchTunnelBlocks >= segmentLength) {
             if (branchMiningPattern != null) {
-                branchMiningPattern.recordBranchComplete();
-                branchDirection = null;
-                branchTunnelBlocks = 0;
-                return StepResult.running("鱼骨支矿道段落完成，正在回到主方向继续寻找 " + oreName);
+                if (branchReturnTarget != null && !aiPlayer.blockPosition().equals(branchReturnTarget)) {
+                    if (descentMoveTarget == null || !descentMoveTarget.equals(branchReturnTarget)) {
+                        setDescentMoveTarget(branchReturnTarget, "branch_return_move");
+                    }
+                } else {
+                    branchMiningPattern.recordBranchComplete();
+                    branchDirection = null;
+                    branchReturnTarget = null;
+                    branchTunnelBlocks = 0;
+                    recordFishboneSnapshot("branch_complete");
+                    requestProspectRescan("fishbone_branch_complete", oreName);
+                    return StepResult.running("鱼骨支矿道段落完成，正在重新探矿后回到主方向继续寻找 " + oreName);
+                }
             }
         }
         if (!sideBranchActive && mainTunnelController != null && mainTunnelController.shouldRescan()) {
@@ -3482,10 +3836,13 @@ public final class StepExecutor {
             return stopMiningTask("unsafe_branch_tunnel:" + targetDanger,
                 "分支矿道前方存在环境风险：" + targetDanger + "，挖掘点 " + digTarget.toShortString());
         }
+        if (!ensureMiningDropCapacity(block, "branch_tunnel:" + oreName)) {
+            return miningFailure("inventory_full_for_drop:branch_tunnel",
+                miningDropCapacityFailureText(block, "鱼骨矿道方块掉落") + "；挖掘点 "
+                    + digTarget.toShortString());
+        }
         recordMiningDigAttempt(digTarget, block);
-        SurvivalUtils.equipBestToolForBlock(aiPlayer, block);
-        aiPlayer.lookAtWorkTarget(digTarget);
-        aiPlayer.swingWorkHand(InteractionHand.MAIN_HAND);
+        prepareMiningBreakAnimation(digTarget, block, "branch_tunnel");
         breakTicks++;
         if (breakTicks < SurvivalUtils.getBreakDelay(aiPlayer, block)) {
             String phaseText = tunnelTarget.step().displayName();
@@ -3566,6 +3923,7 @@ public final class StepExecutor {
             miningRun.recordRoutePlan(miningRoutePlan);
         }
         branchDirection = null;
+        branchReturnTarget = null;
         branchTunnelBlocks = 0;
         branchTunnelTurns = 0;
         descentMoveTarget = null;
@@ -3574,6 +3932,7 @@ public final class StepExecutor {
         downwardStoneMode = true;
         resetMovement();
         markMiningMode("branch_layer_shift");
+        recordFishboneSnapshot("branch_layer_shift");
         AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' shifts branch mining layer: reason={}, targetY={}, shift={}/{}",
             taskId,
             aiPlayer.getAiPlayerName(),
@@ -3690,9 +4049,11 @@ public final class StepExecutor {
             branchDirection = branchDirection == null ? horizontalDirectionFromYaw().getClockWise() : branchDirection.getClockWise();
         }
         branchTunnelBlocks = 0;
+        branchReturnTarget = null;
         branchTunnelTurns++;
         resetMovement();
         markMiningMode("branch_turn");
+        recordFishboneSnapshot("branch_turn");
         AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' rotates branch tunnel: reason={}, nextDirection={}, turns={}/{}",
             taskId,
             aiPlayer.getAiPlayerName(),
@@ -4190,7 +4551,8 @@ public final class StepExecutor {
                         MiningFailureType.STAND_INVALID,
                         "passage_blocked:" + mode,
                         "挖矿通道无法形成两格高空间，目标站位 " + moveTarget.toShortString() + "，阶段 "
-                            + tunnelStep.displayName() + "，原因 " + tunnelStep.reason()
+                            + tunnelStep.displayName() + "，原因 " + tunnelStep.reason(),
+                        moveTarget.toShortString()
                     );
                 }
                 rejectTarget(moveTarget, tunnelStep.reason());
@@ -4219,7 +4581,8 @@ public final class StepExecutor {
                 return recoverableMiningFailure(
                     MiningFailureType.STAND_INVALID,
                     "stand_no_longer_valid",
-                    "挖矿站位已经不可站立，目标站位 " + moveTarget.toShortString()
+                    "挖矿站位已经不可站立，目标站位 " + moveTarget.toShortString(),
+                    moveTarget.toShortString()
                 );
             }
             rejectTarget(moveTarget, "stand_no_longer_valid");
@@ -4272,7 +4635,8 @@ public final class StepExecutor {
                 return recoverableMiningFailure(
                     MiningFailureType.MOVE_STUCK,
                     "descent_move_stuck:" + mode,
-                    "移动到挖矿站位失败，站位 " + moveTarget.toShortString() + "，模式 " + mode
+                    "移动到挖矿站位失败，站位 " + moveTarget.toShortString() + "，模式 " + mode,
+                    moveTarget.toShortString()
                 );
             }
             rejectTarget(moveTarget, "movement_stuck");
@@ -4320,9 +4684,10 @@ public final class StepExecutor {
         if (!"branch_tunnel_move".equals(mode) && !"branch_tunnel".equals(mode)) {
             return;
         }
-        boolean mainDirectionMove = miningRoutePlan == null
+        Direction mainDirection = currentMainTunnelDirection();
+        boolean mainDirectionMove = mainDirection == null
             || branchDirection == null
-            || branchDirection == miningRoutePlan.mainDirection();
+            || branchDirection == mainDirection;
         Direction progressDirection = branchDirection;
         if (mainDirectionMove) {
             branchTunnelBlocks = mainTunnelController == null ? branchTunnelBlocks + 1 : mainTunnelController.segmentBlocks() + 1;
@@ -4336,7 +4701,9 @@ public final class StepExecutor {
             branchMiningPattern.recordMainAdvance();
             if (branchMiningPattern.isBranchTurn()) {
                 branchDirection = branchMiningPattern.nextDirection();
+                branchReturnTarget = moveTarget == null ? aiPlayer.blockPosition().immutable() : moveTarget.immutable();
                 branchTunnelBlocks = 0;
+                recordFishboneSnapshot("branch_start");
                 AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' switches from main tunnel to fishbone branch: direction={}, pattern={}",
                     taskId,
                     aiPlayer.getAiPlayerName(),
@@ -4348,14 +4715,85 @@ public final class StepExecutor {
             miningRun.recordBranchProgress(progressDirection, moveTarget == null ? aiPlayer.blockPosition().getY() : moveTarget.getY(),
                 branchTunnelBlocks, "move_reached");
         }
+        recordFishboneSnapshot("branch_move_reached");
+    }
+
+    private void restoreFishboneSnapshotIfPresent() {
+        ResourceGatherSession.FishboneSnapshot snapshot = sharedMiningState == null ? null : sharedMiningState.getFishboneSnapshot();
+        if (snapshot == null) {
+            return;
+        }
+        if (snapshot.mainTunnel() != null) {
+            mainTunnelController = MainTunnelController.restore(snapshot.mainTunnel());
+        }
+        if (snapshot.branchPattern() != null) {
+            branchMiningPattern = BranchMiningPattern.restore(snapshot.branchPattern());
+        }
+        branchDirection = directionFromName(snapshot.branchDirection()).orElse(null);
+        branchReturnTarget = snapshot.branchReturnTarget();
+        branchTunnelBlocks = Math.max(0, snapshot.branchTunnelBlocks());
+        branchTunnelTurns = Math.max(0, snapshot.branchTunnelTurns());
+        branchLayerShifts = Math.max(0, snapshot.branchLayerShifts());
+        Direction restoredMainDirection = currentMainTunnelDirection();
+        if (restoredMainDirection != null && miningRoutePlan != null && miningRoutePlan.mainDirection() != restoredMainDirection) {
+            miningRoutePlan = miningRoutePlan.withMainDirection(restoredMainDirection, "fishbone_restore");
+        }
+        AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' restored fishbone snapshot: {}",
+            taskId,
+            aiPlayer.getAiPlayerName(),
+            snapshot.toLogText());
+    }
+
+    private void recordFishboneSnapshot(String reason) {
+        ResourceGatherSession.ResourceState state = sharedMiningState != null ? sharedMiningState : activeResourceState;
+        if (state == null || mainTunnelController == null || branchMiningPattern == null) {
+            return;
+        }
+        ResourceGatherSession.FishboneSnapshot snapshot = new ResourceGatherSession.FishboneSnapshot(
+            mainTunnelController.snapshot(),
+            branchMiningPattern.snapshot(),
+            branchDirection == null ? "" : branchDirection.getName(),
+            branchReturnTarget,
+            branchTunnelBlocks,
+            branchTunnelTurns,
+            branchLayerShifts
+        );
+        state.recordFishboneSnapshot(snapshot);
+        AiPlayerMod.debug("mining", "[taskId={}] AiPlayer '{}' records fishbone snapshot: reason={}, {}",
+            taskId,
+            aiPlayer.getAiPlayerName(),
+            reason == null || reason.isBlank() ? "unknown" : reason,
+            snapshot.toLogText());
+    }
+
+    private Optional<Direction> directionFromName(String name) {
+        if (name == null || name.isBlank()) {
+            return Optional.empty();
+        }
+        for (Direction direction : Direction.Plane.HORIZONTAL) {
+            if (direction.getName().equals(name)) {
+                return Optional.of(direction);
+            }
+        }
+        return Optional.empty();
+    }
+
+    private Direction currentMainTunnelDirection() {
+        if (mainTunnelController != null) {
+            return mainTunnelController.direction();
+        }
+        if (branchMiningPattern != null) {
+            return branchMiningPattern.mainDirection();
+        }
+        return miningRoutePlan == null ? null : miningRoutePlan.mainDirection();
     }
 
     private boolean isSideBranchTunnelActive() {
         return branchMiningPattern != null
             && branchMiningPattern.isBranchTurn()
-            && miningRoutePlan != null
             && branchDirection != null
-            && branchDirection != miningRoutePlan.mainDirection();
+            && currentMainTunnelDirection() != null
+            && branchDirection != currentMainTunnelDirection();
     }
 
     private StepResult tickAdjacentMiningMoveTarget(
@@ -4404,7 +4842,8 @@ public final class StepExecutor {
                 return recoverableMiningFailure(
                     MiningFailureType.MOVE_STUCK,
                     "adjacent_mining_step_stuck:" + mode,
-                    "相邻矿道站位无法进入，站位 " + moveTarget.toShortString() + "，模式 " + mode
+                    "相邻矿道站位无法进入，站位 " + moveTarget.toShortString() + "，模式 " + mode,
+                    moveTarget.toShortString()
                 );
             }
             rejectTarget(moveTarget, "adjacent_mining_step_stuck");
@@ -4647,14 +5086,24 @@ public final class StepExecutor {
                 return recoverableMiningFailure(
                     MiningFailureType.UNSAFE_TARGET,
                     "unsafe_route_clearance:" + targetDanger,
-                    "挖矿通道存在环境风险：" + targetDanger + "，挖掘点 " + digTarget.toShortString()
+                    "挖矿通道存在环境风险：" + targetDanger + "，挖掘点 " + digTarget.toShortString(),
+                    digTarget.toShortString()
                 );
             }
             return stopMiningTask("unsafe_route_clearance:" + targetDanger,
                 "挖矿通道存在环境风险：" + targetDanger + "，挖掘点 " + digTarget.toShortString());
         }
+        if (!ensureMiningDropCapacity(block, "route_clearance:" + mode)) {
+            breakTicks = 0;
+            descentMoveTarget = null;
+            descentMoveMode = null;
+            resetMovement();
+            return miningFailure("inventory_full_for_drop:route_clearance:" + mode,
+                miningDropCapacityFailureText(block, "挖矿通道方块掉落") + "；通道阶段="
+                    + (currentTunnelStep == null ? mode : currentTunnelStep.displayName())
+                    + "，挖掘点 " + digTarget.toShortString());
+        }
         recordMiningDigAttempt(digTarget, block);
-        SurvivalUtils.equipBestToolForBlock(aiPlayer, block);
         if (ticks % 40 == 0) {
             AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' clears mining passage: mode={}, current={}, stand={}, digTarget={}, block={}, routeClearanceBlocks={}, reason={}",
                 taskId,
@@ -4667,8 +5116,7 @@ public final class StepExecutor {
                 routeClearanceBlocks,
                 reason);
         }
-        aiPlayer.lookAtWorkTarget(digTarget);
-        aiPlayer.swingWorkHand(InteractionHand.MAIN_HAND);
+        prepareMiningBreakAnimation(digTarget, block, "route_clearance:" + mode);
         breakTicks++;
         if (breakTicks < SurvivalUtils.getBreakDelay(aiPlayer, block)) {
             String phaseText = currentTunnelStep == null ? "清理通道" : currentTunnelStep.displayName();
@@ -4693,7 +5141,8 @@ public final class StepExecutor {
                     MiningFailureType.MOVE_STUCK,
                     "route_clearance_break_failed:" + mode + ":" + breakResult.reason(),
                     "挖矿通道方块连续破坏失败，挖掘点 " + digTarget.toShortString()
-                        + "，模式 " + mode + "，原因 " + breakResult.reason()
+                        + "，模式 " + mode + "，原因 " + breakResult.reason(),
+                    digTarget.toShortString()
                 );
             }
             return StepResult.running("挖矿通道方块破坏失败，正在重试");
@@ -4914,17 +5363,19 @@ public final class StepExecutor {
         return position[0] + "," + position[1] + "," + position[2];
     }
 
-    private boolean ensureMiningInventorySpace(Item item, String reason) {
-        if (item == null || item == Items.AIR || aiPlayer.hasBackpackSpaceFor(item)) {
+    private boolean ensureMiningInventorySpace(Item item, int expectedCount, String reason) {
+        MiningInventoryCapacity.Report report = miningCapacityReport(item, expectedCount);
+        if (item == null || item == Items.AIR || report.enough()) {
+            lastMiningCapacityFailure = null;
             return true;
         }
+        lastMiningCapacityFailure = report;
         setMiningState(MiningState.WAITING_FOR_PLAYER, "inventory_full:" + reason);
-        AiPlayerMod.warn("mining", "[taskId={}] AiPlayer '{}' mining inventory full: reason={}, expectedDrop={}, backpack={}",
+        AiPlayerMod.warn("mining", "[taskId={}] AiPlayer '{}' mining inventory full: reason={}, {}",
             taskId,
             aiPlayer.getAiPlayerName(),
             reason,
-            itemKey(item),
-            new TreeMap<>(aiPlayer.getInventorySnapshot()));
+            report.toStatusText());
         return false;
     }
 
@@ -4934,20 +5385,51 @@ public final class StepExecutor {
         }
         Item drop = SurvivalUtils.getSurvivalDrop(block.defaultBlockState());
         int dropCount = SurvivalUtils.getDropCount(block.defaultBlockState());
-        if (drop == Items.AIR || dropCount <= 0 || aiPlayer.hasBackpackSpaceFor(drop, dropCount)) {
+        MiningInventoryCapacity.Report report = miningCapacityReport(drop, dropCount);
+        if (drop == Items.AIR || dropCount <= 0 || report.enough()) {
+            lastMiningCapacityFailure = null;
             return true;
         }
+        lastMiningCapacityFailure = report;
         setMiningState(MiningState.WAITING_FOR_PLAYER, "inventory_full_for_drop:" + reason);
-        AiPlayerMod.warn("mining", "[taskId={}] AiPlayer '{}' mining inventory lacks drop capacity: reason={}, block={}, expectedDrop={}x{}, available={}, backpack={}",
+        AiPlayerMod.warn("mining", "[taskId={}] AiPlayer '{}' mining inventory lacks drop capacity: reason={}, block={}, {}",
             taskId,
             aiPlayer.getAiPlayerName(),
             reason,
             blockId(block),
-            itemKey(drop),
-            dropCount,
-            aiPlayer.availableBackpackSpaceFor(drop),
-            new TreeMap<>(aiPlayer.getInventorySnapshot()));
+            report.toStatusText());
         return false;
+    }
+
+    private MiningInventoryCapacity.Report miningCapacityReport(Item item, int expectedCount) {
+        if (item == null || item == Items.AIR) {
+            return MiningInventoryCapacity.evaluate("minecraft:air", expectedCount, Integer.MAX_VALUE, aiPlayer.emptyBackpackSlots(), 64,
+                aiPlayer.getInventorySnapshot());
+        }
+        return MiningInventoryCapacity.evaluate(
+            itemKey(item),
+            expectedCount,
+            aiPlayer.availableBackpackSpaceFor(item),
+            aiPlayer.emptyBackpackSlots(),
+            item.getDefaultMaxStackSize(),
+            aiPlayer.getInventorySnapshot()
+        );
+    }
+
+    private String miningCapacityFailureText(Item item, int expectedCount, String reason) {
+        MiningInventoryCapacity.Report report = lastMiningCapacityFailure != null && !lastMiningCapacityFailure.enough()
+            ? lastMiningCapacityFailure
+            : miningCapacityReport(item, expectedCount);
+        return report.toFailureText(reason);
+    }
+
+    private String miningDropCapacityFailureText(Block block, String reason) {
+        if (block == null || block == Blocks.AIR) {
+            return miningCapacityFailureText(Items.AIR, 1, reason);
+        }
+        Item drop = SurvivalUtils.getSurvivalDrop(block.defaultBlockState());
+        int dropCount = SurvivalUtils.getDropCount(block.defaultBlockState());
+        return miningCapacityFailureText(drop, Math.max(1, dropCount), reason);
     }
 
     private StepResult checkMiningDanger(String context) {
@@ -4970,7 +5452,8 @@ public final class StepExecutor {
                 return recoverableMiningFailure(
                     MiningFailureType.MOVE_STUCK,
                     "navigation_stuck:" + context,
-                    "挖矿路径卡住，正在尝试回退到最近安全矿道点"
+                    "挖矿路径卡住，正在尝试回退到最近安全矿道点",
+                    aiPlayer.blockPosition().toShortString()
                 );
             }
             return stopMiningTask("navigation_stuck", "挖矿路径卡住，无法继续执行当前任务");
@@ -5153,6 +5636,25 @@ public final class StepExecutor {
         }
     }
 
+    private void prepareMiningBreakAnimation(BlockPos target, Block block, String mode) {
+        if (target == null || block == null) {
+            return;
+        }
+        SurvivalUtils.equipBestToolForBlock(aiPlayer, block);
+        aiPlayer.lookAtWorkTarget(target);
+        aiPlayer.swingWorkHand(InteractionHand.MAIN_HAND);
+        miningAnimationState.record(mode, target, blockId(block), ticks);
+        if (ticks % 40 == 0) {
+            AiPlayerMod.debug("mining", "[taskId={}] AiPlayer '{}' mining animation: mode={}, target={}, block={}, hand={}",
+                taskId,
+                aiPlayer.getAiPlayerName(),
+                mode,
+                target.toShortString(),
+                blockId(block),
+                aiPlayer.getMainHandItem().isEmpty() ? "empty" : itemKey(aiPlayer.getMainHandItem().getItem()));
+        }
+    }
+
     private void recordMiningDigResult(BlockPos digTarget, Block block, boolean success) {
         if (miningRun != null) {
             miningRun.recordDigResult(
@@ -5279,9 +5781,7 @@ public final class StepExecutor {
             resetMovement();
         }
         recordMiningDigAttempt(target, block);
-        SurvivalUtils.equipBestToolForBlock(aiPlayer, block);
-        aiPlayer.lookAtWorkTarget(target);
-        aiPlayer.swingWorkHand(InteractionHand.MAIN_HAND);
+        prepareMiningBreakAnimation(target, block, pendingOcclusionContext + ":occlusion");
         breakTicks++;
         if (breakTicks < SurvivalUtils.getBreakDelay(aiPlayer, block)) {
             return StepResult.running("正在清理挖矿视线遮挡");
@@ -5292,6 +5792,9 @@ public final class StepExecutor {
         if (breakResult.success()) {
             clearPendingOcclusionClearance();
             return StepResult.running("已清理挖矿视线遮挡，继续原路线");
+        }
+        if (queueOcclusionClearance(pendingOcclusionOriginalTarget, breakResult, pendingOcclusionContext)) {
+            return StepResult.running("视线遮挡方块仍被遮挡，先清理更近的遮挡方块");
         }
         if (registerBreakFailure(target, breakResult.reason())) {
             rejectTarget(pendingOcclusionOriginalTarget, "occlusion_clear_failed:" + breakResult.reason());
@@ -5344,12 +5847,22 @@ public final class StepExecutor {
     }
 
     private StepResult miningFailure(String reason, String message) {
+        lastMiningFailureClassification = MiningFailureClassifier.classify(reason);
         finishMiningRun("failure:" + reason, message);
-        return StepResult.failure(message);
+        return StepResult.failure(message
+            + "；失败分类=" + lastMiningFailureClassification.cause()
+            + "；恢复策略=" + lastMiningFailureClassification.recoveryAction()
+            + "；建议=" + lastMiningFailureClassification.suggestion());
     }
 
     private StepResult recoverableMiningFailure(MiningFailureType type, String reason, String message) {
-        MiningFailurePolicy.Decision decision = miningFailurePolicy.record(type, reason);
+        return recoverableMiningFailure(type, reason, message, currentMiningFailureTargetKey());
+    }
+
+    private StepResult recoverableMiningFailure(MiningFailureType type, String reason, String message, String targetKey) {
+        lastMiningFailureClassification = MiningFailureClassifier.classify(reason);
+        MiningFailurePolicy.Decision decision = miningFailurePolicy.record(type, reason, targetKey);
+        lastMiningFailureDecision = decision;
         AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' mining failure review: {}, step={}, pos={}, summary={}",
             taskId,
             aiPlayer.getAiPlayerName(),
@@ -5365,7 +5878,28 @@ public final class StepExecutor {
         }
         applyMiningRecovery(decision);
         return StepResult.running(message + "；正在恢复：" + decision.action().key()
-            + " (" + decision.count() + "/" + decision.limit() + ")");
+            + " (" + decision.count() + "/" + decision.limit() + ")"
+            + "；失败分类=" + lastMiningFailureClassification.cause()
+            + "；建议=" + lastMiningFailureClassification.suggestion());
+    }
+
+    private String currentMiningFailureTargetKey() {
+        if (targetPos != null) {
+            return targetPos.toShortString();
+        }
+        if (descentMoveTarget != null) {
+            return descentMoveTarget.toShortString();
+        }
+        if (stageMiningPlan != null && stageMiningPlan.orePos() != null) {
+            return stageMiningPlan.orePos().toShortString();
+        }
+        if (directMiningRoute != null && directMiningRoute.targetStand() != null) {
+            return directMiningRoute.targetStand().toShortString();
+        }
+        if (currentTunnelStep != null && currentTunnelStep.target() != null) {
+            return currentTunnelStep.target().toShortString();
+        }
+        return aiPlayer.blockPosition().toShortString();
     }
 
     private void applyMiningRecovery(MiningFailurePolicy.Decision decision) {
@@ -5530,29 +6064,49 @@ public final class StepExecutor {
     }
 
     private StepResult stopMiningTask(String reason, String message) {
+        MiningFailureClassifier.Classification classification = MiningFailureClassifier.classify(reason);
+        lastMiningFailureClassification = classification;
         setMiningState(MiningState.RETURNING, "terminal_failure:" + reason);
-        AiPlayerMod.warn("mining", "[taskId={}] AiPlayer '{}' stops mining task: reason={}, message={}, step={}, pos={}, backpack={}",
+        AiPlayerMod.warn("mining", "[taskId={}] AiPlayer '{}' stops mining task: reason={}, failureCategory={}, failureCause={}, suggestion={}, message={}, step={}, pos={}, backpack={}",
             taskId,
             aiPlayer.getAiPlayerName(),
             reason,
+            classification.code(),
+            classification.cause(),
+            classification.suggestion(),
             message,
             activeStep == null ? "unknown" : activeStep.describe(),
             aiPlayer.blockPosition().toShortString(),
             new TreeMap<>(aiPlayer.getInventorySnapshot()));
-        AiPlayerMod.debug("mining", "[taskId={}] AiPlayer '{}' mining stop debug: reason={}, targetPos={}, descentMoveTarget={}, stagePlan={}, miningRunSummary={}",
+        AiPlayerMod.debug("mining", "[taskId={}] AiPlayer '{}' mining stop debug: reason={}, classification={}, targetPos={}, descentMoveTarget={}, stagePlan={}, miningRunSummary={}",
             taskId,
             aiPlayer.getAiPlayerName(),
             reason,
+            classification.toLogText(),
             targetPos == null ? "none" : targetPos.toShortString(),
             descentMoveTarget == null ? "none" : descentMoveTarget.toShortString(),
             stageMiningPlan == null ? "none" : stageMiningPlan.toLogText(),
             miningRun == null ? "none" : miningRun.summary());
-        return miningTerminalFailure(reason, message + "；任务已结束，AI 将回到玩家身边");
+        return miningTerminalFailure(reason, message
+            + "；失败分类=" + classification.cause()
+            + "；恢复策略=" + classification.recoveryAction()
+            + "；建议=" + classification.suggestion()
+            + "；任务已结束，AI 将回到玩家身边");
     }
 
     private StepResult miningTerminalFailure(String reason, String message) {
-        String fullMessage = miningRun == null ? message : message + "；" + miningRun.summary();
-        finishMiningRun("terminal_failure:" + reason, message);
+        MiningFailureClassifier.Classification classification = MiningFailureClassifier.classify(reason);
+        lastMiningFailureClassification = classification;
+        if (miningRun != null) {
+            miningRun.recordRouteDecision(ticks, "terminal_failure:" + classification.code(), reason, aiPlayer.blockPosition());
+        }
+        String classifiedMessage = message != null && message.contains("失败分类=")
+            ? message
+            : message + "；失败分类=" + classification.cause()
+                + "；恢复策略=" + classification.recoveryAction()
+                + "；建议=" + classification.suggestion();
+        String fullMessage = miningRun == null ? classifiedMessage : classifiedMessage + "；" + miningRun.summary();
+        finishMiningRun("terminal_failure:" + reason, classifiedMessage);
         return StepResult.terminalFailure(fullMessage);
     }
 
@@ -6070,9 +6624,7 @@ public final class StepExecutor {
                 SurvivalUtils.requiredToolForDrop(block));
             return false;
         }
-        SurvivalUtils.equipBestToolForBlock(aiPlayer, block);
-        aiPlayer.lookAtWorkTarget(pos);
-        aiPlayer.swingWorkHand(InteractionHand.MAIN_HAND);
+        prepareMiningBreakAnimation(pos, block, "direct_break");
         boolean destroyed = aiPlayer.level().destroyBlock(pos, false);
         if (destroyed) {
             SurvivalUtils.damageToolForBlock(aiPlayer, block);
@@ -6107,7 +6659,7 @@ public final class StepExecutor {
         if (plannedTarget != null) {
             return plannedTarget;
         }
-        if (stairStepPhase == StairStepPhase.MOVE) {
+        if (stairStepPhase == StairStepPhase.MOVE_TO_STEP) {
             return null;
         }
         clearStairStepPlan();
@@ -6155,6 +6707,7 @@ public final class StepExecutor {
                 stairVerticalTarget = verticalTarget.immutable();
                 stairStandTarget = nextStand.immutable();
                 stairStepPhase = firstPhase;
+                clearLastStairStepFailure();
                 AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' selected stair mining step: phase={}, current={}, targets={}, passage={}",
                     taskId,
                     aiPlayer.getAiPlayerName(),
@@ -6162,7 +6715,7 @@ public final class StepExecutor {
                     center.toShortString(),
                     stairTargets.toLogText(),
                     tunnelStep.toLogText());
-                if (firstPhase == StairStepPhase.MOVE) {
+                if (firstPhase == StairStepPhase.MOVE_TO_STEP) {
                     return null;
                 }
                 return currentStairDigTarget();
@@ -6213,7 +6766,7 @@ public final class StepExecutor {
             clearStairStepPlan();
             return null;
         }
-        if (stairStepPhase == StairStepPhase.CLEAR_ENTRY_HEAD) {
+        if (stairStepPhase == StairStepPhase.CLEAR_FORWARD_HEAD) {
             if (stairEntryHeadTarget == null) {
                 clearStairStepPlan();
                 return null;
@@ -6229,7 +6782,7 @@ public final class StepExecutor {
             clearStairStepPlan();
             return null;
         }
-        if (stairStepPhase == StairStepPhase.CLEAR_HORIZONTAL) {
+        if (stairStepPhase == StairStepPhase.CLEAR_FORWARD_FEET) {
             if (stairHorizontalTarget == null) {
                 clearStairStepPlan();
                 return null;
@@ -6245,7 +6798,7 @@ public final class StepExecutor {
             clearStairStepPlan();
             return null;
         }
-        if (stairStepPhase == StairStepPhase.DIG_DOWN) {
+        if (stairStepPhase == StairStepPhase.CLEAR_DOWN_STEP) {
             if (stairVerticalTarget == null) {
                 clearStairStepPlan();
                 return null;
@@ -6261,7 +6814,7 @@ public final class StepExecutor {
             clearStairStepPlan();
             return null;
         }
-        if (stairStepPhase == StairStepPhase.MOVE && !canStandAt(stairStandTarget)) {
+        if (stairStepPhase == StairStepPhase.MOVE_TO_STEP && !canStandAt(stairStandTarget)) {
             rejectCurrentStairStep("stand_no_longer_valid");
         }
         return null;
@@ -6273,6 +6826,7 @@ public final class StepExecutor {
 
     private void rejectCurrentStairStep(String reason) {
         String safeReason = reason == null || reason.isBlank() ? "stair_step_rejected" : reason;
+        rememberStairStepFailure(stairStepPhase, stairStepDirection, stairStandTarget, safeReason);
         Direction direction = stairStepDirection;
         BlockPos stand = stairStandTarget;
         if (stand != null) {
@@ -6301,10 +6855,10 @@ public final class StepExecutor {
             isAirBlock(targets.vertical())
         );
         return switch (phase) {
-            case CLEAR_ENTRY_HEAD -> breakableStairBlock(targets.entryHead()) == null ? null : StairStepPhase.CLEAR_ENTRY_HEAD;
-            case CLEAR_HORIZONTAL -> breakableStairBlock(targets.horizontal()) == null ? null : StairStepPhase.CLEAR_HORIZONTAL;
-            case DIG_DOWN -> breakableStairBlock(targets.vertical()) == null ? null : StairStepPhase.DIG_DOWN;
-            case MOVE -> StairStepPhase.MOVE;
+            case CLEAR_ENTRY_HEAD -> breakableStairBlock(targets.entryHead()) == null ? null : StairStepPhase.CLEAR_FORWARD_HEAD;
+            case CLEAR_HORIZONTAL -> breakableStairBlock(targets.horizontal()) == null ? null : StairStepPhase.CLEAR_FORWARD_FEET;
+            case DIG_DOWN -> breakableStairBlock(targets.vertical()) == null ? null : StairStepPhase.CLEAR_DOWN_STEP;
+            case MOVE -> StairStepPhase.MOVE_TO_STEP;
         };
     }
 
@@ -6312,11 +6866,11 @@ public final class StepExecutor {
         if (digTarget == null || stairStepPhase == null) {
             return;
         }
-        if (stairStepPhase == StairStepPhase.CLEAR_ENTRY_HEAD && digTarget.equals(stairEntryHeadTarget)) {
+        if (stairStepPhase == StairStepPhase.CLEAR_FORWARD_HEAD && digTarget.equals(stairEntryHeadTarget)) {
             refreshStairStepPhaseFromPassage();
-        } else if (stairStepPhase == StairStepPhase.CLEAR_HORIZONTAL && digTarget.equals(stairHorizontalTarget)) {
+        } else if (stairStepPhase == StairStepPhase.CLEAR_FORWARD_FEET && digTarget.equals(stairHorizontalTarget)) {
             refreshStairStepPhaseFromPassage();
-        } else if (stairStepPhase == StairStepPhase.DIG_DOWN && digTarget.equals(stairVerticalTarget)) {
+        } else if (stairStepPhase == StairStepPhase.CLEAR_DOWN_STEP && digTarget.equals(stairVerticalTarget)) {
             refreshStairStepPhaseFromPassage();
         }
     }
@@ -6349,6 +6903,30 @@ public final class StepExecutor {
         stairHorizontalTarget = null;
         stairVerticalTarget = null;
         stairStandTarget = null;
+    }
+
+    private void rememberStairStepFailure(StairStepPhase phase, Direction direction, BlockPos stand, String reason) {
+        if (phase == null && lastStairStepPhase == null) {
+            return;
+        }
+        lastStairStepPhase = phase == null ? lastStairStepPhase : phase;
+        lastStairStepDirection = direction == null ? lastStairStepDirection : direction;
+        lastStairStepStand = stand == null ? lastStairStepStand : stand.immutable();
+        lastStairStepFailureReason = reason == null || reason.isBlank() ? "unknown" : reason;
+    }
+
+    private void rememberStairStepRescan(String reason) {
+        StairStepPhase phase = stairStepPhase == null ? lastStairStepPhase : stairStepPhase;
+        Direction direction = stairStepDirection == null ? lastStairStepDirection : stairStepDirection;
+        BlockPos stand = stairStandTarget == null ? lastStairStepStand : stairStandTarget;
+        rememberStairStepFailure(phase, direction, stand, "rescan:" + (reason == null || reason.isBlank() ? "unknown" : reason));
+    }
+
+    private void clearLastStairStepFailure() {
+        lastStairStepPhase = null;
+        lastStairStepFailureReason = null;
+        lastStairStepStand = null;
+        lastStairStepDirection = null;
     }
 
     private StepResult placePendingMiningSupport() {
@@ -6809,10 +7387,30 @@ public final class StepExecutor {
     }
 
     private enum StairStepPhase {
-        CLEAR_ENTRY_HEAD,
-        CLEAR_HORIZONTAL,
-        DIG_DOWN,
-        MOVE
+        CLEAR_FORWARD_FEET("CLEAR_FORWARD_FEET", "清理前方脚部空间"),
+        CLEAR_FORWARD_HEAD("CLEAR_FORWARD_HEAD", "清理前方头部空间"),
+        CLEAR_DOWN_STEP("CLEAR_DOWN_STEP", "清理斜下站位"),
+        MOVE_TO_STEP("MOVE_TO_STEP", "移动到下一阶"),
+        RESCAN("RESCAN", "重新探矿或换方向");
+
+        private final String code;
+        private final String displayName;
+
+        StairStepPhase(String code, String displayName) {
+            this.code = code;
+            this.displayName = displayName;
+        }
+
+        String code() {
+            return code;
+        }
+
+        String statusText(BlockPos standTarget, Direction direction) {
+            return "phase=" + code
+                + "，说明=" + displayName
+                + "，方向=" + (direction == null ? "unknown" : direction.getName())
+                + "，目标站位=" + (standTarget == null ? "none" : standTarget.toShortString());
+        }
     }
 
     private record TreeSearchResult(

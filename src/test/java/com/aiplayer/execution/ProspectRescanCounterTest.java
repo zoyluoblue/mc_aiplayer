@@ -48,10 +48,60 @@ class ProspectRescanCounterTest {
     }
 
     @Test
+    void bindingUsesRouteCostAndExposureForNewCandidates() {
+        BlockPos oldOre = new BlockPos(10, 24, 10);
+        BlockPos nearOre = new BlockPos(12, 24, 10);
+        BlockPos farOre = new BlockPos(80, -16, 10);
+
+        ProspectRescanCounter.Binding better = ProspectRescanCounter.binding(
+            oldOre,
+            nearOre,
+            30,
+            -8,
+            18,
+            -6,
+            true
+        );
+        ProspectRescanCounter.Binding worse = ProspectRescanCounter.binding(
+            oldOre,
+            farOre,
+            18,
+            -4,
+            70,
+            -24,
+            true
+        );
+        ProspectRescanCounter.Binding noExposure = ProspectRescanCounter.binding(
+            oldOre,
+            nearOre,
+            18,
+            -4,
+            10,
+            -2,
+            false
+        );
+
+        assertEquals("new_candidate_better_route_rebind", better.decision());
+        assertEquals(true, better.rebindRoute());
+        assertEquals("new_candidate_costlier_keep_current_route", worse.decision());
+        assertEquals(true, worse.keepCurrentRoute());
+        assertEquals("new_candidate_no_exposure_keep_current_route", noExposure.decision());
+        assertEquals(true, noExposure.keepCurrentRoute());
+    }
+
+    @Test
     void statusTextShowsAllCountersAgainstIntervals() {
         assertEquals(
             "blocks=3/30, distance=7/30, actions=11/30",
             ProspectRescanCounter.statusText(3, 7, 11, 30, 30, 30)
+        );
+    }
+
+    @Test
+    void remainingStatusTextShowsNextTrigger() {
+        assertEquals(
+            "remainingBlocks=20, remainingDistance=5, remainingActions=12, nextTrigger=distance",
+            ProspectRescanCounter.remainingStatusText(10, 25, 18, 30, 30, 30)
         );
     }
 }

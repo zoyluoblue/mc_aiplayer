@@ -19,6 +19,7 @@ public record OreTargetScore(
         "coal",
         "raw_copper",
         "raw_iron",
+        "raw_gold",
         "stone",
         "block_source"
     );
@@ -86,6 +87,7 @@ public record OreTargetScore(
             || item.equals("minecraft:coal")
             || item.equals("minecraft:raw_copper")
             || item.equals("minecraft:raw_iron")
+            || item.equals("minecraft:raw_gold")
             || item.equals("minecraft:cobblestone");
     }
 

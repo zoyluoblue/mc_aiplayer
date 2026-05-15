@@ -14,6 +14,7 @@ import com.aiplayer.entity.AiPlayerEntity;
 import com.aiplayer.plugin.ActionRegistry;
 import com.aiplayer.plugin.PluginManager;
 import com.aiplayer.recipe.MiningGoalResolver;
+import net.minecraft.nbt.CompoundTag;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -30,6 +31,7 @@ public class ActionExecutor {
     private final Queue<Task> taskQueue;
 
     private BaseAction currentAction;
+    private Task activeTask;
     private String currentGoal;
     private int ticksSinceLastAction;
     private BaseAction idleFollowAction;
@@ -49,6 +51,7 @@ public class ActionExecutor {
         this.taskQueue = new LinkedList<>();
         this.ticksSinceLastAction = 0;
         this.idleFollowAction = null;
+        this.activeTask = null;
         this.planningFuture = null;
         this.pendingCommand = null;
         this.pendingTaskId = null;
@@ -92,6 +95,7 @@ public class ActionExecutor {
         if (currentAction != null) {
             currentAction.cancel();
             currentAction = null;
+            activeTask = null;
         }
 
         if (idleFollowAction != null) {
@@ -190,6 +194,7 @@ public class ActionExecutor {
                 }
                 
                 currentAction = null;
+                activeTask = null;
                 activeTaskId = "task-unknown";
                 if (taskQueue.isEmpty()) {
                     currentGoal = null;
@@ -245,8 +250,10 @@ public class ActionExecutor {
         
         if (currentAction == null) {
             AiPlayerMod.error("action", "[taskId={}] FAILED to create action for task: {}", activeTaskId, task);
+            activeTask = null;
             return;
         }
+        activeTask = task;
 
         AiPlayerMod.info("action", "[taskId={}] Created action: {} - starting now...",
             activeTaskId, currentAction.getClass().getSimpleName());
@@ -382,6 +389,7 @@ public class ActionExecutor {
             currentAction.cancel();
             currentAction = null;
         }
+        activeTask = null;
         if (idleFollowAction != null) {
             idleFollowAction.cancel();
             idleFollowAction = null;
@@ -389,6 +397,97 @@ public class ActionExecutor {
         taskQueue.clear();
         currentGoal = null;
         stateMachine.reset();
+    }
+
+    public ActionRecoveryState recoveryState() {
+        List<Task> queued = new ArrayList<>(taskQueue);
+        Task resumableActiveTask = null;
+        if (currentAction != null) {
+            if (currentAction.isComplete()) {
+                ActionResult result = currentAction.getResult();
+                if (result != null && !result.isSuccess() && !result.requiresReplanning()) {
+                    queued.clear();
+                }
+            } else {
+                resumableActiveTask = activeTask;
+            }
+        }
+        if (resumableActiveTask == null && queued.isEmpty()) {
+            return ActionRecoveryState.empty();
+        }
+        return new ActionRecoveryState(currentGoal, activeTaskId, resumableActiveTask, queued);
+    }
+
+    public void saveRecoveryState(CompoundTag tag) {
+        if (tag == null) {
+            return;
+        }
+        ActionRecoveryState state = recoveryState();
+        if (!state.emptyState()) {
+            tag.put("ActionRecovery", state.toTag());
+        }
+    }
+
+    public void loadRecoveryState(CompoundTag tag) {
+        if (tag == null || !tag.contains("ActionRecovery")) {
+            return;
+        }
+        restoreRecoveryStateIfIdle(ActionRecoveryState.fromTag(tag.getCompound("ActionRecovery")), "nbt_load");
+    }
+
+    public boolean restoreRecoveryStateIfIdle(ActionRecoveryState state, String reason) {
+        if (state == null || state.emptyState()) {
+            return false;
+        }
+        if (isPlanning || currentAction != null || !taskQueue.isEmpty()) {
+            AiPlayerMod.debug("action", "[taskId={}] AiPlayer '{}' skipped recovery after {} because executor is busy: currentAction={}, queued={}, planning={}",
+                state.activeTaskId(),
+                aiPlayer.getAiPlayerName(),
+                reason == null || reason.isBlank() ? "recovery" : reason,
+                currentAction == null ? "none" : currentAction.getDescription(),
+                taskQueue.size(),
+                isPlanning);
+            return false;
+        }
+        restoreRecoveryState(state, reason);
+        return true;
+    }
+
+    public void restoreRecoveryState(ActionRecoveryState state, String reason) {
+        if (state == null || state.emptyState()) {
+            return;
+        }
+        if (idleFollowAction != null) {
+            idleFollowAction.cancel();
+            idleFollowAction = null;
+        }
+        if (planningFuture != null && !planningFuture.isDone()) {
+            planningFuture.cancel(false);
+        }
+        isPlanning = false;
+        planningFuture = null;
+        pendingCommand = null;
+        pendingTaskId = null;
+        currentAction = null;
+        activeTask = null;
+        taskQueue.clear();
+        if (state.activeTask() != null) {
+            taskQueue.add(state.activeTask());
+        }
+        taskQueue.addAll(state.queuedTasks());
+        currentGoal = state.currentGoal().isBlank()
+            ? (state.activeTask() == null ? "" : state.activeTask().getAction())
+            : state.currentGoal();
+        activeTaskId = "task-unknown";
+        ticksSinceLastAction = AiPlayerConfig.ACTION_TICK_DELAY.get();
+        aiPlayer.getMemory().setCurrentGoal(currentGoal);
+        AiPlayerMod.info("action", "[taskId={}] AiPlayer '{}' restored task state after {}: activeTask={}, queued={}, goal={}",
+            state.activeTaskId(),
+            aiPlayer.getAiPlayerName(),
+            reason == null || reason.isBlank() ? "recovery" : reason,
+            state.activeTask(),
+            state.queuedTasks().size(),
+            currentGoal);
     }
 
     public boolean isExecuting() {

@@ -143,6 +143,49 @@ class MiningPassagePolicyTest {
     }
 
     @Test
+    void reportsSpecificBlockingPartForUnbreakablePassageBlocks() {
+        MiningPassagePolicy.Decision feet = MiningPassagePolicy.nextClearance(new MiningPassagePolicy.Input(
+            MiningPassagePolicy.MoveIntent.FORWARD_LEVEL,
+            "minecraft:air",
+            true,
+            true,
+            null,
+            "minecraft:air",
+            true,
+            true,
+            null,
+            "minecraft:bedrock",
+            false,
+            false,
+            null,
+            "minecraft:deepslate",
+            true
+        ));
+        MiningPassagePolicy.Decision head = MiningPassagePolicy.nextClearance(new MiningPassagePolicy.Input(
+            MiningPassagePolicy.MoveIntent.FORWARD_LEVEL,
+            "minecraft:air",
+            true,
+            true,
+            null,
+            "minecraft:bedrock",
+            false,
+            false,
+            null,
+            "minecraft:air",
+            true,
+            true,
+            null,
+            "minecraft:deepslate",
+            true
+        ));
+
+        assertEquals(MiningPassagePolicy.Action.BLOCKED, feet.action());
+        assertTrue(feet.reason().contains("feet=minecraft:bedrock"));
+        assertEquals(MiningPassagePolicy.Action.BLOCKED, head.action());
+        assertTrue(head.reason().contains("head=minecraft:bedrock"));
+    }
+
+    @Test
     void mapsClearanceActionsToExpectedStandRelativeBlocks() {
         BlockPos stand = new BlockPos(10, 40, -3);
 

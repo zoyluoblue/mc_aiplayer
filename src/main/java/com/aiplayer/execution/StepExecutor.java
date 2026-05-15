@@ -38,6 +38,8 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.pathfinder.Path;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
@@ -57,11 +59,16 @@ public final class StepExecutor {
     private static final int TARGET_MOVE_TIMEOUT_TICKS = 200;
     private static final int DESCENT_MOVE_TIMEOUT_TICKS = 120;
     private static final int MAX_CONSECUTIVE_BREAK_FAILURES = 3;
+    private static final int STATION_PLACEMENT_SEARCH_RADIUS = 6;
+    private static final int STATION_PLACEMENT_VERTICAL_RADIUS = 2;
+    private static final int STATION_PREPARATION_SEARCH_RADIUS = 3;
+    private static final int STATION_PREPARE_BREAK_TIMEOUT_TICKS = 160;
     private static final int ADJACENT_MINING_MOVE_TIMEOUT_TICKS = 40;
-    private static final double ADJACENT_MINING_MOVE_REACHED_DISTANCE_SQ = 0.12D;
-    private static final double ADJACENT_MINING_STEP_SPEED = 0.24D;
     private static final int CHEST_RADIUS = 12;
+    private static final int STATION_SEARCH_HORIZONTAL_RADIUS = 16;
+    private static final int STATION_SEARCH_VERTICAL_RADIUS = 8;
     private static final int STONE_DESCENT_MAX_BLOCKS = 32;
+    private static final int FORCED_LAYER_DESCENT_MARGIN_BLOCKS = 12;
     private static final int ORE_DESCENT_MAX_BLOCKS = 112;
     private static final int STONE_NO_PROGRESS_TIMEOUT_TICKS = 2400;
     private static final int ORE_PROSPECT_TIMEOUT_TICKS = 3600;
@@ -102,12 +109,15 @@ public final class StepExecutor {
     private static final int TREE_EXPLORE_STAND_VERTICAL_RADIUS = 5;
     private static final int TREE_EXPLORE_PATH_CHECK_LIMIT = 8;
     private static final int TREE_SCAN_BLOCK_BUDGET_PER_TICK = 12_000;
-    private static final int TREE_SCAN_PATH_CANDIDATE_LIMIT = 16;
-    private static final int TREE_SCAN_PATH_CHECKS_PER_TICK = 4;
+    private static final int TREE_SCAN_PATH_CANDIDATE_LIMIT = 96;
+    private static final int TREE_SCAN_PATH_CHECKS_PER_TICK = 8;
     private static final int TREE_NO_REACHABLE_SCAN_LIMIT = 4;
     private static final int TREE_EXPLORE_FAILURE_LIMIT = 3;
     private static final int TREE_TARGET_NO_EFFECTIVE_PROGRESS_TICKS = 240;
     private static final int TREE_HARD_TIMEOUT_TICKS = 1600;
+    private static final int TREE_STRUCTURE_SCAN_RADIUS = 5;
+    private static final int TREE_CONNECTED_LOG_SCAN_LIMIT = 24;
+    private static final int TREE_CONNECTED_LOG_SCAN_RADIUS = 7;
     private static final int INTERACTION_FAILURE_TTL_TICKS = 1200;
     private static final int STONE_DESCENT_START_SEARCH_RADIUS = 12;
     private static final int STONE_DESCENT_START_VERTICAL_RADIUS = 5;
@@ -139,6 +149,8 @@ public final class StepExecutor {
     private Entity targetEntity;
     private BlockPos descentMoveTarget;
     private String descentMoveMode;
+    private boolean descentMoveAdjacentMining;
+    private boolean descentMoveDescending;
     private Direction descentDirection;
     private MiningResource.Profile activeMiningProfile;
     private int ticks;
@@ -230,6 +242,9 @@ public final class StepExecutor {
     private BlockPos treeTargetStand;
     private InteractionTarget activeInteractionTarget;
     private BlockPos activeStationPos;
+    private BlockPos pendingStationPlacementTarget;
+    private String pendingStationPlacementStation;
+    private int pendingStationPrepareTicks;
     private InteractionFailureSnapshot lastInteractionFailure;
     private final InteractionFailureMemory interactionFailures = new InteractionFailureMemory();
     private int treeExploreAttempts;
@@ -544,6 +559,7 @@ public final class StepExecutor {
         treeTargetStand = null;
         activeInteractionTarget = null;
         activeStationPos = null;
+        clearPendingStationPlacement();
         lastInteractionFailure = null;
         interactionFailures.clear();
         treeExploreAttempts = 0;
@@ -775,7 +791,7 @@ public final class StepExecutor {
             markTreeProgress("tree_target_in_reach");
             return null;
         }
-        if (!canStandAt(standPos)) {
+        if ("树木".equals(resourceName) ? !canTreeStandAt(standPos) : !canStandAt(standPos)) {
             rejectInteractionTarget(interactionTarget, "stand_no_longer_valid");
             return StepResult.running(resourceName + "工作站位失效，正在重新寻找");
         }
@@ -928,9 +944,19 @@ public final class StepExecutor {
         nextTreeSearchTick = ticks + TREE_SEARCH_INTERVAL_TICKS;
         if (completed.candidates() > 0 && completed.reachable() == 0) {
             treeNoReachableScans++;
-            if (treeNoReachableScans >= TREE_NO_REACHABLE_SCAN_LIMIT) {
+            if (TreeTargetPolicy.shouldFailNoReachableScan(
+                treeNoReachableScans,
+                TREE_NO_REACHABLE_SCAN_LIMIT,
+                treeExploreAttempts,
+                TREE_EXPLORE_MAX_POINTS,
+                treeExploreTarget != null
+            )) {
                 return StepResult.terminalFailure("附近发现树木但找不到可站立砍树位置；" + completed.toSummaryText()
                     + "；请移动到树林平坦地面附近，或给 AI 放入任意原木/木板");
+            }
+            if (treeNoReachableScans >= TREE_NO_REACHABLE_SCAN_LIMIT) {
+                nextTreeSearchTick = 0;
+                return null;
             }
         } else if (completed.reachable() > 0) {
             treeNoReachableScans = 0;
@@ -954,11 +980,15 @@ public final class StepExecutor {
                 continue;
             }
             state.candidates++;
+            if (!isLikelyTreeLog(pos)) {
+                state.reject("not_tree_structure");
+                continue;
+            }
             if (rejectedTargets.contains(pos)) {
                 state.reject("target_rejected");
                 continue;
             }
-            state.addPathCandidate(pos.immutable());
+            state.addPathCandidate(pos.immutable(), treeCandidateScore(pos));
         }
         return state.isComplete();
     }
@@ -1027,6 +1057,7 @@ public final class StepExecutor {
                 logPos.immutable(),
                 directStand,
                 0.0D,
+                treeStructureScore(logPos),
                 "direct",
                 treeInteractionTarget(logPos, null, "direct")
             );
@@ -1036,6 +1067,7 @@ public final class StepExecutor {
             logPos.immutable(),
             pos,
             verticalPenalty(logPos, pos),
+            treeStructureScore(logPos),
             "stand",
             treeInteractionTarget(logPos, pos, "reachable_stand")
         )).orElse(null);
@@ -1057,7 +1089,7 @@ public final class StepExecutor {
         double bestScore = Double.MAX_VALUE;
         for (BlockPos candidate : BlockPos.betweenClosed(logPos.offset(-4, -3, -4), logPos.offset(4, 2, 4))) {
             BlockPos stand = candidate.immutable();
-            if (!aiPlayer.level().hasChunkAt(stand) || !canStandAt(stand)) {
+            if (!aiPlayer.level().hasChunkAt(stand) || !canTreeStandAt(stand)) {
                 continue;
             }
             if (!TreeTargetPolicy.isWithinSafeReach(TreeTargetPolicy.standFeetToBlockCenterDistanceSq(stand, logPos))) {
@@ -1066,7 +1098,7 @@ public final class StepExecutor {
             if (!canReachTreeFromStand(stand, logPos)) {
                 continue;
             }
-            if (aiPlayer.getNavigation().createPath(stand, 1) == null) {
+            if (!hasReachableNavigationPath(stand)) {
                 continue;
             }
             double score = stand.distSqr(aiPlayer.blockPosition()) + verticalPenalty(logPos, stand);
@@ -1080,6 +1112,68 @@ public final class StepExecutor {
 
     private boolean canBreakTreeDirectly(BlockPos logPos) {
         return SurvivalInteractionValidator.canBreakBlock(aiPlayer, logPos, TreeTargetPolicy.SAFE_TREE_REACH).valid();
+    }
+
+    private double treeCandidateScore(BlockPos logPos) {
+        return TreeTargetPolicy.scanCandidateScore(aiPlayer.blockPosition(), logPos) + treeStructureScore(logPos);
+    }
+
+    private double treeStructureScore(BlockPos logPos) {
+        int nearbyLeaves = nearbyLeafCount(logPos, TREE_STRUCTURE_SCAN_RADIUS);
+        int connectedLogs = connectedLogCount(logPos, TREE_CONNECTED_LOG_SCAN_RADIUS, TREE_CONNECTED_LOG_SCAN_LIMIT);
+        boolean bottomLog = !SurvivalUtils.isLog(aiPlayer.level().getBlockState(logPos.below()).getBlock());
+        return TreeTargetPolicy.structureScoreAdjustment(nearbyLeaves, connectedLogs, bottomLog);
+    }
+
+    private boolean isLikelyTreeLog(BlockPos logPos) {
+        return nearbyLeafCount(logPos, TREE_STRUCTURE_SCAN_RADIUS) > 0
+            || connectedLogCount(logPos, TREE_CONNECTED_LOG_SCAN_RADIUS, 3) >= 3;
+    }
+
+    private int nearbyLeafCount(BlockPos center, int radius) {
+        Level level = aiPlayer.level();
+        int count = 0;
+        for (BlockPos candidate : BlockPos.betweenClosed(center.offset(-radius, -radius, -radius), center.offset(radius, radius, radius))) {
+            BlockPos pos = candidate.immutable();
+            if (!level.hasChunkAt(pos)) {
+                continue;
+            }
+            if (SurvivalUtils.isLeaves(level.getBlockState(pos).getBlock())) {
+                count++;
+                if (count >= 32) {
+                    return count;
+                }
+            }
+        }
+        return count;
+    }
+
+    private int connectedLogCount(BlockPos origin, int radius, int limit) {
+        Level level = aiPlayer.level();
+        Set<BlockPos> visited = new HashSet<>();
+        List<BlockPos> queue = new ArrayList<>();
+        queue.add(origin.immutable());
+        visited.add(origin.immutable());
+        int count = 0;
+        for (int index = 0; index < queue.size() && count < limit; index++) {
+            BlockPos current = queue.get(index);
+            if (Math.abs(current.getX() - origin.getX()) > radius
+                || Math.abs(current.getY() - origin.getY()) > radius
+                || Math.abs(current.getZ() - origin.getZ()) > radius) {
+                continue;
+            }
+            if (!level.hasChunkAt(current) || !SurvivalUtils.isLog(level.getBlockState(current).getBlock())) {
+                continue;
+            }
+            count++;
+            for (Direction direction : Direction.values()) {
+                BlockPos next = current.relative(direction).immutable();
+                if (visited.add(next)) {
+                    queue.add(next);
+                }
+            }
+        }
+        return count;
     }
 
     private boolean canReachTreeFromStand(BlockPos standPos, BlockPos logPos) {
@@ -1145,7 +1239,7 @@ public final class StepExecutor {
         }
         if (treeExploreTarget == null
             || aiPlayer.blockPosition().closerThan(treeExploreTarget, 2.5D)
-            || !canStandAt(treeExploreTarget)) {
+            || !canTreeStandAt(treeExploreTarget)) {
             if (treeExploreTarget != null && aiPlayer.blockPosition().closerThan(treeExploreTarget, 2.5D)) {
                 AiPlayerMod.info("make_item", "[taskId={}] AiPlayer '{}' reached tree exploration point: pos={}, attempts={}",
                     taskId,
@@ -1250,7 +1344,7 @@ public final class StepExecutor {
             rough.offset(horizontalRadius, verticalRadius, horizontalRadius)
         )) {
             BlockPos pos = candidate.immutable();
-            if (!aiPlayer.level().hasChunkAt(pos) || !canStandAt(pos) || isRejectedTreeExploreTarget(pos)) {
+            if (!aiPlayer.level().hasChunkAt(pos) || !canTreeStandAt(pos) || isRejectedTreeExploreTarget(pos)) {
                 continue;
             }
             double distance = pos.distSqr(current);
@@ -1260,7 +1354,7 @@ public final class StepExecutor {
             }
         }
         int pathChecks = 0;
-        if (best != null && aiPlayer.getNavigation().createPath(best, 1) != null) {
+        if (best != null && hasReachableNavigationPath(best)) {
             return Optional.of(best);
         }
         for (BlockPos candidate : BlockPos.betweenClosed(
@@ -1271,11 +1365,11 @@ public final class StepExecutor {
                 break;
             }
             BlockPos pos = candidate.immutable();
-            if (!aiPlayer.level().hasChunkAt(pos) || !canStandAt(pos) || isRejectedTreeExploreTarget(pos)) {
+            if (!aiPlayer.level().hasChunkAt(pos) || !canTreeStandAt(pos) || isRejectedTreeExploreTarget(pos)) {
                 continue;
             }
             pathChecks++;
-            if (aiPlayer.getNavigation().createPath(pos, 1) != null) {
+            if (hasReachableNavigationPath(pos)) {
                 return Optional.of(pos);
             }
         }
@@ -1354,7 +1448,7 @@ public final class StepExecutor {
             ticksWithoutItemProgress = 0;
             lastProgressCount = currentCount;
         }
-        SurvivalUtils.equipBestToolForBlock(aiPlayer, aiPlayer.level().getBlockState(targetPos).getBlock());
+        SurvivalUtils.equipBestToolForBlock(aiPlayer, aiPlayer.level().getBlockState(targetPos).getBlock(), MIN_MINING_TOOL_DURABILITY);
         setMiningState(MiningState.TRAVEL_TO_ORE, "move_to_stone");
         InteractionTarget interactionTarget = activeInteractionTarget != null
             && activeInteractionTarget.targetBlock().equals(targetPos)
@@ -1412,7 +1506,7 @@ public final class StepExecutor {
                 "向下搜索 " + descentLimit + " 个方块仍未找到可采集目标"
             );
         }
-        if (!isProspectingForOre()) {
+        if (!isProspectingForOre() && shouldSearchStoneDescentStart()) {
             StepResult startMove = ensureStoneDescentStart();
             if (startMove != null) {
                 return startMove;
@@ -1508,6 +1602,7 @@ public final class StepExecutor {
         descentDetourTurns = 0;
         recordMiningDigResult(digTarget, block, breakResult);
         advanceStairStepAfterBreak(digTarget);
+        recordLayerDescentProgress(digTarget, block);
         recordGuidedProspectDigProgress();
         breakTicks = 0;
         if (SurvivalUtils.isStone(block)) {
@@ -1530,10 +1625,48 @@ public final class StepExecutor {
     }
 
     private int currentDescentLimit() {
+        int forcedLayerLimit = forcedLayerDescentLimit();
         if (isProspectingForOre() && activeMiningProfile.descentBudget() > 0) {
-            return activeMiningProfile.descentBudget();
+            return Math.max(activeMiningProfile.descentBudget(), forcedLayerLimit);
         }
-        return isProspectingForOre() ? ORE_DESCENT_MAX_BLOCKS : STONE_DESCENT_MAX_BLOCKS;
+        int defaultLimit = isProspectingForOre() ? ORE_DESCENT_MAX_BLOCKS : STONE_DESCENT_MAX_BLOCKS;
+        return Math.max(defaultLimit, forcedLayerLimit);
+    }
+
+    private int forcedLayerDescentLimit() {
+        if (miningRoutePlan == null) {
+            return 0;
+        }
+        int currentY = aiPlayer.blockPosition().getY();
+        if (currentY <= miningRoutePlan.targetY()) {
+            return 0;
+        }
+        return currentY - miningRoutePlan.targetY() + FORCED_LAYER_DESCENT_MARGIN_BLOCKS;
+    }
+
+    private boolean shouldSearchStoneDescentStart() {
+        if (miningRoutePlan == null || aiPlayer.blockPosition().getY() > miningRoutePlan.targetY()) {
+            return false;
+        }
+        return stairDescentController == null
+            && stairStepPhase == null
+            && descentMoveTarget == null
+            && downwardDigBlocks == 0
+            && routeClearanceBlocks == 0;
+    }
+
+    private void recordLayerDescentProgress(BlockPos digTarget, Block block) {
+        if (digTarget == null || block == null || miningRoutePlan == null) {
+            return;
+        }
+        if (aiPlayer.blockPosition().getY() <= miningRoutePlan.targetY()) {
+            return;
+        }
+        ticksWithoutItemProgress = 0;
+        lastProgressCount = goalChecker.countItem(aiPlayer, activeStep == null ? "" : activeStep.getItem());
+        if (miningRun != null) {
+            miningRun.recordRouteDecision(ticks, "layer_descent_progress", blockId(block), digTarget);
+        }
     }
 
     private boolean isProspectingForOre() {
@@ -1542,6 +1675,17 @@ public final class StepExecutor {
 
     private StepResult moveToCompletedStairStep() {
         if (stairStepPhase == StairStepPhase.MOVE_TO_STEP && stairStandTarget != null && canStandAt(stairStandTarget)) {
+            if (!isAdjacentMiningMoveTarget(aiPlayer.blockPosition(), stairStandTarget)) {
+                AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' drops stale stair stand before move: current={}, stand={}, direction={}",
+                    taskId,
+                    aiPlayer.getAiPlayerName(),
+                    aiPlayer.blockPosition().toShortString(),
+                    stairStandTarget.toShortString(),
+                    stairStepDirection == null ? "unknown" : stairStepDirection.getName());
+                clearStairStepPlan();
+                resetMovement();
+                return StepResult.running("阶梯站位已偏离当前位置，正在重建下一阶");
+            }
             setDescentMoveTarget(stairStandTarget, isProspectingForOre() ? "prospect_stair_step_move" : "stone_stair_step_move");
             return StepResult.running("阶梯横挖和下挖已完成，正在移动到下一阶");
         }
@@ -1700,7 +1844,7 @@ public final class StepExecutor {
                         builder.recordRejected("interaction_rejected:" + directRejected.get().reason());
                         continue;
                     }
-                    if (canWorkBlockDirectly(pos, 3.5D)) {
+                    if (canBreakBlockDirectly(pos, 3.5D)) {
                         builder.recordCandidate(new StoneAcquisitionPolicy.Candidate(
                             pos,
                             null,
@@ -1759,6 +1903,21 @@ public final class StepExecutor {
         return aiPlayer.position().distanceToSqr(Vec3.atCenterOf(pos)) <= range * range;
     }
 
+    private boolean canBreakBlockDirectly(BlockPos pos, double range) {
+        return SurvivalInteractionValidator.canBreakBlock(aiPlayer, pos, range).valid();
+    }
+
+    private boolean hasReachableNavigationPath(BlockPos pos) {
+        if (pos == null) {
+            return false;
+        }
+        if (aiPlayer.blockPosition().equals(pos)) {
+            return true;
+        }
+        Path path = aiPlayer.getNavigation().createPath(pos, 1);
+        return path != null && path.canReach();
+    }
+
     private boolean hasPathToBlock(BlockPos pos) {
         if (pos == null || Math.abs(pos.getY() - aiPlayer.blockPosition().getY()) > 2) {
             return false;
@@ -1770,7 +1929,7 @@ public final class StepExecutor {
         if (stonePos == null) {
             return Optional.empty();
         }
-        if (canWorkBlockDirectly(stonePos, 3.5D)) {
+        if (canBreakBlockDirectly(stonePos, 3.5D)) {
             return Optional.of(new StoneWorkTarget(
                 stonePos.immutable(),
                 aiPlayer.blockPosition().immutable(),
@@ -1803,12 +1962,12 @@ public final class StepExecutor {
         }
         for (Direction direction : horizontalDirections()) {
             BlockPos candidate = targetBlock.relative(direction);
-            if (canStandAt(candidate) && aiPlayer.getNavigation().createPath(candidate, 1) != null) {
+            if (canStandAt(candidate) && hasReachableNavigationPath(candidate)) {
                 return Optional.of(candidate.immutable());
             }
         }
         BlockPos below = targetBlock.below();
-        if (canStandAt(below) && aiPlayer.getNavigation().createPath(below, 1) != null) {
+        if (canStandAt(below) && hasReachableNavigationPath(below)) {
             return Optional.of(below.immutable());
         }
         return Optional.empty();
@@ -1903,7 +2062,7 @@ public final class StepExecutor {
         if (requiredTool != null && !ensureTool(requiredTool)) {
             return StepResult.failure("缺少工具，无法采集 " + step.getItem() + "，需要 " + requiredTool);
         }
-        SurvivalUtils.equipBestToolForBlock(aiPlayer, block);
+        SurvivalUtils.equipBestToolForBlock(aiPlayer, block, MIN_MINING_TOOL_DURABILITY);
         if (targetPos == null || !isGatherBlockTargetValid(targetPos, targetBlocks)) {
             Optional<BlockPos> found = SurvivalUtils.findNearestBlock(aiPlayer,
                 (pos, state) -> targetBlocks.contains(state.getBlock())
@@ -1961,7 +2120,7 @@ public final class StepExecutor {
     }
 
     private boolean isGatherBlockTargetCollectible(BlockPos pos) {
-        return canWorkBlockDirectly(pos, 3.5D) || (hasAirNeighbor(pos) && hasPathToBlock(pos));
+        return canBreakBlockDirectly(pos, 3.5D) || (hasAirNeighbor(pos) && hasPathToBlock(pos));
     }
 
     private Optional<BlockPos> prospectGatherBlockTarget(ExecutionStep step, List<String> blockIds, String requiredTool) {
@@ -2025,23 +2184,28 @@ public final class StepExecutor {
         }
         trackItemProgress(currentCount);
         String currentDimension = aiPlayer.level().dimension().location().toString();
-        if (!profile.allowsDimension(currentDimension)) {
+        MiningEnvironmentPolicy.Decision environment = MiningEnvironmentPolicy.decide(
+            currentDimension,
+            aiPlayer.blockPosition().getY(),
+            profile
+        );
+        if (!environment.dimensionAllowed()) {
             setMiningState(MiningState.WAITING_FOR_PLAYER, "wrong_dimension:" + currentDimension);
-            return miningTerminalFailure("wrong_dimension", resourceName + " 需要在 " + profile.dimension() + " 获取，当前维度是 " + currentDimension);
+            return miningTerminalFailure("wrong_dimension", environment.dimensionFailureText(resourceName));
         }
         String requiredTool = profile.requiredTool();
-        MiningToolGate.Result toolGate = evaluateMiningToolGate(requiredTool);
+        MiningToolGate.Result toolGate = evaluateMiningToolGate(profile);
         logMiningToolGate(profile, toolGate, "before_ensure");
         if (requiredTool != null && !toolGate.hasRequiredTier()) {
             setMiningState(MiningState.PREPARE_TOOLS, "ensure_tool:" + requiredTool);
         }
         if (requiredTool != null && !ensureTool(requiredTool)) {
-            MiningToolGate.Result failedGate = evaluateMiningToolGate(requiredTool);
+            MiningToolGate.Result failedGate = evaluateMiningToolGate(profile);
             logMiningToolGate(profile, failedGate, "missing_tool");
             return miningFailure("missing_tool", "缺少工具，无法挖 " + resourceName + "，需要 " + requiredTool
                 + "；工具门禁=" + failedGate.toLogText());
         }
-        toolGate = evaluateMiningToolGate(requiredTool);
+        toolGate = evaluateMiningToolGate(profile);
         logMiningToolGate(profile, toolGate, "after_ensure");
         if (requiredTool != null && !toolGate.hasRequiredTier()) {
             return miningFailure("wrong_tool_tier", "工具等级不足，无法挖 " + resourceName + "，需要 " + requiredTool
@@ -2054,7 +2218,7 @@ public final class StepExecutor {
                 return miningFailure("low_tool_durability", "当前镐耐久低于 " + MIN_MINING_TOOL_DURABILITY + "，且暂时无法制作替换工具，先停止挖 "
                     + resourceName + "，避免挖到一半工具损坏；工具门禁=" + toolGate.toLogText());
             }
-            toolGate = evaluateMiningToolGate(requiredTool);
+            toolGate = evaluateMiningToolGate(profile);
             logMiningToolGate(profile, toolGate, "after_replace_low_durability");
             if (!toolGate.ready()) {
                 setMiningState(MiningState.WAITING_FOR_PLAYER, "replacement_tool_not_ready:" + requiredTool);
@@ -2121,7 +2285,7 @@ public final class StepExecutor {
             ticksWithoutItemProgress = 0;
             lastProgressCount = currentCount;
         }
-        SurvivalUtils.equipBestToolForBlock(aiPlayer, aiPlayer.level().getBlockState(targetPos).getBlock());
+        SurvivalUtils.equipBestToolForBlock(aiPlayer, aiPlayer.level().getBlockState(targetPos).getBlock(), MIN_MINING_TOOL_DURABILITY);
         setMiningState(MiningState.TRAVEL_TO_ORE, "move_to_visible_ore");
         InteractionTarget interactionTarget = activeInteractionTarget != null
             && activeInteractionTarget.targetBlock().equals(targetPos)
@@ -2197,9 +2361,11 @@ public final class StepExecutor {
     }
 
     private boolean shouldDescendTowardPreferredHeight(MiningResource.Profile profile) {
-        return profile.prospectable()
-            && profile.hasPreferredYRange()
-            && profile.isAbovePreferredY(aiPlayer.blockPosition().getY());
+        return MiningEnvironmentPolicy.decide(
+            aiPlayer.level().dimension().location().toString(),
+            aiPlayer.blockPosition().getY(),
+            profile
+        ).shouldDescend();
     }
 
     private boolean shouldDescendToRouteTarget() {
@@ -2220,9 +2386,11 @@ public final class StepExecutor {
     }
 
     private boolean shouldRequestHigherSearchArea(MiningResource.Profile profile) {
-        return profile.prospectable()
-            && profile.hasPreferredYRange()
-            && aiPlayer.blockPosition().getY() < profile.preferredMinY();
+        return MiningEnvironmentPolicy.decide(
+            aiPlayer.level().dimension().location().toString(),
+            aiPlayer.blockPosition().getY(),
+            profile
+        ).shouldMoveHigher();
     }
 
     private Optional<BlockPos> findReachableMiningTarget(List<Block> blocks) {
@@ -2268,6 +2436,9 @@ public final class StepExecutor {
             return false;
         }
         if (!miningBlocks(activeMiningProfile).contains(aiPlayer.level().getBlockState(hint).getBlock())) {
+            return false;
+        }
+        if (miningCandidateCooldown.isCooling(hint, ticks) || rejectedTargets.contains(hint)) {
             return false;
         }
         if (stageMiningPlan != null && hint.equals(stageMiningPlan.orePos())) {
@@ -2392,6 +2563,10 @@ public final class StepExecutor {
                         scan.reject("previously_rejected:" + rejectedTargetReason(pos));
                         continue;
                     }
+                    if (miningCandidateCooldown.isCooling(pos, ticks)) {
+                        scan.reject("candidate_cooling");
+                        continue;
+                    }
                     int exposedAir = countAirNeighbors(pos);
                     if (exposedAir <= 0) {
                         scan.selectEmbedded(pos, pos.distSqr(center));
@@ -2405,7 +2580,7 @@ public final class StepExecutor {
                         scan.reject("interaction_rejected:" + directRejected.get().reason());
                         continue;
                     }
-                    if (canWorkBlockDirectly(pos, 3.5D)) {
+                    if (canBreakBlockDirectly(pos, 3.5D)) {
                         scan.directlyWorkable++;
                         scan.selectDirect(pos, distance, exposedAir, directTarget);
                         continue;
@@ -2473,6 +2648,34 @@ public final class StepExecutor {
             rejectInteractionTarget(interactionTarget, "out_of_reach:" + String.format(Locale.ROOT, "%.2f", Math.sqrt(distanceSq)));
             return StepResult.running(resourceName + " 目标超出交互距离，正在重新寻找");
         }
+        SurvivalInteractionValidator.ValidationResult breakValidation = SurvivalInteractionValidator.canBreakBlock(
+            aiPlayer,
+            target,
+            reach
+        );
+        if (!breakValidation.valid()) {
+            BlockPos blocker = "blocked_line_of_sight".equals(breakValidation.reason())
+                ? SurvivalInteractionValidator.blockingBlockForBreak(aiPlayer, target).orElse(null)
+                : null;
+            SurvivalUtils.BreakResult validationResult = new SurvivalUtils.BreakResult(
+                false,
+                target,
+                block,
+                breakValidation.reason(),
+                blocker,
+                Items.AIR,
+                0,
+                0,
+                0
+            );
+            breakTicks = 0;
+            if (queueOcclusionClearance(target, validationResult, mode)) {
+                activeInteractionTarget = null;
+                return StepResult.running(resourceName + " 目标被视线遮挡，先清理遮挡方块");
+            }
+            rejectInteractionTarget(interactionTarget, breakValidation.reason());
+            return StepResult.running(resourceName + " 暂时不可直接挖取，正在重新寻找可挖站位");
+        }
         String targetDanger = blockingMiningDanger(target, "visible_" + mode);
         if (targetDanger != null) {
             recordMiningDanger(targetDanger, target, "skip_" + mode);
@@ -2497,7 +2700,7 @@ public final class StepExecutor {
         if (orePos == null) {
             return Optional.empty();
         }
-        if (canWorkBlockDirectly(orePos, 3.5D)) {
+        if (canBreakBlockDirectly(orePos, 3.5D)) {
             return Optional.of(new StoneWorkTarget(
                 orePos.immutable(),
                 aiPlayer.blockPosition().immutable(),
@@ -2621,6 +2824,17 @@ public final class StepExecutor {
         return digResult;
     }
 
+    private boolean shouldContinueDescentAfterEmptyProspect() {
+        if (activeMiningProfile == null || !activeMiningProfile.prospectable()) {
+            return false;
+        }
+        if (miningRoutePlan != null) {
+            return aiPlayer.blockPosition().getY() > miningRoutePlan.targetY() + BRANCH_TARGET_Y_TOLERANCE;
+        }
+        return activeMiningProfile.hasPreferredYRange()
+            && activeMiningProfile.isAbovePreferredY(aiPlayer.blockPosition().getY());
+    }
+
     private StepResult tickGuidedProspectMining(ExecutionStep step, String oreName) {
         if (activeMiningProfile == null || !activeMiningProfile.prospectable()) {
             return null;
@@ -2668,6 +2882,17 @@ public final class StepExecutor {
                 lastProspectResult.toLogText());
             if (!lastProspectResult.found()) {
                 logProspectRescanSelection(oreName, null);
+                if (shouldContinueDescentAfterEmptyProspect()) {
+                    AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' empty prospect scan above target layer; continuing descent: ore={}, pos={}, targetY={}, height={}, route={}",
+                        taskId,
+                        aiPlayer.getAiPlayerName(),
+                        oreName,
+                        aiPlayer.blockPosition().toShortString(),
+                        miningRoutePlan == null ? "unknown" : miningRoutePlan.targetY(),
+                        miningRoutePlan == null ? "none" : miningRoutePlan.heightReason(),
+                        miningRoutePlan == null ? "none" : miningRoutePlan.toLogText());
+                    return null;
+                }
                 StepResult recoveryResult = handleAboveLayerRecoveryProspectNotFound(oreName);
                 if (recoveryResult != null) {
                     return recoveryResult;
@@ -3123,7 +3348,7 @@ public final class StepExecutor {
             .filter(aiPlayer.level()::hasChunkAt)
             .filter(pos -> !rejectedStoneDescentStarts.contains(pos))
             .filter(this::isGoodStoneDescentStart)
-            .filter(pos -> aiPlayer.getNavigation().createPath(pos, 1) != null)
+            .filter(this::hasReachableNavigationPath)
             .min(Comparator.comparingDouble(pos -> pos.distSqr(center)));
     }
 
@@ -3132,7 +3357,7 @@ public final class StepExecutor {
             return false;
         }
         Block support = aiPlayer.level().getBlockState(pos.below()).getBlock();
-        if (isTreeBlock(support) || support == Blocks.GRAVEL || support == Blocks.SAND || support == Blocks.RED_SAND) {
+        if (isTreeBlock(support)) {
             return false;
         }
         int treeBlocks = 0;
@@ -3254,7 +3479,7 @@ public final class StepExecutor {
             }
             return digResult;
         }
-        if (currentY < routeTarget.getY() - 1) {
+        if (currentY < routeTarget.getY() - 2) {
             return replanProspectTargetAboveCurrentLayer(
                 "prospect_target_above_current_layer",
                 oreName,
@@ -3262,7 +3487,14 @@ public final class StepExecutor {
                 routeTarget
             );
         }
-        if (hasAirNeighbor(orePos) && canWorkBlockDirectly(orePos, 3.5D)) {
+        if (hasAirNeighbor(orePos) && canBreakBlockDirectly(orePos, 3.5D)) {
+            stageMiningPlan = stageMiningPlan.withStage(StageMiningPlan.Stage.MINE, aiPlayer.blockPosition());
+            return mineProspectOreTarget(orePos, oreName);
+        }
+        if (hasAirNeighbor(orePos)
+            && directMiningRoute != null
+            && directMiningRoute.arrived()
+            && SurvivalInteractionValidator.isWithinReach(aiPlayer, orePos, 3.5D)) {
             stageMiningPlan = stageMiningPlan.withStage(StageMiningPlan.Stage.MINE, aiPlayer.blockPosition());
             return mineProspectOreTarget(orePos, oreName);
         }
@@ -3415,7 +3647,7 @@ public final class StepExecutor {
         if (currentY > routeTarget.getY()) {
             return StepResult.running("当前仍高于探矿目标高度，继续阶梯下挖 " + oreName);
         }
-        if (currentY < routeTarget.getY() - 1) {
+        if (currentY < routeTarget.getY() - 2) {
             return replanProspectTargetAboveCurrentLayer(
                 "tunnel_target_above_current_layer",
                 oreName,
@@ -3453,6 +3685,18 @@ public final class StepExecutor {
         }
 
         TunnelTarget tunnelTarget = findGuidedTunnelDigTarget(nextStand, routeTarget, orePos);
+        if (tunnelTarget.exposureStand()) {
+            BlockPos exposureStand = tunnelTarget.target();
+            if (exposureStand != null && canStandAt(exposureStand)) {
+                setDescentMoveTarget(exposureStand, "prospect_exposure_stand");
+                return StepResult.running("正在进入已打开的矿物暴露格，避免把暴露面补成支撑；"
+                    + stageMiningPlan.statusText(aiPlayer.blockPosition()));
+            }
+            return stopMiningTask("exposure_stand_invalid",
+                "矿物暴露格不能作为站位，已拒绝直接补支撑以免重新封住矿物："
+                    + (exposureStand == null ? "none" : exposureStand.toShortString())
+                    + "，目标 " + orePos.toShortString());
+        }
         if (tunnelTarget.needsSupport()) {
             return StepResult.running("探矿路线前方缺少支撑，正在补支撑后继续接近目标；"
                 + tunnelTarget.step().toLogText());
@@ -3615,7 +3859,7 @@ public final class StepExecutor {
     }
 
     private TunnelTarget findGuidedTunnelDigTarget(BlockPos nextStand, BlockPos routeTarget, BlockPos orePos) {
-        if (orePos != null && isOnProspectMiningLayer(orePos) && hasAirNeighbor(orePos) && canWorkBlockDirectly(orePos, 3.5D)) {
+        if (orePos != null && isOnProspectMiningLayer(orePos) && hasAirNeighbor(orePos) && canBreakBlockDirectly(orePos, 3.5D)) {
             return TunnelTarget.mineOre(orePos);
         }
         BlockPos exposureClearTarget = findProspectExposureClearTarget(orePos);
@@ -3623,6 +3867,17 @@ public final class StepExecutor {
             return TunnelTarget.exposure(exposureClearTarget);
         }
         MiningTunnelStepper.Plan tunnelStep = miningTunnelStep(aiPlayer.blockPosition(), nextStand);
+        if (tunnelStep.needsSupport()
+            && supportWouldSealProspectExposure(tunnelStep.target(), orePos)) {
+            AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' redirects support placement into exposure stand: ore={}, exposureStand={}, nextStand={}, reason={}",
+                taskId,
+                aiPlayer.getAiPlayerName(),
+                orePos.toShortString(),
+                tunnelStep.target() == null ? "none" : tunnelStep.target().toShortString(),
+                nextStand == null ? "none" : nextStand.toShortString(),
+                tunnelStep.reason());
+            return TunnelTarget.exposureStand(tunnelStep);
+        }
         if (queueSupportFromTunnelStep(tunnelStep, aiPlayer.blockPosition(), nextStand, "guided_tunnel")) {
             return TunnelTarget.support(tunnelStep);
         }
@@ -3632,7 +3887,11 @@ public final class StepExecutor {
         if (tunnelStep.needsClearance()) {
             return TunnelTarget.clearance(tunnelStep);
         }
-        if (orePos != null && isOnProspectMiningLayer(orePos) && hasAirNeighbor(orePos) && isNearFieldProspectTarget(orePos)) {
+        if (orePos != null
+            && isOnProspectMiningLayer(orePos)
+            && hasAirNeighbor(orePos)
+            && isNearFieldProspectTarget(orePos)
+            && canBreakBlockDirectly(orePos, 3.5D)) {
             return TunnelTarget.mineOre(orePos);
         }
         return TunnelTarget.blocked(new MiningTunnelStepper.Plan(
@@ -3641,6 +3900,16 @@ public final class StepExecutor {
             "no_clearance_or_workable_ore",
             null
         ));
+    }
+
+    private boolean supportWouldSealProspectExposure(BlockPos supportPos, BlockPos orePos) {
+        return supportPos != null
+            && aiPlayer.level().hasChunkAt(supportPos)
+            && MiningExposureSupportPolicy.supportWouldSealOreExposure(
+                supportPos,
+                orePos,
+                aiPlayer.level().getBlockState(supportPos).isAir()
+            );
     }
 
     private BlockPos findProspectExposureClearTarget(BlockPos orePos) {
@@ -3665,7 +3934,7 @@ public final class StepExecutor {
             .filter(pos -> !pos.equals(orePos))
             .filter(pos -> !aiPlayer.level().getBlockState(pos).isAir())
             .filter(pos -> breakableMiningPassageBlock(pos) != null)
-            .filter(pos -> canWorkBlockDirectly(pos, 3.5D))
+            .filter(pos -> canBreakBlockDirectly(pos, 3.5D))
             .min(Comparator
                 .comparingInt((BlockPos pos) -> exposureTarget != null && pos.equals(exposureTarget.exposurePos()) ? 0 : 1)
                 .thenComparingInt(pos -> pos.getY() == orePos.getY() ? 0 : 1)
@@ -3698,7 +3967,7 @@ public final class StepExecutor {
         if (entrance == null || exploredCaveEntrances.contains(entrance)) {
             return null;
         }
-        if (!canStandAt(entrance) || aiPlayer.getNavigation().createPath(entrance, 1) == null) {
+        if (!canStandAt(entrance) || !hasReachableNavigationPath(entrance)) {
             exploredCaveEntrances.add(entrance);
             AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' skips unsafe cave entrance for {}: entrance={}",
                 taskId, aiPlayer.getAiPlayerName(), oreName, entrance.toShortString());
@@ -4028,8 +4297,7 @@ public final class StepExecutor {
             return true;
         }
         Block block = aiPlayer.level().getBlockState(pos).getBlock();
-        return block == Blocks.BEDROCK || block == Blocks.WATER || block == Blocks.LAVA
-            || block == Blocks.GRAVEL || block == Blocks.SAND || block == Blocks.RED_SAND;
+        return block == Blocks.BEDROCK || block == Blocks.WATER || block == Blocks.LAVA;
     }
 
     private boolean rotateBranchDirection(String reason) {
@@ -4079,7 +4347,7 @@ public final class StepExecutor {
         }
         boolean crafted = craftItem(step);
         if (crafted) {
-            return StepResult.success("已合成 " + step.getItem());
+            return StepResult.success("已合成 " + step.getItem() + reclaimPortableStationAfterCraft(step));
         }
         if (isSmeltingStep(step)) {
             return StepResult.failure("材料不足，无法烧炼 " + step.getItem() + "；" + smeltingPreflightText(step));
@@ -4112,6 +4380,47 @@ public final class StepExecutor {
             case "furnace", "blast_furnace", "smoker", "campfire" -> true;
             default -> false;
         };
+    }
+
+    private String reclaimPortableStationAfterCraft(ExecutionStep step) {
+        if (step == null || !"craft_station".equals(step.getStep())) {
+            return "";
+        }
+        String station = step.getStation() == null ? "inventory" : step.getStation();
+        Block stationBlock = stationBlock(station);
+        String stationItem = stationItemId(station);
+        if (stationBlock == Blocks.AIR || stationItem == null || "minecraft:air".equals(stationItem)) {
+            return "";
+        }
+        BlockPos stationPos = activeInteractionTarget != null
+            && aiPlayer.level().getBlockState(activeInteractionTarget.targetBlock()).getBlock() == stationBlock
+            ? activeInteractionTarget.targetBlock()
+            : activeStationPos;
+        if (stationPos == null || aiPlayer.level().getBlockState(stationPos).getBlock() != stationBlock) {
+            return "";
+        }
+        SurvivalUtils.BreakResult breakResult = SurvivalUtils.breakBlockDetailed(aiPlayer, stationPos);
+        if (!breakResult.success()) {
+            AiPlayerMod.info("make_item", "[taskId={}] AiPlayer '{}' kept station after craft: station={}, pos={}, reason={}",
+                taskId,
+                aiPlayer.getAiPlayerName(),
+                stationName(station),
+                stationPos.toShortString(),
+                breakResult.reason());
+            return "";
+        }
+        resourceGatherSession.forgetStation(stationItem, stationPos);
+        if (stationPos.equals(activeStationPos)) {
+            activeStationPos = null;
+        }
+        activeInteractionTarget = null;
+        AiPlayerMod.info("make_item", "[taskId={}] AiPlayer '{}' reclaimed station after craft: station={}, pos={}, backpack={}",
+            taskId,
+            aiPlayer.getAiPlayerName(),
+            stationName(station),
+            stationPos.toShortString(),
+            new TreeMap<>(aiPlayer.getInventorySnapshot()));
+        return "，并收回" + stationName(station);
     }
 
     private void logSmeltingPreflight(ExecutionStep step) {
@@ -4529,6 +4838,22 @@ public final class StepExecutor {
         }
         BlockPos moveTarget = descentMoveTarget;
         boolean adjacentMiningMove = isAdjacentMiningMoveTarget(aiPlayer.blockPosition(), moveTarget);
+        if (descentMoveAdjacentMining && !adjacentMiningMove && isStairStepMoveMode(mode)) {
+            AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' rebuilds stale stair move target: targetStep={}, current={}, target={}, mode={}",
+                taskId,
+                aiPlayer.getAiPlayerName(),
+                activeStep == null ? "unknown" : activeStep.describe(),
+                aiPlayer.blockPosition().toShortString(),
+                moveTarget.toShortString(),
+                mode);
+            descentMoveTarget = null;
+            descentMoveMode = null;
+            descentMoveAdjacentMining = false;
+            descentMoveDescending = false;
+            clearStairStepPlan();
+            resetMovement();
+            return StepResult.running("阶梯移动目标已偏离当前位置，正在按当前站位重新规划下一阶");
+        }
         if (adjacentMiningMove) {
             MiningTunnelStepper.Plan tunnelStep = miningTunnelStep(aiPlayer.blockPosition(), moveTarget);
             if (queueSupportFromTunnelStep(tunnelStep, aiPlayer.blockPosition(), moveTarget, mode)) {
@@ -4592,12 +4917,11 @@ public final class StepExecutor {
             return null;
         }
         markMiningMode(mode);
-        double footDistanceSq = aiPlayer.position().distanceToSqr(Vec3.atBottomCenterOf(moveTarget));
-        if (hasReachedMiningMoveTarget(moveTarget, footDistanceSq, adjacentMiningMove)) {
+        if (hasReachedMiningMoveTarget(moveTarget, adjacentMiningMove)) {
             return completeDescentMoveTarget(mode, moveTarget, reachedMessage);
         }
         if (adjacentMiningMove) {
-            StepResult adjacentResult = tickAdjacentMiningMoveTarget(moveTarget, mode, movingMessage, fallbackMessage, footDistanceSq);
+            StepResult adjacentResult = tickAdjacentMiningMoveTarget(moveTarget, mode, movingMessage, fallbackMessage);
             if (adjacentResult != null) {
                 return adjacentResult;
             }
@@ -4649,9 +4973,10 @@ public final class StepExecutor {
         return descentMoveMode == null || descentMoveMode.isBlank() ? fallback : descentMoveMode;
     }
 
-    private boolean hasReachedMiningMoveTarget(BlockPos moveTarget, double footDistanceSq, boolean adjacentMiningMove) {
-        return aiPlayer.blockPosition().equals(moveTarget)
-            || (adjacentMiningMove && footDistanceSq <= ADJACENT_MINING_MOVE_REACHED_DISTANCE_SQ);
+    private boolean hasReachedMiningMoveTarget(BlockPos moveTarget, boolean adjacentMiningMove) {
+        return adjacentMiningMove || descentMoveDescending
+            ? AdjacentMiningStepPolicy.reached(aiPlayer.blockPosition(), aiPlayer.position(), moveTarget, descentMoveDescending)
+            : aiPlayer.blockPosition().equals(moveTarget);
     }
 
     private StepResult completeDescentMoveTarget(String mode, BlockPos moveTarget, String reachedMessage) {
@@ -4800,35 +5125,44 @@ public final class StepExecutor {
         BlockPos moveTarget,
         String mode,
         String movingMessage,
-        String fallbackMessage,
-        double footDistanceSq
+        String fallbackMessage
     ) {
-        Vec3 target = Vec3.atBottomCenterOf(moveTarget);
-        Vec3 current = aiPlayer.position();
-        double dx = target.x - current.x;
-        double dz = target.z - current.z;
-        double horizontal = Math.sqrt(dx * dx + dz * dz);
-        if (horizontal > 0.02D) {
-            aiPlayer.getNavigation().stop();
-            aiPlayer.setSprinting(true);
-            aiPlayer.getMoveControl().setWantedPosition(target.x, target.y, target.z, SurvivalUtils.TASK_RUN_SPEED);
-            double speed = Math.min(ADJACENT_MINING_STEP_SPEED, horizontal);
-            aiPlayer.setDeltaMovement(dx / horizontal * speed, aiPlayer.getDeltaMovement().y, dz / horizontal * speed);
-        }
-        if (footDistanceSq + 0.02D < closestTargetDistanceSq) {
-            closestTargetDistanceSq = footDistanceSq;
+        Vec3 position = aiPlayer.position();
+        Vec3 wanted = AdjacentMiningStepPolicy.wantedPosition(aiPlayer.blockPosition(), position, moveTarget, descentMoveDescending);
+        Vec3 velocity = AdjacentMiningStepPolicy.stepVelocity(
+            aiPlayer.blockPosition(),
+            position,
+            aiPlayer.getDeltaMovement(),
+            moveTarget,
+            descentMoveDescending
+        );
+        aiPlayer.getNavigation().stop();
+        aiPlayer.setSprinting(true);
+        aiPlayer.getMoveControl().setWantedPosition(wanted.x, wanted.y, wanted.z, SurvivalUtils.TASK_RUN_SPEED);
+        aiPlayer.setDeltaMovement(velocity);
+
+        double progressDistanceSq = AdjacentMiningStepPolicy.progressDistanceSq(
+            aiPlayer.blockPosition(),
+            position,
+            moveTarget,
+            descentMoveDescending
+        );
+        if (progressDistanceSq + 0.02D < closestTargetDistanceSq) {
+            closestTargetDistanceSq = progressDistanceSq;
             moveTicksWithoutProgress = 0;
             return StepResult.running(movingMessage);
         }
         moveTicksWithoutProgress++;
         if (moveTicksWithoutProgress > ADJACENT_MINING_MOVE_TIMEOUT_TICKS) {
-            AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' cannot step into adjacent mining target: targetStep={}, pos={}, mode={}, footDistanceSq={}, noProgressTicks={}",
+            AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' cannot step into adjacent mining target: targetStep={}, pos={}, mode={}, progressDistanceSq={}, current={}, velocity={}, noProgressTicks={}",
                 taskId,
                 aiPlayer.getAiPlayerName(),
                 activeStep == null ? "unknown" : activeStep.describe(),
                 moveTarget.toShortString(),
                 mode,
-                String.format("%.2f", footDistanceSq),
+                String.format(Locale.ROOT, "%.2f", progressDistanceSq),
+                aiPlayer.position(),
+                velocity,
                 moveTicksWithoutProgress);
             descentMoveTarget = null;
             descentMoveMode = null;
@@ -4837,6 +5171,10 @@ public final class StepExecutor {
             aiPlayer.setSprinting(false);
             resetMovement();
             breakTicks = 0;
+            if (isStairStepMoveMode(mode)) {
+                rejectCurrentStairStep("adjacent_step_move_timeout:" + mode);
+                return StepResult.running("相邻阶梯站位进入失败，正在从当前位置重建下一阶");
+            }
             if (isMiningRunStep(activeStep)) {
                 rejectSafeMiningPointIfReturning(moveTarget, mode, "adjacent_mining_step_stuck");
                 return recoverableMiningFailure(
@@ -4856,18 +5194,27 @@ public final class StepExecutor {
         if (pos == null) {
             return;
         }
+        BlockPos current = aiPlayer.blockPosition();
         descentMoveTarget = pos.immutable();
         descentMoveMode = mode;
+        descentMoveAdjacentMining = isAdjacentMiningMoveTarget(current, descentMoveTarget);
+        descentMoveDescending = AdjacentMiningStepPolicy.isDescending(current, descentMoveTarget);
         breakTicks = 0;
         resetMovement();
         markMiningMode(mode);
-        AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' selected descent move target: targetStep={}, pos={}, mode={}, currentPos={}",
+        AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' selected descent move target: targetStep={}, pos={}, mode={}, currentPos={}, adjacentMiningMove={}, descendingMove={}",
             taskId,
             aiPlayer.getAiPlayerName(),
             activeStep == null ? "unknown" : activeStep.describe(),
             descentMoveTarget.toShortString(),
             mode,
-            aiPlayer.blockPosition().toShortString());
+            current.toShortString(),
+            descentMoveAdjacentMining,
+            descentMoveDescending);
+    }
+
+    private boolean isStairStepMoveMode(String mode) {
+        return "prospect_stair_step_move".equals(mode) || "stone_stair_step_move".equals(mode);
     }
 
     private void recordStairDescentStepIfNeeded(String mode, BlockPos stand) {
@@ -4945,12 +5292,7 @@ public final class StepExecutor {
     }
 
     private boolean isAdjacentMiningMoveTarget(BlockPos current, BlockPos target) {
-        if (current == null || target == null) {
-            return false;
-        }
-        int horizontal = Math.abs(current.getX() - target.getX()) + Math.abs(current.getZ() - target.getZ());
-        int vertical = current.getY() - target.getY();
-        return horizontal == 1 && vertical >= 0 && vertical <= 1;
+        return AdjacentMiningStepPolicy.isOneStepTarget(current, target);
     }
 
     private MiningPassagePolicy.Decision miningPassageDecision(BlockPos current, BlockPos stand) {
@@ -5235,13 +5577,33 @@ public final class StepExecutor {
     }
 
     private MiningToolGate.Result evaluateMiningToolGate(String requiredTool) {
-        ItemStack bestPickaxe = aiPlayer.getBestToolStackFor("pickaxe", MIN_MINING_TOOL_DURABILITY);
-        if (bestPickaxe.isEmpty()) {
-            bestPickaxe = aiPlayer.getBestToolStackFor("pickaxe");
-        }
-        String currentBestTool = bestPickaxe.isEmpty() ? "minecraft:air" : itemKey(bestPickaxe.getItem());
-        int remaining = toolRemainingDurability(bestPickaxe);
-        return MiningToolGate.evaluate(requiredTool, currentBestTool, remaining, MIN_MINING_TOOL_DURABILITY);
+        ItemStack highestTierPickaxe = aiPlayer.getBestToolStackFor("pickaxe");
+        ItemStack healthyPickaxe = aiPlayer.getBestToolStackFor("pickaxe", MIN_MINING_TOOL_DURABILITY);
+        return MiningToolGate.evaluateWithFallback(
+            requiredTool,
+            toolItemKey(highestTierPickaxe),
+            toolRemainingDurability(highestTierPickaxe),
+            toolItemKey(healthyPickaxe),
+            toolRemainingDurability(healthyPickaxe),
+            MIN_MINING_TOOL_DURABILITY
+        );
+    }
+
+    private MiningToolGate.Result evaluateMiningToolGate(MiningResource.Profile profile) {
+        ItemStack highestTierPickaxe = aiPlayer.getBestToolStackFor("pickaxe");
+        ItemStack healthyPickaxe = aiPlayer.getBestToolStackFor("pickaxe", MIN_MINING_TOOL_DURABILITY);
+        return MiningToolGate.evaluateWithFallback(
+            profile,
+            toolItemKey(highestTierPickaxe),
+            toolRemainingDurability(highestTierPickaxe),
+            toolItemKey(healthyPickaxe),
+            toolRemainingDurability(healthyPickaxe),
+            MIN_MINING_TOOL_DURABILITY
+        );
+    }
+
+    private String toolItemKey(ItemStack stack) {
+        return stack == null || stack.isEmpty() ? "minecraft:air" : itemKey(stack.getItem());
     }
 
     private int toolRemainingDurability(ItemStack stack) {
@@ -5282,8 +5644,7 @@ public final class StepExecutor {
         boolean furnaceReady = goalChecker.hasItem(aiPlayer, "minecraft:furnace", 1)
             || hasNearbyBlock(Blocks.FURNACE, 8)
             || craftItemToCount("minecraft:furnace", 1, new HashSet<>());
-        boolean fuelReady = goalChecker.hasItem(aiPlayer, "minecraft:coal", 1)
-            || goalChecker.hasItem(aiPlayer, "minecraft:charcoal", 1);
+        boolean fuelReady = SmeltingFuelPolicy.countFuel(aiPlayer.getInventorySnapshot()) > 0;
         AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' mining supplies checked: target={}, craftingReady={}, furnaceReady={}, fuelReady={}, backpack={}",
             taskId,
             aiPlayer.getAiPlayerName(),
@@ -5517,7 +5878,7 @@ public final class StepExecutor {
             : activeMiningProfile.preferredMaxY();
         Optional<BlockPos> waypoint = sharedMiningState.nearestMiningWaypoint(aiPlayer.blockPosition(), preferredY)
             .filter(this::canStandAt)
-            .filter(pos -> aiPlayer.getNavigation().createPath(pos, 1) != null);
+            .filter(this::hasReachableNavigationPath);
         if (waypoint.isEmpty()) {
             return;
         }
@@ -5640,7 +6001,7 @@ public final class StepExecutor {
         if (target == null || block == null) {
             return;
         }
-        SurvivalUtils.equipBestToolForBlock(aiPlayer, block);
+        SurvivalUtils.equipBestToolForBlock(aiPlayer, block, MIN_MINING_TOOL_DURABILITY);
         aiPlayer.lookAtWorkTarget(target);
         aiPlayer.swingWorkHand(InteractionHand.MAIN_HAND);
         miningAnimationState.record(mode, target, blockId(block), ticks);
@@ -5686,7 +6047,7 @@ public final class StepExecutor {
     }
 
     private SurvivalUtils.BreakResult breakBlockDetailed(BlockPos digTarget, String context) {
-        SurvivalUtils.BreakResult result = SurvivalUtils.breakBlockDetailed(aiPlayer, digTarget);
+        SurvivalUtils.BreakResult result = SurvivalUtils.breakBlockDetailed(aiPlayer, digTarget, MIN_MINING_TOOL_DURABILITY);
         if (result.success()) {
             clearBreakFailureMemory();
         } else {
@@ -5745,6 +6106,7 @@ public final class StepExecutor {
         if (aiPlayer.level().getBlockState(target).isAir()) {
             clearPendingOcclusionClearance();
             clearBreakFailureMemory();
+            recordGuidedProspectDigProgress();
             return StepResult.running("遮挡方块已消失，继续原挖矿路线");
         }
         Block block = aiPlayer.level().getBlockState(target).getBlock();
@@ -5790,6 +6152,8 @@ public final class StepExecutor {
         recordMiningDigResult(target, block, breakResult);
         breakTicks = 0;
         if (breakResult.success()) {
+            recordGuidedProspectDigProgress();
+            recordMiningWaypoint("occlusion_clearance:" + pendingOcclusionContext);
             clearPendingOcclusionClearance();
             return StepResult.running("已清理挖矿视线遮挡，继续原路线");
         }
@@ -6000,7 +6364,7 @@ public final class StepExecutor {
         if (horizontalDistanceSq(pos, current) > SAFE_MINING_FALLBACK_MAX_HORIZONTAL_DISTANCE * SAFE_MINING_FALLBACK_MAX_HORIZONTAL_DISTANCE) {
             return "too_far";
         }
-        if (aiPlayer.getNavigation().createPath(pos, 1) == null) {
+        if (!hasReachableNavigationPath(pos)) {
             return "no_path";
         }
         return null;
@@ -6383,6 +6747,10 @@ public final class StepExecutor {
     private StepResult placeStationForUse(String stationItem, Block stationBlock, String station) {
         Optional<InteractionTarget> target = findStationPlacementTarget(station);
         if (target.isEmpty()) {
+            StepResult prepareResult = prepareStationPlacementSpace(stationItem, stationBlock, station);
+            if (prepareResult != null) {
+                return prepareResult;
+            }
             AiPlayerMod.debug("make_item", "AiPlayer '{}' has no valid placement position for station {}", aiPlayer.getAiPlayerName(), stationItem);
             return StepResult.failure("找不到可放置" + stationName(station) + "的位置");
         }
@@ -6400,7 +6768,9 @@ public final class StepExecutor {
             return StepResult.running(stationName(station) + "放置失败，正在重新寻找位置");
         }
         activeStationPos = placeTarget.targetBlock().immutable();
+        resourceGatherSession.rememberStation(stationItem, activeStationPos);
         activeInteractionTarget = null;
+        clearPendingStationPlacement();
         craftTicks = 0;
         AiPlayerMod.info("make_item", "[taskId={}] AiPlayer '{}' placed station for crafting: station={}, pos={}",
             taskId,
@@ -6408,6 +6778,76 @@ public final class StepExecutor {
             stationName(station),
             activeStationPos.toShortString());
         return StepResult.running("已放置" + stationName(station) + "，正在靠近使用");
+    }
+
+    private StepResult prepareStationPlacementSpace(String stationItem, Block stationBlock, String station) {
+        BlockPos target = pendingStationPlacementTarget;
+        if (target == null
+            || pendingStationPlacementStation == null
+            || !pendingStationPlacementStation.equals(station)
+            || !isPotentialStationPlacementTarget(target)) {
+            target = findStationPreparationTarget(station).orElse(null);
+            pendingStationPlacementTarget = target;
+            pendingStationPlacementStation = station;
+            pendingStationPrepareTicks = 0;
+            breakTicks = 0;
+        }
+        if (target == null) {
+            AiPlayerMod.info("make_item", "[taskId={}] AiPlayer '{}' cannot prepare station placement space: station={}, pos={}, backpack={}",
+                taskId,
+                aiPlayer.getAiPlayerName(),
+                stationName(station),
+                aiPlayer.blockPosition().toShortString(),
+                new TreeMap<>(aiPlayer.getInventorySnapshot()));
+            return null;
+        }
+        if (aiPlayer.level().getBlockState(target).isAir()) {
+            clearPendingStationPlacement();
+            return StepResult.running("已清理" + stationName(station) + "放置空间，正在放置");
+        }
+        Block block = aiPlayer.level().getBlockState(target).getBlock();
+        if (!isBreakableStationSpaceBlock(target, block)) {
+            rejectInteractionTarget(stationPlacementInteractionTarget(target, station), "station_space_unbreakable:" + blockId(block));
+            clearPendingStationPlacement();
+            return StepResult.running(stationName(station) + "放置空间不可清理，正在换位置");
+        }
+        pendingStationPrepareTicks++;
+        if (pendingStationPrepareTicks > STATION_PREPARE_BREAK_TIMEOUT_TICKS) {
+            rejectInteractionTarget(stationPlacementInteractionTarget(target, station), "station_space_prepare_timeout");
+            clearPendingStationPlacement();
+            return StepResult.running(stationName(station) + "放置空间清理超时，正在换位置");
+        }
+        SurvivalUtils.equipBestToolForBlock(aiPlayer, block, MIN_MINING_TOOL_DURABILITY);
+        prepareMiningBreakAnimation(target, block, "station_space");
+        breakTicks++;
+        int delay = SurvivalUtils.getBreakDelay(aiPlayer, block);
+        if (breakTicks < delay) {
+            return StepResult.running("正在清理" + stationName(station) + "放置空间");
+        }
+        SurvivalUtils.BreakResult breakResult = SurvivalUtils.breakBlockDetailed(aiPlayer, target, MIN_MINING_TOOL_DURABILITY);
+        breakTicks = 0;
+        if (!breakResult.success()) {
+            rejectInteractionTarget(stationPlacementInteractionTarget(target, station), "station_space_break_failed:" + breakResult.reason());
+            AiPlayerMod.info("make_item", "[taskId={}] AiPlayer '{}' failed to clear station placement space: station={}, pos={}, block={}, reason={}, blocker={}",
+                taskId,
+                aiPlayer.getAiPlayerName(),
+                stationName(station),
+                target.toShortString(),
+                blockId(block),
+                breakResult.reason(),
+                breakResult.blocker() == null ? "none" : breakResult.blocker().toShortString());
+            clearPendingStationPlacement();
+            return StepResult.running(stationName(station) + "放置空间清理失败，正在换位置");
+        }
+        AiPlayerMod.info("make_item", "[taskId={}] AiPlayer '{}' cleared station placement space: station={}, pos={}, block={}, backpack={}",
+            taskId,
+            aiPlayer.getAiPlayerName(),
+            stationName(station),
+            target.toShortString(),
+            blockId(block),
+            new TreeMap<>(aiPlayer.getInventorySnapshot()));
+        clearPendingStationPlacement();
+        return StepResult.running("已清理" + stationName(station) + "放置空间，正在放置");
     }
 
     private boolean validateStationPlacementTarget(InteractionTarget placeTarget, Block stationBlock, String stationItem, String station) {
@@ -6426,7 +6866,7 @@ public final class StepExecutor {
             return false;
         }
         Block support = aiPlayer.level().getBlockState(target.below()).getBlock();
-        if (support == Blocks.AIR || support == Blocks.WATER || support == Blocks.LAVA || support == Blocks.BEDROCK) {
+        if (!StationPlacementPolicy.hasUsableSupport(support)) {
             rejectInteractionTarget(placeTarget, "bad_support:" + blockId(support));
             return false;
         }
@@ -6448,10 +6888,23 @@ public final class StepExecutor {
             rejectInteractionTarget(stationTarget, "out_of_reach:" + String.format(Locale.ROOT, "%.2f", Math.sqrt(distanceSq)));
             return StepResult.running(stationName(station) + "超出交互距离，正在重新寻找");
         }
+        SurvivalInteractionValidator.ValidationResult useValidation = SurvivalInteractionValidator.canUseBlock(
+            aiPlayer,
+            stationTarget.targetBlock(),
+            stationTarget.reachRange()
+        );
+        if (!useValidation.valid()) {
+            rejectInteractionTarget(stationTarget, useValidation.reason());
+            return StepResult.running(stationName(station) + "不可直接触达，正在重新寻找");
+        }
         return null;
     }
 
     private Optional<InteractionTarget> findStationInteractionTarget(Block stationBlock, String reason) {
+        Optional<BlockPos> remembered = rememberedStationPosition(stationBlock);
+        if (remembered.isPresent()) {
+            activeStationPos = remembered.get();
+        }
         if (activeStationPos != null && aiPlayer.level().getBlockState(activeStationPos).getBlock() == stationBlock) {
             Optional<InteractionTarget> target = stationInteractionTarget(activeStationPos, reason);
             if (target.isPresent() && interactionFailures.rejectionFor(target.get(), ticks).isEmpty()) {
@@ -6459,7 +6912,10 @@ public final class StepExecutor {
             }
         }
         BlockPos center = aiPlayer.blockPosition();
-        return BlockPos.betweenClosedStream(center.offset(-8, -4, -8), center.offset(8, 4, 8))
+        return BlockPos.betweenClosedStream(
+                center.offset(-STATION_SEARCH_HORIZONTAL_RADIUS, -STATION_SEARCH_VERTICAL_RADIUS, -STATION_SEARCH_HORIZONTAL_RADIUS),
+                center.offset(STATION_SEARCH_HORIZONTAL_RADIUS, STATION_SEARCH_VERTICAL_RADIUS, STATION_SEARCH_HORIZONTAL_RADIUS)
+            )
             .map(BlockPos::immutable)
             .filter(aiPlayer.level()::hasChunkAt)
             .filter(pos -> aiPlayer.level().getBlockState(pos).getBlock() == stationBlock)
@@ -6469,11 +6925,36 @@ public final class StepExecutor {
             .min(Comparator.comparingDouble(target -> target.targetBlock().distSqr(center)));
     }
 
+    private Optional<BlockPos> rememberedStationPosition(Block stationBlock) {
+        String stationItem = blockId(stationBlock);
+        Optional<BlockPos> remembered = resourceGatherSession.knownStation(stationItem);
+        if (remembered.isEmpty()) {
+            return Optional.empty();
+        }
+        BlockPos pos = remembered.get();
+        if (!aiPlayer.level().hasChunkAt(pos)) {
+            return remembered;
+        }
+        if (aiPlayer.level().getBlockState(pos).getBlock() == stationBlock) {
+            return remembered;
+        }
+        resourceGatherSession.forgetStation(stationItem, pos);
+        if (pos.equals(activeStationPos)) {
+            activeStationPos = null;
+        }
+        AiPlayerMod.info("make_item", "[taskId={}] AiPlayer '{}' forgot missing station: item={}, pos={}",
+            taskId,
+            aiPlayer.getAiPlayerName(),
+            stationItem,
+            pos.toShortString());
+        return Optional.empty();
+    }
+
     private Optional<InteractionTarget> stationInteractionTarget(BlockPos stationPos, String reason) {
         if (stationPos == null) {
             return Optional.empty();
         }
-        if (canWorkBlockDirectly(stationPos, 4.5D)) {
+        if (SurvivalInteractionValidator.canUseBlock(aiPlayer, stationPos, 4.5D).valid()) {
             return Optional.of(new InteractionTarget(
                 stationPos.immutable(),
                 null,
@@ -6497,14 +6978,18 @@ public final class StepExecutor {
     private Optional<InteractionTarget> findStationPlacementTarget(String station) {
         Level level = aiPlayer.level();
         BlockPos center = aiPlayer.blockPosition();
-        return BlockPos.betweenClosedStream(center.offset(-2, -1, -2), center.offset(2, 1, 2))
+        return BlockPos.betweenClosedStream(
+                center.offset(-STATION_PLACEMENT_SEARCH_RADIUS, -STATION_PLACEMENT_VERTICAL_RADIUS, -STATION_PLACEMENT_SEARCH_RADIUS),
+                center.offset(STATION_PLACEMENT_SEARCH_RADIUS, STATION_PLACEMENT_VERTICAL_RADIUS, STATION_PLACEMENT_SEARCH_RADIUS)
+            )
             .map(BlockPos::immutable)
-            .filter(pos -> !pos.equals(center) && !pos.equals(center.above()))
+            .filter(this::isPotentialStationPlacementTarget)
             .filter(pos -> level.getBlockState(pos).isAir())
             .filter(pos -> {
                 Block support = level.getBlockState(pos.below()).getBlock();
-                return support != Blocks.AIR && support != Blocks.WATER && support != Blocks.LAVA && support != Blocks.BEDROCK;
+                return StationPlacementPolicy.hasUsableSupport(support);
             })
+            .filter(pos -> SurvivalInteractionValidator.canPlaceBlock(aiPlayer, pos).valid())
             .map(pos -> new InteractionTarget(
                     pos,
                     null,
@@ -6515,7 +7000,67 @@ public final class StepExecutor {
                 )
             )
             .filter(target -> interactionFailures.rejectionFor(target, ticks).isEmpty())
-            .min(Comparator.comparingDouble(target -> target.targetBlock().distSqr(center)));
+            .min(Comparator.comparingDouble(target -> StationPlacementPolicy.candidateScore(center, target.targetBlock(), false)));
+    }
+
+    private Optional<BlockPos> findStationPreparationTarget(String station) {
+        Level level = aiPlayer.level();
+        BlockPos center = aiPlayer.blockPosition();
+        return BlockPos.betweenClosedStream(
+                center.offset(-STATION_PREPARATION_SEARCH_RADIUS, -1, -STATION_PREPARATION_SEARCH_RADIUS),
+                center.offset(STATION_PREPARATION_SEARCH_RADIUS, 1, STATION_PREPARATION_SEARCH_RADIUS)
+            )
+            .map(BlockPos::immutable)
+            .filter(this::isPotentialStationPlacementTarget)
+            .filter(pos -> StationPlacementPolicy.hasUsableSupport(level.getBlockState(pos.below()).getBlock()))
+            .filter(pos -> isBreakableStationSpaceBlock(pos, level.getBlockState(pos).getBlock()))
+            .filter(pos -> SurvivalInteractionValidator.canBreakBlock(aiPlayer, pos).valid())
+            .map(pos -> stationPlacementInteractionTarget(pos, station))
+            .filter(target -> interactionFailures.rejectionFor(target, ticks).isEmpty())
+            .map(InteractionTarget::targetBlock)
+            .min(Comparator.comparingDouble(pos -> StationPlacementPolicy.candidateScore(center, pos, true)));
+    }
+
+    private boolean isPotentialStationPlacementTarget(BlockPos pos) {
+        if (pos == null || !aiPlayer.level().hasChunkAt(pos)) {
+            return false;
+        }
+        BlockPos center = aiPlayer.blockPosition();
+        return !pos.equals(center)
+            && !pos.equals(center.above())
+            && !pos.equals(center.below())
+            && pos.getY() >= aiPlayer.level().getMinY()
+            && pos.getY() < aiPlayer.level().getMinY() + aiPlayer.level().getHeight();
+    }
+
+    private boolean isBreakableStationSpaceBlock(BlockPos pos, Block block) {
+        return pos != null
+            && block != null
+            && !aiPlayer.level().getBlockState(pos).hasBlockEntity()
+            && block != Blocks.AIR
+            && block != Blocks.WATER
+            && block != Blocks.LAVA
+            && block != Blocks.BEDROCK
+            && !SurvivalUtils.isMiningResourceBlock(block)
+            && StationPlacementPolicy.isSafeSpaceClearingBlock(blockId(block))
+            && SurvivalUtils.canHarvestBlock(aiPlayer, block, MIN_MINING_TOOL_DURABILITY);
+    }
+
+    private InteractionTarget stationPlacementInteractionTarget(BlockPos pos, String station) {
+        return new InteractionTarget(
+            pos.immutable(),
+            null,
+            4.5D,
+            "hand",
+            InteractionActionType.PLACE_BLOCK,
+            "prepare_place_" + station
+        );
+    }
+
+    private void clearPendingStationPlacement() {
+        pendingStationPlacementTarget = null;
+        pendingStationPlacementStation = null;
+        pendingStationPrepareTicks = 0;
     }
 
     private String stationName(String station) {
@@ -6560,18 +7105,22 @@ public final class StepExecutor {
         if (itemId == null || itemId.isBlank()) {
             return true;
         }
-        int targetCount = MiningToolGate.replacementTargetCount(goalChecker.countItem(aiPlayer, itemId));
-        boolean available = craftItemToCount(itemId, targetCount, new HashSet<>());
-        if (available) {
-            equipRequiredTool(itemId);
-            AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' prepared replacement tool: item={}, targetCount={}, backpack={}",
+        for (String candidate : MiningToolGate.replacementCandidates(itemId)) {
+            int targetCount = MiningToolGate.replacementTargetCount(goalChecker.countItem(aiPlayer, candidate));
+            if (!craftItemToCount(candidate, targetCount, new HashSet<>())) {
+                continue;
+            }
+            equipRequiredTool(candidate);
+            AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' prepared replacement tool: required={}, item={}, targetCount={}, backpack={}",
                 taskId,
                 aiPlayer.getAiPlayerName(),
                 itemId,
+                candidate,
                 targetCount,
                 new TreeMap<>(aiPlayer.getInventorySnapshot()));
+            return true;
         }
-        return available;
+        return false;
     }
 
     private void equipRequiredTool(String itemId) {
@@ -6599,9 +7148,6 @@ public final class StepExecutor {
     }
 
     private boolean breakBlockForTarget(BlockPos pos, Item targetItem, int dropCount) {
-        if (targetItem == Items.AIR) {
-            return SurvivalUtils.breakBlock(aiPlayer, pos);
-        }
         if (aiPlayer.level().getBlockState(pos).isAir() || aiPlayer.level().getBlockState(pos).getBlock() == Blocks.BEDROCK) {
             return false;
         }
@@ -6615,7 +7161,7 @@ public final class StepExecutor {
             return false;
         }
         Block block = aiPlayer.level().getBlockState(pos).getBlock();
-        if (!SurvivalUtils.canHarvestBlock(aiPlayer, block)) {
+        if (!SurvivalUtils.canHarvestBlock(aiPlayer, block, MIN_MINING_TOOL_DURABILITY)) {
             AiPlayerMod.info("mining", "[taskId={}] AiPlayer '{}' rejected direct block break: pos={}, block={}, reason=wrong_tool_tier:{}",
                 taskId,
                 aiPlayer.getAiPlayerName(),
@@ -6625,12 +7171,8 @@ public final class StepExecutor {
             return false;
         }
         prepareMiningBreakAnimation(pos, block, "direct_break");
-        boolean destroyed = aiPlayer.level().destroyBlock(pos, false);
-        if (destroyed) {
-            SurvivalUtils.damageToolForBlock(aiPlayer, block);
-            aiPlayer.addItem(targetItem, Math.max(1, dropCount));
-        }
-        return destroyed;
+        SurvivalUtils.BreakResult result = SurvivalUtils.breakBlockDetailed(aiPlayer, pos, MIN_MINING_TOOL_DURABILITY);
+        return result.success();
     }
 
     private int genericBreakDelay(Block block) {
@@ -6678,6 +7220,12 @@ public final class StepExecutor {
             BlockPos entryHeadTarget = stairTargets.entryHead();
             BlockPos horizontalTarget = stairTargets.horizontal();
             BlockPos verticalTarget = stairTargets.vertical();
+            if (rejectedTargets.contains(nextStand)) {
+                String reason = "stair_stand_rejected:" + rejectedTargetReason(nextStand);
+                recordRejectedStairDirection(direction, nextStand, reason);
+                rejectedDirections.add(stairDirectionRejectionSummary(direction, nextStand, reason));
+                continue;
+            }
             String futureInvalidReason = futureStairStandInvalidReason(nextStand, horizontalTarget, verticalTarget);
             if (futureInvalidReason != null) {
                 if (futureInvalidReason.startsWith("future_stand_invalid:support")
@@ -7131,10 +7679,7 @@ public final class StepExecutor {
         return support != Blocks.AIR
             && support != Blocks.BEDROCK
             && support != Blocks.WATER
-            && support != Blocks.LAVA
-            && support != Blocks.GRAVEL
-            && support != Blocks.SAND
-            && support != Blocks.RED_SAND;
+            && support != Blocks.LAVA;
     }
 
     private boolean isAirBlock(BlockPos pos) {
@@ -7150,10 +7695,7 @@ public final class StepExecutor {
             return true;
         }
         Block support = aiPlayer.level().getBlockState(standPos.below()).getBlock();
-        return !isSafeMiningRouteSupport(standPos)
-            || support == Blocks.GRAVEL
-            || support == Blocks.SAND
-            || support == Blocks.RED_SAND;
+        return !isSafeMiningRouteSupport(standPos);
     }
 
     private BlockPos breakableStairBlock(BlockPos pos) {
@@ -7166,8 +7708,7 @@ public final class StepExecutor {
         }
         Block block = aiPlayer.level().getBlockState(pos).getBlock();
         if (aiPlayer.level().getBlockState(pos).isAir()
-            || block == Blocks.BEDROCK || block == Blocks.WATER || block == Blocks.LAVA
-            || block == Blocks.GRAVEL || block == Blocks.SAND || block == Blocks.RED_SAND) {
+            || block == Blocks.BEDROCK || block == Blocks.WATER || block == Blocks.LAVA) {
             return null;
         }
         if (!SurvivalUtils.canHarvestBlock(aiPlayer, block)) {
@@ -7206,6 +7747,18 @@ public final class StepExecutor {
             && isSafeMiningRouteSupport(pos);
     }
 
+    private boolean canTreeStandAt(BlockPos pos) {
+        Level level = aiPlayer.level();
+        return isTreeStandSpace(level, pos)
+            && isTreeStandSpace(level, pos.above())
+            && isSafeMiningRouteSupport(pos);
+    }
+
+    private boolean isTreeStandSpace(Level level, BlockPos pos) {
+        BlockState state = level.getBlockState(pos);
+        return state.isAir() || state.getCollisionShape(level, pos).isEmpty();
+    }
+
     private boolean isSafeMiningMemoryStand(BlockPos pos) {
         if (pos == null || pos.getY() <= aiPlayer.level().getMinY()) {
             return false;
@@ -7215,9 +7768,6 @@ public final class StepExecutor {
         }
         Level level = aiPlayer.level();
         Block support = level.getBlockState(pos.below()).getBlock();
-        if (support == Blocks.GRAVEL || support == Blocks.SAND || support == Blocks.RED_SAND) {
-            return false;
-        }
         for (Direction direction : Direction.values()) {
             Block feetNeighbor = level.getBlockState(pos.relative(direction)).getBlock();
             Block headNeighbor = level.getBlockState(pos.above().relative(direction)).getBlock();
@@ -7454,11 +8004,12 @@ public final class StepExecutor {
         BlockPos logPos,
         BlockPos standPos,
         double penalty,
+        double structureScore,
         String reason,
         InteractionTarget interactionTarget
     ) {
         private double score(BlockPos current) {
-            return TreeTargetPolicy.workTargetScore(current, logPos, standPos) + penalty;
+            return TreeTargetPolicy.workTargetScore(current, logPos, standPos) + penalty + structureScore;
         }
     }
 
@@ -7500,6 +8051,7 @@ public final class StepExecutor {
         private final int minZ;
         private final int maxZ;
         private final List<BlockPos> pathCandidates = new ArrayList<>();
+        private final Map<BlockPos, Double> pathCandidateScores = new HashMap<>();
         private int x;
         private int y;
         private int z;
@@ -7555,14 +8107,16 @@ public final class StepExecutor {
             return x > maxX;
         }
 
-        private void addPathCandidate(BlockPos pos) {
+        private void addPathCandidate(BlockPos pos, double score) {
             pathCandidates.add(pos);
+            pathCandidateScores.put(pos, score);
             pathCandidates.sort(
-                Comparator.comparingDouble((BlockPos candidate) -> TreeTargetPolicy.scanCandidateScore(center, candidate))
+                Comparator.comparingDouble((BlockPos candidate) -> pathCandidateScores.getOrDefault(candidate, Double.MAX_VALUE))
                     .thenComparingDouble(candidate -> candidate.distSqr(center))
             );
             if (pathCandidates.size() > TREE_SCAN_PATH_CANDIDATE_LIMIT) {
-                pathCandidates.remove(pathCandidates.size() - 1);
+                BlockPos removed = pathCandidates.remove(pathCandidates.size() - 1);
+                pathCandidateScores.remove(removed);
             }
         }
 
@@ -7643,7 +8197,8 @@ public final class StepExecutor {
         boolean mineOre,
         boolean needsSupport,
         boolean blocked,
-        boolean exposureClearance
+        boolean exposureClearance,
+        boolean exposureStand
     ) {
         private TunnelTarget {
             target = target == null ? null : target.immutable();
@@ -7654,6 +8209,7 @@ public final class StepExecutor {
                 target,
                 new MiningTunnelStepper.Plan(MiningTunnelStepper.Action.MOVE, target, "ore_workable", null),
                 true,
+                false,
                 false,
                 false,
                 false
@@ -7667,20 +8223,25 @@ public final class StepExecutor {
                 false,
                 false,
                 false,
-                true
+                true,
+                false
             );
         }
 
         static TunnelTarget clearance(MiningTunnelStepper.Plan step) {
-            return new TunnelTarget(step == null ? null : step.target(), safeStep(step), false, false, false, false);
+            return new TunnelTarget(step == null ? null : step.target(), safeStep(step), false, false, false, false, false);
         }
 
         static TunnelTarget support(MiningTunnelStepper.Plan step) {
-            return new TunnelTarget(step == null ? null : step.target(), safeStep(step), false, true, false, false);
+            return new TunnelTarget(step == null ? null : step.target(), safeStep(step), false, true, false, false, false);
         }
 
         static TunnelTarget blocked(MiningTunnelStepper.Plan step) {
-            return new TunnelTarget(step == null ? null : step.target(), safeStep(step), false, false, true, false);
+            return new TunnelTarget(step == null ? null : step.target(), safeStep(step), false, false, true, false, false);
+        }
+
+        static TunnelTarget exposureStand(MiningTunnelStepper.Plan step) {
+            return new TunnelTarget(step == null ? null : step.target(), safeStep(step), false, false, false, false, true);
         }
 
         String reason() {

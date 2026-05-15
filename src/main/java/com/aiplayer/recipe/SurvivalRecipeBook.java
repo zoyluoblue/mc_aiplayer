@@ -43,7 +43,9 @@ public final class SurvivalRecipeBook {
         "minecraft:acacia_log",
         "minecraft:dark_oak_log",
         "minecraft:mangrove_log",
-        "minecraft:cherry_log"
+        "minecraft:cherry_log",
+        "minecraft:crimson_stem",
+        "minecraft:warped_stem"
     );
     public static final List<String> WOOD_PLANKS = List.of(
         "minecraft:oak_planks",
@@ -53,7 +55,9 @@ public final class SurvivalRecipeBook {
         "minecraft:acacia_planks",
         "minecraft:dark_oak_planks",
         "minecraft:mangrove_planks",
-        "minecraft:cherry_planks"
+        "minecraft:cherry_planks",
+        "minecraft:crimson_planks",
+        "minecraft:warped_planks"
     );
     public static final Map<String, String> PLANK_TO_LOG = Map.ofEntries(
         Map.entry("minecraft:oak_planks", "minecraft:oak_log"),
@@ -63,7 +67,9 @@ public final class SurvivalRecipeBook {
         Map.entry("minecraft:acacia_planks", "minecraft:acacia_log"),
         Map.entry("minecraft:dark_oak_planks", "minecraft:dark_oak_log"),
         Map.entry("minecraft:mangrove_planks", "minecraft:mangrove_log"),
-        Map.entry("minecraft:cherry_planks", "minecraft:cherry_log")
+        Map.entry("minecraft:cherry_planks", "minecraft:cherry_log"),
+        Map.entry("minecraft:crimson_planks", "minecraft:crimson_stem"),
+        Map.entry("minecraft:warped_planks", "minecraft:warped_stem")
     );
     public static final Map<String, String> DOOR_TO_PLANK = Map.ofEntries(
         Map.entry("minecraft:oak_door", "minecraft:oak_planks"),
@@ -73,7 +79,9 @@ public final class SurvivalRecipeBook {
         Map.entry("minecraft:acacia_door", "minecraft:acacia_planks"),
         Map.entry("minecraft:dark_oak_door", "minecraft:dark_oak_planks"),
         Map.entry("minecraft:mangrove_door", "minecraft:mangrove_planks"),
-        Map.entry("minecraft:cherry_door", "minecraft:cherry_planks")
+        Map.entry("minecraft:cherry_door", "minecraft:cherry_planks"),
+        Map.entry("minecraft:crimson_door", "minecraft:crimson_planks"),
+        Map.entry("minecraft:warped_door", "minecraft:warped_planks")
     );
 
     private static final Map<String, Definition> RECIPES = new LinkedHashMap<>();
@@ -81,6 +89,32 @@ public final class SurvivalRecipeBook {
     private static final Map<String, String> BASE_SOURCES = new HashMap<>();
     private static final Map<String, String> BASE_TOOLS = new HashMap<>();
     private static final Map<String, Integer> SOURCE_DROP_COUNTS = new HashMap<>();
+    private static final List<String> FURNACE_FUEL_ITEMS = List.of(
+        "minecraft:coal",
+        "minecraft:charcoal",
+        "minecraft:oak_log",
+        "minecraft:spruce_log",
+        "minecraft:birch_log",
+        "minecraft:jungle_log",
+        "minecraft:acacia_log",
+        "minecraft:dark_oak_log",
+        "minecraft:mangrove_log",
+        "minecraft:cherry_log",
+        "minecraft:oak_planks",
+        "minecraft:spruce_planks",
+        "minecraft:birch_planks",
+        "minecraft:jungle_planks",
+        "minecraft:acacia_planks",
+        "minecraft:dark_oak_planks",
+        "minecraft:mangrove_planks",
+        "minecraft:cherry_planks",
+        "minecraft:wooden_pickaxe",
+        "minecraft:wooden_axe",
+        "minecraft:wooden_shovel",
+        "minecraft:wooden_hoe",
+        "minecraft:wooden_sword"
+    );
+    private static final String FALLBACK_FURNACE_FUEL = "minecraft:oak_log";
     private static final int MAX_RECIPE_VARIANTS = 256;
 
     static {
@@ -126,6 +160,7 @@ public final class SurvivalRecipeBook {
         alias("minecraft:chest", "chest", "箱子");
         alias("minecraft:torch", "torch", "torches", "火把");
         alias("minecraft:furnace", "furnace", "熔炉");
+        alias("minecraft:cobblestone", "cobblestone", "圆石");
         alias("minecraft:coal", "coal", "煤", "煤炭");
         alias("minecraft:raw_iron", "rawiron", "生铁", "粗铁", "铁矿");
         alias("minecraft:iron_ingot", "ironingot", "铁锭");
@@ -292,6 +327,18 @@ public final class SurvivalRecipeBook {
             return WOOD_PLANKS;
         }
         return item == null || item.isBlank() ? List.of() : List.of(item);
+    }
+
+    public static boolean isFurnaceFuelRequirement(String item) {
+        return "minecraft:coal".equals(item);
+    }
+
+    public static List<String> furnaceFuelItems() {
+        return FURNACE_FUEL_ITEMS;
+    }
+
+    public static String fallbackFurnaceFuelItem() {
+        return FALLBACK_FURNACE_FUEL;
     }
 
     public static int sourceDropCount(String item, String source) {

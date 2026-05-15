@@ -19,6 +19,7 @@ public final class ResourceGatherSession {
     private static final int MAX_SAFE_MINING_POINTS = 48;
 
     private final Map<String, ResourceState> states = new HashMap<>();
+    private final Map<String, BlockPos> knownStations = new HashMap<>();
 
     public ResourceState stateFor(String resourceKey, BlockPos currentPos) {
         ResourceState state = states.computeIfAbsent(resourceKey, ResourceState::new);
@@ -32,6 +33,35 @@ public final class ResourceGatherSession {
 
     public ResourceState miningState(BlockPos currentPos) {
         return stateFor("mining", currentPos);
+    }
+
+    public void rememberStation(String stationItem, BlockPos pos) {
+        if (stationItem == null || stationItem.isBlank() || pos == null) {
+            return;
+        }
+        knownStations.put(stationItem, pos.immutable());
+    }
+
+    public Optional<BlockPos> knownStation(String stationItem) {
+        if (stationItem == null || stationItem.isBlank()) {
+            return Optional.empty();
+        }
+        BlockPos pos = knownStations.get(stationItem);
+        return pos == null ? Optional.empty() : Optional.of(pos.immutable());
+    }
+
+    public void forgetStation(String stationItem, BlockPos pos) {
+        if (stationItem == null || stationItem.isBlank()) {
+            return;
+        }
+        if (pos == null) {
+            knownStations.remove(stationItem);
+            return;
+        }
+        BlockPos current = knownStations.get(stationItem);
+        if (pos.equals(current)) {
+            knownStations.remove(stationItem);
+        }
     }
 
     public void saveToNBT(CompoundTag tag) {
@@ -50,11 +80,27 @@ public final class ResourceGatherSession {
             stateTags.add(stateTag);
         }
         tag.put("States", stateTags);
+        ListTag stationTags = new ListTag();
+        for (Map.Entry<String, BlockPos> entry : knownStations.entrySet()) {
+            BlockPos pos = entry.getValue();
+            if (pos == null) {
+                continue;
+            }
+            CompoundTag stationTag = new CompoundTag();
+            stationTag.putString("Item", entry.getKey());
+            stationTag.putInt("X", pos.getX());
+            stationTag.putInt("Y", pos.getY());
+            stationTag.putInt("Z", pos.getZ());
+            stationTags.add(stationTag);
+        }
+        tag.put("KnownStations", stationTags);
     }
 
     public void loadFromNBT(CompoundTag tag) {
         states.clear();
+        knownStations.clear();
         if (tag == null || !tag.contains("States")) {
+            loadKnownStations(tag);
             return;
         }
         ListTag stateTags = tag.getList("States", 10);
@@ -66,6 +112,26 @@ public final class ResourceGatherSession {
             }
             ResourceState state = states.computeIfAbsent(key, ResourceState::new);
             state.recordFishboneSnapshot(loadFishboneSnapshot(stateTag.getCompound("Fishbone")));
+        }
+        loadKnownStations(tag);
+    }
+
+    private void loadKnownStations(CompoundTag tag) {
+        if (tag == null || !tag.contains("KnownStations")) {
+            return;
+        }
+        ListTag stationTags = tag.getList("KnownStations", 10);
+        for (int i = 0; i < stationTags.size(); i++) {
+            CompoundTag stationTag = stationTags.getCompound(i);
+            String item = stationTag.getString("Item");
+            if (item == null || item.isBlank()) {
+                continue;
+            }
+            knownStations.put(item, new BlockPos(
+                stationTag.getInt("X"),
+                stationTag.getInt("Y"),
+                stationTag.getInt("Z")
+            ));
         }
     }
 

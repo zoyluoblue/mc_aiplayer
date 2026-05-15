@@ -34,17 +34,18 @@ public final class MiningGoalResolver {
             return Optional.empty();
         }
 
-        boolean explicitOreBlock = isExplicitOreBlockTarget(safeInput, profile);
-        String finalItem = explicitOreBlock ? profile.item() : profile.item();
         return Optional.of(new Goal(
             safeInput,
-            finalItem,
+            requestedItem(safeInput, normalizedItem, profile),
+            profile.item(),
             profile.item(),
             profile.source(),
             profile.blockIds(),
             false,
             null,
+            null,
             profile.requiredTool(),
+            profile.requiredToolTier(),
             profile.dimension(),
             profile
         ));
@@ -66,13 +67,16 @@ public final class MiningGoalResolver {
         }
         return Optional.of(new Goal(
             item == null || item.isBlank() ? source : item,
+            item == null || item.isBlank() ? source : item,
             profile.item(),
             profile.item(),
             profile.source(),
             profile.blockIds(),
             false,
             null,
+            null,
             profile.requiredTool(),
+            profile.requiredToolTier(),
             profile.dimension(),
             profile
         ));
@@ -86,15 +90,31 @@ public final class MiningGoalResolver {
         return Optional.of(new Goal(
             input,
             smeltedProduct.finalItem(),
+            smeltedProduct.finalItem(),
             profile.item(),
             profile.source(),
             profile.blockIds(),
             true,
+            smeltedProduct.rawItem(),
             "minecraft:furnace",
             profile.requiredTool(),
+            profile.requiredToolTier(),
             profile.dimension(),
             profile
         ));
+    }
+
+    private static String requestedItem(String input, String normalizedItem, MiningResource.Profile profile) {
+        if (profile == null) {
+            return normalizedItem;
+        }
+        String normalizedInput = normalize(input);
+        for (String blockId : profile.blockIds()) {
+            if (normalizedInput.equals(normalize(blockId))) {
+                return blockId;
+            }
+        }
+        return profile.item();
     }
 
     public static boolean isExplicitOreBlockTarget(String input, MiningResource.Profile profile) {
@@ -125,16 +145,23 @@ public final class MiningGoalResolver {
 
     public record Goal(
         String input,
+        String requestedItem,
         String finalItem,
         String directMiningItem,
         String source,
         List<String> blockIds,
         boolean needsSmelting,
+        String smeltingInput,
         String station,
         String requiredTool,
+        MiningToolTier requiredToolTier,
         String dimension,
         MiningResource.Profile profile
     ) {
+        public List<String> sourceBlocks() {
+            return blockIds;
+        }
+
         public String profileKey() {
             return profile.key();
         }

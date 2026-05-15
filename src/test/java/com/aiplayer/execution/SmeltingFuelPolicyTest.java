@@ -14,14 +14,17 @@ class SmeltingFuelPolicyTest {
         Map<String, Integer> inventory = Map.of(
             "minecraft:charcoal", 1,
             "minecraft:oak_log", 2,
-            "minecraft:birch_planks", 3
+            "minecraft:birch_planks", 3,
+            "minecraft:wooden_pickaxe", 1
         );
 
-        assertEquals(6, SmeltingFuelPolicy.countFuel(inventory));
+        assertEquals(7, SmeltingFuelPolicy.countFuel(inventory));
         assertTrue(SmeltingFuelPolicy.fuelItems().contains("minecraft:coal"));
         assertTrue(SmeltingFuelPolicy.fuelItems().contains("minecraft:charcoal"));
         assertTrue(SmeltingFuelPolicy.fuelItems().contains("minecraft:oak_log"));
         assertTrue(SmeltingFuelPolicy.fuelItems().contains("minecraft:oak_planks"));
+        assertTrue(SmeltingFuelPolicy.fuelItems().contains("minecraft:wooden_pickaxe"));
+        assertFalse(SmeltingFuelPolicy.fuelItems().contains("minecraft:stick"));
     }
 
     @Test

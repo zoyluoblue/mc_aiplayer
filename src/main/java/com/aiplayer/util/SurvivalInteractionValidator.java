@@ -35,6 +35,19 @@ public final class SurvivalInteractionValidator {
         return ValidationResult.ok();
     }
 
+    public static ValidationResult canUseBlock(AiPlayerEntity aiPlayer, BlockPos pos, double range) {
+        if (aiPlayer == null || pos == null) {
+            return ValidationResult.invalid("missing_target");
+        }
+        if (!isWithinReach(aiPlayer, pos, range)) {
+            return ValidationResult.invalid("out_of_reach");
+        }
+        if (!hasClearReachToBlock(aiPlayer, pos)) {
+            return ValidationResult.invalid("blocked_line_of_sight");
+        }
+        return ValidationResult.ok();
+    }
+
     public static PlacementResult canPlaceBlock(AiPlayerEntity aiPlayer, BlockPos pos) {
         if (aiPlayer == null || pos == null) {
             return PlacementResult.invalid("missing_target");

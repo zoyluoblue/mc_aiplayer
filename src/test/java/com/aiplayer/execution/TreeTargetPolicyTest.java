@@ -51,4 +51,21 @@ class TreeTargetPolicyTest {
             TreeTargetPolicy.standFeetToBlockCenterDistanceSq(stand, stableThreeBlocksAway)
         ));
     }
+
+    @Test
+    void noReachableTreeScansDoNotFailBeforeExplorationIsExhausted() {
+        assertTrue(!TreeTargetPolicy.shouldFailNoReachableScan(4, 4, 5, 12, false));
+        assertTrue(!TreeTargetPolicy.shouldFailNoReachableScan(4, 4, 12, 12, true));
+        assertTrue(TreeTargetPolicy.shouldFailNoReachableScan(4, 4, 12, 12, false));
+    }
+
+    @Test
+    void structureScorePrefersRealTreeBottomLogs() {
+        double realTreeBottom = TreeTargetPolicy.structureScoreAdjustment(8, 5, true);
+        double isolatedLog = TreeTargetPolicy.structureScoreAdjustment(0, 1, true);
+        double upperTreeLog = TreeTargetPolicy.structureScoreAdjustment(8, 5, false);
+
+        assertTrue(realTreeBottom < isolatedLog);
+        assertTrue(realTreeBottom < upperTreeLog);
+    }
 }

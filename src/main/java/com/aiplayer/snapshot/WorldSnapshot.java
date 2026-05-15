@@ -1,6 +1,7 @@
 package com.aiplayer.snapshot;
 
 import com.aiplayer.entity.AiPlayerEntity;
+import com.aiplayer.util.SurvivalInteractionValidator;
 import com.aiplayer.util.SurvivalUtils;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -17,6 +18,7 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.pathfinder.Path;
 import net.minecraft.world.phys.AABB;
 
 import java.util.ArrayList;
@@ -89,6 +91,43 @@ public final class WorldSnapshot {
                     "feet", "minecraft:air"
                 ),
                 List.of(),
+                "",
+                false,
+                false,
+                false
+            ),
+            new WorldState("minecraft:overworld", "unknown", 0L, "day", 0),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of()
+        );
+    }
+
+    public static WorldSnapshot withAiInventory(String playerCommand, Map<String, Integer> inventory) {
+        List<InventorySnapshot> stacks = new ArrayList<>();
+        int slot = 0;
+        for (Map.Entry<String, Integer> entry : (inventory == null ? Map.<String, Integer>of() : inventory).entrySet()) {
+            int count = Math.max(0, entry.getValue());
+            if (count > 0 && entry.getKey() != null && !entry.getKey().isBlank()) {
+                stacks.add(new InventorySnapshot(slot++, entry.getKey(), count, 0, 0));
+            }
+        }
+        return new WorldSnapshot(
+            playerCommand == null ? "" : playerCommand,
+            new AiState(
+                "test",
+                new int[] {0, 64, 0},
+                20.0F,
+                20.0F,
+                "minecraft:air",
+                Map.of(
+                    "head", "minecraft:air",
+                    "chest", "minecraft:air",
+                    "legs", "minecraft:air",
+                    "feet", "minecraft:air"
+                ),
+                stacks,
                 "",
                 false,
                 false,
@@ -216,9 +255,10 @@ public final class WorldSnapshot {
 
     private static boolean isReachable(AiPlayerEntity aiPlayer, BlockPos pos) {
         if (aiPlayer.blockPosition().closerThan(pos, 5.0)) {
-            return true;
+            return SurvivalInteractionValidator.hasClearReachToBlock(aiPlayer, pos);
         }
-        return aiPlayer.getNavigation().createPath(pos, 1) != null;
+        Path path = aiPlayer.getNavigation().createPath(pos, 1);
+        return path != null && path.canReach();
     }
 
     private static boolean isKeyBlock(Block block) {

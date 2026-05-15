@@ -3,10 +3,13 @@ package com.aiplayer.recipe;
 import com.aiplayer.AiPlayerMod;
 import com.aiplayer.entity.AiPlayerEntity;
 import com.aiplayer.snapshot.WorldSnapshot;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -199,7 +202,9 @@ public final class RecipeResolver {
         for (MaterialRequirement requirement : definition.requires()) {
             MaterialRequirement batched = MaterialRequirement.of(requirement.getItem(), requirement.getCount() * batches);
             batchedRequirements.add(batched);
-            ResolveResult requirementResult = satisfyIngredient(aiPlayer, snapshot, batched.getItem(), batched.getCount(), materials, chain, missingBaseResources, stack);
+            ResolveResult requirementResult = isSmeltingFuelRequirement(definition, batched)
+                ? satisfyFuelIngredient(aiPlayer, snapshot, batched.getCount(), materials, chain, missingBaseResources, stack)
+                : satisfyIngredient(aiPlayer, snapshot, batched.getItem(), batched.getCount(), materials, chain, missingBaseResources, stack);
             if (!requirementResult.success()) {
                 return requirementResult;
             }
@@ -229,6 +234,47 @@ public final class RecipeResolver {
         return ResolveResult.ok();
     }
 
+    private ResolveResult satisfyFuelIngredient(
+        AiPlayerEntity aiPlayer,
+        WorldSnapshot snapshot,
+        int count,
+        MissingMaterialResolver materials,
+        List<RecipeNode> chain,
+        List<MaterialRequirement> missingBaseResources,
+        Set<String> stack
+    ) {
+        MissingMaterialResolver.TakeResult existing = materials.takeFuelForIngredient(SurvivalRecipeBook.furnaceFuelItems(), count);
+        addWithdrawNodes(chain, existing.fromChestItems());
+        if (existing.missing() <= 0) {
+            return ResolveResult.ok();
+        }
+        return produceMissing(
+            aiPlayer,
+            snapshot,
+            SurvivalRecipeBook.fallbackFurnaceFuelItem(),
+            existing.missing(),
+            true,
+            materials,
+            chain,
+            missingBaseResources,
+            stack
+        );
+    }
+
+    private boolean isSmeltingFuelRequirement(RecipeDefinition definition, MaterialRequirement requirement) {
+        return definition != null
+            && isSmeltingStation(definition.station())
+            && requirement != null
+            && SurvivalRecipeBook.isFurnaceFuelRequirement(requirement.getItem());
+    }
+
+    private boolean isSmeltingStation(String station) {
+        return "furnace".equals(station)
+            || "blast_furnace".equals(station)
+            || "smoker".equals(station)
+            || "campfire".equals(station);
+    }
+
     private ResolveResult ensureNonConsumableItem(
         AiPlayerEntity aiPlayer,
         WorldSnapshot snapshot,
@@ -239,6 +285,9 @@ public final class RecipeResolver {
         Set<String> stack
     ) {
         if (materials.getBackpackCount(item) > 0) {
+            return ResolveResult.ok();
+        }
+        if (isReusableStationItem(item) && (isReachableBlockInSnapshot(snapshot, item) || isKnownReusableStation(aiPlayer, item))) {
             return ResolveResult.ok();
         }
         MissingMaterialResolver.TakeResult movedFromChest = materials.withdrawToBackpackDetailed(item, 1);
@@ -338,6 +387,47 @@ public final class RecipeResolver {
             }
         }
         return false;
+    }
+
+    private boolean isReusableStationItem(String item) {
+        return Set.of(
+            "minecraft:crafting_table",
+            "minecraft:furnace",
+            "minecraft:blast_furnace",
+            "minecraft:smoker",
+            "minecraft:campfire"
+        ).contains(item);
+    }
+
+    private boolean isKnownReusableStation(AiPlayerEntity aiPlayer, String item) {
+        if (aiPlayer == null || aiPlayer.getResourceGatherSession() == null) {
+            return false;
+        }
+        Optional<BlockPos> pos = aiPlayer.getResourceGatherSession().knownStation(item);
+        if (pos.isEmpty()) {
+            return false;
+        }
+        Block expected = blockFromItemId(item);
+        if (expected == Blocks.AIR) {
+            return false;
+        }
+        if (!aiPlayer.level().hasChunkAt(pos.get())) {
+            return true;
+        }
+        if (aiPlayer.level().getBlockState(pos.get()).getBlock() == expected) {
+            return true;
+        }
+        aiPlayer.getResourceGatherSession().forgetStation(item, pos.get());
+        return false;
+    }
+
+    private Block blockFromItemId(String item) {
+        try {
+            return BuiltInRegistries.BLOCK.getValue(ResourceLocation.parse(item));
+        } catch (RuntimeException e) {
+            AiPlayerMod.warn("recipe", "Invalid station block id in recipe resolver: {}", item);
+            return Blocks.AIR;
+        }
     }
 
     private Item itemFromId(String item) {

@@ -26,7 +26,7 @@ class SurvivalRecipePlanningTest {
         assertHasCraft(plan, "minecraft:stone_pickaxe", "crafting_table");
         assertHasCraft(plan, "minecraft:furnace", "crafting_table");
         assertHasGather(plan, "minecraft:raw_iron", "iron_ore");
-        assertHasGather(plan, "minecraft:coal", "coal_ore");
+        assertNoNode(plan, "minecraft:coal");
         assertBefore(plan, "minecraft:stone_pickaxe", "minecraft:furnace");
         assertBefore(plan, "minecraft:stone_pickaxe", "minecraft:raw_iron");
     }
@@ -39,7 +39,7 @@ class SurvivalRecipePlanningTest {
         assertHasCraft(plan, "minecraft:iron_pickaxe", "crafting_table");
         assertHasCraft(plan, "minecraft:iron_ingot", "furnace");
         assertHasGather(plan, "minecraft:raw_iron", "iron_ore");
-        assertHasGather(plan, "minecraft:coal", "coal_ore");
+        assertNoNode(plan, "minecraft:coal");
         assertNoNode(plan, "minecraft:raw_iron_block");
         assertNoNode(plan, "minecraft:coal_block");
         assertBefore(plan, "minecraft:stone_pickaxe", "minecraft:furnace");
@@ -81,7 +81,7 @@ class SurvivalRecipePlanningTest {
         assertTrue(plan.isSuccess(), plan.getFailureReason());
         assertHasCraft(plan, "minecraft:iron_pickaxe", "crafting_table");
         assertHasGather(plan, "minecraft:raw_gold", "gold_ore");
-        assertHasGather(plan, "minecraft:coal", "coal_ore");
+        assertNoNode(plan, "minecraft:coal");
         assertHasCraft(plan, "minecraft:gold_ingot", "furnace");
         assertBefore(plan, "minecraft:iron_pickaxe", "minecraft:raw_gold");
         assertBefore(plan, "minecraft:raw_gold", "minecraft:gold_ingot");
@@ -123,6 +123,14 @@ class SurvivalRecipePlanningTest {
     }
 
     @Test
+    void genericWoodRequirementsIncludeNetherStemsAndPlanks() {
+        assertTrue(SurvivalRecipeBook.equivalentMaterialItems("minecraft:oak_log").contains("minecraft:crimson_stem"));
+        assertTrue(SurvivalRecipeBook.equivalentMaterialItems("minecraft:oak_log").contains("minecraft:warped_stem"));
+        assertTrue(SurvivalRecipeBook.equivalentMaterialItems("minecraft:oak_planks").contains("minecraft:crimson_planks"));
+        assertTrue(SurvivalRecipeBook.equivalentMaterialItems("minecraft:oak_planks").contains("minecraft:warped_planks"));
+    }
+
+    @Test
     void cookedBeefExpandsToCowFuelAndFurnace() {
         RecipePlan plan = recipeResolver.resolve(null, emptySnapshot, "minecraft:cooked_beef", 1);
 
@@ -130,7 +138,23 @@ class SurvivalRecipePlanningTest {
         assertHasCraft(plan, "minecraft:cooked_beef", "furnace");
         assertHasCraft(plan, "minecraft:furnace", "crafting_table");
         assertHasGather(plan, "minecraft:beef", "mob:minecraft:cow");
-        assertHasGather(plan, "minecraft:coal", "coal_ore");
+        assertNoNode(plan, "minecraft:coal");
+    }
+
+    @Test
+    void smeltingUsesExistingWoodFuelInsteadOfAddingCoalStep() {
+        WorldSnapshot snapshot = WorldSnapshot.withAiInventory("", Map.of(
+            "minecraft:raw_iron", 3,
+            "minecraft:furnace", 1,
+            "minecraft:oak_planks", 3
+        ));
+
+        RecipePlan plan = recipeResolver.resolve(null, snapshot, "minecraft:iron_ingot", 3);
+
+        assertTrue(plan.isSuccess(), plan.getFailureReason());
+        assertHasCraft(plan, "minecraft:iron_ingot", "furnace");
+        assertNoNode(plan, "minecraft:coal");
+        assertNoNode(plan, "minecraft:oak_planks");
     }
 
     @Test

@@ -144,7 +144,7 @@
 2. 管理器会强制保持 AI 当前区块加载，降低玩家 `/tp` 或远距离移动后 AI 实体被区块卸载的概率。
 3. 服务端 tick 会重新注册世界中已加载但 manager 尚未索引的 AI，避免服务端重启或存档加载后 `/ai list` 找不到旧 AI。
 4. 如果恢复过程中发现同 owner/name 的旧副本，会避免形成两个可操作 AI；旧副本只作为重复实体清理，真正玩家 AI 的索引、背包和记忆保留。
-5. 找不到安全恢复位置时不会把 AI 放到危险或不可站立位置，而是保留 inactive 索引等待后续恢复。
+5. 恢复位置搜索改为多级策略：先找标准可站立位置，再找脚下可不稳定但身体可放置的位置，最后在玩家附近强制恢复。由于当前 AI 完全无敌，玩家处于矿洞、岩浆、半空、狭窄通道或没有标准安全站位时，也不会因为找不到安全恢复点而卡住 inactive 状态。
 6. `/ai remove` 会写入持久化删除墓碑 `config/aiplayer_removed_ai.json`，记录 owner、已删除 AI UUID 和重新生成后允许注册的新 AI UUID；后续区块加载或服务端重启时，旧 AI 副本不会重新注册复活。
 
 验证结果：
@@ -3739,3 +3739,552 @@
 6. 验证通过：`./gradlew build`。
 7. agent2 初审无 Must Fix，提出 1 个文档去歧义 Should Fix；修复后复审无 Must Fix / Should Fix。
 8. 本轮完成自动化和文档验收；GUI 实机长链路未在本轮执行，后续按 `docs/mining-regression.md` 模板补充 taskId、日志片段和最终背包记录。
+
+## 16. 强制目标层下探
+
+本阶段针对 `task-16bf9b52` 暴露的问题修复：AI 在金锭链路的圆石前置阶段已经完成木镐，但下探时反复在“选择起挖点”和“前往矿区”之间循环。它尝试挖斜下方泥土前，没有先清理前方脚部通道，导致真实生存破坏被 `blocked_line_of_sight` 拒绝；同时清理草、泥土等覆盖层没有计为有效下探进展，最终被 `stone_no_progress` 提前终止。
+
+### 16.1 指定 Y 层到达器
+
+状态：`[x] 已完成`
+
+目标：挖矿或采石需要先到达预设目标层时，AI 先稳定挖出可通行阶梯到目标 Y 层，再进入裸露石头、主矿道或鱼骨搜索。
+
+开发内容：
+
+1. 指定目标层下探时，预算按当前位置到目标层的高度差动态扩展，避免默认圆石下探预算不足。
+2. 当前高度仍高于目标层时，不再反复重选地表起挖点，而是锁定当前下探会话向下推进。
+3. 阶梯每一步固定按“前方脚部 -> 前方头部 -> 斜下脚部 -> 移动到下一阶”执行，保证两格高实体能走下去。
+4. 统一通道策略在下行时优先清理前方通行空间，再挖斜下方站位，避免视线被前方脚部方块挡住。
+5. 清理草、泥土、树叶等覆盖层时重置下探无进展计数，并在 `mining.log` 记录 `layer_descent_progress`。
+
+验收标准：
+
+1. `gather_stone minecraft:cobblestone x3` 不会因为先挖斜下方、被前方脚部方块挡住视线而卡死。
+2. AI 从地表到目标层期间，覆盖层破坏被视为下探进展，不会提前触发 `stone_no_progress`。
+3. 水平矿道、阶梯下挖和通用移动模拟器的清理顺序保持一致。
+
+验证方式：`./gradlew test --tests com.aiplayer.execution.StairDescentControllerTest --tests com.aiplayer.execution.MiningPassagePolicyTest --tests com.aiplayer.execution.MiningMovementSimulatorTest --tests com.aiplayer.execution.MiningTunnelStepperTest --tests com.aiplayer.execution.MiningRegressionMatrixTest`；`./gradlew build`；agent2 审核下探顺序、无进展计数和文档状态。
+
+完成记录：
+
+1. `StairDescentController.clearancePhase(...)` 已调整为先清前方脚部、再清前方头部、最后挖斜下脚部，避免先挖下方方块时被前方方块挡住视线。
+2. `MiningPassagePolicy` 的下行通道判断与阶梯状态机对齐，通用移动模拟器和矿道 stepper 都按同一顺序输出动作。
+3. `StepExecutor` 在当前位置高于路线目标层时跳过反复重选 `stoneDescentStartTarget`，改为锁定当前下探会话继续向目标层推进。
+4. 下探预算会按当前 Y 到目标 Y 的高度差动态扩展，并保留额外余量，避免还没到目标层就耗尽默认圆石下探预算。
+5. 目标层以上破坏覆盖层会重置 `ticksWithoutItemProgress` 并记录 `layer_descent_progress`，避免清理泥土、草方块或树叶时被误判为没有采集进展。
+6. `README.md` 已更新强制目标层下探玩法说明；`docs/mining-regression.md` 已记录 `task-16bf9b52` 回归样本。
+7. 验证通过：`./gradlew test --tests com.aiplayer.execution.StairDescentControllerTest --tests com.aiplayer.execution.MiningPassagePolicyTest --tests com.aiplayer.execution.MiningMovementSimulatorTest --tests com.aiplayer.execution.MiningTunnelStepperTest --tests com.aiplayer.execution.MiningRegressionMatrixTest`。
+8. 验证通过：`./gradlew build`。
+9. agent2 只读审查无 Must Fix / Should Fix，确认可以标记 phase 16.1 完成。
+
+### 16.2 工作站复用与真实路径可达
+
+状态：`[x] 已完成`
+
+目标：修复金锭长链路中完成圆石后，制作石镐却重新要求砍树的问题；同时修复树木目标“扫描时看似可达、实际导航到不了站位”导致反复卡住的问题。
+
+开发内容：
+
+1. 非消耗工作站需求先检查观察层里真实存在且可达的工作台、熔炉等方块。
+2. 工作站执行器的搜索范围与观察层对齐，避免 AI 走远后忘记刚放过的工作台或熔炉。
+3. 路径可达判断从“`createPath(...) != null`”升级为“`Path.canReach()`”，避免把原版未到达目标的部分路径当成可用路线。
+4. 树木采集、直接采集和世界快照使用同一套真实可达路径语义。
+5. 保留生存规则：工作站必须来自真实放置方块、背包、箱子或递归制作，不能凭空满足。
+
+验收标准：
+
+1. 背包已有圆石、木棍且附近已有工作台时，制作石镐不会重新进入砍树链路。
+2. 树木搜索不会反复选择 `Path.canReach()` 为 false 的站位。
+3. 直接采集和制作链采集的树木路径判断一致。
+4. 观察层不会把只有部分 path 的工作台、箱子或关键方块标记为可达。
+
+验证方式：`./gradlew test --tests com.aiplayer.recipe.SurvivalRecipePlanningTest --tests com.aiplayer.execution.TreeTargetPolicyTest --tests com.aiplayer.execution.MiningRegressionMatrixTest`；`./gradlew build`；agent2 审核工作站复用、路径可达和文档状态。
+
+完成记录：
+
+1. `RecipeResolver` 在处理工作台、熔炉、高炉、烟熏炉和营火这类非消耗工作站时，会优先复用观察层中真实存在且可达的工作站方块；否则仍按背包、可达箱子或递归制作处理。
+2. `StepExecutor` 的工作站搜索半径已扩大到和观察层一致，制作链重建后更容易找到同一任务中刚放置过的工作台或熔炉。
+3. `StepExecutor`、`GatherResourceAction` 和 `WorldSnapshot` 的路径可达判断改为 `Path.canReach()`，避免把原版未到达目标的部分 path 当成可执行站位。
+4. `SurvivalInteractionValidator` 新增 `canUseBlock(...)`；工作站 direct 使用和合成前验证都要求距离和视线通过，避免隔墙或超距使用工作台、熔炉。
+5. `README.md` 已说明非消耗工作站来源和真实可达路径语义；`docs/mining-regression.md` 已记录 `task-f7c1f684` 回归样本。
+6. 验证通过：`./gradlew test --tests com.aiplayer.recipe.SurvivalRecipePlanningTest --tests com.aiplayer.execution.TreeTargetPolicyTest --tests com.aiplayer.execution.MiningRegressionMatrixTest`。
+7. 验证通过：`./gradlew build`。
+8. agent2 初审提出 2 个 Must Fix；修复后复审无 Must Fix，建议后续补更贴近 16.2 的专项回归测试。
+
+### 16.3 实体恢复诊断与高处空探矿恢复
+
+状态：`[x] 已完成`
+
+目标：修复 `task-d1badba9` 中 AI 挖金矿途中实体恢复到玩家附近后，因为当前位置高于金矿目标层、首次探矿扫描没有候选而直接终止任务的问题；同时补足实体 unload 诊断，让后续能判断旧 AI 实体为何变成 unusable。
+
+开发内容：
+
+1. AI 实体恢复前记录旧实体名称、UUID、owner、存活状态、removed 状态、`RemovalReason`、原位置、原维度、owner 位置和 owner 维度。
+2. 所有 `AiPlayerManager` 内部主动 `discard()` AI 的路径统一写入原因，包含 discard 前后的 removed 状态和 removal reason。
+3. 恢复成功日志记录旧位置和旧 removal reason，避免只看到笼统的 `after entity unload`。
+4. 探矿扫描在目标矿层以上返回空结果时，不再触发 `prospect_not_found` 终止，而是写入 `empty prospect scan above target layer` 并继续目标层下探。
+5. 保留真正终止条件：到达目标层或没有继续下探条件后，多轮探矿仍找不到目标才允许进入失败分类。
+
+验收标准：
+
+1. 下一次 AI 实体变为 unusable 时，`player.log` 能看到具体 removal reason 和恢复前后位置。
+2. 玩家在高处、山上或恢复到玩家附近后，金矿/钻石等深层矿不会因为当前高度首次扫描为空直接失败。
+3. 修复不绕过生存规则：仍然需要真实工具、真实挖掘通道、真实背包容量和真实方块破坏。
+
+验证方式：`./gradlew build`；agent2 审核恢复诊断、discard 日志和高处空探矿继续下探逻辑。
+
+完成记录：
+
+1. `AiPlayerManager` 增加恢复前诊断日志，记录 unusable AI 的 `alive/removed/removalReason/pos/level/ownerPos/ownerLevel`。
+2. `AiPlayerManager` 内部主动丢弃 AI 实体的路径改为 `discardAiPlayer(...)`，统一记录 discard 原因和前后 `RemovalReason`。
+3. `StepExecutor` 增加 `shouldContinueDescentAfterEmptyProspect()`，当当前位置仍高于路线目标层或资源推荐层时，空探矿结果会回到下探流程而不是终止任务。
+4. `README.md` 已同步说明实体恢复诊断和高处空探矿继续下探行为。
+5. 验证通过：`./gradlew build`。
+6. agent2 只读审查无 Must Fix / Should Fix。
+
+## 17. 意图入口纠偏与物品目标锁定
+
+本阶段针对最新日志中 `source_command=帮我两块金锭` 被错误规划成 `gather tree x1` 的问题修复。目标是让玩家输入明确物品目标时，先由本地代码识别目标物品和数量，再让 DeepSeek 参与高层规划；DeepSeek 或 fallback 不允许把“金锭、铁锭、铁镐、钻石”等明确物品目标误降级成无关采集任务。
+
+### 17.1 中文物品名与数量解析
+
+状态：`[x] 已完成`
+
+目标：建立本地、可测试的中文物品目标解析器，把玩家输入中的物品名和数量稳定解析为 Minecraft 物品 ID 和目标数量。
+
+开发内容：
+
+1. 新增中文别名表，至少覆盖当前高频链路：金锭、铁锭、铜锭、木板、原木、木棍、木镐、石镐、铁镐、铁铲、钻石、绿宝石、红石、青金石、煤炭、圆石、黑曜石、桶、水桶、熟牛肉。
+2. 支持中文数量词和阿拉伯数字：一、两、二、三、十、1、2、3，以及“两块金锭”“两个金锭”“金锭两块”“帮我2个金锭”等常见顺序。
+3. 解析结果必须包含：原始命令、匹配到的物品 ID、数量、匹配文本、置信度和是否为明确物品目标。
+4. 如果同一句中出现多个物品，先记录所有候选，后续 phase 再决定优先级。
+5. 不在这里决定执行动作，只负责把自然语言里的目标事实抽取出来。
+
+验收标准：
+
+1. `帮我两块金锭` 解析为 `minecraft:gold_ingot x2`。
+2. `帮我做两个铁镐` 解析为 `minecraft:iron_pickaxe x2`。
+3. `挖三颗钻石` 解析为 `minecraft:diamond x3`。
+4. `去砍树` 不应被误解析成金锭、铁锭等明确物品目标。
+
+验证方式：新增或扩展 intent 解析单元测试；`./gradlew build`；agent2 审核别名表、数量解析和误判风险。
+
+完成记录：
+
+1. 新增 `ItemGoalParser`，集中处理中文物品别名、数量词、明确物品目标判断和特殊目标（水桶、熟牛肉）。
+2. `AgentIntentParser` 改为优先使用 `ItemGoalParser`，并保留“去砍树”先进入树木采集的分流顺序。
+3. `SurvivalRecipeBook` 补充 `minecraft:cobblestone` 的 `圆石/cobblestone` 别名。
+4. 新增 `ItemGoalParserTest`，覆盖 `帮我两块金锭`、`帮我做两个铁镐`、`挖三颗钻石`、`金锭两块`、`收集三块圆石`、`打一桶水`、`烧一块牛肉` 和 `去砍树`。
+5. `AgentIntentParserTest` 补充入口层断言，确认 `/ai say 帮我两块金锭` 数量为 2，`/ai say 去砍树` 仍为 `GATHER_RESOURCE tree`。
+6. 验证通过：`./gradlew test --tests com.aiplayer.agent.ItemGoalParserTest --tests com.aiplayer.agent.AgentIntentParserTest --tests com.aiplayer.llm.TaskPlannerIntentTest`。
+7. agent2 初审提出入口层数量和砍树分流 Should Fix；补充测试后复审无 Must Fix / Should Fix。
+
+### 17.2 明确物品目标优先路由
+
+状态：`[x] 已完成`
+
+目标：当本地解析器识别到明确物品目标时，任务入口优先生成 `make_item` 或等价的物品获得目标，禁止直接落到 `gather tree` 这类无关 fallback。
+
+开发内容：
+
+1. 在 DeepSeek 调用前增加本地目标锁定：明确物品目标先绑定为 `item_goal`。
+2. 对可制作、可熔炼、可直接采集的物品统一进入物品获得链路，由 RecipeResolver 和获取规则继续拆解。
+3. DeepSeek 可以参与“如何获得”的高层建议，但不能覆盖已锁定的目标物品和数量。
+4. fallback 只在没有明确物品目标时生效，例如“去砍树”“收集石头”“跟我来”。
+5. 任务日志中输出 `locked_item_goal=minecraft:gold_ingot x2`，便于确认入口是否正确。
+
+验收标准：
+
+1. `帮我两块金锭` 不再生成 `Task{action='gather', resource=tree}`。
+2. `帮我两块金锭` 必须进入 `make_item minecraft:gold_ingot x2` 或项目内等价的物品目标任务。
+3. `去砍一棵树` 仍然进入树木采集任务。
+4. DeepSeek 返回错误动作时，本地目标锁定仍然生效。
+
+验证方式：任务规划单元测试覆盖 DeepSeek 正常、DeepSeek 错误、fallback 三种路径；`./gradlew build`；agent2 审核路由优先级。
+
+完成记录：
+
+1. `TaskPlanner.findMakeItemIntent(...)` 现在先使用 `ItemGoalParser` 锁定明确物品目标，再回退到旧的 `AgentIntentParser`。
+2. 同步规划、异步规划和 DeepSeek 返回后的归一化路径都会优先使用本地 `make_item` 目标。
+3. `makeItemResponse(...)` 为任务写入 `locked_item_goal`、`intent_source=local_item_goal` 和 `intent_summary`，方便后续日志与状态面板展示。
+4. `TaskPlannerIntentTest` 增加入口路由测试，确认 `帮我两块金锭` 生成 `make_item minecraft:gold_ingot x2`，`去砍树` 不会被物品目标锁定。
+5. 验证通过：`./gradlew test --tests com.aiplayer.agent.ItemGoalParserTest --tests com.aiplayer.agent.AgentIntentParserTest --tests com.aiplayer.llm.TaskPlannerIntentTest`。
+6. agent2 只读审查无 Must Fix / Should Fix。
+
+### 17.3 DeepSeek 计划校验与自动修复
+
+状态：`[x] 已完成`
+
+目标：DeepSeek 返回计划后，用本地事实校验器检查目标物品、数量和动作是否一致；发现明显偏离时自动修复或拒绝执行。
+
+开发内容：
+
+1. 新增计划一致性校验：原始命令包含 `minecraft:gold_ingot x2` 时，计划目标不能变成 `tree x1`。
+2. 校验字段包括：目标物品、数量、动作类型、资源类型、是否需要配方链、是否需要采集前置材料。
+3. 对明显错误的计划执行本地修复：改回 `make_item` 目标，并记录 `plan_repaired`。
+4. 对无法修复的计划拒绝执行，向玩家和日志说明“DeepSeek 计划与本地目标不一致”。
+5. 修复后的计划必须重新进入 RecipeResolver，而不是直接跳到硬编码动作。
+
+验收标准：
+
+1. DeepSeek 返回 `gather tree` 但本地目标是 `gold_ingot x2` 时，最终执行目标仍然是金锭。
+2. 修复日志包含原始计划、修复后计划和修复原因。
+3. 合法的树木采集、石头采集和跟随任务不会被误修复。
+4. 计划校验不阻塞 server thread。
+
+验证方式：模拟 DeepSeek 返回错误 JSON 的单元测试；`./gradlew build`；agent2 审核计划修复边界和日志可追踪性。
+
+完成记录：
+
+1. `TaskPlanner.normalizeForCommand(...)` 在 DeepSeek 返回后会重新检查本地明确物品目标；如果原始命令锁定了物品目标，则丢弃冲突计划并重建 `make_item`。
+2. 修复后的任务写入 `plan_repaired=true`、`repair_reason` 和 `original_plan`，同时保留 `locked_item_goal`、`intent_source` 和 `intent_summary`。
+3. `TaskPlannerIntentTest` 增加 DeepSeek 误判回归：`帮我两块金锭` 即使收到 `gather tree x1` 也会修复为 `make_item minecraft:gold_ingot x2`。
+4. `TaskPlannerIntentTest` 增加非物品目标边界：`去砍树` 不会触发物品目标修复。
+5. 验证通过：`./gradlew test --tests com.aiplayer.llm.TaskPlannerIntentTest --tests com.aiplayer.agent.ItemGoalParserTest --tests com.aiplayer.agent.AgentIntentParserTest`。
+6. agent2 只读审查无 Must Fix / Should Fix。
+
+### 17.4 任务日志与 AI 状态面板可解释化
+
+状态：`[x] 已完成`
+
+目标：让玩家能从日志、`/ai status` 和 AI 面板状态里看懂“玩家说了什么、AI 识别成什么、DeepSeek 给了什么、本地最终执行什么”。
+
+开发内容：
+
+1. `taskId` 创建时记录：原始命令、解析物品、解析数量、DeepSeek 动作、本地最终动作和是否发生修复。
+2. `/ai status` 增加简短入口摘要，例如：`目标：minecraft:gold_ingot x2；入口：本地锁定；计划：已修复 DeepSeek gather tree`。
+3. AI 面板状态按钮显示同样摘要，避免长文本被截断时只看到后半段。
+4. 日志分类中把 intent、planner、repair、execute 分开输出，便于后续排查。
+5. 如果目标解析失败，状态里明确显示“未识别明确物品目标，进入普通对话/采集规划”。
+
+验收标准：
+
+1. 玩家输入 `帮我两块金锭` 后，状态面板能看到目标被识别为金锭 x2。
+2. 如果 DeepSeek 误判，状态面板能看到本地修复结果。
+3. 日志能复盘一次任务从输入到最终动作的完整链路。
+4. 状态摘要不会被长挖矿摘要覆盖到看不见。
+
+验证方式：状态格式单元测试或快照测试；`./gradlew build`；agent2 审核日志字段和玩家可解释性。
+
+完成记录：
+
+1. `TaskPlanner` 生成本地物品目标任务时写入 `intent_summary`，内容包含目标物品、数量、入口来源和执行链路。
+2. `ActionExecutor` 新增 `currentIntentSummary`，规划成功后从任务参数读取，任务结束、停止、新指令、规划失败、规划取消和异常时清空，任务恢复时从队列恢复。
+3. `/ai status` 增加“入口”字段，直接显示当前任务的入口摘要，避免玩家只能从长挖矿细节里倒推。
+4. `MakeItemAction.getStatusDetails()` 把“入口摘要”放在里程碑和挖矿细节之前，AI 面板状态按钮能优先看到目标锁定和计划修复信息。
+5. 验证通过：`./gradlew test --tests com.aiplayer.llm.TaskPlannerIntentTest --tests com.aiplayer.agent.ItemGoalParserTest --tests com.aiplayer.agent.AgentIntentParserTest`。
+6. agent2 初审提出新指令规划期间可能显示旧入口摘要的 Should Fix；修复后复审无 Must Fix / Should Fix。
+
+### 17.5 入口回归矩阵与金锭链路复测
+
+状态：`[x] 已完成`
+
+目标：用固定回归矩阵防止以后再次出现“明确物品目标被误判成砍树”的问题，并把金锭入口重新接回挖矿制作链路。
+
+开发内容：
+
+1. 建立入口回归矩阵，覆盖：`帮我两块金锭`、`帮我做两个金锭`、`挖两块金锭`、`给我两个铁锭`、`帮我做铁镐`、`去砍树`、`收集圆石`。
+2. 每个用例记录期望动作、目标物品、数量、是否允许 fallback、是否允许 DeepSeek 改写目标。
+3. 金锭用例必须进入 RecipeResolver 的金锭获得链路，后续再拆成铁工具、挖矿、熔炼等步骤。
+4. README 增加“自然语言任务识别规则”和推荐命令写法，解释物品目标会被本地锁定。
+5. `docs/mining-regression.md` 增加本次日志样本，说明这次失败属于入口误规划，不属于挖矿路线失败。
+
+验收标准：
+
+1. 所有入口矩阵测试通过。
+2. `帮我两块金锭` 的最终初始任务不再是 `gather tree x1`。
+3. 金锭链路失败时，失败点应出现在工具、路线、矿点、熔炼或背包容量等真实生存阶段，而不是入口误判。
+4. README 和挖矿回归文档同步更新。
+
+验证方式：入口回归测试、金锭链路相关测试、`./gradlew build`、agent2 最终只读审核。
+
+完成记录：
+
+1. `TaskPlannerIntentTest` 新增 `itemGoalEntryRegressionMatrix`，覆盖 `帮我两块金锭`、`帮我做两个金锭`、`挖两块金锭`、`给我两个铁锭`、`帮我做铁镐`、`收集圆石` 和 `去砍树`。
+2. 入口矩阵确认明确物品目标生成 `make_item`，并写入 `intent_source=local_item_goal`；`去砍树` 不进入物品目标锁定。
+3. `SurvivalRecipePlanningTest` 继续覆盖金锭获得链，确认 `minecraft:gold_ingot x2` 会进入铁镐、粗金、燃料和熔炼链路。
+4. README 增加自然语言物品目标锁定、DeepSeek 冲突修复、`/ai status` 入口字段和树木采集保留语义说明。
+5. `docs/mining-regression.md` 增加 `帮我两块金锭 -> gather tree` 的失败样本、入口回归矩阵、自动化覆盖和实机观察重点。
+6. 验证通过：`./gradlew test --tests com.aiplayer.llm.TaskPlannerIntentTest --tests com.aiplayer.agent.ItemGoalParserTest --tests com.aiplayer.agent.AgentIntentParserTest --tests com.aiplayer.recipe.SurvivalRecipePlanningTest`。
+7. 验证通过：`./gradlew build`。
+8. agent2 初审指出缺少 `./gradlew build` 收口验证；补跑通过后复审无 Must Fix / Should Fix。
+
+## 18. 金锭链路燃料与近层上方矿点恢复
+
+本阶段针对 `task-64f8f515` 中“帮我挖两块金锭”失败的问题修复。该任务入口和金锭目标锁定正常，失败点发生在前置铁工具链的燃料阶段：AI 已有 `raw_iron x3`、`coal x1`、`oak_planks x3` 和木工具，但计划仍继续要求 `minecraft:coal x3`，随后煤矿探矿目标略高于当前矿道层，连续重探后终止。
+
+### 18.1 熔炼燃料泛化、候选冷却与向上短路线
+
+状态：`[x] 已完成`
+
+目标：让熔炼阶段优先使用已有燃料，避免为了补煤卡住金锭链路；同时允许一到两格高度差的矿点生成短距离向上路线，并防止刚冷却的隐藏矿点被本地扫描立即重新绑定。
+
+开发内容：
+
+1. 将熔炼燃料事实集中到 `SurvivalRecipeBook`，统一包含煤、木炭、原木、木板和木制工具；木棍不足以独立烧炼一个物品，不作为一个完整燃料单位。
+2. `RecipeResolver` 处理熔炼配方时，把原来的 `minecraft:coal` 需求解释为通用燃料槽：先从 AI 背包和可达箱子扣除任意可用燃料，不足时补充可砍树获得的原木燃料。
+3. `StepExecutor` 熔炼前置补给检查使用通用燃料数量，不再只认煤和木炭。
+4. `DirectMiningRoute` 对高出当前层一到两格的目标生成 `direct_ascent`，返回下一步向上站位；明显更高的目标仍按上方不可达候选重探。
+5. `StepExecutor` 的可见矿扫描和隐藏矿重绑定尊重 `MiningCandidateCooldown`，刚被拒绝的候选不会马上被 `embedded_hint` 逻辑重新绑定。
+6. 新增测试覆盖：已有木板燃料时不再添加采煤步骤、木制工具可计入燃料、短距离上方矿点生成向上路线、候选冷却仍可过期恢复。
+7. README 同步说明熔炼燃料泛化、`direct_ascent` 路线和上方隐藏矿点的区别。
+
+验收标准：
+
+1. `minecraft:iron_ingot x3` 在已有 `raw_iron x3 + furnace + oak_planks x3` 时，配方计划不生成 `minecraft:coal` 采集节点。
+2. 金锭链路不会在拥有木板、原木或木工具燃料时继续强制执行 `gather minecraft:coal x3`。
+3. `DirectMiningRoute` 对目标高出当前层两格的情况返回下一步向上站位，不再进入 `REPROSPECT`。
+4. 被冷却的隐藏矿点不会被同一轮本地可见扫描重新绑定。
+5. 构建和 agent2 只读审查通过后，才能标记完成。
+
+验证方式：`./gradlew test --tests com.aiplayer.recipe.SurvivalRecipePlanningTest --tests com.aiplayer.execution.SmeltingFuelPolicyTest --tests com.aiplayer.execution.DirectMiningRouteTest --tests com.aiplayer.execution.MiningCandidateCooldownTest`；`./gradlew build`；agent2 审核燃料链、上方短路线和候选冷却边界。
+
+完成记录：
+
+1. 熔炼燃料事实集中到 `SurvivalRecipeBook.furnaceFuelItems()`，并由 `SmeltingFuelPolicy` 复用同一列表。
+2. 熔炼配方里的 `minecraft:coal` 作为燃料槽占位处理，`RecipeResolver` 会先消耗已有煤、木炭、原木、木板或木制工具；不足时补充可通过砍树获得的原木燃料。
+3. 木棍不再作为一个完整熔炼燃料单位，避免“一根木棍烧一块矿”的非原版行为。
+4. `DirectMiningRoute` 对高出当前层 1 到 2 格的站位生成 `direct_ascent`；如果 X/Z 已对齐，则直接上移一格；高出 3 格及以上仍进入上方目标重探。
+5. 可见矿扫描和隐藏矿点重绑定都会检查 `MiningCandidateCooldown`，刚冷却的候选不会立刻被同轮重新绑定。
+6. README 已同步说明通用燃料、木棍不计完整燃料单位、`direct_ascent` 和候选冷却行为。
+7. 验证通过：`./gradlew test --tests com.aiplayer.recipe.SurvivalRecipePlanningTest --tests com.aiplayer.execution.SmeltingFuelPolicyTest --tests com.aiplayer.execution.DirectMiningRouteTest --tests com.aiplayer.execution.MiningCandidateCooldownTest`。
+8. 验证通过：`./gradlew build`。
+9. agent2 最终复审无 Must Fix / Should Fix，建议后续补 StepExecutor 层面的 `direct_ascent` 执行回归测试。
+
+## 19. 全矿物工具分层与路线鲁棒优化
+
+本阶段面向所有需要工具采集的矿物和特殊方块，不再只围绕金锭单点修复。目标是把矿物事实、工具门禁、目标高度、路线策略、采集后处理和失败恢复统一成稳定矩阵，覆盖金锭、红石、钻石、青金石、绿宝石、黑曜石、远古残骸、下界石英、下界金矿等目标。
+
+### 19.1 工具等级与资源分组矩阵
+
+状态：`[x] 已完成`
+
+目标：把所有矿物按最低工具等级、产物类型、维度、是否需要熔炼、是否适合探矿、是否需要特殊环境分组，作为后续路线策略的统一事实入口。
+
+开发内容：
+
+1. 新增工具等级分类，覆盖 `none`、`wood`、`stone`、`iron`、`diamond`、`netherite`。
+2. 为 `MiningResource.Profile` 暴露工具等级、是否需要镐、是否属于低层分支挖矿资源、是否属于特殊环境资源。
+3. 建立资源矩阵测试，覆盖煤、铜、铁、金、红石、钻石、青金石、绿宝石、黑曜石、远古残骸、下界石英和下界金矿。
+4. 矩阵必须区分最终产物：金锭需要粗金 + 熔炼，钻石直接掉落钻石，黑曜石掉落方块本身。
+5. 后续路线、补工具、状态显示和失败恢复都从该矩阵读取，不再各自硬编码工具等级。
+
+验收标准：
+
+1. 金矿、红石、钻石和绿宝石要求铁镐等级。
+2. 黑曜石和远古残骸要求钻石镐等级。
+3. 铜、铁、青金石要求石镐等级。
+4. 煤、下界石英和下界金矿允许木镐等级。
+5. 工具等级测试和资源矩阵测试通过。
+
+验证方式：`./gradlew test --tests com.aiplayer.recipe.MiningResourceTest --tests com.aiplayer.execution.MiningToolGateTest`；`./gradlew build`；agent2 审核资源矩阵是否覆盖常见矿物和特殊方块。
+
+完成记录：
+
+1. 新增 `MiningToolTier`，统一定义 `none`、`wood`、`stone`、`iron`、`diamond`、`netherite` 工具等级，并把金镐归入木镐级。
+2. `MiningToolGate.pickaxeTier(...)` 改为复用 `MiningToolTier`，避免门禁和资源矩阵各自维护工具等级。
+3. `MiningResource.Profile` 暴露 `requiredToolTier()`、`requiresPickaxe()` 和 `isLowLayerBranchMiningResource()`，用于后续路线和状态判断。
+4. 资源矩阵测试覆盖煤、铜、铁、青金石、金、红石、钻石、绿宝石、黑曜石、远古残骸、下界石英和下界金矿。
+5. 黑曜石目标增加断言：最终产物是 `minecraft:obsidian`，来源是 `block:minecraft:obsidian`。
+6. AI 的 pickaxe 工具选择列表加入 `minecraft:golden_pickaxe`，保持实际执行和工具等级矩阵一致；排序在木镐之后，避免优先消耗金镐。
+7. 验证通过：`./gradlew test --tests com.aiplayer.recipe.MiningResourceTest --tests com.aiplayer.execution.MiningToolGateTest`。
+8. 验证通过：`./gradlew build`。
+9. agent2 初审无 Must Fix；两个 Should Fix 已处理。最终补充验证通过。
+
+### 19.2 目标物品到采集链归一
+
+状态：`[x] 已完成`
+
+目标：把“玩家要的东西”和“实际应该挖什么、烧什么、合成什么”彻底分开，避免再次把金锭、钻石矿、红石矿、黑曜石这类目标混淆。
+
+开发内容：
+
+1. 扩展 `MiningGoalResolver` 输出：`requestedItem`、`finalItem`、`directMiningItem`、`sourceBlocks`、`needsSmelting`、`smeltingInput`、`station`、`requiredToolTier`。
+2. 金锭、铁锭、铜锭统一走原矿采集 + 熔炼。
+3. 钻石、红石、青金石、绿宝石统一走矿石采集直接产物。
+4. 黑曜石走已有方块采集，必须有钻石镐。
+5. `minecraft:*_ore` 输入统一转换为普通生存掉落目标，除非后续显式支持精准采集。
+
+验收标准：每个目标输出稳定链路，状态面板不再出现“挖金锭方块”或“钻石矿作为最终物品”的表述。
+
+验证方式：`MiningGoalResolverTest`、`SurvivalRecipePlanningTest`、`./gradlew build`、agent2 审核。
+
+完成记录：
+
+1. `MiningGoalResolver.Goal` 增加 `requestedItem`、`smeltingInput`、`requiredToolTier` 和 `sourceBlocks()`，保留旧的 `blockIds()` 访问方式，避免调用方破坏。
+2. 金锭、铁锭、铜锭解析为最终锭目标，但直接采集物和熔炼输入保持为对应粗矿。
+3. `minecraft:*_ore` 输入默认转换为普通生存掉落目标，不返回精准采集矿石方块。
+4. 钻石、红石、青金石、绿宝石、黑曜石和远古残骸保持各自的产物、来源、维度和工具等级。
+5. 去掉 `MiningGoalResolver` 中误导性的空分支，明确矿石方块输入仍走普通掉落目标。
+6. 测试补充金锭、金矿、钻石矿、黑曜石和远古残骸的 `requestedItem`、最终产物、直接采集物、熔炼输入和工具等级断言。
+7. 验证通过：`./gradlew test --tests com.aiplayer.recipe.MiningGoalResolverTest --tests com.aiplayer.execution.MiningRegressionMatrixTest --tests com.aiplayer.recipe.SurvivalRecipePlanningTest`。
+8. 验证通过：`./gradlew build`。
+9. agent2 初审无 Must Fix；Should Fix 已处理。复审无 Must Fix、无 Should Fix。
+
+### 19.3 工具前置闭环与替换策略
+
+状态：`[x] 已完成`
+
+目标：进入任何矿物采集前，先确保工具等级和耐久满足最低要求；不满足时递归制作工具，而不是到矿点后失败。
+
+开发内容：
+
+1. 资源矩阵驱动 `MiningToolGate`，不再手写单个资源判断。
+2. 木镐、石镐、铁镐、钻石镐按配方递归制作。
+3. 工具耐久不足时制作同等级或更高等级替换工具。
+4. 黑曜石、远古残骸必须先完成钻石镐链。
+5. 状态显示“当前工具等级 / 所需工具等级 / 下一步制作目标”。
+
+验收标准：请求黑曜石时不会拿铁镐去挖；请求红石和钻石时不会拿石镐去挖。
+
+验证方式：`MiningToolGateTest`、黑曜石/红石/钻石链路测试、`./gradlew build`、agent2 审核。
+
+完成记录：
+
+1. `MiningToolGate` 增加资源矩阵驱动入口，`StepExecutor` 的矿物采集门禁改为基于 `MiningResource.Profile` 判断所需工具。
+2. 工具门禁支持最高阶工具和健康工具双视角评估：健康且满足等级的工具优先通过；低耐久的所需等级或高阶工具会进入 `low_tool_durability`。
+3. 替换工具候选由 `MiningToolGate.replacementCandidates(...)` 统一生成，铁镐需求可尝试铁镐和钻石镐，钻石镐需求可尝试钻石镐和下界合金镐。
+4. 挖矿破坏、动画装备、通道清理和通用 `block:` 采集路径统一使用最低耐久阈值，避免门禁通过后实际消耗另一把低耐久工具。
+5. `SurvivalUtils.breakBlockDetailed(...)` 在工具等级满足但耐久低于阈值时返回 `low_tool_durability`，不再误报 `wrong_tool_tier`。
+6. 新增测试覆盖：红石/黑曜石/远古残骸的资源矩阵门禁、同级或更高阶替换候选、低耐久所需等级工具不被健康低阶工具遮蔽、健康同级工具不被低耐久高阶工具遮蔽。
+7. 验证通过：`./gradlew test --tests com.aiplayer.execution.MiningToolGateTest --tests com.aiplayer.recipe.SurvivalRecipePlanningTest --tests com.aiplayer.recipe.MiningResourceTest --tests com.aiplayer.util.SurvivalToolRulesTest`。
+8. 验证通过：`./gradlew build`。
+9. agent2 三轮审查提出的 Must Fix 均已处理；最终复审无 Must Fix、无 Should Fix。
+
+### 19.4 高度策略与维度策略统一
+
+状态：`[x] 已完成`
+
+目标：每种矿物都从资源矩阵读取推荐高度、有效维度和备用策略，不再所有矿物都硬下探到同一 Y 层。
+
+开发内容：
+
+1. 煤、铁、绿宝石支持高处/洞穴策略。
+2. 金、钻石、红石、青金石使用深层策略。
+3. 黑曜石支持现有黑曜石或水岩浆区域策略。
+4. 下界石英、下界金矿、远古残骸限制下界维度。
+5. 维度错误时给出明确失败说明。
+
+验收标准：红石/钻石进入深层；煤不会强行下探到深层；远古残骸不会在主世界搜索。
+
+验证方式：`MiningHeightPolicyTest`、`MiningRegressionMatrixTest`、`./gradlew build`、agent2 审核。
+
+完成记录：
+
+1. 新增 `MiningEnvironmentPolicy`，统一读取 `MiningResource.Profile` 的维度、目标高度、路线提示、特殊环境、分支挖矿偏好和下探/上移判断。
+2. `StepExecutor` 在工具准备和探矿前先执行维度门禁，维度不符时进入 `wrong_dimension` 并给出“需要维度 / 当前维度”的明确失败信息。
+3. 下探判断和低于目标层恢复判断改为复用同一个环境策略，避免煤、铁、钻石、红石、黑曜石和远古残骸走不同高度判断入口。
+4. 测试覆盖煤高层不强制深挖、钻石/红石深层下探、黑曜石任意维度特殊环境、远古残骸下界低层、石英/下界金矿/远古残骸在主世界拒绝且在下界允许。
+5. `/ai mining start` 未知目标提示同步加入 `quartz`、`gold_nugget`；README 同步说明下界专属目标会在错误维度直接失败。
+6. 验证通过：`./gradlew test --tests com.aiplayer.execution.MiningEnvironmentPolicyTest --tests com.aiplayer.execution.MiningHeightPolicyTest --tests com.aiplayer.execution.MiningRegressionMatrixTest`。
+7. 验证通过：`./gradlew build`。
+8. agent2 初审无 Must Fix；Should Fix 已处理。最终复审无 Must Fix、无 Should Fix。
+
+### 19.5 阶梯下探与短距上探统一路线器
+
+状态：`[ ] 未开始`
+
+目标：把向下阶梯、水平推进、短距离 `direct_ascent` 放进同一通道模拟器，确保每一步都清出两格高通道。
+
+开发内容：
+
+1. 抽象 `MiningRouteStepper`，输入当前站位、下一站位、目标矿点和路线类型。
+2. 下探时按脚部、头部、斜下、移动推进。
+3. 上探时按脚部、头部、正上/前上、移动推进。
+4. 水平推进保持两格高通道。
+5. 每 30 步或 30 格触发探矿修正。
+
+验收标准：不会再出现“知道矿点但因为一格头部空间不足无法前进”的问题。
+
+验证方式：新增路线模拟测试、`DirectMiningRouteTest`、`MiningMovementSimulatorTest`、`./gradlew build`、agent2 审核。
+
+### 19.6 探矿候选评分与目标切换
+
+状态：`[ ] 未开始`
+
+目标：候选矿点选择要按实际路线成本排序，而不是只看距离或暴露状态。
+
+开发内容：
+
+1. 候选评分包含工具等级、水平距离、垂直差、是否当前路线可达、是否冷却、是否已失败。
+2. 对当前任务目标产物不匹配的矿点降权或拒绝。
+3. 同一候选连续失败后短期冷却。
+4. 冷却到期后允许重试。
+5. 日志输出前 5 个候选及选择原因。
+
+验收标准：不会反复选择同一个上方不可执行矿点；不会因为远处暴露矿压过近处可开路矿点。
+
+验证方式：`OreProspectSelectionPolicyTest`、`MiningCandidateCooldownTest`、`./gradlew build`、agent2 审核。
+
+### 19.7 采矿产物与背包容量闭环
+
+状态：`[ ] 未开始`
+
+目标：采矿前预测掉落，背包满或产物不匹配时提前处理，不在挖完后才发现目标没进背包。
+
+开发内容：
+
+1. 每种矿物记录普通生存掉落产物和数量范围。
+2. 挖矿前检查背包空格和已有同类栈。
+3. 采集后用背包差异确认产物。
+4. 金、铁、铜原矿进入熔炼子链。
+5. 红石、青金石等多掉落物按“至少获得目标数量”判断完成。
+
+验收标准：红石任务按红石粉数量判断完成；金锭任务按粗金和熔炼链推进。
+
+验证方式：掉落进度测试、`MiningRegressionMatrixTest`、`./gradlew build`、agent2 审核。
+
+### 19.8 黑曜石与特殊资源策略
+
+状态：`[ ] 未开始`
+
+目标：黑曜石、远古残骸、下界资源不走普通主世界矿石逻辑，使用独立的特殊资源策略。
+
+开发内容：
+
+1. 黑曜石优先扫描已有黑曜石方块。
+2. 找不到黑曜石时识别水岩浆区域，后续阶段再实现造黑曜石。
+3. 远古残骸在下界低层鱼骨挖矿。
+4. 下界石英和下界金矿走下界开放地形/墙面扫描。
+5. 维度不符时请求玩家切换维度或带 AI 到对应维度。
+
+验收标准：黑曜石不会在主世界地下像普通矿石一样盲挖；远古残骸不会在主世界搜索。
+
+验证方式：特殊资源测试、`MiningResourceTest`、`./gradlew build`、agent2 审核。
+
+### 19.9 状态面板与日志可解释化
+
+状态：`[ ] 未开始`
+
+目标：玩家能从 `/ai status` 和 AI 面板看懂当前矿物属于哪类、需要什么工具、为什么选择当前路线。
+
+开发内容：
+
+1. 状态显示资源分组、所需工具等级、当前工具等级、目标高度、维度。
+2. 显示当前路线：下探、上探、水平、鱼骨、特殊资源。
+3. 显示候选评分摘要和冷却数量。
+4. 显示采集后处理：直接完成、需要熔炼、需要合成。
+5. 状态文本避免被内部字段截断。
+
+验收标准：点击状态按钮能看懂“为什么现在要做铁镐 / 为什么下探 / 为什么重扫”。
+
+验证方式：状态文本测试、README 同步、`./gradlew build`、agent2 审核。
+
+### 19.10 全矿物回归矩阵与实机模板
+
+状态：`[ ] 未开始`
+
+目标：建立长期回归矩阵，避免以后每次只修金锭或只修单个矿物。
+
+开发内容：
+
+1. 自动化矩阵覆盖煤、铜、铁、金、红石、钻石、青金石、绿宝石、黑曜石、远古残骸、下界石英、下界金矿。
+2. 每个用例断言目标解析、工具等级、维度、高度策略、路线策略和产物链。
+3. README 增加推荐实机复测命令。
+4. `docs/mining-regression.md` 增加统一记录模板。
+5. 每次挖矿失败都能归档到矩阵分类。
+
+验收标准：所有矩阵测试通过；新增矿物优化必须补对应矩阵行。
+
+验证方式：`MiningRegressionMatrixTest`、`SurvivalRecipePlanningTest`、`./gradlew build`、agent2 最终审核。

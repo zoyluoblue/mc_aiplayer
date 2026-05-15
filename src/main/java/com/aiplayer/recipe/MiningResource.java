@@ -279,6 +279,18 @@ public final class MiningResource {
         public boolean isWithinFallbackY(int y) {
             return fallbackRange != null && fallbackRange.contains(y);
         }
+
+        public MiningToolTier requiredToolTier() {
+            return MiningToolTier.fromPickaxeItem(requiredTool);
+        }
+
+        public boolean requiresPickaxe() {
+            return requiredToolTier().requiresPickaxe();
+        }
+
+        public boolean isLowLayerBranchMiningResource() {
+            return branchMinePreferred && preferredMaxY <= 32;
+        }
     }
 
     public record HeightRange(int minY, int maxY, String strategy) {

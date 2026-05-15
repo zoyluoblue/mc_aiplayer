@@ -13,6 +13,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.border.WorldBorder;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
@@ -27,6 +28,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 public class AiPlayerManager {
+    private static final int RECOVERY_STRICT_RADIUS = 6;
+    private static final int RECOVERY_RELAXED_RADIUS = 12;
+    private static final int RECOVERY_VERTICAL_BELOW = 6;
+    private static final int RECOVERY_VERTICAL_ABOVE = 8;
     private static final Path REMOVED_AI_TOMBSTONE_PATH = FabricLoader.getInstance()
         .getConfigDir()
         .resolve("aiplayer_removed_ai.json");
@@ -182,7 +187,7 @@ public class AiPlayerManager {
         AiPlayerMod.info("player", "Clearing {} AI player entities", activeAiPlayers.size());
         for (AiPlayerEntity aiPlayer : activeAiPlayers.values()) {
             unforceAiPlayerChunk(aiPlayer);
-            aiPlayer.discard();
+            discardAiPlayer(aiPlayer, "clear_all");
         }
         activeAiPlayers.clear();
         aiPlayersByUUID.clear();
@@ -265,7 +270,7 @@ public class AiPlayerManager {
         aiPlayersByOwner.entrySet().removeIf(entry -> entry.getValue() == aiPlayer);
         discardLoadedAiPlayerCopies(aiPlayer, tombstoneOwner, requesterOwner, name == null || name.isBlank() ? aiPlayer.getAiPlayerName() : name);
         unforceAiPlayerChunk(aiPlayer);
-        aiPlayer.discard();
+        discardAiPlayer(aiPlayer, reason);
         AiPlayerMod.info("player", "Removed AI player record: name={}, uuid={}, owner={}, reason={}",
             name == null || name.isBlank() ? aiPlayer.getAiPlayerName() : name,
             aiPlayer.getUUID(),
@@ -283,7 +288,7 @@ public class AiPlayerManager {
                 AiPlayerMod.info("player", "Discarding manually removed AI player copy: name={}, uuid={}, owner={}",
                     aiPlayer.getAiPlayerName(), aiPlayer.getUUID(), ownerUuid);
                 unforceAiPlayerChunk(aiPlayer);
-                aiPlayer.discard();
+                discardAiPlayer(aiPlayer, "manual_removal_tombstone_copy");
                 continue;
             }
             AiPlayerEntity existingByName = activeAiPlayers.get(aiPlayer.getAiPlayerName());
@@ -293,7 +298,7 @@ public class AiPlayerManager {
                 AiPlayerMod.warn("player", "Discarding loaded AI player copy because name index is owned: name={}, incomingUuid={}, incomingOwner={}, activeUuid={}, activeOwner={}",
                     aiPlayer.getAiPlayerName(), aiPlayer.getUUID(), ownerUuid, existingByName.getUUID(), existingByName.getOwnerUuid());
                 unforceAiPlayerChunk(aiPlayer);
-                aiPlayer.discard();
+                discardAiPlayer(aiPlayer, "name_index_owned_copy");
                 continue;
             }
             AiPlayerEntity existing = ownerUuid == null ? null : aiPlayersByOwner.get(ownerUuid);
@@ -308,7 +313,7 @@ public class AiPlayerManager {
             if (isSameAiPlayer(existing, aiPlayer)) {
                 AiPlayerMod.warn("player", "Discarding duplicate stale AI player copy: name={}, duplicateUuid={}, activeUuid={}",
                     aiPlayer.getAiPlayerName(), aiPlayer.getUUID(), existing.getUUID());
-                aiPlayer.discard();
+                discardAiPlayer(aiPlayer, "duplicate_stale_copy");
             }
         }
     }
@@ -343,6 +348,18 @@ public class AiPlayerManager {
         if (owner == null) {
             return null;
         }
+        AiPlayerMod.warn("player",
+            "Recovering unusable AI player: name={}, uuid={}, owner={}, alive={}, removed={}, removalReason={}, pos={}, level={}, ownerPos={}, ownerLevel={}",
+            name,
+            previous.getUUID(),
+            ownerUuid,
+            previous.isAlive(),
+            previous.isRemoved(),
+            removalReasonText(previous),
+            previous.blockPosition().toShortString(),
+            levelText(previous),
+            owner.blockPosition().toShortString(),
+            owner.serverLevel().dimension().location());
         AiPlayerEntity loaded = findLoadedAiPlayer(owner.serverLevel(), ownerUuid, name);
         if (loaded != null) {
             if (loaded.getOwnerUuid() == null && ownerUuid != null) {
@@ -362,10 +379,6 @@ public class AiPlayerManager {
         recovered.setOwnerUuid(ownerUuid);
 
         Vec3 position = recoveryPosition(owner);
-        if (position == null) {
-            AiPlayerMod.warn("player", "Could not find safe recovery position for AI player '{}' near owner {}", name, owner.getGameProfile().getName());
-            return null;
-        }
         recovered.setPos(position.x, position.y, position.z);
 
         if (!targetLevel.addFreshEntity(recovered)) {
@@ -382,8 +395,8 @@ public class AiPlayerManager {
         }
         unforceAiPlayerChunk(previous);
         forceAiPlayerChunk(recovered);
-        AiPlayerMod.info("player", "Recovered AI player '{}' after entity unload at {} for owner {}",
-            name, position, ownerUuid);
+        AiPlayerMod.info("player", "Recovered AI player '{}' after entity unload at {} for owner {}; previousPos={}, previousRemovalReason={}",
+            name, position, ownerUuid, previous.blockPosition().toShortString(), removalReasonText(previous));
         return recovered;
     }
 
@@ -397,27 +410,94 @@ public class AiPlayerManager {
     private Vec3 recoveryPosition(ServerPlayer owner) {
         ServerLevel level = owner.serverLevel();
         BlockPos base = owner.blockPosition();
-        int[][] offsets = {
-            {2, 0}, {-2, 0}, {0, 2}, {0, -2},
-            {2, 1}, {2, -1}, {-2, 1}, {-2, -1},
-            {1, 2}, {-1, 2}, {1, -2}, {-1, -2},
-            {1, 0}, {-1, 0}, {0, 1}, {0, -1}
-        };
-        for (int[] offset : offsets) {
-            for (int dy = -1; dy <= 1; dy++) {
-                BlockPos feet = base.offset(offset[0], dy, offset[1]);
-                if (isRecoveryPositionSafe(level, feet)) {
-                    return Vec3.atBottomCenterOf(feet);
+        BlockPos strict = findRecoveryPosition(level, base, RECOVERY_STRICT_RADIUS, true);
+        if (strict != null) {
+            return Vec3.atBottomCenterOf(strict);
+        }
+        BlockPos relaxed = findRecoveryPosition(level, base, RECOVERY_RELAXED_RADIUS, false);
+        if (relaxed != null) {
+            AiPlayerMod.info("player", "Recovered AI player near owner with relaxed recovery position: owner={}, pos={}",
+                owner.getGameProfile().getName(), relaxed);
+            return Vec3.atBottomCenterOf(relaxed);
+        }
+        Vec3 forced = forcedRecoveryPosition(level, owner);
+        AiPlayerMod.warn("player", "No passable recovery position found near owner {}; forcing AI recovery near player at {} because AI is invulnerable",
+            owner.getGameProfile().getName(), forced);
+        return forced;
+    }
+
+    private BlockPos findRecoveryPosition(ServerLevel level, BlockPos base, int radius, boolean requireSupport) {
+        int[] verticalOffsets = orderedVerticalOffsets(RECOVERY_VERTICAL_BELOW, RECOVERY_VERTICAL_ABOVE);
+        for (int r = 0; r <= radius; r++) {
+            for (int dx = -r; dx <= r; dx++) {
+                for (int dz = -r; dz <= r; dz++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dz)) != r) {
+                        continue;
+                    }
+                    for (int dy : verticalOffsets) {
+                        BlockPos feet = clampRecoveryY(level, base.offset(dx, dy, dz));
+                        if (isRecoveryPositionUsable(level, feet, requireSupport)) {
+                            return feet;
+                        }
+                    }
                 }
             }
         }
         return null;
     }
 
-    private boolean isRecoveryPositionSafe(ServerLevel level, BlockPos feet) {
-        return level.getBlockState(feet).getCollisionShape(level, feet).isEmpty()
-            && level.getBlockState(feet.above()).getCollisionShape(level, feet.above()).isEmpty()
-            && !level.getBlockState(feet.below()).getCollisionShape(level, feet.below()).isEmpty();
+    private boolean isRecoveryPositionUsable(ServerLevel level, BlockPos feet, boolean requireSupport) {
+        if (!level.getWorldBorder().isWithinBounds(feet)) {
+            return false;
+        }
+        if (!level.getBlockState(feet).getCollisionShape(level, feet).isEmpty()
+            || !level.getBlockState(feet.above()).getCollisionShape(level, feet.above()).isEmpty()) {
+            return false;
+        }
+        return !requireSupport || !level.getBlockState(feet.below()).getCollisionShape(level, feet.below()).isEmpty();
+    }
+
+    private Vec3 forcedRecoveryPosition(ServerLevel level, ServerPlayer owner) {
+        Vec3 look = owner.getLookAngle();
+        WorldBorder border = level.getWorldBorder();
+        double x = clamp(owner.getX() - look.x * 1.25D, border.getMinX() + 0.5D, border.getMaxX() - 0.5D);
+        double z = clamp(owner.getZ() - look.z * 1.25D, border.getMinZ() + 0.5D, border.getMaxZ() - 0.5D);
+        int minY = level.getMinY() + 1;
+        int maxY = level.getMinY() + level.getHeight() - 2;
+        double y = Math.max(minY, Math.min(maxY, owner.getY()));
+        return new Vec3(x, y, z);
+    }
+
+    private int[] orderedVerticalOffsets(int below, int above) {
+        int[] offsets = new int[below + above + 1];
+        int index = 0;
+        offsets[index++] = 0;
+        int max = Math.max(below, above);
+        for (int distance = 1; distance <= max; distance++) {
+            if (distance <= below) {
+                offsets[index++] = -distance;
+            }
+            if (distance <= above) {
+                offsets[index++] = distance;
+            }
+        }
+        return offsets;
+    }
+
+    private double clamp(double value, double min, double max) {
+        if (min > max) {
+            return value;
+        }
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private BlockPos clampRecoveryY(ServerLevel level, BlockPos pos) {
+        int minY = level.getMinY() + 1;
+        int maxY = level.getMinY() + level.getHeight() - 2;
+        if (pos.getY() >= minY && pos.getY() <= maxY) {
+            return pos;
+        }
+        return new BlockPos(pos.getX(), Math.max(minY, Math.min(maxY, pos.getY())), pos.getZ());
     }
 
     private AiPlayerEntity findLoadedAiPlayer(ServerLevel level, UUID ownerUuid, String name) {
@@ -433,7 +513,7 @@ public class AiPlayerManager {
                         AiPlayerMod.info("player", "Discarding tombstoned loaded AI player during recovery scan: name={}, uuid={}, owner={}",
                             aiPlayer.getAiPlayerName(), aiPlayer.getUUID(), aiPlayer.getOwnerUuid());
                         unforceAiPlayerChunk(aiPlayer);
-                        aiPlayer.discard();
+                        discardAiPlayer(aiPlayer, "recovery_scan_tombstoned_copy");
                         continue;
                     }
                     return aiPlayer;
@@ -471,10 +551,49 @@ public class AiPlayerManager {
                     aiPlayersByUUID.remove(aiPlayer.getUUID());
                     aiPlayersByOwner.entrySet().removeIf(entry -> entry.getValue() == aiPlayer);
                     unforceAiPlayerChunk(aiPlayer);
-                    aiPlayer.discard();
+                    discardAiPlayer(aiPlayer, "discard_loaded_copy");
                 }
             }
         }
+    }
+
+    private void discardAiPlayer(AiPlayerEntity aiPlayer, String reason) {
+        if (aiPlayer == null) {
+            return;
+        }
+        AiPlayerMod.warn("player",
+            "Discarding AI player entity: name={}, uuid={}, owner={}, reason={}, pos={}, level={}, alive={}, removed={}, removalReasonBefore={}",
+            aiPlayer.getAiPlayerName(),
+            aiPlayer.getUUID(),
+            aiPlayer.getOwnerUuid(),
+            reason == null || reason.isBlank() ? "unknown" : reason,
+            aiPlayer.blockPosition().toShortString(),
+            levelText(aiPlayer),
+            aiPlayer.isAlive(),
+            aiPlayer.isRemoved(),
+            removalReasonText(aiPlayer));
+        aiPlayer.discard();
+        AiPlayerMod.warn("player",
+            "Discarded AI player entity: name={}, uuid={}, reason={}, removed={}, removalReasonAfter={}",
+            aiPlayer.getAiPlayerName(),
+            aiPlayer.getUUID(),
+            reason == null || reason.isBlank() ? "unknown" : reason,
+            aiPlayer.isRemoved(),
+            removalReasonText(aiPlayer));
+    }
+
+    private String removalReasonText(AiPlayerEntity aiPlayer) {
+        if (aiPlayer == null || aiPlayer.getRemovalReason() == null) {
+            return "none";
+        }
+        return aiPlayer.getRemovalReason().name();
+    }
+
+    private String levelText(AiPlayerEntity aiPlayer) {
+        if (aiPlayer == null || aiPlayer.level() == null) {
+            return "none";
+        }
+        return aiPlayer.level().dimension().location().toString();
     }
 
     private boolean isSameAiPlayer(AiPlayerEntity first, AiPlayerEntity second) {

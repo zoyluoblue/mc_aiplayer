@@ -108,6 +108,12 @@ class MiningResourceTest {
         assertEquals("minecraft:diamond", diamondOreBlock.item());
         assertEquals("diamond", diamondOreBlock.profile().key());
         assertTrue(diamondOreBlock.message().contains("普通生存链"));
+
+        AutoMiningTarget obsidian = AutoMiningTarget.resolve("minecraft:obsidian", 1);
+        assertTrue(obsidian.supported());
+        assertEquals("minecraft:obsidian", obsidian.item());
+        assertEquals("obsidian", obsidian.profile().key());
+        assertEquals("block:minecraft:obsidian", obsidian.profile().source());
     }
 
     @Test
@@ -121,6 +127,22 @@ class MiningResourceTest {
     }
 
     @Test
+    void miningResourcesExposeToolTierMatrix() {
+        assertTier("minecraft:coal", MiningToolTier.WOOD, false);
+        assertTier("minecraft:raw_copper", MiningToolTier.STONE, false);
+        assertTier("minecraft:raw_iron", MiningToolTier.STONE, false);
+        assertTier("minecraft:lapis_lazuli", MiningToolTier.STONE, false);
+        assertTier("minecraft:raw_gold", MiningToolTier.IRON, true);
+        assertTier("minecraft:redstone", MiningToolTier.IRON, true);
+        assertTier("minecraft:diamond", MiningToolTier.IRON, true);
+        assertTier("minecraft:emerald", MiningToolTier.IRON, false);
+        assertTier("minecraft:obsidian", MiningToolTier.DIAMOND, false);
+        assertTier("minecraft:ancient_debris", MiningToolTier.DIAMOND, true);
+        assertTier("minecraft:quartz", MiningToolTier.WOOD, false);
+        assertTier("minecraft:gold_nugget", MiningToolTier.WOOD, false);
+    }
+
+    @Test
     void emeraldUsesHighMountainProfileInsteadOfLowlandBranchMining() {
         MiningResource.Profile emerald = MiningResource.findByItemOrSource("minecraft:emerald", null).orElseThrow();
 
@@ -130,5 +152,12 @@ class MiningResourceTest {
         assertFalse(emerald.branchMinePreferred());
         assertFalse(emerald.isWithinPrimaryY(40));
         assertTrue(emerald.isWithinPrimaryY(120));
+    }
+
+    private static void assertTier(String item, MiningToolTier expectedTier, boolean deepLayerResource) {
+        MiningResource.Profile profile = MiningResource.findByItemOrSource(item, null).orElseThrow();
+        assertTrue(profile.requiresPickaxe(), item + " should require a pickaxe");
+        assertEquals(expectedTier, profile.requiredToolTier(), item);
+        assertEquals(deepLayerResource, profile.isLowLayerBranchMiningResource(), item);
     }
 }

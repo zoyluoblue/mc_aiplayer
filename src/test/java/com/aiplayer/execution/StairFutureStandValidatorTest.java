@@ -94,4 +94,22 @@ class StairFutureStandValidatorTest {
         assertFalse(result.valid());
         assertTrue(result.reason().contains("vertical_danger=lava"));
     }
+
+    @Test
+    void acceptsFallingBlocksWhenCallerMarksThemBreakableAndSupported() {
+        StairFutureStandValidator.Result result = StairFutureStandValidator.validate(new StairFutureStandValidator.Input(
+            "minecraft:gravel",
+            false,
+            true,
+            "minecraft:sand",
+            false,
+            true,
+            "minecraft:gravel",
+            true,
+            null,
+            null
+        ));
+
+        assertTrue(result.valid());
+    }
 }

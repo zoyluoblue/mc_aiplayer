@@ -51,6 +51,26 @@ public final class MissingMaterialResolver {
         return new TakeResult(fromBackpack, fromChest, remaining, fromBackpackItems, fromChestItems);
     }
 
+    public TakeResult takeFuelForIngredient(java.util.List<String> fuelItems, int count) {
+        int remaining = Math.max(0, count);
+        Map<String, Integer> fromBackpackItems = takeFirstAvailable(backpackItems, fuelItems, remaining);
+        int fromBackpack = sum(fromBackpackItems);
+        remaining -= fromBackpack;
+        Map<String, Integer> fromChestItems = takeFirstAvailable(chestItems, fuelItems, remaining);
+        int fromChest = sum(fromChestItems);
+        remaining -= fromChest;
+        return new TakeResult(fromBackpack, fromChest, remaining, fromBackpackItems, fromChestItems);
+    }
+
+    public int getFuelCount(java.util.List<String> fuelItems) {
+        int count = 0;
+        for (String item : fuelItems == null ? java.util.List.<String>of() : fuelItems) {
+            count += backpackItems.getOrDefault(item, 0);
+            count += chestItems.getOrDefault(item, 0);
+        }
+        return count;
+    }
+
     public int withdrawToBackpack(String item, int count) {
         return withdrawToBackpackDetailed(item, count).fromChest();
     }
@@ -138,6 +158,25 @@ public final class MissingMaterialResolver {
             int taken = take(source, candidate, remaining);
             if (taken > 0) {
                 takenItems.merge(candidate, taken, Integer::sum);
+                remaining -= taken;
+            }
+        }
+        return takenItems;
+    }
+
+    private static Map<String, Integer> takeFirstAvailable(Map<String, Integer> source, java.util.List<String> items, int count) {
+        Map<String, Integer> takenItems = new LinkedHashMap<>();
+        int remaining = Math.max(0, count);
+        if (items == null) {
+            return takenItems;
+        }
+        for (String item : items) {
+            if (remaining <= 0) {
+                break;
+            }
+            int taken = take(source, item, remaining);
+            if (taken > 0) {
+                takenItems.merge(item, taken, Integer::sum);
                 remaining -= taken;
             }
         }

@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MiningGoalResolverTest {
@@ -11,12 +12,15 @@ class MiningGoalResolverTest {
     void resolvesSmeltedIngotToRawOreChain() {
         MiningGoalResolver.Goal goal = MiningGoalResolver.resolve("金锭").orElseThrow();
 
+        assertEquals("minecraft:gold_ingot", goal.requestedItem());
         assertEquals("minecraft:gold_ingot", goal.finalItem());
         assertEquals("minecraft:raw_gold", goal.directMiningItem());
+        assertEquals("minecraft:raw_gold", goal.smeltingInput());
         assertEquals("gold_ore", goal.source());
         assertTrue(goal.needsSmelting());
         assertEquals("minecraft:furnace", goal.station());
         assertEquals("minecraft:iron_pickaxe", goal.requiredTool());
+        assertEquals(MiningToolTier.IRON, goal.requiredToolTier());
         assertEquals("minecraft:overworld", goal.dimension());
         assertEquals("raw_gold", goal.profileKey());
         assertTrue(goal.blockIds().contains("minecraft:gold_ore"));
@@ -28,11 +32,14 @@ class MiningGoalResolverTest {
         MiningGoalResolver.Goal diamondOre = MiningGoalResolver.resolve("minecraft:diamond_ore").orElseThrow();
         MiningGoalResolver.Goal goldOre = MiningGoalResolver.resolve("gold_ore").orElseThrow();
 
+        assertEquals("minecraft:diamond_ore", diamondOre.requestedItem());
         assertEquals("minecraft:diamond", diamondOre.finalItem());
         assertEquals("minecraft:diamond", diamondOre.directMiningItem());
         assertFalse(diamondOre.needsSmelting());
+        assertEquals(MiningToolTier.IRON, diamondOre.requiredToolTier());
         assertEquals("diamond", diamondOre.profileKey());
 
+        assertEquals("minecraft:gold_ore", goldOre.requestedItem());
         assertEquals("minecraft:raw_gold", goldOre.finalItem());
         assertEquals("minecraft:raw_gold", goldOre.directMiningItem());
         assertFalse(goldOre.needsSmelting());
@@ -56,15 +63,25 @@ class MiningGoalResolverTest {
         MiningGoalResolver.Goal obsidian = MiningGoalResolver.resolve("黑曜石").orElseThrow();
         MiningGoalResolver.Goal ancientDebris = MiningGoalResolver.resolve("ancient_debris").orElseThrow();
 
+        assertEquals("minecraft:obsidian", obsidian.requestedItem());
         assertEquals("minecraft:obsidian", obsidian.finalItem());
+        assertEquals("minecraft:obsidian", obsidian.directMiningItem());
+        assertEquals("block:minecraft:obsidian", obsidian.source());
         assertEquals("minecraft:diamond_pickaxe", obsidian.requiredTool());
+        assertEquals(MiningToolTier.DIAMOND, obsidian.requiredToolTier());
         assertEquals("any", obsidian.dimension());
         assertFalse(obsidian.needsSmelting());
+        assertNull(obsidian.smeltingInput());
 
+        assertEquals("minecraft:ancient_debris", ancientDebris.requestedItem());
         assertEquals("minecraft:ancient_debris", ancientDebris.finalItem());
+        assertEquals("minecraft:ancient_debris", ancientDebris.directMiningItem());
+        assertEquals("block:minecraft:ancient_debris", ancientDebris.source());
         assertEquals("minecraft:the_nether", ancientDebris.dimension());
         assertEquals("minecraft:diamond_pickaxe", ancientDebris.requiredTool());
+        assertEquals(MiningToolTier.DIAMOND, ancientDebris.requiredToolTier());
         assertFalse(ancientDebris.needsSmelting());
+        assertNull(ancientDebris.smeltingInput());
     }
 
     @Test

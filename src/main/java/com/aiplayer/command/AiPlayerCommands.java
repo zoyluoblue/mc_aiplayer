@@ -550,7 +550,7 @@ public class AiPlayerCommands {
         AutoMiningTarget miningTarget = AutoMiningTarget.resolve(target, count);
         if (!miningTarget.supported()) {
             source.sendFailure(Component.literal(miningTarget.message()
-                + " 可用目标包括 iron、coal、gold、diamond、redstone、lapis、emerald、copper、obsidian、ancient_debris。"));
+                + " 可用目标包括 iron、coal、gold、diamond、redstone、lapis、emerald、copper、obsidian、quartz、gold_nugget、ancient_debris。"));
             return 0;
         }
 
@@ -637,12 +637,14 @@ public class AiPlayerCommands {
         String goal = aiPlayer.getActionExecutor().getCurrentGoal();
         String action = aiPlayer.getActionExecutor().getCurrentActionDescription();
         String agentState = aiPlayer.getActionExecutor().getStateMachine().getCurrentState().getDisplayName();
+        String intentSummary = aiPlayer.getActionExecutor().getCurrentIntentSummary();
         String details = aiPlayer.getActionExecutor().getCurrentActionStatusDetails();
         String message = """
             AI 当前状态：
             - 名称: %s
             - 阶段: %s
             - 目标: %s
+            - 入口: %s
             - 当前动作: %s
             - 执行中: %s，规划中: %s
             - 位置: %s，Y=%d
@@ -653,6 +655,7 @@ public class AiPlayerCommands {
             aiPlayer.getAiPlayerName(),
             agentState,
             goal == null || goal.isBlank() ? "无" : goal,
+            intentSummary == null || intentSummary.isBlank() ? "无" : intentSummary,
             action == null || action.isBlank() ? "无" : action,
             aiPlayer.getActionExecutor().isExecuting(),
             aiPlayer.getActionExecutor().isPlanning(),

@@ -10,6 +10,16 @@
 
 | 样本编号 | 日志来源 | 目标/阶段 | 最小输入 | 失败信号 | 期望修复方向 |
 | --- | --- | --- | --- | --- | --- |
+| `R-2026-05-15-03492d17` | `make_item`、`action`、`planning` | `minecraft:gold_ingot x2` 的第 1/13 步，采集 `minecraft:oak_log x1` | AI 背包为空，从木材起步；附近扩展扫描发现 `53` 个原木候选 | 只检查 `16` 个候选路径且均为 `no_reachable_stand`，`noReachableScans` 达到阈值后直接终止，未耗尽树木探索点 | 扩大树木路径候选验证数量；`no_reachable_stand` 只触发继续探索和重扫，探索点耗尽前不终止制作链 |
+| `R-2026-05-15-tree-structure` | `make_item` | 金锭、铁工具、石工具等长链路的第一个木材 step | 附近有多种树、树叶或草地站位；通用目标仍显示为 `minecraft:oak_log` | 旧逻辑按单个原木评分，可能优先检查树冠、高差大或不像树的孤立原木；脚下有草、花等无碰撞植物时也可能误判没有站位 | 树木候选增加真实树结构评分：有树叶、连接原木多、树干底部优先；树木站位允许无碰撞植物；通用木材扩展到绯红菌柄和诡异菌柄 |
+| `R-2026-05-15-ff6adb24` | `make_item`、`action` | `minecraft:gold_ingot x2` 的铁锭前置链，制作 `minecraft:furnace x1` | AI 已完成树木、圆石、石镐和 `minecraft:raw_iron x3`，背包已有 `minecraft:crafting_table x1`、`minecraft:cobblestone x43`、`minecraft:raw_iron x3` | 在地下矿道进入 `craft_station minecraft:furnace x1` 后失败：`找不到可放置工作台的位置`；不是矿物目标或配方失败，而是附近没有现成可放置空气格 | 工作站放置搜索扩大到附近有效支撑格；若没有空气格，先按生存规则清理有支撑、可触达的普通地形方块形成工作台/熔炉放置空间，排除箱子、木桶、已有工作站和带方块实体的容器，并记录清理失败原因 |
+| `R-2026-05-15-344d3a06` | `make_item`、`mining`、`action` | `minecraft:gold_ingot x2` 的第 12/13 步，采集 `minecraft:raw_gold x2` | AI 已完成木材、工作台、石镐、铁矿、熔炉、铁镐，背包已有 `minecraft:iron_pickaxe x1`，正在从 Y=115 向金矿目标 `-506,20,-297` 下探 | 旧台阶站位最初是相邻下一阶，但实体位移后当前位置变成 `-442,112,-301`，旧站位仍是 `-442,109,-302`，垂直差扩大到 3 格；代码继续按 `prospect_stair_step_move` 相邻一步处理，最终累计 `adjacent_mining_step_stuck` 终止 | 台阶移动目标必须每 tick 按当前位置重新确认只能是一格水平/下降站位；目标过期时清空旧目标并按当前位置重建下一阶；相邻台阶进入超时只拒绝当前站位并重规划，不再直接把整条挖矿链判为终止失败 |
+| `R-2026-05-15-a124d328` | `make_item`、`mining`、`action` | `minecraft:gold_ingot x2` 的第 7/13 步，采集 `minecraft:raw_iron x3` | AI 已完成木材、工作台、木镐、圆石和石镐，从 Y=81 向铁矿目标 `-3,66,-7` 下探，途中遇到大量砂砾和沙子 | 四个阶梯方向都被 `future_stand_invalid:support=minecraft:gravel` 或 `head_blocked=minecraft:gravel` 拒绝；`canStandAt` 允许砂砾支撑，但阶梯预判和通道可挖规则把砂砾/沙子排除，导致没有下一阶目标并终止 `no_downward_target` | 挖矿通道规则统一：砂砾、沙子、红沙可以作为可破坏的头部/脚部通道方块，也可以作为普通下探站位支撑；真正阻断下探的硬条件保留为空气缺支撑、水、岩浆、基岩、工具无法采集、世界边界或区块未加载 |
+| `R-2026-05-15-c99f58d0` | `make_item`、`mining`、`action` | `minecraft:gold_ingot x2` 的铁镐前置链，第 7/13 步采集 `minecraft:raw_iron x3` | AI 在 `6,67,8`，铁矿 `8,66,8`，已挖开 `7,66,8` 作为水平暴露邻格，背包已有圆石和石镐 | 路线又把 `7,66,8` 当作下一站位 `7,67,8` 的脚下支撑补成圆石，导致刚暴露的矿重新变成 `no_air_neighbor`，随后 `prospect_timeout` | 支撑放置前必须检测是否会封住已打开的水平矿物暴露格；若会封住，应进入该暴露格作为站位，而不是放置支撑 |
+| `R-2026-05-15-155e48be` | `make_item`、`mining`、`action` | `minecraft:gold_ingot x2` 的第 12/13 步，采集 `minecraft:raw_gold x2` | AI 已完成铁镐、熔炉和燃料，正在从 Y=50 向金矿目标层下探 | 通道判定 `passage_ready`，但目标站位 `-10,49,-25` 反复 `adjacent_mining_step_stuck:prospect_stair_step_move`，实体没有稳定走入下一阶 | 相邻下降 step 使用专门移动策略：水平贴近下一阶中心，靠近后给向下速度，并用水平距离 + 落点高度作为进展和到达判定 |
+| `R-2026-05-15-32c1096a` | `make_item`、`mining`、`action` | `minecraft:gold_ingot x2` 的第 7/13 步，采集 `minecraft:raw_iron x3` | AI 已有工作台、石镐、`raw_iron=2`，铁矿线索在附近矿道内 | 大量候选为 `no_air_neighbor`；路线目标和暴露面多次 `blocked_line_of_sight`，遮挡清理后仍被 `prospect_timeout` 判为长期无进展 | 直接挖矿目标必须同时校验距离和视线；无清晰视线时继续两格高通道推进；成功清理视线遮挡也计入有效挖矿进展 |
+| `R-2026-05-15-f7c1f684` | `make_item`、`action`、`survival` | `minecraft:gold_ingot x2` 的第 6/13 步，制作石镐 | AI 已有 `minecraft:cobblestone x3`、`minecraft:stick x2`、木镐和已放置过的工作台 | 制作链重建后没有复用附近工作台，重新进入 `gather_tree minecraft:oak_log x1`；树木扫描选中可疑站位后又反复 `stand_unreachable` | 非消耗工作站先复用观察层真实可达方块；工作站搜索半径与观察层一致；路径判断必须要求 `Path.canReach()`，避免伪可达树木站位 |
+| `R-2026-05-15-16bf9b52` | `make_item`、`mining`、`action`、`survival` | `minecraft:gold_ingot x2` 的第 5/13 步，采集 `minecraft:cobblestone x3` | AI 已完成木镐，在 `70,66,-1` 附近尝试下探，目标层低于当前位置 | 反复 `move_to_stone_descent_start`，破坏 `70,65,-1` 被 `blocked_line_of_sight blocker=70,66,-1` 拒绝，最终 `stone_no_progress` | 指定目标层下探时锁定当前阶梯会话，先清前方脚部和头部空间，再挖斜下脚部；清理覆盖层计为下探进展 |
 | `R-2026-05-14-e2ad0a9a` | `make_item`、`mining`、`action` | `minecraft:gold_ingot x2` 的第 7/13 步，采集 `minecraft:raw_iron x1` | AI 在 `-780,59,-1`，矿点 `-780,58,0`，暴露点 `-780,59,0` | 近场矿点被反复拒绝，`target_changed:minecraft:iron_ore`、`no_air_neighbor`、`no_path` 持续增长，最终 `prospect_timeout` | 当前站位已贴近矿点时进入 `EXPOSE_OR_MINE`，不再把相邻暴露点当成不可达路线 |
 | `R-2026-05-14-c852ddd1` | `mining`、`survival` | `minecraft:iron_ingot x2`，最终成功，但过程多次破坏失败 | 石头目标 `-790,74,10`，铁矿目标 `-774,68,-2`、`-773,67,-3` | 多次 `blocked_line_of_sight`，阻挡方块位于目标侧面或头部通道 | 两格通道清理要先处理脚部/头部遮挡，再执行破坏；该样本作为可恢复遮挡回归 |
 | `R-2026-05-13-ae778bec` | `mining`、`action` | `minecraft:iron_ingot x2` 的探矿路线 | AI 在 `14,60,-30`，矿点 `-65,59,-24`，路线点 `-65,60,-24` | 长距离 `TUNNEL` 阶段被 `blocked_line_of_sight`、`occlusion_clear_failed`、`no_air_neighbor`、`no_path` 组合阻断 | 远距离矿点要支持路线重绑定、通道清理失败分类和鱼骨兜底，不能只持续追同一不可执行直线 |
@@ -19,6 +29,19 @@
 样本字段明细：
 
 ```text
+R-2026-05-15-16bf9b52:
+- taskId=task-16bf9b52
+- target=minecraft:gold_ingot x2
+- step=milestone 5/13 gather_stone minecraft:cobblestone x3
+- aiPos=70,66,-1 and nearby descent start candidates
+- routeStage=stone_descent
+- rejectionReason=blocked_line_of_sight blocker=70,66,-1 while target=70,65,-1
+- lastInteractionTarget=minecraft:dirt at 70,65,-1
+- lastBreakResult=Survival breakBlock rejected because forward foot block still blocked line of sight
+- backpack=wooden_pickaxe and early wood chain materials
+- milestone=gold_ingot milestone 5/13 current=gather_stone minecraft:cobblestone x3
+- routeSummary=repeated start reselection and cover-block digging did not count as descent progress
+
 R-2026-05-14-e2ad0a9a:
 - taskId=task-e2ad0a9a
 - target=minecraft:gold_ingot x2
@@ -453,6 +476,50 @@ MiningMovementSimulatorTest
 MiningCandidateCooldownTest
 MiningToolGateTest
 SmeltingFuelPolicyTest
+```
+
+## 自然语言入口误规划回归
+
+最新失败样本：
+
+```text
+source_command=帮我两块金锭
+实际错误任务=Task{action='gather', parameters={quantity=1, resource=tree}}
+结果=AI 去找树，附近候选原木存在但站位不可达，快速失败
+```
+
+该失败不属于挖矿路线失败，而是入口规划把明确物品目标误降级成树木采集。修复后，自然语言入口会先由本地代码锁定明确物品目标和数量，DeepSeek 或 fallback 不能覆盖这个目标。
+
+入口回归矩阵：
+
+| 命令 | 期望入口动作 | 期望目标 | 数量 | 是否允许 fallback 改目标 |
+| --- | --- | --- | --- | --- |
+| `/ai say 帮我两块金锭` | `make_item` | `minecraft:gold_ingot` | 2 | 否 |
+| `/ai say 帮我做两个金锭` | `make_item` | `minecraft:gold_ingot` | 2 | 否 |
+| `/ai say 挖两块金锭` | `make_item` | `minecraft:gold_ingot` | 2 | 否 |
+| `/ai say 给我两个铁锭` | `make_item` | `minecraft:iron_ingot` | 2 | 否 |
+| `/ai say 帮我做铁镐` | `make_item` | `minecraft:iron_pickaxe` | 1 | 否 |
+| `/ai say 收集圆石` | `make_item` | `minecraft:cobblestone` | 1 | 否 |
+| `/ai say 去砍树` | `gather` | `tree` | 1 | 保持树木采集 |
+
+自动化覆盖：
+
+```text
+ItemGoalParserTest
+AgentIntentParserTest
+TaskPlannerIntentTest:
+- itemGoalEntryRegressionMatrix
+- repairsDeepSeekPlanThatConflictsWithLockedItemGoal
+- doesNotRepairNonItemGoalTreePlan
+```
+
+实机观察重点：
+
+```text
+planning.log 应出现 locked_item_goal=minecraft:gold_ingot x2
+action.log 第一条执行任务应为 make_item，而不是 gather tree
+/ai status 的“入口”字段应显示本地锁定目标
+若后续失败，失败点应落在工具、路线、矿点、熔炼或背包容量等真实生存阶段
 ```
 
 手动实机复测记录：

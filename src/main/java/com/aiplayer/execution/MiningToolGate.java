@@ -1,5 +1,9 @@
 package com.aiplayer.execution;
 
+import com.aiplayer.recipe.MiningToolTier;
+import com.aiplayer.recipe.MiningResource;
+
+import java.util.List;
 import java.util.Locale;
 
 public final class MiningToolGate {
@@ -9,8 +13,8 @@ public final class MiningToolGate {
     public static Result evaluate(String requiredTool, String currentBestTool, int durability, int minDurability) {
         String required = normalize(requiredTool);
         String current = normalize(currentBestTool);
-        int requiredTier = pickaxeTier(required);
-        int currentTier = pickaxeTier(current);
+        int requiredTier = MiningToolTier.fromPickaxeItem(required).level();
+        int currentTier = MiningToolTier.fromPickaxeItem(current).level();
         boolean requiredPickaxe = requiredTier > 0;
         boolean hasRequiredTier = !requiredPickaxe || currentTier >= requiredTier;
         boolean enoughDurability = !requiredPickaxe || durability == Integer.MAX_VALUE || durability >= minDurability;
@@ -33,20 +37,77 @@ public final class MiningToolGate {
             hasRequiredTier, enoughDurability, reason, nextMilestone);
     }
 
+    public static Result evaluate(MiningResource.Profile profile, String currentBestTool, int durability, int minDurability) {
+        String requiredTool = profile == null ? null : profile.requiredTool();
+        return evaluate(requiredTool, currentBestTool, durability, minDurability);
+    }
+
+    public static Result evaluateWithFallback(
+        String requiredTool,
+        String highestTierTool,
+        int highestTierDurability,
+        String healthyTool,
+        int healthyToolDurability,
+        int minDurability
+    ) {
+        Result highest = evaluate(requiredTool, highestTierTool, highestTierDurability, minDurability);
+        Result healthy = evaluate(requiredTool, healthyTool, healthyToolDurability, minDurability);
+        if (healthy.ready()) {
+            return healthy;
+        }
+        if (highest.hasRequiredTier() || healthyTool == null || healthyTool.isBlank()) {
+            return highest;
+        }
+        if (healthy.hasRequiredTier()) {
+            return healthy;
+        }
+        return highest.currentTier() >= healthy.currentTier() ? highest : healthy;
+    }
+
+    public static Result evaluateWithFallback(
+        MiningResource.Profile profile,
+        String highestTierTool,
+        int highestTierDurability,
+        String healthyTool,
+        int healthyToolDurability,
+        int minDurability
+    ) {
+        String requiredTool = profile == null ? null : profile.requiredTool();
+        return evaluateWithFallback(requiredTool, highestTierTool, highestTierDurability, healthyTool, healthyToolDurability, minDurability);
+    }
+
     public static int pickaxeTier(String itemId) {
-        String normalized = normalize(itemId);
-        return switch (normalized) {
-            case "minecraft:wooden_pickaxe", "minecraft:golden_pickaxe" -> 1;
-            case "minecraft:stone_pickaxe" -> 2;
-            case "minecraft:iron_pickaxe" -> 3;
-            case "minecraft:diamond_pickaxe" -> 4;
-            case "minecraft:netherite_pickaxe" -> 5;
-            default -> 0;
-        };
+        return MiningToolTier.fromPickaxeItem(itemId).level();
     }
 
     public static int replacementTargetCount(int currentCount) {
         return Math.max(0, currentCount) + 1;
+    }
+
+    public static List<String> replacementCandidates(String requiredTool) {
+        MiningToolTier requiredTier = MiningToolTier.fromPickaxeItem(normalize(requiredTool));
+        return switch (requiredTier) {
+            case NONE -> List.of();
+            case WOOD -> List.of(
+                "minecraft:wooden_pickaxe",
+                "minecraft:stone_pickaxe",
+                "minecraft:iron_pickaxe",
+                "minecraft:diamond_pickaxe"
+            );
+            case STONE -> List.of(
+                "minecraft:stone_pickaxe",
+                "minecraft:iron_pickaxe",
+                "minecraft:diamond_pickaxe"
+            );
+            case IRON -> List.of(
+                "minecraft:iron_pickaxe",
+                "minecraft:diamond_pickaxe"
+            );
+            case DIAMOND, NETHERITE -> List.of(
+                "minecraft:diamond_pickaxe",
+                "minecraft:netherite_pickaxe"
+            );
+        };
     }
 
     private static String normalize(String itemId) {

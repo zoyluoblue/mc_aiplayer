@@ -17,6 +17,7 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.pathfinder.Path;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.List;
@@ -370,12 +371,12 @@ public class GatherResourceAction extends BaseAction {
         }
         for (Direction direction : Direction.Plane.HORIZONTAL) {
             BlockPos stand = pos.relative(direction);
-            if (canStandAt(stand) && aiPlayer.getNavigation().createPath(stand, 1) != null) {
+            if (canStandAt(stand) && hasReachableNavigationPath(stand)) {
                 return true;
             }
         }
         BlockPos below = pos.below();
-        return canStandAt(below) && aiPlayer.getNavigation().createPath(below, 1) != null;
+        return canStandAt(below) && hasReachableNavigationPath(below);
     }
 
     private int getBreakDelay() {
@@ -645,7 +646,7 @@ public class GatherResourceAction extends BaseAction {
             }
         }
         int pathChecks = 0;
-        if (best != null && aiPlayer.getNavigation().createPath(best, 1) != null) {
+        if (best != null && hasReachableNavigationPath(best)) {
             return Optional.of(best);
         }
         for (BlockPos candidate : BlockPos.betweenClosed(
@@ -660,7 +661,7 @@ public class GatherResourceAction extends BaseAction {
                 continue;
             }
             pathChecks++;
-            if (aiPlayer.getNavigation().createPath(pos, 1) != null) {
+            if (hasReachableNavigationPath(pos)) {
                 return Optional.of(pos);
             }
         }
@@ -689,7 +690,7 @@ public class GatherResourceAction extends BaseAction {
             if (Vec3.atCenterOf(stand).distanceToSqr(Vec3.atCenterOf(logPos)) > getInteractionRange() * getInteractionRange()) {
                 continue;
             }
-            if (aiPlayer.getNavigation().createPath(stand, 1) == null) {
+            if (!hasReachableNavigationPath(stand)) {
                 continue;
             }
             double score = stand.distSqr(aiPlayer.blockPosition()) + verticalPenalty(logPos, stand);
@@ -703,6 +704,17 @@ public class GatherResourceAction extends BaseAction {
 
     private boolean canWorkBlockDirectly(BlockPos pos, double range) {
         return pos != null && aiPlayer.position().distanceToSqr(Vec3.atCenterOf(pos)) <= range * range;
+    }
+
+    private boolean hasReachableNavigationPath(BlockPos pos) {
+        if (pos == null) {
+            return false;
+        }
+        if (aiPlayer.blockPosition().equals(pos)) {
+            return true;
+        }
+        Path path = aiPlayer.getNavigation().createPath(pos, 1);
+        return path != null && path.canReach();
     }
 
     private double verticalPenalty(BlockPos logPos, BlockPos standPos) {

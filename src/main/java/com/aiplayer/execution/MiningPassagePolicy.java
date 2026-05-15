@@ -15,6 +15,24 @@ public final class MiningPassagePolicy {
         if (!descending && !input.supportSafe()) {
             return Decision.blocked("passage_blocked:support=" + clean(input.supportBlock()));
         }
+        if (descending && !input.headAir()) {
+            if (hasText(input.headDanger())) {
+                return Decision.blocked("passage_blocked:head_danger=" + input.headDanger());
+            }
+            if (!input.headBreakable()) {
+                return Decision.blocked("passage_blocked:head=" + clean(input.headBlock()));
+            }
+            return Decision.digHead("clear_head:" + clean(input.headBlock()));
+        }
+        if (descending && !input.entryHeadAir()) {
+            if (hasText(input.entryHeadDanger())) {
+                return Decision.blocked("passage_blocked:entry_head_danger=" + input.entryHeadDanger());
+            }
+            if (!input.entryHeadBreakable()) {
+                return Decision.blocked("passage_blocked:entry_head=" + clean(input.entryHeadBlock()));
+            }
+            return Decision.digEntryHead("clear_entry_head:" + clean(input.entryHeadBlock()));
+        }
         if (!input.feetAir()) {
             if (hasText(input.feetDanger())) {
                 return Decision.blocked("passage_blocked:feet_danger=" + input.feetDanger());
@@ -32,15 +50,6 @@ public final class MiningPassagePolicy {
                 return Decision.blocked("passage_blocked:head=" + clean(input.headBlock()));
             }
             return Decision.digHead("clear_head:" + clean(input.headBlock()));
-        }
-        if (descending && !input.entryHeadAir()) {
-            if (hasText(input.entryHeadDanger())) {
-                return Decision.blocked("passage_blocked:entry_head_danger=" + input.entryHeadDanger());
-            }
-            if (!input.entryHeadBreakable()) {
-                return Decision.blocked("passage_blocked:entry_head=" + clean(input.entryHeadBlock()));
-            }
-            return Decision.digEntryHead("clear_entry_head:" + clean(input.entryHeadBlock()));
         }
         if (!input.supportSafe()) {
             return Decision.blocked("passage_blocked:support=" + clean(input.supportBlock()));

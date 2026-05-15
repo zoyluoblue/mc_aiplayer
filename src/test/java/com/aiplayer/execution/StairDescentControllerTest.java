@@ -68,22 +68,22 @@ class StairDescentControllerTest {
     }
 
     @Test
-    void clearancePhaseUsesUnifiedTwoHighPassageOrder() {
+    void clearancePhaseClearsForwardSpaceBeforeLowerStep() {
         assertEquals(
-            StairDescentController.ClearancePhase.DIG_DOWN,
+            StairDescentController.ClearancePhase.CLEAR_HORIZONTAL,
             StairDescentController.clearancePhase(false, false, false)
         );
         assertEquals(
-            StairDescentController.ClearancePhase.DIG_DOWN,
+            StairDescentController.ClearancePhase.CLEAR_HORIZONTAL,
             StairDescentController.clearancePhase(true, false, false)
         );
         assertEquals(
-            StairDescentController.ClearancePhase.CLEAR_HORIZONTAL,
-            StairDescentController.clearancePhase(false, false, true)
+            StairDescentController.ClearancePhase.CLEAR_ENTRY_HEAD,
+            StairDescentController.clearancePhase(false, true, false)
         );
         assertEquals(
-            StairDescentController.ClearancePhase.CLEAR_ENTRY_HEAD,
-            StairDescentController.clearancePhase(false, true, true)
+            StairDescentController.ClearancePhase.DIG_DOWN,
+            StairDescentController.clearancePhase(true, true, false)
         );
         assertEquals(
             StairDescentController.ClearancePhase.MOVE,

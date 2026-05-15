@@ -5,6 +5,7 @@ import com.aiplayer.action.Task;
 import com.aiplayer.agent.AgentIntent;
 import com.aiplayer.agent.AgentIntentParser;
 import com.aiplayer.agent.AgentIntentType;
+import com.aiplayer.agent.ItemGoalParser;
 import com.aiplayer.config.AiPlayerConfig;
 import com.aiplayer.entity.AiPlayerEntity;
 import com.aiplayer.llm.async.AsyncLLMClient;
@@ -41,6 +42,7 @@ public class TaskPlanner {
     private final RecipeResolver recipeResolver;
     private final PlanValidator planValidator;
     private final AgentIntentParser intentParser;
+    private final ItemGoalParser itemGoalParser;
     private static final Pattern NUMBER_PATTERN = Pattern.compile("(\\d+)");
 
     public TaskPlanner() {
@@ -48,6 +50,7 @@ public class TaskPlanner {
         this.recipeResolver = new RecipeResolver();
         this.planValidator = new PlanValidator(recipeResolver);
         this.intentParser = new AgentIntentParser(recipeResolver);
+        this.itemGoalParser = new ItemGoalParser(recipeResolver);
 
         this.llmCache = new LLMCache();
         LLMFallbackHandler fallbackHandler = new LLMFallbackHandler();
@@ -86,6 +89,8 @@ public class TaskPlanner {
 
             MakeItemIntent makeItemIntent = findMakeItemIntent(command, snapshot);
             if (makeItemIntent != null) {
+                AiPlayerMod.info("planning", "[taskId={}] locked_item_goal={} x{} source=local_item_goal command={}",
+                    taskId, makeItemIntent.item(), makeItemIntent.quantity(), command);
                 logRecipePlan(aiPlayer, snapshot, makeItemIntent.item(), makeItemIntent.quantity(), taskId);
                 return makeItemResponse(makeItemIntent.item(), makeItemIntent.quantity(), makeItemIntent.description(), taskId);
             }
@@ -207,7 +212,14 @@ public class TaskPlanner {
     private ResponseParser.ParsedResponse normalizeForCommand(String command, ResponseParser.ParsedResponse response, WorldSnapshot snapshot, String taskId) {
         MakeItemIntent makeItemIntent = findMakeItemIntent(command, snapshot);
         if (makeItemIntent != null) {
-            return makeItemResponse(makeItemIntent.item(), makeItemIntent.quantity(), makeItemIntent.description(), taskId);
+            AiPlayerMod.info("planning", "[taskId={}] plan_repaired=local_item_goal locked_item_goal={} x{} originalPlan={} tasks={}",
+                taskId,
+                makeItemIntent.item(),
+                makeItemIntent.quantity(),
+                response == null ? "" : response.getPlan(),
+                response == null ? 0 : response.getTasks().size());
+            return makeItemResponse(makeItemIntent.item(), makeItemIntent.quantity(), makeItemIntent.description(), taskId, true,
+                response == null ? "" : response.getPlan());
         }
         if (isSingleTreeCommand(command)) {
             return singleTreeResponse(taskId);
@@ -275,16 +287,47 @@ public class TaskPlanner {
     }
 
     private ResponseParser.ParsedResponse makeItemResponse(String item, int quantity, String description, String taskId) {
+        return makeItemResponse(item, quantity, description, taskId, false, "");
+    }
+
+    private ResponseParser.ParsedResponse makeItemResponse(
+        String item,
+        int quantity,
+        String description,
+        String taskId,
+        boolean repaired,
+        String originalPlan
+    ) {
+        return buildMakeItemResponse(item, quantity, description, taskId, repaired, originalPlan);
+    }
+
+    private static ResponseParser.ParsedResponse buildMakeItemResponse(
+        String item,
+        int quantity,
+        String description,
+        String taskId,
+        boolean repaired,
+        String originalPlan
+    ) {
         List<Task> normalizedTasks = new ArrayList<>();
         Map<String, Object> parameters = new HashMap<>();
         parameters.put("item", item);
         parameters.put("quantity", Math.max(1, quantity));
         parameters.put("task_id", taskId);
+        parameters.put("locked_item_goal", item + " x" + Math.max(1, quantity));
+        parameters.put("intent_source", "local_item_goal");
+        parameters.put("intent_summary", "目标：" + item + " x" + Math.max(1, quantity) + "；入口：本地锁定；计划：进入生存物品获得链");
+        if (repaired) {
+            parameters.put("plan_repaired", true);
+            parameters.put("repair_reason", "DeepSeek 计划与本地明确物品目标不一致，已改回 make_item");
+            parameters.put("original_plan", originalPlan == null ? "" : originalPlan);
+        }
         normalizedTasks.add(new Task("make_item", parameters));
 
+        String repairText = repaired ? "；修复：DeepSeek 计划与本地目标不一致，已改回 make_item" : "";
         return new ResponseParser.ParsedResponse(
             "玩家要求制作物品，使用观察、配方、step 执行和复盘循环",
-            description,
+            "目标：" + item + " x" + Math.max(1, quantity) + "；入口：本地锁定；计划：进入生存物品获得链" + repairText + "；" + description,
             normalizedTasks
         );
     }
@@ -407,6 +450,10 @@ public class TaskPlanner {
     }
 
     private MakeItemIntent findMakeItemIntent(String command, WorldSnapshot snapshot) {
+        MakeItemIntent explicitItemGoal = findExplicitItemGoal(command, snapshot, itemGoalParser);
+        if (explicitItemGoal != null) {
+            return explicitItemGoal;
+        }
         if (command == null || command.isBlank()) {
             return null;
         }
@@ -417,6 +464,59 @@ public class TaskPlanner {
             return null;
         }
         return new MakeItemIntent(intent.targetItem(), intent.quantity(), "按生存流程制作 " + intent.targetItem() + " x" + intent.quantity());
+    }
+
+    static Task lockedItemGoalTaskForTest(String command, WorldSnapshot snapshot, RecipeResolver recipeResolver, String taskId) {
+        MakeItemIntent intent = findExplicitItemGoal(command, snapshot, new ItemGoalParser(recipeResolver));
+        if (intent == null) {
+            return null;
+        }
+        Map<String, Object> parameters = new HashMap<>();
+        parameters.put("item", intent.item());
+        parameters.put("quantity", intent.quantity());
+        parameters.put("task_id", taskId == null || taskId.isBlank() ? "task-test" : taskId);
+        parameters.put("locked_item_goal", intent.item() + " x" + intent.quantity());
+        parameters.put("intent_source", "local_item_goal");
+        parameters.put("intent_summary", "目标：" + intent.item() + " x" + intent.quantity() + "；入口：本地锁定；计划：进入生存物品获得链");
+        return new Task("make_item", parameters);
+    }
+
+    static ResponseParser.ParsedResponse repairLockedItemGoalForTest(
+        String command,
+        ResponseParser.ParsedResponse response,
+        WorldSnapshot snapshot,
+        RecipeResolver recipeResolver,
+        String taskId
+    ) {
+        MakeItemIntent intent = findExplicitItemGoal(command, snapshot, new ItemGoalParser(recipeResolver));
+        if (intent == null) {
+            return response;
+        }
+        return buildMakeItemResponse(
+            intent.item(),
+            intent.quantity(),
+            intent.description(),
+            taskId,
+            true,
+            response == null ? "" : response.getPlan()
+        );
+    }
+
+    private static MakeItemIntent findExplicitItemGoal(String command, WorldSnapshot snapshot, ItemGoalParser parser) {
+        if (command == null || command.isBlank()) {
+            return null;
+        }
+        String normalized = compact(command);
+        if (isStructureIntent(normalized)) {
+            return null;
+        }
+        return parser.parsePrimary(command, snapshot)
+            .map(goal -> new MakeItemIntent(
+                goal.itemId(),
+                goal.quantity(),
+                "按生存流程获得 " + goal.itemId() + " x" + goal.quantity()
+            ))
+            .orElse(null);
     }
 
     static String detectLocalMakeItemTarget(String command, WorldSnapshot snapshot, RecipeResolver recipeResolver) {

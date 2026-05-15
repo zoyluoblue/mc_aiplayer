@@ -3,6 +3,7 @@ package com.aiplayer.util;
 import com.aiplayer.entity.AiPlayerEntity;
 import com.aiplayer.AiPlayerMod;
 import net.minecraft.core.BlockPos;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
@@ -65,6 +66,10 @@ public final class SurvivalUtils {
     }
 
     public static BreakResult breakBlockDetailed(AiPlayerEntity aiPlayer, BlockPos pos) {
+        return breakBlockDetailed(aiPlayer, pos, 1);
+    }
+
+    public static BreakResult breakBlockDetailed(AiPlayerEntity aiPlayer, BlockPos pos, int minToolDurability) {
         if (aiPlayer == null || pos == null) {
             return BreakResult.failure(pos, null, "missing_target", null, Items.AIR, 0);
         }
@@ -87,17 +92,20 @@ public final class SurvivalUtils {
             return BreakResult.failure(pos, state.getBlock(), validation.reason(), blocker, Items.AIR, 0);
         }
         String requiredTool = requiredToolForDrop(state.getBlock());
-        if (requiredTool != null && !canHarvestBlock(aiPlayer, state.getBlock())) {
-            return BreakResult.failure(pos, state.getBlock(), "wrong_tool_tier:" + requiredTool, null, Items.AIR, 0);
+        if (requiredTool != null && !canHarvestBlock(aiPlayer, state.getBlock(), minToolDurability)) {
+            String reason = canHarvestBlock(aiPlayer, state.getBlock(), 1)
+                ? "low_tool_durability:" + requiredTool
+                : "wrong_tool_tier:" + requiredTool;
+            return BreakResult.failure(pos, state.getBlock(), reason, null, Items.AIR, 0);
         }
         Item drop = getSurvivalDrop(state);
         int dropCount = getDropCount(state);
-        equipBestToolForBlock(aiPlayer, state.getBlock());
+        equipBestToolForBlock(aiPlayer, state.getBlock(), minToolDurability);
         aiPlayer.lookAtWorkTarget(pos);
         aiPlayer.swingWorkHand(InteractionHand.MAIN_HAND);
         boolean destroyed = aiPlayer.level().destroyBlock(pos, false);
         if (destroyed) {
-            damageToolForBlock(aiPlayer, state.getBlock());
+            damageToolForBlock(aiPlayer, state.getBlock(), minToolDurability);
             int inserted = 0;
             if (drop != Items.AIR) {
                 inserted = aiPlayer.addItem(drop, dropCount);
@@ -196,16 +204,24 @@ public final class SurvivalUtils {
     }
 
     public static boolean isLog(Block block) {
+        if (block == null) {
+            return false;
+        }
         return block == Blocks.OAK_LOG || block == Blocks.SPRUCE_LOG || block == Blocks.BIRCH_LOG ||
             block == Blocks.JUNGLE_LOG || block == Blocks.ACACIA_LOG || block == Blocks.DARK_OAK_LOG ||
-            block == Blocks.MANGROVE_LOG || block == Blocks.CHERRY_LOG;
+            block == Blocks.MANGROVE_LOG || block == Blocks.CHERRY_LOG ||
+            block == Blocks.CRIMSON_STEM || block == Blocks.WARPED_STEM ||
+            block.defaultBlockState().is(BlockTags.LOGS);
     }
 
     public static boolean isLeaves(Block block) {
+        if (block == null) {
+            return false;
+        }
         return block == Blocks.OAK_LEAVES || block == Blocks.SPRUCE_LEAVES || block == Blocks.BIRCH_LEAVES ||
             block == Blocks.JUNGLE_LEAVES || block == Blocks.ACACIA_LEAVES || block == Blocks.DARK_OAK_LEAVES ||
             block == Blocks.MANGROVE_LEAVES || block == Blocks.CHERRY_LEAVES || block == Blocks.AZALEA_LEAVES ||
-            block == Blocks.FLOWERING_AZALEA_LEAVES;
+            block == Blocks.FLOWERING_AZALEA_LEAVES || block.defaultBlockState().is(BlockTags.LEAVES);
     }
 
     public static boolean isStone(Block block) {
@@ -254,6 +270,10 @@ public final class SurvivalUtils {
     }
 
     public static boolean canHarvestBlock(AiPlayerEntity aiPlayer, Block block) {
+        return canHarvestBlock(aiPlayer, block, 1);
+    }
+
+    public static boolean canHarvestBlock(AiPlayerEntity aiPlayer, Block block, int minToolDurability) {
         String requiredTool = requiredToolForDrop(block);
         if (requiredTool == null) {
             return true;
@@ -261,7 +281,7 @@ public final class SurvivalUtils {
         if (aiPlayer == null) {
             return false;
         }
-        return pickaxeMeetsRequirement(aiPlayer.getBestToolStackFor("pickaxe"), requiredTool);
+        return pickaxeMeetsRequirement(aiPlayer.getBestToolStackFor("pickaxe", Math.max(1, minToolDurability)), requiredTool);
     }
 
     public static boolean pickaxeMeetsRequirement(ItemStack tool, String requiredTool) {
@@ -291,18 +311,26 @@ public final class SurvivalUtils {
     }
 
     public static void equipBestToolForBlock(AiPlayerEntity aiPlayer, Block block) {
+        equipBestToolForBlock(aiPlayer, block, 1);
+    }
+
+    public static void equipBestToolForBlock(AiPlayerEntity aiPlayer, Block block, int minToolDurability) {
         String toolType = preferredToolForBlock(block);
         if (toolType == null) {
             aiPlayer.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
             return;
         }
-        aiPlayer.setItemInHand(InteractionHand.MAIN_HAND, aiPlayer.getBestToolStackFor(toolType));
+        aiPlayer.setItemInHand(InteractionHand.MAIN_HAND, aiPlayer.getBestToolStackFor(toolType, Math.max(1, minToolDurability)));
     }
 
     public static void damageToolForBlock(AiPlayerEntity aiPlayer, Block block) {
+        damageToolForBlock(aiPlayer, block, 1);
+    }
+
+    public static void damageToolForBlock(AiPlayerEntity aiPlayer, Block block, int minToolDurability) {
         String toolType = preferredToolForBlock(block);
         if (toolType != null) {
-            aiPlayer.damageBestTool(toolType, 1);
+            aiPlayer.damageBestTool(toolType, 1, Math.max(1, minToolDurability));
         }
     }
 

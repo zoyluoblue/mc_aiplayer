@@ -46,11 +46,11 @@ class MiningMovementSimulatorTest {
     }
 
     @Test
-    void descendingStairClearsFeetHeadAndEntryHeadBeforeMoving() {
+    void descendingStairClearsForwardSpaceBeforeLowerStepAndMoving() {
         BlockPos current = new BlockPos(0, 64, 0);
         BlockPos stand = new BlockPos(1, 63, 0);
 
-        MiningMovementSimulator.Result feet = simulate(
+        MiningMovementSimulator.Result forwardFeet = simulate(
             current,
             stand,
             MiningMovementSimulator.BlockInfo.block("minecraft:stone"),
@@ -58,20 +58,20 @@ class MiningMovementSimulatorTest {
             MiningMovementSimulator.BlockInfo.block("minecraft:stone"),
             MiningMovementSimulator.BlockInfo.support("minecraft:stone", true)
         );
-        MiningMovementSimulator.Result head = simulate(
+        MiningMovementSimulator.Result entryHead = simulate(
             current,
             stand,
             MiningMovementSimulator.BlockInfo.block("minecraft:stone"),
-            MiningMovementSimulator.BlockInfo.block("minecraft:stone"),
+            MiningMovementSimulator.BlockInfo.empty(),
             MiningMovementSimulator.BlockInfo.empty(),
             MiningMovementSimulator.BlockInfo.support("minecraft:stone", true)
         );
-        MiningMovementSimulator.Result entry = simulate(
+        MiningMovementSimulator.Result lowerStep = simulate(
             current,
             stand,
+            MiningMovementSimulator.BlockInfo.empty(),
+            MiningMovementSimulator.BlockInfo.empty(),
             MiningMovementSimulator.BlockInfo.block("minecraft:stone"),
-            MiningMovementSimulator.BlockInfo.empty(),
-            MiningMovementSimulator.BlockInfo.empty(),
             MiningMovementSimulator.BlockInfo.support("minecraft:stone", true)
         );
         MiningMovementSimulator.Result move = simulate(
@@ -83,11 +83,13 @@ class MiningMovementSimulatorTest {
             MiningMovementSimulator.BlockInfo.support("minecraft:stone", true)
         );
 
-        assertEquals(MiningPassagePolicy.MoveIntent.FORWARD_DOWN, feet.intent());
-        assertEquals(MiningMovementSimulator.Action.DIG_FEET, feet.action());
-        assertEquals(MiningMovementSimulator.Action.DIG_HEAD, head.action());
-        assertEquals(MiningMovementSimulator.Action.DIG_ENTRY_HEAD, entry.action());
-        assertEquals(stand.above(2), entry.target());
+        assertEquals(MiningPassagePolicy.MoveIntent.FORWARD_DOWN, forwardFeet.intent());
+        assertEquals(MiningMovementSimulator.Action.DIG_HEAD, forwardFeet.action());
+        assertEquals(stand.above(), forwardFeet.target());
+        assertEquals(MiningMovementSimulator.Action.DIG_ENTRY_HEAD, entryHead.action());
+        assertEquals(stand.above(2), entryHead.target());
+        assertEquals(MiningMovementSimulator.Action.DIG_FEET, lowerStep.action());
+        assertEquals(stand, lowerStep.target());
         assertEquals(MiningMovementSimulator.Action.MOVE, move.action());
     }
 
@@ -126,6 +128,34 @@ class MiningMovementSimulatorTest {
 
         assertEquals(MiningMovementSimulator.Action.BLOCKED, result.action());
         assertTrue(result.reason().contains("entry_head_danger"));
+    }
+
+    @Test
+    void descendingStairCanClearFallingBlocksWhenSupportIsStable() {
+        BlockPos current = new BlockPos(0, 64, 0);
+        BlockPos stand = new BlockPos(1, 63, 0);
+
+        MiningMovementSimulator.Result head = simulate(
+            current,
+            stand,
+            MiningMovementSimulator.BlockInfo.empty(),
+            MiningMovementSimulator.BlockInfo.block("minecraft:gravel"),
+            MiningMovementSimulator.BlockInfo.block("minecraft:sand"),
+            MiningMovementSimulator.BlockInfo.support("minecraft:gravel", true)
+        );
+        MiningMovementSimulator.Result feet = simulate(
+            current,
+            stand,
+            MiningMovementSimulator.BlockInfo.empty(),
+            MiningMovementSimulator.BlockInfo.empty(),
+            MiningMovementSimulator.BlockInfo.block("minecraft:sand"),
+            MiningMovementSimulator.BlockInfo.support("minecraft:gravel", true)
+        );
+
+        assertEquals(MiningMovementSimulator.Action.DIG_HEAD, head.action());
+        assertEquals(stand.above(), head.target());
+        assertEquals(MiningMovementSimulator.Action.DIG_FEET, feet.action());
+        assertEquals(stand, feet.target());
     }
 
     private static MiningMovementSimulator.Result simulate(

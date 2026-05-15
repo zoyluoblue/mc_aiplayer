@@ -54,6 +54,7 @@ public class MakeItemAction extends BaseAction {
     private String targetItem;
     private String taskId;
     private String sourceCommand;
+    private String intentSummary;
     private String lastLoggedStepDescription;
     private int lastLoggedStepIndex = -1;
     private Map<String, Integer> stepStartInventory = Map.of();
@@ -85,6 +86,7 @@ public class MakeItemAction extends BaseAction {
             .orElseGet(() -> recipeResolver.normalizeItemId(requestedItem));
         quantity = task.getIntParameter("quantity", 1);
         sourceCommand = task.getStringParameter("source_command", "");
+        intentSummary = task.getStringParameter("intent_summary", "");
         failureReplans = 0;
         ticksSinceMiningStrategyReport = 0;
         skillCommitted = false;
@@ -105,8 +107,10 @@ public class MakeItemAction extends BaseAction {
             AiPlayerMod.info("planning", "[taskId={}] AiPlayer '{}' retrieved {} skill memories for target {}: {}",
                 taskId, aiPlayer.getAiPlayerName(), retrievedSkillSummaries.size(), targetItem, retrievedSkillSummaries);
         }
-        AiPlayerMod.info("make_item", "[taskId={}] AiPlayer '{}' make_item start: target={} x{}, pos={}, mainHand={}, backpack={}, {}",
-            taskId, aiPlayer.getAiPlayerName(), targetItem, quantity, positionText(), mainHandText(), inventoryText(), milestoneText());
+        AiPlayerMod.info("make_item", "[taskId={}] AiPlayer '{}' make_item start: target={} x{}, intentSummary={}, pos={}, mainHand={}, backpack={}, {}",
+            taskId, aiPlayer.getAiPlayerName(), targetItem, quantity,
+            intentSummary == null || intentSummary.isBlank() ? "none" : intentSummary,
+            positionText(), mainHandText(), inventoryText(), milestoneText());
         if (goalChecker.isComplete(aiPlayer, targetItem, quantity)) {
             completeSuccessfully("目标已完成：" + targetItem + " x" + quantity);
             return;
@@ -249,11 +253,24 @@ public class MakeItemAction extends BaseAction {
         String miningDetails = stepExecutor == null ? "" : stepExecutor.getStatusDetails();
         String milestone = milestoneText();
         String treeStatus = craftingTreeStatusText();
-        String prefix = treeStatus.isBlank() ? milestone : milestone + "\n" + treeStatus;
+        String intent = intentSummary == null || intentSummary.isBlank() ? "" : "入口摘要：" + intentSummary;
+        String prefix = joinStatusLines(intent, treeStatus.isBlank() ? milestone : milestone + "\n" + treeStatus);
         if (miningDetails == null || miningDetails.isBlank()) {
             return prefix;
         }
         return prefix + "\n" + miningDetails;
+    }
+
+    private String joinStatusLines(String first, String second) {
+        boolean hasFirst = first != null && !first.isBlank();
+        boolean hasSecond = second != null && !second.isBlank();
+        if (hasFirst && hasSecond) {
+            return first + "\n" + second;
+        }
+        if (hasFirst) {
+            return first;
+        }
+        return hasSecond ? second : "";
     }
 
     private void rebuildSession(String reason) {

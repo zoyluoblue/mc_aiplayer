@@ -74,7 +74,7 @@ public record DirectMiningRoute(
     }
 
     public boolean targetAboveCurrentLayer() {
-        return verticalDelta > 1;
+        return verticalDelta > 2;
     }
 
     public boolean needsDescent() {
@@ -116,6 +116,9 @@ public record DirectMiningRoute(
         }
         if (needsDescent()) {
             return "clear_forward_and_down_to_" + nextStand.toShortString();
+        }
+        if ("direct_ascent".equals(reason)) {
+            return "clear_forward_and_up_to_" + nextStand.toShortString();
         }
         return "clear_forward_to_" + nextStand.toShortString();
     }
@@ -199,25 +202,33 @@ public record DirectMiningRoute(
 
     private static BlockPos nextStand(BlockPos current, BlockPos targetStand, Direction nextDirection) {
         int verticalDelta = targetStand.getY() - current.getY();
-        if (verticalDelta > 1) {
+        if (verticalDelta > 2) {
             return null;
         }
         if (current.equals(targetStand)) {
             return current;
         }
-        BlockPos horizontal = current.relative(nextDirection);
-        if (verticalDelta < 0) {
-            return horizontal.below();
+        if (verticalDelta > 0) {
+            if (current.getX() == targetStand.getX() && current.getZ() == targetStand.getZ()) {
+                return current.above();
+            }
+            return current.relative(nextDirection).above();
         }
-        return horizontal;
+        if (verticalDelta < 0) {
+            return current.relative(nextDirection).below();
+        }
+        return current.relative(nextDirection);
     }
 
     private static String reason(BlockPos current, BlockPos targetStand, int horizontalDistance, int verticalDelta) {
         if (current.equals(targetStand)) {
             return "arrived";
         }
-        if (verticalDelta > 1) {
+        if (verticalDelta > 2) {
             return "target_above_current_layer";
+        }
+        if (verticalDelta > 0) {
+            return "direct_ascent";
         }
         if (verticalDelta < 0) {
             return "direct_descent";

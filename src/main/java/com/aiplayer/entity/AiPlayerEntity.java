@@ -54,7 +54,8 @@ public class AiPlayerEntity extends PathfinderMob {
         Items.ACACIA_DOOR, Items.DARK_OAK_DOOR, Items.MANGROVE_DOOR, Items.CHERRY_DOOR
     };
     private static final Item[] PICKAXES = {
-        Items.NETHERITE_PICKAXE, Items.DIAMOND_PICKAXE, Items.IRON_PICKAXE, Items.STONE_PICKAXE, Items.WOODEN_PICKAXE
+        Items.NETHERITE_PICKAXE, Items.DIAMOND_PICKAXE, Items.IRON_PICKAXE, Items.STONE_PICKAXE,
+        Items.WOODEN_PICKAXE, Items.GOLDEN_PICKAXE
     };
     private static final Item[] AXES = {
         Items.NETHERITE_AXE, Items.DIAMOND_AXE, Items.IRON_AXE, Items.STONE_AXE, Items.WOODEN_AXE
@@ -93,6 +94,7 @@ public class AiPlayerEntity extends PathfinderMob {
         this.memory = new AiPlayerMemory(this);
         this.actionExecutor = new ActionExecutor(this);
         this.setCustomNameVisible(true);
+        this.setInvulnerable(true);
     }
 
     public static AttributeSupplier.Builder createAttributes() {
@@ -124,9 +126,12 @@ public class AiPlayerEntity extends PathfinderMob {
         super.tick();
         
         if (!this.level().isClientSide) {
+            this.setInvulnerable(true);
             if (this.getHealth() < this.getMaxHealth()) {
                 this.setHealth(this.getMaxHealth());
             }
+            this.setAirSupply(this.getMaxAirSupply());
+            this.clearFire();
             if (workSwingCooldown > 0) {
                 workSwingCooldown--;
             }
@@ -713,13 +718,18 @@ public class AiPlayerEntity extends PathfinderMob {
     }
 
     public boolean damageBestTool(String toolType, int amount) {
+        return damageBestTool(toolType, amount, amount);
+    }
+
+    public boolean damageBestTool(String toolType, int amount, int requiredDurability) {
         if (amount <= 0) {
             return true;
         }
+        int minimumDurability = Math.max(amount, requiredDurability);
         for (Item item : toolsFor(toolType)) {
             for (int slot = 0; slot < backpack.size(); slot++) {
                 ItemStack stack = backpack.get(slot);
-                if (!stack.isEmpty() && stack.is(item) && isUsableToolStack(stack, amount)) {
+                if (!stack.isEmpty() && stack.is(item) && isUsableToolStack(stack, minimumDurability)) {
                     if (!stack.isDamageableItem()) {
                         return true;
                     }

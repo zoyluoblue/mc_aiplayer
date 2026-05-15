@@ -91,6 +91,70 @@ class DirectMiningRouteTest {
     }
 
     @Test
+    void exactlyThreeBlocksAboveCurrentLayerReprospects() {
+        DirectMiningRoute route = DirectMiningRoute.create(
+            new BlockPos(0, 60, 0),
+            new BlockPos(0, 63, 2),
+            new BlockPos(0, 63, 1),
+            Direction.SOUTH
+        );
+
+        assertTrue(route.targetAboveCurrentLayer());
+        assertNull(route.nextStand());
+        assertEquals(3, route.verticalDelta());
+        assertEquals("target_above_current_layer", route.reason());
+        assertEquals("REPROSPECT", route.routeStage());
+    }
+
+    @Test
+    void nearAboveLayerRouteStepsUpInsteadOfReprospecting() {
+        DirectMiningRoute route = DirectMiningRoute.create(
+            new BlockPos(0, 58, 0),
+            new BlockPos(3, 60, 1),
+            new BlockPos(3, 60, 0),
+            Direction.EAST
+        );
+
+        assertFalse(route.targetAboveCurrentLayer());
+        assertEquals(new BlockPos(1, 59, 0), route.nextStand());
+        assertEquals("direct_ascent", route.reason());
+        assertEquals("TUNNEL", route.routeStage());
+        assertEquals("clear_forward_and_up_to_1, 59, 0", route.currentStepText());
+    }
+
+    @Test
+    void oneBlockAboveRouteContinuesSteppingUp() {
+        DirectMiningRoute route = DirectMiningRoute.create(
+            new BlockPos(1, 59, 0),
+            new BlockPos(3, 60, 1),
+            new BlockPos(3, 60, 0),
+            Direction.EAST
+        );
+
+        assertFalse(route.targetAboveCurrentLayer());
+        assertEquals(new BlockPos(2, 60, 0), route.nextStand());
+        assertEquals("direct_ascent", route.reason());
+        assertEquals("TUNNEL", route.routeStage());
+        assertEquals("clear_forward_and_up_to_2, 60, 0", route.currentStepText());
+    }
+
+    @Test
+    void alignedBelowAboveRouteStepsStraightUp() {
+        DirectMiningRoute route = DirectMiningRoute.create(
+            new BlockPos(2, 59, 0),
+            new BlockPos(3, 60, 0),
+            new BlockPos(2, 60, 0),
+            Direction.EAST
+        );
+
+        assertFalse(route.targetAboveCurrentLayer());
+        assertEquals(new BlockPos(2, 60, 0), route.nextStand());
+        assertEquals("direct_ascent", route.reason());
+        assertEquals("APPROACH", route.routeStage());
+        assertEquals("clear_forward_and_up_to_2, 60, 0", route.currentStepText());
+    }
+
+    @Test
     void verticalExposureTargetIsNotTreatedAsStandingTarget() {
         BlockPos current = new BlockPos(0, 64, 0);
         BlockPos ore = new BlockPos(5, 64, 0);
@@ -102,7 +166,7 @@ class DirectMiningRouteTest {
         assertEquals(new BlockPos(4, 64, 0), below.targetStand());
         assertEquals(Direction.EAST, above.nextDirection());
         assertEquals(Direction.EAST, below.nextDirection());
-        assertEquals(new BlockPos(1, 64, 0), above.nextStand());
+        assertEquals(new BlockPos(1, 65, 0), above.nextStand());
         assertEquals(new BlockPos(1, 64, 0), below.nextStand());
     }
 

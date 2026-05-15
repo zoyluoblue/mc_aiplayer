@@ -88,14 +88,14 @@ public final class StairDescentController {
     }
 
     public static ClearancePhase clearancePhase(boolean entryHeadAir, boolean horizontalAir, boolean verticalAir) {
-        if (!verticalAir) {
-            return ClearancePhase.DIG_DOWN;
-        }
         if (!horizontalAir) {
             return ClearancePhase.CLEAR_HORIZONTAL;
         }
         if (!entryHeadAir) {
             return ClearancePhase.CLEAR_ENTRY_HEAD;
+        }
+        if (!verticalAir) {
+            return ClearancePhase.DIG_DOWN;
         }
         return ClearancePhase.MOVE;
     }

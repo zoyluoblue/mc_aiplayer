@@ -8,7 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MiningPassagePolicyTest {
     @Test
-    void descendingStairClearsFeetBeforeHeadAndEntry() {
+    void descendingStairClearsForwardFeetBeforeEntryAndLowerStep() {
         MiningPassagePolicy.Decision decision = MiningPassagePolicy.nextClearance(new MiningPassagePolicy.Input(
             MiningPassagePolicy.MoveIntent.FORWARD_DOWN,
             "minecraft:stone",
@@ -17,6 +17,53 @@ class MiningPassagePolicyTest {
             null,
             "minecraft:stone",
             false,
+            true,
+            null,
+            "minecraft:stone",
+            false,
+            true,
+            null,
+            "minecraft:stone",
+            true
+        ));
+
+        assertEquals(MiningPassagePolicy.Action.DIG_HEAD, decision.action());
+        assertTrue(decision.reason().contains("clear_head"));
+    }
+
+    @Test
+    void descendingStairClearsEntryHeadAfterForwardFeetIsOpen() {
+        MiningPassagePolicy.Decision decision = MiningPassagePolicy.nextClearance(new MiningPassagePolicy.Input(
+            MiningPassagePolicy.MoveIntent.FORWARD_DOWN,
+            "minecraft:stone",
+            false,
+            true,
+            null,
+            "minecraft:air",
+            true,
+            true,
+            null,
+            "minecraft:stone",
+            false,
+            true,
+            null,
+            "minecraft:stone",
+            true
+        ));
+
+        assertEquals(MiningPassagePolicy.Action.DIG_ENTRY_HEAD, decision.action());
+    }
+
+    @Test
+    void descendingStairDigsLowerStepAfterForwardSpaceIsOpen() {
+        MiningPassagePolicy.Decision decision = MiningPassagePolicy.nextClearance(new MiningPassagePolicy.Input(
+            MiningPassagePolicy.MoveIntent.FORWARD_DOWN,
+            "minecraft:air",
+            true,
+            true,
+            null,
+            "minecraft:air",
+            true,
             true,
             null,
             "minecraft:stone",
@@ -28,53 +75,6 @@ class MiningPassagePolicyTest {
         ));
 
         assertEquals(MiningPassagePolicy.Action.DIG_FEET, decision.action());
-        assertTrue(decision.reason().contains("clear_feet"));
-    }
-
-    @Test
-    void descendingStairClearsHeadBeforeEntryAfterFeetIsOpen() {
-        MiningPassagePolicy.Decision decision = MiningPassagePolicy.nextClearance(new MiningPassagePolicy.Input(
-            MiningPassagePolicy.MoveIntent.FORWARD_DOWN,
-            "minecraft:stone",
-            false,
-            true,
-            null,
-            "minecraft:stone",
-            false,
-            true,
-            null,
-            "minecraft:air",
-            true,
-            true,
-            null,
-            "minecraft:stone",
-            true
-        ));
-
-        assertEquals(MiningPassagePolicy.Action.DIG_HEAD, decision.action());
-    }
-
-    @Test
-    void descendingStairClearsEntryHeadAfterFeetAndHeadAreOpen() {
-        MiningPassagePolicy.Decision decision = MiningPassagePolicy.nextClearance(new MiningPassagePolicy.Input(
-            MiningPassagePolicy.MoveIntent.FORWARD_DOWN,
-            "minecraft:stone",
-            false,
-            true,
-            null,
-            "minecraft:air",
-            true,
-            true,
-            null,
-            "minecraft:air",
-            true,
-            true,
-            null,
-            "minecraft:stone",
-            true
-        ));
-
-        assertEquals(MiningPassagePolicy.Action.DIG_ENTRY_HEAD, decision.action());
     }
 
     @Test

@@ -6,6 +6,8 @@ import org.apache.logging.log4j.core.LogEvent;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -14,13 +16,14 @@ import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
 import java.util.Locale;
+import java.util.regex.Pattern;
 
 public final class CategorizedLogWriter {
     public static final String CATEGORY_CONTEXT_KEY = "aiplayerCategory";
 
-    private static final int MAX_FILES_PER_CATEGORY = 3;
-    private static final long MAX_FILE_BYTES = 100L * 1024L * 1024L;
+    private static final long MAX_FILE_BYTES = 10L * 1024L * 1024L;
     private static final DateTimeFormatter TIMESTAMP_FORMAT =
         DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS").withZone(ZoneId.systemDefault());
 
@@ -47,7 +50,6 @@ public final class CategorizedLogWriter {
 
         Path activeFile = categoryDir.resolve(category + ".log");
         byte[] entry = format(event, category).getBytes(StandardCharsets.UTF_8);
-        rotateIfNeeded(categoryDir, category, activeFile, entry.length);
         Files.write(
             activeFile,
             entry,
@@ -55,31 +57,56 @@ public final class CategorizedLogWriter {
             StandardOpenOption.APPEND,
             StandardOpenOption.WRITE
         );
+        trimOldestRecords(activeFile);
+        deleteLegacyRotatedFiles(categoryDir, category);
     }
 
-    private static void rotateIfNeeded(Path categoryDir, String category, Path activeFile, int incomingBytes)
-        throws IOException {
+    private static void trimOldestRecords(Path activeFile) throws IOException {
         if (Files.notExists(activeFile)) {
             return;
         }
         long currentSize = Files.size(activeFile);
-        if (currentSize + incomingBytes <= MAX_FILE_BYTES) {
+        if (currentSize <= MAX_FILE_BYTES) {
             return;
         }
 
-        Files.deleteIfExists(backupFile(categoryDir, category, MAX_FILES_PER_CATEGORY - 1));
-
-        for (int i = MAX_FILES_PER_CATEGORY - 2; i >= 1; i--) {
-            Path source = backupFile(categoryDir, category, i);
-            if (Files.exists(source)) {
-                Files.move(source, backupFile(categoryDir, category, i + 1), StandardCopyOption.REPLACE_EXISTING);
+        int keepBytes = (int) Math.min(MAX_FILE_BYTES, currentSize);
+        byte[] latestBytes = new byte[keepBytes];
+        try (SeekableByteChannel channel = Files.newByteChannel(activeFile, StandardOpenOption.READ)) {
+            channel.position(currentSize - keepBytes);
+            ByteBuffer buffer = ByteBuffer.wrap(latestBytes);
+            while (buffer.hasRemaining() && channel.read(buffer) > 0) {
             }
         }
-        Files.move(activeFile, backupFile(categoryDir, category, 1), StandardCopyOption.REPLACE_EXISTING);
+
+        int offset = firstCompleteRecordOffset(latestBytes);
+        byte[] trimmed = offset <= 0 ? latestBytes : Arrays.copyOfRange(latestBytes, offset, latestBytes.length);
+        Path tempFile = activeFile.resolveSibling(activeFile.getFileName() + ".tmp");
+        Files.write(tempFile, trimmed, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+        Files.move(tempFile, activeFile, StandardCopyOption.REPLACE_EXISTING);
     }
 
-    private static Path backupFile(Path categoryDir, String category, int index) {
-        return categoryDir.resolve(category + "-" + index + ".log");
+    private static int firstCompleteRecordOffset(byte[] bytes) {
+        if (bytes.length == 0) {
+            return 0;
+        }
+        for (int i = 0; i < bytes.length; i++) {
+            if (bytes[i] == '\n') {
+                return Math.min(i + 1, bytes.length);
+            }
+        }
+        return 0;
+    }
+
+    private static void deleteLegacyRotatedFiles(Path categoryDir, String category) throws IOException {
+        Pattern legacyName = Pattern.compile(Pattern.quote(category) + "-\\d+\\.log");
+        try (var stream = Files.list(categoryDir)) {
+            for (Path path : stream.toList()) {
+                if (legacyName.matcher(path.getFileName().toString()).matches()) {
+                    Files.deleteIfExists(path);
+                }
+            }
+        }
     }
 
     private static String categoryFor(LogEvent event) {

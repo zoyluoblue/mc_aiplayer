@@ -33,6 +33,7 @@ public class ActionExecutor {
     private BaseAction currentAction;
     private Task activeTask;
     private String currentGoal;
+    private String currentIntentSummary;
     private int ticksSinceLastAction;
     private BaseAction idleFollowAction;
     private CompletableFuture<ResponseParser.ParsedResponse> planningFuture;
@@ -52,6 +53,7 @@ public class ActionExecutor {
         this.ticksSinceLastAction = 0;
         this.idleFollowAction = null;
         this.activeTask = null;
+        this.currentIntentSummary = "";
         this.planningFuture = null;
         this.pendingCommand = null;
         this.pendingTaskId = null;
@@ -97,6 +99,7 @@ public class ActionExecutor {
             currentAction = null;
             activeTask = null;
         }
+        currentIntentSummary = "";
 
         if (idleFollowAction != null) {
             idleFollowAction.cancel();
@@ -144,6 +147,7 @@ public class ActionExecutor {
 
                     taskQueue.clear();
                     taskQueue.addAll(stampTasks(response.getTasks(), pendingTaskId));
+                    currentIntentSummary = firstIntentSummary(response.getTasks());
 
                     if (AiPlayerConfig.ENABLE_CHAT_RESPONSES.get()) {
                         sendToGUI(aiPlayer.getAiPlayerName(), "好的，" + currentGoal);
@@ -153,6 +157,7 @@ public class ActionExecutor {
                         pendingTaskId, aiPlayer.getAiPlayerName(), taskQueue.size());
                 } else {
                     sendToGUI(aiPlayer.getAiPlayerName(), "我没能理解这条指令。");
+                    currentIntentSummary = "";
                     AiPlayerMod.warn("planning", "[taskId={}] AiPlayer '{}' async planning returned null response",
                         pendingTaskId, aiPlayer.getAiPlayerName());
                 }
@@ -160,10 +165,12 @@ public class ActionExecutor {
             } catch (java.util.concurrent.CancellationException e) {
                 AiPlayerMod.info("planning", "[taskId={}] AiPlayer '{}' planning was cancelled",
                     pendingTaskId, aiPlayer.getAiPlayerName());
+                currentIntentSummary = "";
                 sendToGUI(aiPlayer.getAiPlayerName(), "任务规划已取消。");
             } catch (Exception e) {
                 AiPlayerMod.error("planning", "[taskId={}] AiPlayer '{}' failed to get planning result",
                     pendingTaskId, aiPlayer.getAiPlayerName(), e);
+                currentIntentSummary = "";
                 sendToGUI(aiPlayer.getAiPlayerName(), "规划任务时出现错误。");
             } finally {
                 isPlanning = false;
@@ -198,6 +205,7 @@ public class ActionExecutor {
                 activeTaskId = "task-unknown";
                 if (taskQueue.isEmpty()) {
                     currentGoal = null;
+                    currentIntentSummary = "";
                     aiPlayer.getMemory().setCurrentGoal("");
                     if (result.isSuccess()) {
                         AiPlayerMod.info("player", "AiPlayer '{}' completed task queue and will return to owner by idle follow",
@@ -295,6 +303,7 @@ public class ActionExecutor {
 
         String taskId = createTaskId();
         currentGoal = goal == null || goal.isBlank() ? task.getAction() : goal;
+        currentIntentSummary = task.getStringParameter("intent_summary", "");
         aiPlayer.getMemory().setCurrentGoal(currentGoal);
         taskQueue.add(task.withParameter("task_id", taskId).withParameter("source_command", currentGoal));
         activeTaskId = "task-unknown";
@@ -396,6 +405,7 @@ public class ActionExecutor {
         }
         taskQueue.clear();
         currentGoal = null;
+        currentIntentSummary = "";
         stateMachine.reset();
     }
 
@@ -478,6 +488,7 @@ public class ActionExecutor {
         currentGoal = state.currentGoal().isBlank()
             ? (state.activeTask() == null ? "" : state.activeTask().getAction())
             : state.currentGoal();
+        currentIntentSummary = firstIntentSummary(taskQueue.stream().toList());
         activeTaskId = "task-unknown";
         ticksSinceLastAction = AiPlayerConfig.ACTION_TICK_DELAY.get();
         aiPlayer.getMemory().setCurrentGoal(currentGoal);
@@ -498,6 +509,10 @@ public class ActionExecutor {
         return currentGoal;
     }
 
+    public String getCurrentIntentSummary() {
+        return currentIntentSummary == null ? "" : currentIntentSummary;
+    }
+
     public String getCurrentActionDescription() {
         return currentAction == null ? "" : currentAction.getDescription();
     }
@@ -514,8 +529,24 @@ public class ActionExecutor {
         return eventBus;
     }
 
-        public AgentStateMachine getStateMachine() {
+    public AgentStateMachine getStateMachine() {
         return stateMachine;
+    }
+
+    private String firstIntentSummary(List<Task> tasks) {
+        if (tasks == null) {
+            return "";
+        }
+        for (Task task : tasks) {
+            if (task == null) {
+                continue;
+            }
+            String summary = task.getStringParameter("intent_summary", "");
+            if (summary != null && !summary.isBlank()) {
+                return summary;
+            }
+        }
+        return "";
     }
 
         public InterceptorChain getInterceptorChain() {

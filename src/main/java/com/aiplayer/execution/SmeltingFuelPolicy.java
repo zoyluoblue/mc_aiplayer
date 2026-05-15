@@ -1,40 +1,21 @@
 package com.aiplayer.execution;
 
+import com.aiplayer.recipe.SurvivalRecipeBook;
+
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
 public final class SmeltingFuelPolicy {
-    private static final List<String> FUEL_ITEMS = List.of(
-        "minecraft:coal",
-        "minecraft:charcoal",
-        "minecraft:oak_log",
-        "minecraft:spruce_log",
-        "minecraft:birch_log",
-        "minecraft:jungle_log",
-        "minecraft:acacia_log",
-        "minecraft:dark_oak_log",
-        "minecraft:mangrove_log",
-        "minecraft:cherry_log",
-        "minecraft:oak_planks",
-        "minecraft:spruce_planks",
-        "minecraft:birch_planks",
-        "minecraft:jungle_planks",
-        "minecraft:acacia_planks",
-        "minecraft:dark_oak_planks",
-        "minecraft:mangrove_planks",
-        "minecraft:cherry_planks"
-    );
-
     private SmeltingFuelPolicy() {
     }
 
     public static boolean isFuelRequirement(String itemId) {
-        return "minecraft:coal".equals(itemId);
+        return SurvivalRecipeBook.isFurnaceFuelRequirement(itemId);
     }
 
     public static List<String> fuelItems() {
-        return FUEL_ITEMS;
+        return SurvivalRecipeBook.furnaceFuelItems();
     }
 
     public static int countFuel(Map<String, Integer> inventory) {
@@ -42,7 +23,7 @@ public final class SmeltingFuelPolicy {
             return 0;
         }
         int count = 0;
-        for (String item : FUEL_ITEMS) {
+        for (String item : fuelItems()) {
             count += Math.max(0, inventory.getOrDefault(item, 0));
         }
         return count;
@@ -51,7 +32,7 @@ public final class SmeltingFuelPolicy {
     public static String fuelSummary(Map<String, Integer> inventory) {
         Map<String, Integer> present = new TreeMap<>();
         if (inventory != null) {
-            for (String item : FUEL_ITEMS) {
+            for (String item : fuelItems()) {
                 int count = inventory.getOrDefault(item, 0);
                 if (count > 0) {
                     present.put(item, count);

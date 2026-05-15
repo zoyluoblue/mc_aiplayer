@@ -7,6 +7,9 @@ final class TreeTargetPolicy {
     private static final double LOG_VERTICAL_WEIGHT = 12.0D;
     private static final double STAND_VERTICAL_WEIGHT = 18.0D;
     private static final double LOG_STAND_VERTICAL_WEIGHT = 4.0D;
+    private static final double LEAF_STRUCTURE_BONUS = 18.0D;
+    private static final double CONNECTED_LOG_BONUS = 6.0D;
+    private static final double BOTTOM_LOG_BONUS = 24.0D;
 
     private TreeTargetPolicy() {
     }
@@ -36,6 +39,14 @@ final class TreeTargetPolicy {
         return distanceSq <= SAFE_TREE_REACH * SAFE_TREE_REACH;
     }
 
+    static double structureScoreAdjustment(int nearbyLeaves, int connectedLogs, boolean bottomLog) {
+        int cappedLeaves = Math.max(0, Math.min(nearbyLeaves, 12));
+        int cappedLogs = Math.max(0, Math.min(connectedLogs, 8));
+        return -(cappedLeaves * LEAF_STRUCTURE_BONUS)
+            - (cappedLogs * CONNECTED_LOG_BONUS)
+            - (bottomLog ? BOTTOM_LOG_BONUS : 0.0D);
+    }
+
     static double standFeetToBlockCenterDistanceSq(BlockPos standPos, BlockPos blockPos) {
         if (standPos == null || blockPos == null) {
             return Double.MAX_VALUE;
@@ -44,5 +55,17 @@ final class TreeTargetPolicy {
         double dy = standPos.getY() - (blockPos.getY() + 0.5D);
         double dz = standPos.getZ() + 0.5D - (blockPos.getZ() + 0.5D);
         return dx * dx + dy * dy + dz * dz;
+    }
+
+    static boolean shouldFailNoReachableScan(
+        int noReachableScans,
+        int scanLimit,
+        int exploreAttempts,
+        int maxExplorePoints,
+        boolean hasExploreTarget
+    ) {
+        return noReachableScans >= scanLimit
+            && exploreAttempts >= maxExplorePoints
+            && !hasExploreTarget;
     }
 }

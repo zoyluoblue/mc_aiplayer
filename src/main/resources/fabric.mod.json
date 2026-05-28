@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "aibot",
+  "version": "${version}",
+  "name": "AIBot",
+  "description": "A Minecraft Fabric mod that lets an AI act as a real player in the world.",
+  "authors": [
+    "zoyluo"
+  ],
+  "contact": {
+    "homepage": "https://github.com/zoyluo/mc_aiplayer",
+    "sources": "https://github.com/zoyluo/mc_aiplayer"
+  },
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "io.github.zoyluo.aibot.AIBotMod"
+    ]
+  },
+  "mixins": [
+    "aibot.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.18.4",
+    "minecraft": "1.21.3",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}

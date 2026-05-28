@@ -1,0 +1,26 @@
+.gradle/
+build/
+run/
+out/
+classes/
+
+.DS_Store
+Thumbs.db
+
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.eclipse/
+*.launch
+.settings/
+.project
+.classpath
+bin/
+
+# Keep planning and work logs local.
+*.md
+
+# Local reference source used during implementation.
+references/

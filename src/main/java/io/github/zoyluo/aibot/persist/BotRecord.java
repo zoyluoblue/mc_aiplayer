@@ -13,6 +13,7 @@ public record BotRecord(
         int hunger,
         String inventoryNbt,
         String role,
-        String memoryNbt
+        String memoryNbt,
+        String ownerUuid
 ) {
 }

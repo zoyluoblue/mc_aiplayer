@@ -9,6 +9,7 @@ import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.Text;
 import net.minecraft.world.GameMode;
 
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 import static net.minecraft.server.command.CommandManager.argument;
@@ -55,6 +56,11 @@ public final class AIBotCommand {
     private static int spawn(ServerCommandSource source, String name, String role) {
         ServerPlayerEntity executor = source.getPlayer();
         GameMode gameMode = executor == null ? GameMode.SURVIVAL : executor.interactionManager.getGameMode();
+        UUID ownerUuid = executor == null ? null : executor.getUuid();
+        if (ownerUuid != null && AIPlayerManager.INSTANCE.botOf(ownerUuid).isPresent()) {
+            source.sendError(Text.literal("[AIBot] 你已经有一个 AI 助手了,请先 /aibot despawn <名字>"));
+            return 0;
+        }
         var rotation = source.getRotation();
         var spawned = AIPlayerManager.INSTANCE.spawn(
                 source.getServer(),
@@ -63,7 +69,8 @@ public final class AIBotCommand {
                 source.getPosition(),
                 rotation.y,
                 rotation.x,
-                gameMode);
+                gameMode,
+                ownerUuid);
 
         if (spawned.isPresent()) {
             AIPlayerManager.INSTANCE.setRole(spawned.get(), role);
@@ -71,7 +78,7 @@ public final class AIBotCommand {
             return 1;
         }
 
-        source.sendError(Text.literal("[AIBot] Failed to spawn " + name + " (already exists?)"));
+        source.sendError(Text.literal("[AIBot] 无法生成 " + name + " (名称已存在或已达到限制)"));
         return 0;
     }
 

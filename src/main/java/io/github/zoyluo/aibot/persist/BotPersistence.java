@@ -20,17 +20,21 @@ import net.minecraft.util.WorldSavePath;
 import java.io.IOException;
 import java.io.Reader;
 import java.io.Writer;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class BotPersistence {
     public static final BotPersistence INSTANCE = new BotPersistence();
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final String INVENTORY_KEY = "Inventory";
+    private final AtomicBoolean asyncWriteInFlight = new AtomicBoolean();
 
     private BotPersistence() {
     }
@@ -44,7 +48,17 @@ public final class BotPersistence {
     public void saveAllAsync(MinecraftServer server) {
         Path file = file(server);
         List<BotRecord> records = captureAll();
-        CompletableFuture.runAsync(() -> write(file, records));
+        if (!asyncWriteInFlight.compareAndSet(false, true)) {
+            BotLog.lifecycle("bot_persist_async_skipped", "reason", "write_in_flight");
+            return;
+        }
+        CompletableFuture.runAsync(() -> write(file, records))
+                .whenComplete((ignored, throwable) -> {
+                    asyncWriteInFlight.set(false);
+                    if (throwable != null) {
+                        BotLog.error("bot_persist_async_failed", throwable, "path", file, "count", records.size());
+                    }
+                });
     }
 
     public List<BotRecord> load(MinecraftServer server) {
@@ -89,7 +103,8 @@ public final class BotPersistence {
                 bot.getHungerManager().getFoodLevel(),
                 encodeInventory(bot),
                 AIPlayerManager.INSTANCE.role(bot),
-                BotMemoryStore.INSTANCE.saveString(bot.getUuid()));
+                BotMemoryStore.INSTANCE.saveString(bot.getUuid()),
+                AIPlayerManager.INSTANCE.ownerOf(bot).map(java.util.UUID::toString).orElse(""));
     }
 
     public static String encodeInventory(ServerPlayerEntity player) {
@@ -122,28 +137,34 @@ public final class BotPersistence {
     }
 
     private void write(Path file, List<BotRecord> records) {
+        Path temp = tempPath(file);
         try {
             Files.createDirectories(file.getParent());
-            try (Writer writer = Files.newBufferedWriter(file)) {
+            try (Writer writer = Files.newBufferedWriter(temp)) {
                 GSON.toJson(records, writer);
             }
+            moveIntoPlace(temp, file);
             BotLog.lifecycle("bot_persist_saved", "count", records.size(), "path", file);
             writeJobs(file.getParent().resolve("jobs.json"));
         } catch (IOException | RuntimeException exception) {
             BotLog.error("bot_persist_save_failed", exception, "path", file, "count", records.size());
+            deleteQuietly(temp);
         }
     }
 
     private void writeJobs(Path file) {
         List<Job> jobs = TaskBoard.INSTANCE.snapshot();
+        Path temp = tempPath(file);
         try {
             Files.createDirectories(file.getParent());
-            try (Writer writer = Files.newBufferedWriter(file)) {
+            try (Writer writer = Files.newBufferedWriter(temp)) {
                 GSON.toJson(jobs, writer);
             }
+            moveIntoPlace(temp, file);
             BotLog.task(null, "jobs_persist_saved", "count", jobs.size(), "path", file);
         } catch (IOException | RuntimeException exception) {
             BotLog.error("jobs_persist_save_failed", exception, "path", file, "count", jobs.size());
+            deleteQuietly(temp);
         }
     }
 
@@ -163,5 +184,25 @@ public final class BotPersistence {
 
     private Path file(MinecraftServer server) {
         return server.getSavePath(WorldSavePath.ROOT).resolve("aibot").resolve("bots.json");
+    }
+
+    private static Path tempPath(Path file) {
+        return file.resolveSibling(file.getFileName() + ".tmp");
+    }
+
+    private static void moveIntoPlace(Path temp, Path file) throws IOException {
+        try {
+            Files.move(temp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException exception) {
+            Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
+            BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.LIFECYCLE, null, "atomic_move_not_supported", "path", file);
+        }
+    }
+
+    private static void deleteQuietly(Path path) {
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException ignored) {
+        }
     }
 }

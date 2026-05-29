@@ -41,6 +41,8 @@ public final class AIPlayerManager {
     private final Map<UUID, AIPlayerEntity> players = new ConcurrentHashMap<>();
     private final Map<String, UUID> nameIndex = new ConcurrentHashMap<>();
     private final Map<UUID, String> roles = new ConcurrentHashMap<>();
+    private final Map<UUID, UUID> ownerIndex = new ConcurrentHashMap<>();
+    private final Map<UUID, UUID> botOwners = new ConcurrentHashMap<>();
 
     private AIPlayerManager() {
     }
@@ -52,8 +54,22 @@ public final class AIPlayerManager {
                                           float yaw,
                                           float pitch,
                                           GameMode gameMode) {
+        return spawn(server, name, world, pos, yaw, pitch, gameMode, null);
+    }
+
+    public Optional<AIPlayerEntity> spawn(MinecraftServer server,
+                                          String name,
+                                          ServerWorld world,
+                                          Vec3d pos,
+                                          float yaw,
+                                          float pitch,
+                                          GameMode gameMode,
+                                          UUID ownerUuid) {
         String normalizedName = normalizeName(name);
         if (nameIndex.containsKey(normalizedName) || server.getPlayerManager().getPlayer(name) != null) {
+            return Optional.empty();
+        }
+        if (ownerUuid != null && botOf(ownerUuid).isPresent()) {
             return Optional.empty();
         }
 
@@ -76,27 +92,26 @@ public final class AIPlayerManager {
         players.put(player.getUuid(), player);
         nameIndex.put(normalizedName, player.getUuid());
         roles.put(player.getUuid(), "worker");
+        if (ownerUuid != null) {
+            ownerIndex.put(ownerUuid, player.getUuid());
+            botOwners.put(player.getUuid(), ownerUuid);
+        }
         BotLog.lifecycle(player, "bot_spawned", "pos", LogFields.pos(player.getBlockPos()), "mode", gameMode.getName());
         return Optional.of(player);
     }
 
     public Optional<AIPlayerEntity> respawnFromRecord(MinecraftServer server, BotRecord record) {
-        RegistryKey<World> worldKey = RegistryKey.of(RegistryKeys.WORLD, Identifier.of(record.dimension()));
-        ServerWorld world = server.getWorld(worldKey);
-        if (world == null) {
-            BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.LIFECYCLE, null, "bot_restore_world_missing",
-                    "name", record.name(), "dimension", record.dimension());
-            return Optional.empty();
-        }
+        RestoreTarget target = restoreTarget(server, record);
         GameMode gameMode = GameMode.byName(record.gameMode(), GameMode.SURVIVAL);
         Optional<AIPlayerEntity> spawned = spawn(
                 server,
                 record.name(),
-                world,
-                new Vec3d(record.x(), record.y(), record.z()),
+                target.world(),
+                target.pos(),
                 record.yaw(),
                 record.pitch(),
-                gameMode);
+                gameMode,
+                parseUuid(record.ownerUuid()));
         spawned.ifPresent(bot -> {
             BotPersistence.applyInventory(bot, record.inventoryNbt());
             setRole(bot, record.role());
@@ -106,7 +121,8 @@ public final class AIPlayerManager {
             BotLog.lifecycle(bot, "bot_restored",
                     "pos", LogFields.pos(bot.getBlockPos()),
                     "mode", gameMode.getName(),
-                    "dimension", record.dimension());
+                    "dimension", bot.getWorld().getRegistryKey().getValue(),
+                    "fallback", target.fallback());
         });
         return spawned;
     }
@@ -125,6 +141,7 @@ public final class AIPlayerManager {
         players.remove(entity.getUuid());
         nameIndex.remove(normalizeName(name));
         roles.remove(entity.getUuid());
+        clearOwner(entity.getUuid());
         if (entity.networkHandler != null) {
             entity.networkHandler.onDisconnected(new DisconnectionInfo(Text.literal("AIBot despawn")));
         } else {
@@ -141,6 +158,23 @@ public final class AIPlayerManager {
 
     public Optional<AIPlayerEntity> getByUuid(UUID uuid) {
         return Optional.ofNullable(players.get(uuid));
+    }
+
+    public Optional<AIPlayerEntity> botOf(UUID ownerUuid) {
+        UUID botUuid = ownerIndex.get(ownerUuid);
+        if (botUuid == null) {
+            return Optional.empty();
+        }
+        AIPlayerEntity bot = players.get(botUuid);
+        if (bot == null) {
+            ownerIndex.remove(ownerUuid);
+            return Optional.empty();
+        }
+        return Optional.of(bot);
+    }
+
+    public Optional<UUID> ownerOf(AIPlayerEntity bot) {
+        return Optional.ofNullable(botOwners.get(bot.getUuid()));
     }
 
     public Collection<AIPlayerEntity> all() {
@@ -171,7 +205,50 @@ public final class AIPlayerManager {
         }
         players.clear();
         nameIndex.clear();
+        ownerIndex.clear();
+        botOwners.clear();
         BotLog.lifecycle("all_bots_cleared", "count", count);
+    }
+
+    private void clearOwner(UUID botUuid) {
+        UUID ownerUuid = botOwners.remove(botUuid);
+        if (ownerUuid != null) {
+            ownerIndex.remove(ownerUuid, botUuid);
+        }
+    }
+
+    private static UUID parseUuid(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return UUID.fromString(value);
+        } catch (IllegalArgumentException ignored) {
+            return null;
+        }
+    }
+
+    private static RestoreTarget restoreTarget(MinecraftServer server, BotRecord record) {
+        RegistryKey<World> worldKey;
+        try {
+            worldKey = RegistryKey.of(RegistryKeys.WORLD, Identifier.of(record.dimension()));
+        } catch (RuntimeException exception) {
+            BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.LIFECYCLE, null, "bot_restore_dimension_invalid",
+                    "name", record.name(), "dimension", record.dimension());
+            return overworldSpawn(server);
+        }
+        ServerWorld world = server.getWorld(worldKey);
+        if (world == null) {
+            BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.LIFECYCLE, null, "bot_restore_world_missing",
+                    "name", record.name(), "dimension", record.dimension());
+            return overworldSpawn(server);
+        }
+        return new RestoreTarget(world, new Vec3d(record.x(), record.y(), record.z()), false);
+    }
+
+    private static RestoreTarget overworldSpawn(MinecraftServer server) {
+        ServerWorld overworld = server.getOverworld();
+        return new RestoreTarget(overworld, Vec3d.ofBottomCenter(overworld.getSpawnPos()), true);
     }
 
     private static String normalizeName(String name) {
@@ -183,5 +260,8 @@ public final class AIPlayerManager {
             return "worker";
         }
         return role.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private record RestoreTarget(ServerWorld world, Vec3d pos, boolean fallback) {
     }
 }

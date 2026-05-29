@@ -57,7 +57,7 @@ public final class MineTask extends AbstractTask {
     @Override
     protected void onTick(AIPlayerEntity bot) {
         if (elapsed > 2400) {
-            fail("timeout_120s");
+            fail("mine_timeout");
             return;
         }
         switch (phase) {

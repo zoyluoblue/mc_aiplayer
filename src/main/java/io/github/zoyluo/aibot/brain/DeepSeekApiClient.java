@@ -13,6 +13,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -60,7 +61,10 @@ public final class DeepSeekApiClient {
 
         HttpResponse<String> response = sendWithRetry(request);
         if (response.statusCode() != 200) {
-            throw new DeepSeekApiException("status=" + response.statusCode() + " body=" + response.body());
+            throw new DeepSeekApiException(classifyStatus(response.statusCode(), response.body()));
+        }
+        if (response.body() == null || response.body().isBlank()) {
+            throw new DeepSeekApiException("empty_response");
         }
         return parseResponse(response.body());
     }
@@ -79,9 +83,17 @@ public final class DeepSeekApiClient {
                     continue;
                 }
                 return response;
-            } catch (IOException exception) {
+            } catch (HttpTimeoutException exception) {
                 if (attempt >= attempts) {
                     BotLog.error("api_timeout", exception, "attempt", attempt);
+                    throw new DeepSeekApiException("api_timeout: " + exception.getMessage(), exception);
+                }
+                BotLog.warn(LogCategory.API, null, "api_retry", "attempt", attempt, "reason", "api_timeout", "backoff_ms", backoffMs);
+                sleep(backoffMs);
+                backoffMs *= 2;
+            } catch (IOException exception) {
+                if (attempt >= attempts) {
+                    BotLog.error("api_io_error", exception, "attempt", attempt);
                     throw new DeepSeekApiException("io_error: " + exception.getMessage(), exception);
                 }
                 BotLog.warn(LogCategory.API, null, "api_retry", "attempt", attempt, "reason", "io_error", "backoff_ms", backoffMs);
@@ -113,6 +125,23 @@ public final class DeepSeekApiClient {
             base = base.substring(0, base.length() - 3);
         }
         return base;
+    }
+
+    private static String classifyStatus(int status, String body) {
+        String excerpt = body == null ? "" : body.substring(0, Math.min(200, body.length()));
+        if (status == 429) {
+            return "rate_limited: status=429 body=" + excerpt;
+        }
+        if (status == 408) {
+            return "api_timeout: status=408 body=" + excerpt;
+        }
+        if (status >= 500) {
+            return "server_error: status=" + status + " body=" + excerpt;
+        }
+        if (status == 401 || status == 403) {
+            return "auth_error: status=" + status + " body=" + excerpt;
+        }
+        return "http_error: status=" + status + " body=" + excerpt;
     }
 
     private static JsonArray serializeMessages(List<ChatMessage> history) {

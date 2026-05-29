@@ -54,7 +54,7 @@ public final class MoveTask extends AbstractTask {
             return;
         }
         if (elapsed > 1200) {
-            fail("timeout_60s");
+            fail("move_timeout");
         }
     }
 

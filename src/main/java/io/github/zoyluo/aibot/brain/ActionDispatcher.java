@@ -39,9 +39,10 @@ public final class ActionDispatcher {
             JsonObject args = call.parsedArguments();
             BotLog.action(bot, "tool_dispatch", "tool", call.name(), "args", args);
             return definition.handler().invoke(bot, args);
-        } catch (Exception exception) {
+        } catch (RuntimeException exception) {
             BotLog.error(bot, "tool_exception", exception, "tool", call.name());
-            return new ToolDefinition.ToolResult(false, "exception: " + exception.getMessage());
+            String reason = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
+            return new ToolDefinition.ToolResult(false, "exception: " + reason);
         }
     }
 }

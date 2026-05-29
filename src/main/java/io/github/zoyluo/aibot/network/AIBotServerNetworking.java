@@ -2,6 +2,7 @@ package io.github.zoyluo.aibot.network;
 
 import io.github.zoyluo.aibot.brain.BrainCoordinator;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
+import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
 import io.github.zoyluo.aibot.network.payload.BotChatS2C;
 import io.github.zoyluo.aibot.network.payload.BotCommandC2S;
@@ -124,7 +125,9 @@ public final class AIBotServerNetworking {
         try {
             dispatch(player, bot.get(), payload);
         } catch (RuntimeException exception) {
-            sendSystem(player, payload.botName(), "Command failed: " + exception.getMessage());
+            BotLog.error(bot.get(), "panel_command_exception", exception, "action", payload.action());
+            String reason = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
+            sendSystem(player, payload.botName(), "Command failed: " + reason);
         }
     }
 

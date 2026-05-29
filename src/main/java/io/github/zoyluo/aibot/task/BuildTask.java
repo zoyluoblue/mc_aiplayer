@@ -96,7 +96,7 @@ public final class BuildTask extends AbstractTask {
     @Override
     protected void onTick(AIPlayerEntity bot) {
         if (elapsed > 7200) {
-            fail("timeout_6min");
+            fail("build_timeout");
             return;
         }
         if (placeDelayTicks > 0) {
@@ -224,7 +224,10 @@ public final class BuildTask extends AbstractTask {
         }
         BlueprintSchema.BlockPlacement placement = blueprint.placements().get(nextIndex);
         BlockPos pos = anchor.add(placement.dx(), placement.dy(), placement.dz());
-        Block block = Registries.BLOCK.get(Identifier.of(placement.blockId()));
+        Block block = resolveBlock(placement.blockId());
+        if (block == null) {
+            return;
+        }
         if (block == Blocks.AIR) {
             nextIndex++;
             return;
@@ -264,7 +267,8 @@ public final class BuildTask extends AbstractTask {
     private OptionalInt materialSlot(AIPlayerEntity bot, BlueprintSchema.BlockPlacement placement, Block block) {
         if (placement.palette() != null && !placement.palette().isBlank()) {
             if (!MaterialPalette.isKnown(placement.palette())) {
-                throw new IllegalArgumentException("unknown_palette: " + placement.palette());
+                fail("unknown_palette: " + placement.palette());
+                return OptionalInt.empty();
             }
             OptionalInt slot = MaterialPalette.pickSlot(bot, placement.palette());
             if (slot.isPresent()) {
@@ -277,6 +281,21 @@ public final class BuildTask extends AbstractTask {
             return OptionalInt.empty();
         }
         return InventoryAction.findItem(bot, item);
+    }
+
+    private Block resolveBlock(String blockId) {
+        Identifier id;
+        try {
+            id = Identifier.of(blockId);
+        } catch (RuntimeException exception) {
+            fail("invalid_block_id: " + blockId);
+            return null;
+        }
+        return Registries.BLOCK.getOptionalValue(id)
+                .orElseGet(() -> {
+                    fail("unknown_block_id: " + id);
+                    return null;
+                });
     }
 
     private boolean moveWithinReach(AIPlayerEntity bot, BlockPos pos, String reason, double maxDistanceSquared) {

@@ -48,7 +48,8 @@ public final class AIBotCommand {
                 .then(AIBotObserveSubcommand.replay())
                 .then(AIBotObserveSubcommand.tps())
                 .then(AIBotTestSubcommand.build(registryAccess))
-                .then(AIBotTaskSubcommand.build()));
+                .then(AIBotTaskSubcommand.build())
+                .then(AIBotVerifySubcommand.build()));
     }
 
     private static int spawn(ServerCommandSource source, String name, String role) {

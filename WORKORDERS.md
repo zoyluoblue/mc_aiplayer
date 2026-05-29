@@ -178,5 +178,5 @@ Minecraft 1.21.3、Fabric Loader 0.18.4、Yarn 1.21.3+build.2、fabric-loom 1.16
 ---
 
 ## 进度勾选(Codex 做完一张勾一张)
-- [x] RL-1 done: 失败记录、消费式诊断注入和 maxTaskRetries 配置已实现,编译通过。  [x] RL-2 done: plan_craft 只读预检与 missing source 提示已实现,编译通过。  [x] RL-3 done: StuckWatcher、isWaiting 豁免和 stuck 失败回灌已实现,编译通过。  [x] RL-4 done: perception highlights 与 includeRawLists=false 默认裁剪已实现,编译通过。  [ ] RL-5  [ ] RL-6  [ ] RL-7  [ ] RL-8  [ ] RL-9  [ ] RL-10
+- [x] RL-1 done: 失败记录、消费式诊断注入和 maxTaskRetries 配置已实现,编译通过。  [x] RL-2 done: plan_craft 只读预检与 missing source 提示已实现,编译通过。  [x] RL-3 done: StuckWatcher、isWaiting 豁免和 stuck 失败回灌已实现,编译通过。  [x] RL-4 done: perception highlights 与 includeRawLists=false 默认裁剪已实现,编译通过。  [x] RL-5 done: /aibot verify 矩阵、跨 tick 轮询和 craft_chain 自动工作台清账已实现,编译通过。  [ ] RL-6  [ ] RL-7  [ ] RL-8  [ ] RL-9  [ ] RL-10
 - [ ] RL-11 [ ] RL-12 [ ] RL-13 [ ] RL-14 [ ] RL-15 [ ] RL-16 [ ] RL-17 [ ] RL-18 [ ] RL-19 [ ] RL-20

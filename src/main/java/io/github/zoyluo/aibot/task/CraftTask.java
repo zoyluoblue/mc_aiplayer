@@ -14,6 +14,7 @@ import net.minecraft.registry.Registries;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.OptionalInt;
 
@@ -81,11 +82,21 @@ public final class CraftTask extends AbstractTask {
             fail("need: " + plan.missingDescription());
             return;
         }
+        if (plan.needsCraftingTable() && nearbyCraftingTable(bot) == null && InventoryAction.findItem(bot, Items.CRAFTING_TABLE).isEmpty()) {
+            CraftingHelper.CraftPlan tablePlan = CraftingHelper.plan(bot, Items.CRAFTING_TABLE, 1);
+            if (!tablePlan.success()) {
+                fail("need: minecraft:crafting_table x1 (" + tablePlan.missingDescription() + ")");
+                return;
+            }
+            List<CraftingHelper.CraftStep> steps = new ArrayList<>(tablePlan.steps());
+            steps.addAll(plan.steps());
+            plan = new CraftingHelper.CraftPlan(target, targetCount, List.copyOf(steps), plan.missing(), true);
+        }
         if (plan.steps().isEmpty()) {
             complete();
             return;
         }
-        phase = plan.needsCraftingTable() ? Phase.ENSURING_TABLE : Phase.CRAFTING;
+        phase = Phase.CRAFTING;
     }
 
     private void ensureTable(AIPlayerEntity bot) {
@@ -117,6 +128,10 @@ public final class CraftTask extends AbstractTask {
         }
         CraftingHelper.CraftStep step = plan.steps().get(nextStep);
         RecipeRegistry.Recipe recipe = step.recipe();
+        if (recipe.needsCraftingTable() && nearbyCraftingTable(bot) == null) {
+            phase = Phase.ENSURING_TABLE;
+            return;
+        }
         for (RecipeRegistry.Ingredient ingredient : recipe.ingredients()) {
             if (!removeIngredient(bot, ingredient, ingredient.count() * step.crafts())) {
                 fail("need: " + describeIngredient(ingredient, ingredient.count() * step.crafts()));

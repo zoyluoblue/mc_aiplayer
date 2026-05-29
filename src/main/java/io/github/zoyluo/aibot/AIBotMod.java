@@ -3,6 +3,7 @@ package io.github.zoyluo.aibot;
 import io.github.zoyluo.aibot.brain.BrainCoordinator;
 import io.github.zoyluo.aibot.brain.ChatCaptureListener;
 import io.github.zoyluo.aibot.command.AIBotCommand;
+import io.github.zoyluo.aibot.command.AIBotVerifySubcommand;
 import io.github.zoyluo.aibot.coordination.IdleCoordinator;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.log.BotLogWriter;
@@ -69,6 +70,7 @@ public class AIBotMod implements ModInitializer {
                 IdleCoordinator.INSTANCE.tick(server);
                 DangerWatcher.INSTANCE.scanAll(server);
             }
+            AIBotVerifySubcommand.tick(server);
             AIBotServerNetworking.INSTANCE.tick(server);
             if (server.getTicks() > 0 && server.getTicks() % 6000 == 0) {
                 BotPersistence.INSTANCE.saveAllAsync(server);

@@ -169,7 +169,7 @@ Minecraft 1.21.3、Fabric Loader 0.18.4、Yarn 1.21.3+build.2、fabric-loom 1.16
 **约束**:`⚠️VERIFY` `fishHook` / `FishingBobberEntity` 咬钩状态字段。
 **验收**:对水 `fish` → 抛竿-咬钩-收竿-得鱼,循环;渔获进背包。
 
-## WO-RL-20 · 村民交易  (PLAN §RL-20)
+## WO-RL-20 · 村民交易  (PLAN §RL-20) ✅ done: 新增 TradeTask 直接结算简单一输入村民 offer, 接入 trade 工具与 assign_task trade, compileJava/compileClientJava 通过。
 **文件**:新 `task/TradeTask`、工具 `trade`
 **改动**:找最近 `VillagerEntity` → `getOffers` → 选可负担 offer → **直接结算**(移除买入物 + `giveItem` 产物 + 维护 `offer.use()`/`villager.afterUsing` 补货/经验),**不开 `MerchantScreen`**(G3);先支持简单 1-input(或绿宝石单买入)offer。
 **约束**:`⚠️VERIFY` `TradeOffer`/`MerchantEntity.getOffers`/`afterUsing`/`TradeOffer.use`。

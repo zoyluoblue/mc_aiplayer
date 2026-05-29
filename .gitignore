@@ -21,6 +21,7 @@ bin/
 
 # Keep planning and work logs local.
 *.md
+!README.md
 
 # Local reference source used during implementation.
 references/

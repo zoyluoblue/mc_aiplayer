@@ -2,104 +2,107 @@ package io.github.zoyluo.aibot.client.screen;
 
 import io.github.zoyluo.aibot.client.BotClientState;
 import io.github.zoyluo.aibot.client.BotCommandBridge;
+import io.github.zoyluo.aibot.client.screen.ui.ChatView;
+import io.github.zoyluo.aibot.client.screen.ui.PanelComponent;
+import io.github.zoyluo.aibot.client.screen.ui.Theme;
+import io.github.zoyluo.aibot.client.screen.ui.cards.InventoryCard;
+import io.github.zoyluo.aibot.client.screen.ui.cards.QuickActionCard;
+import io.github.zoyluo.aibot.client.screen.ui.cards.GoalCard;
+import io.github.zoyluo.aibot.client.screen.ui.cards.SettingsCard;
+import io.github.zoyluo.aibot.client.screen.ui.cards.StatusCard;
+import io.github.zoyluo.aibot.client.screen.ui.cards.TaskCard;
 import io.github.zoyluo.aibot.network.payload.BotSnapshotS2C;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
+import net.minecraft.client.gui.widget.ClickableWidget;
 import net.minecraft.client.gui.widget.TextFieldWidget;
 import net.minecraft.text.Text;
 import org.lwjgl.glfw.GLFW;
 
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
 public final class BotPanelScreen extends Screen {
-    private static final int PANEL_WIDTH = 360;
-    private static final int INPUT_HEIGHT = 20;
+    public enum Mode {
+        CHAT_STATUS,
+        ACTIONS,
+        SETTINGS
+    }
 
-    private TextFieldWidget botField;
-    private TextFieldWidget chatField;
-    private TextFieldWidget moveField;
-    private TextFieldWidget mineField;
-    private TextFieldWidget mineCountField;
-    private TextFieldWidget craftField;
-    private TextFieldWidget craftCountField;
-    private TextFieldWidget smeltInputField;
-    private TextFieldWidget smeltOutputField;
-    private TextFieldWidget smeltCountField;
+    private final List<PanelComponent> leftCards = new ArrayList<>();
+    private final List<ClickableWidget> panelWidgets = new ArrayList<>();
+    private final Mode mode;
+    private ChatView chat;
+    private TextFieldWidget input;
+    private ButtonWidget sendButton;
+    private ButtonWidget settingsButton;
+    private ButtonWidget closeButton;
+    private int px;
+    private int py;
+    private int pw;
+    private int ph;
+    private int leftW;
+    private int rightW;
+    private String target = "";
 
-    public BotPanelScreen() {
-        super(Text.translatable("screen.aibot.panel"));
+    public BotPanelScreen(Mode mode) {
+        super(Text.translatable(mode == Mode.ACTIONS ? "screen.aibot.actions_panel"
+                : mode == Mode.SETTINGS ? "screen.aibot.settings_panel"
+                : "screen.aibot.panel"));
+        this.mode = mode;
+    }
+
+    public Mode mode() {
+        return mode;
     }
 
     @Override
     protected void init() {
-        int left = Math.max(12, (width - PANEL_WIDTH) / 2);
-        int y = 28;
-        TextRenderer renderer = MinecraftClient.getInstance().textRenderer;
+        target = BotClientState.INSTANCE.targetBot();
+        panelWidgets.clear();
+        computeLayout();
+        buildCards();
+        layoutComponents();
+        if (mode == Mode.CHAT_STATUS) {
+            input = new TextFieldWidget(textRenderer, px + leftW + Theme.GUTTER + Theme.PAD, py + ph - Theme.INPUT_H - Theme.PAD + 1,
+                    Math.max(60, rightW - Theme.PAD * 2 - 54), 18, Text.translatable("chat.aibot.input"));
+            input.setMaxLength(512);
+            input.setSuggestion(Theme.tr("chat.aibot.input"));
+            sendButton = ButtonWidget.builder(Text.translatable("btn.aibot.send"), button -> sendChat())
+                    .dimensions(px + pw - Theme.PAD - 48, py + ph - Theme.INPUT_H - Theme.PAD + 1, 48, 18)
+                    .build();
+            register(input);
+            register(sendButton);
+        }
+        settingsButton = ButtonWidget.builder(Text.translatable(mode == Mode.SETTINGS ? "btn.aibot.chat" : "btn.aibot.settings"), button -> {
+                    if (client != null) {
+                        client.setScreen(new BotPanelScreen(mode == Mode.SETTINGS ? Mode.CHAT_STATUS : Mode.SETTINGS));
+                    }
+                })
+                .dimensions(px + pw - 90, py + 4, 40, 14)
+                .build();
+        closeButton = ButtonWidget.builder(Text.translatable("btn.aibot.close"), button -> close())
+                .dimensions(px + pw - 46, py + 4, 38, 14)
+                .build();
+        register(settingsButton);
+        register(closeButton);
+        leftCards.forEach(card -> card.addWidgets(this::register));
+        layoutComponents();
+        BotCommandBridge.subscribe(target, true);
+        if (input != null) {
+            setInitialFocus(input);
+        }
+    }
 
-        botField = addTextField(renderer, left, y, 164, BotClientState.INSTANCE.targetBot(), "Bob");
-        addDrawableChild(ButtonWidget.builder(Text.literal("Lock"), button -> lockTarget())
-                .dimensions(left + 170, y, 54, INPUT_HEIGHT)
-                .build());
-        addDrawableChild(ButtonWidget.builder(Text.literal("Come"), button -> {
-            if (client != null && client.player != null) {
-                BotCommandBridge.command(targetBot(), "move", client.player.getBlockPos().toShortString().replace(",", ""), "", 1);
-            }
-        }).dimensions(left + 230, y, 58, INPUT_HEIGHT).build());
-        addDrawableChild(ButtonWidget.builder(Text.literal("Stop"), button -> BotCommandBridge.command(targetBot(), "abort", "", "", 1))
-                .dimensions(left + 294, y, 54, INPUT_HEIGHT)
-                .build());
-
-        y += 28;
-        chatField = addTextField(renderer, left, y, 278, "", "Message");
-        addDrawableChild(ButtonWidget.builder(Text.literal("Send"), button -> sendChat())
-                .dimensions(left + 286, y, 62, INPUT_HEIGHT)
-                .build());
-
-        y += 30;
-        moveField = addTextField(renderer, left, y, 166, "", "x y z");
-        addDrawableChild(ButtonWidget.builder(Text.literal("Move"), button -> BotCommandBridge.command(targetBot(), "move", moveField.getText(), "", 1))
-                .dimensions(left + 172, y, 52, INPUT_HEIGHT)
-                .build());
-        addDrawableChild(ButtonWidget.builder(Text.literal("Eat"), button -> BotCommandBridge.command(targetBot(), "eat", "", "", 1))
-                .dimensions(left + 230, y, 48, INPUT_HEIGHT)
-                .build());
-        addDrawableChild(ButtonWidget.builder(Text.literal("Reset"), button -> BotCommandBridge.command(targetBot(), "reset", "", "", 1))
-                .dimensions(left + 284, y, 64, INPUT_HEIGHT)
-                .build());
-
-        y += 30;
-        mineField = addTextField(renderer, left, y, 200, "minecraft:stone", "Block id");
-        mineCountField = addTextField(renderer, left + 206, y, 48, "1", "N");
-        addDrawableChild(ButtonWidget.builder(Text.literal("Mine"), button -> BotCommandBridge.command(targetBot(), "mine", mineField.getText(), "", parseCount(mineCountField)))
-                .dimensions(left + 262, y, 86, INPUT_HEIGHT)
-                .build());
-
-        y += 30;
-        craftField = addTextField(renderer, left, y, 200, "minecraft:crafting_table", "Item id");
-        craftCountField = addTextField(renderer, left + 206, y, 48, "1", "N");
-        addDrawableChild(ButtonWidget.builder(Text.literal("Craft"), button -> BotCommandBridge.command(targetBot(), "craft", craftField.getText(), "", parseCount(craftCountField)))
-                .dimensions(left + 262, y, 86, INPUT_HEIGHT)
-                .build());
-
-        y += 30;
-        smeltInputField = addTextField(renderer, left, y, 126, "minecraft:raw_iron", "Input");
-        smeltOutputField = addTextField(renderer, left + 132, y, 126, "minecraft:iron_ingot", "Output");
-        smeltCountField = addTextField(renderer, left + 264, y, 32, "1", "N");
-        addDrawableChild(ButtonWidget.builder(Text.literal("Smelt"), button -> BotCommandBridge.command(targetBot(), "smelt", smeltInputField.getText(), smeltOutputField.getText(), parseCount(smeltCountField)))
-                .dimensions(left + 302, y, 58, INPUT_HEIGHT)
-                .build());
-
-        BotCommandBridge.subscribe(targetBot(), true);
-        setInitialFocus(chatField);
+    private void register(ClickableWidget widget) {
+        addDrawableChild(widget);   // 仍注册以接管点击/焦点/输入路由
+        panelWidgets.add(widget);   // 但渲染由本类手动负责(见 render),绕开 super.render 的背景模糊 pass
     }
 
     @Override
     public void close() {
-        BotCommandBridge.subscribe(targetBot(), false);
+        BotCommandBridge.subscribe(target, false);
         super.close();
     }
 
@@ -109,142 +112,155 @@ public final class BotPanelScreen extends Screen {
     }
 
     @Override
-    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
-            if (chatField != null && chatField.isFocused()) {
-                sendChat();
+    public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
+        if (chat != null && chat.mouseScrolled(mouseX, mouseY, verticalAmount)) {
+            return true;
+        }
+        for (PanelComponent card : leftCards) {
+            if (card.mouseScrolled(mouseX, mouseY, verticalAmount)) {
                 return true;
             }
+        }
+        return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount);
+    }
+
+    @Override
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        for (PanelComponent card : leftCards) {
+            if (card.mouseClicked(mouseX, mouseY, button)) {
+                return true;
+            }
+        }
+        return super.mouseClicked(mouseX, mouseY, button);
+    }
+
+    @Override
+    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if ((keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) && input != null && input.isFocused()) {
+            sendChat();
+            return true;
         }
         return super.keyPressed(keyCode, scanCode, modifiers);
     }
 
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
-        context.fill(0, 0, width, height, 0xD0101014);
-        int left = Math.max(12, (width - PANEL_WIDTH) / 2);
-        int top = 10;
-        int textColor = 0xFFE8ECEF;
-        TextRenderer renderer = MinecraftClient.getInstance().textRenderer;
-
-        context.drawTextWithShadow(renderer, title, left, top, textColor);
-        drawStatus(context, renderer, left, 212);
-        drawTranscript(context, renderer, left, Math.max(318, height - 112));
-        super.render(context, mouseX, mouseY, delta);
-    }
-
-    private TextFieldWidget addTextField(TextRenderer renderer, int x, int y, int width, String text, String suggestion) {
-        TextFieldWidget field = new TextFieldWidget(renderer, x, y, width, INPUT_HEIGHT, Text.literal(suggestion));
-        field.setMaxLength(256);
-        field.setText(text);
-        field.setSuggestion(suggestion);
-        addDrawableChild(field);
-        return field;
-    }
-
-    private void lockTarget() {
-        String oldTarget = BotClientState.INSTANCE.targetBot();
-        String newTarget = botField.getText().isBlank() ? "Bob" : botField.getText().trim();
-        if (!oldTarget.equals(newTarget)) {
-            BotCommandBridge.subscribe(oldTarget, false);
-            BotClientState.INSTANCE.setTargetBot(newTarget);
-            BotCommandBridge.subscribe(newTarget, true);
-            BotClientState.INSTANCE.addTranscript("system", "Locked target: " + newTarget);
+        Theme.panel(context, px, py, pw, ph, Theme.PANEL_BG);
+        drawTitleBar(context);
+        BotSnapshotS2C snapshot = BotClientState.INSTANCE.snapshot();
+        List<BotClientState.ChatLine> transcript = BotClientState.INSTANCE.transcript();
+        for (PanelComponent card : leftCards) {
+            card.refresh(snapshot, transcript);
+            card.render(context, mouseX, mouseY, delta, textRenderer);
         }
+        if (chat != null) {
+            chat.refresh(snapshot, transcript);
+            chat.render(context, mouseX, mouseY, delta, textRenderer);
+        }
+        if (mode == Mode.CHAT_STATUS) {
+            drawInputStrip(context);
+        }
+        // 手动渲染控件,不调用 super.render()——绕开 1.21 屏幕背景模糊/暗化 pass。
+        // 否则该 pass 会在控件渲染之前把"已画进帧缓冲的面板内容(标题/状态/背包/对话)"一并模糊,
+        // 而控件在 pass 之后才画 → 形成"控件清晰、面板内容发糊"的现象。
+        for (ClickableWidget widget : panelWidgets) {
+            widget.render(context, mouseX, mouseY, delta);
+        }
+    }
+
+    private void computeLayout() {
+        boolean docked = width >= 420;
+        if (mode == Mode.ACTIONS) {
+            pw = docked ? Math.min(260, Math.max(220, (int) (width * 0.24F))) : Math.max(220, width - 20);
+            ph = Math.min(170, Math.max(150, height - 96));
+        } else if (mode == Mode.SETTINGS) {
+            pw = docked ? Math.min(300, Math.max(260, (int) (width * 0.28F))) : Math.max(240, width - 20);
+            ph = Math.min(170, Math.max(150, height - 96));
+        } else {
+            pw = docked ? Math.min(520, Math.max(360, (int) (width * 0.48F))) : Math.max(240, width - 20);
+            ph = Math.min(Math.max(260, height - 96), 380);
+        }
+        px = docked ? width - pw - 12 : (width - pw) / 2;
+        py = 12;
+        leftW = mode == Mode.ACTIONS || mode == Mode.SETTINGS ? pw : Math.max(160, Math.round(pw * 0.42F));
+        rightW = pw - leftW - Theme.GUTTER;
+    }
+
+    private void buildCards() {
+        leftCards.clear();
+        if (mode == Mode.ACTIONS) {
+            leftCards.add(new QuickActionCard(target));
+            chat = null;
+            return;
+        }
+        if (mode == Mode.SETTINGS) {
+            leftCards.add(new SettingsCard(target));
+            chat = null;
+            return;
+        }
+        leftCards.add(new StatusCard());
+        leftCards.add(new TaskCard());
+        leftCards.add(new GoalCard());
+        leftCards.add(new InventoryCard());
+        chat = new ChatView();
+    }
+
+    private void layoutComponents() {
+        int leftX = px + Theme.PAD;
+        int cardY = py + Theme.TITLE_H + Theme.PAD;
+        int cardW = leftW - Theme.PAD * 2;
+        int bottom = py + ph - Theme.PAD;
+        for (PanelComponent card : leftCards) {
+            int cardH = Math.min(card.preferredHeight(), Math.max(46, bottom - cardY));
+            card.setBounds(leftX, cardY, cardW, cardH);
+            cardY += cardH + Theme.GUTTER;
+            if (cardY >= bottom) {
+                break;
+            }
+        }
+        if (chat != null) {
+            int rightX = px + leftW + Theme.GUTTER;
+            int rightY = py + Theme.TITLE_H + Theme.PAD;
+            int chatH = ph - Theme.TITLE_H - Theme.PAD * 3 - Theme.INPUT_H;
+            chat.setBounds(rightX + Theme.PAD, rightY, rightW - Theme.PAD * 2, chatH);
+        }
+    }
+
+    private void drawTitleBar(DrawContext context) {
+        String name = displayTarget();
+        String titleKey = mode == Mode.ACTIONS ? "screen.aibot.actions_title"
+                : mode == Mode.SETTINGS ? "screen.aibot.settings_title"
+                : "screen.aibot.title";
+        context.drawTextWithShadow(textRenderer, Theme.tr(titleKey, name), px + Theme.PAD, py + 6, Theme.TEXT_STRONG);
+        context.drawHorizontalLine(px + Theme.PAD, px + pw - Theme.PAD - 1, py + Theme.TITLE_H, Theme.BORDER);
+        if (mode == Mode.CHAT_STATUS) {
+            context.drawVerticalLine(px + leftW, py + Theme.TITLE_H + 1, py + ph - Theme.PAD, Theme.BORDER);
+        }
+    }
+
+    private void drawInputStrip(DrawContext context) {
+        int x = px + leftW + Theme.GUTTER + Theme.PAD - 2;
+        int y = py + ph - Theme.INPUT_H - Theme.PAD - 1;
+        int w = rightW - Theme.PAD * 2 + 4;
+        int h = Theme.INPUT_H + 2;
+        Theme.panel(context, x, y, w, h, Theme.CHAT_INPUT_BG);
+        context.drawHorizontalLine(x + 1, x + w - 2, y + 1, Theme.BORDER_BRIGHT);
+    }
+
+    private String displayTarget() {
+        BotSnapshotS2C snapshot = BotClientState.INSTANCE.snapshot();
+        if (snapshot != null) {
+            return snapshot.botName();
+        }
+        return target == null || target.isBlank() ? Theme.tr("screen.aibot.owner_bot") : target;
     }
 
     private void sendChat() {
-        String text = chatField.getText().trim();
+        String text = input.getText().trim();
         if (text.isEmpty()) {
             return;
         }
-        BotCommandBridge.chat(targetBot(), text);
-        chatField.setText("");
-    }
-
-    private void drawStatus(DrawContext context, TextRenderer renderer, int left, int top) {
-        BotSnapshotS2C snapshot = BotClientState.INSTANCE.snapshot();
-        if (!BotCommandBridge.hasPermission()) {
-            drawLine(context, renderer, "Permission: Need OP permission", left, top, 0xFFFFB4A8);
-            top += 12;
-        }
-        if (snapshot == null) {
-            drawLine(context, renderer, "Target: " + targetBot() + " | waiting for snapshot", left, top, 0xFFE8ECEF);
-            drawLine(context, renderer, "Fallback: commands and chat capture stay available", left, top + 12, 0xFFADB5BD);
-            return;
-        }
-        drawLine(context, renderer, "Target: " + snapshot.botName() + " | HP " + oneDecimal(snapshot.health()) + "/" + oneDecimal(snapshot.maxHealth()) + " | Food " + snapshot.food(), left, top, 0xFFE8ECEF);
-        drawLine(context, renderer, "Task: " + snapshot.taskName() + " | " + snapshot.taskState() + " | " + (int) (snapshot.progress() * 100) + "%", left, top + 12, 0xFFD7DEE5);
-        drawLine(context, renderer, "Brain: " + (snapshot.brainBusy() ? "busy" : "idle") + " | tokens " + snapshot.promptTokens() + "/" + snapshot.completionTokens(), left, top + 24, 0xFFD7DEE5);
-        drawLine(context, renderer, "Inventory: " + inventoryText(snapshot.inventory()), left, top + 38, 0xFFBEC7D0);
-    }
-
-    private void drawTranscript(DrawContext context, TextRenderer renderer, int left, int top) {
-        drawLine(context, renderer, "Chat", left, top, 0xFFE8ECEF);
-        List<BotClientState.ChatLine> lines = BotClientState.INSTANCE.transcript();
-        int start = Math.max(0, lines.size() - 7);
-        int y = top + 14;
-        for (int index = start; index < lines.size(); index++) {
-            BotClientState.ChatLine line = lines.get(index);
-            int color = switch (line.role()) {
-                case "user" -> 0xFFB8E0FF;
-                case "bot" -> 0xFFC8F7C5;
-                case "system" -> 0xFFFFD28C;
-                default -> 0xFFE8ECEF;
-            };
-            drawLine(context, renderer, trim(line.role() + ": " + line.text(), 76), left, y, color);
-            y += 12;
-        }
-    }
-
-    private void drawLine(DrawContext context, TextRenderer renderer, String text, int x, int y, int color) {
-        context.drawTextWithShadow(renderer, text, x, y, color);
-    }
-
-    private String inventoryText(List<BotSnapshotS2C.ItemEntry> inventory) {
-        if (inventory.isEmpty()) {
-            return "empty";
-        }
-        StringBuilder builder = new StringBuilder();
-        int limit = Math.min(inventory.size(), 8);
-        for (int index = 0; index < limit; index++) {
-            BotSnapshotS2C.ItemEntry entry = inventory.get(index);
-            if (index > 0) {
-                builder.append(", ");
-            }
-            builder.append(shortId(entry.itemId())).append(" x").append(entry.count());
-        }
-        if (inventory.size() > limit) {
-            builder.append(", +").append(inventory.size() - limit);
-        }
-        return builder.toString();
-    }
-
-    private String targetBot() {
-        return BotClientState.INSTANCE.targetBot();
-    }
-
-    private int parseCount(TextFieldWidget field) {
-        try {
-            return Math.max(1, Integer.parseInt(field.getText().trim()));
-        } catch (NumberFormatException ignored) {
-            return 1;
-        }
-    }
-
-    private String shortId(String id) {
-        int separator = id.indexOf(':');
-        return separator >= 0 ? id.substring(separator + 1) : id;
-    }
-
-    private String trim(String value, int maxLength) {
-        if (value.length() <= maxLength) {
-            return value;
-        }
-        return value.substring(0, Math.max(0, maxLength - 3)) + "...";
-    }
-
-    private String oneDecimal(float value) {
-        return String.format(Locale.ROOT, "%.1f", value);
+        BotCommandBridge.chat(target, text);
+        input.setText("");
     }
 }

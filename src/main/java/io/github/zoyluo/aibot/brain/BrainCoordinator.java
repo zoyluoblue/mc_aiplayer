@@ -129,6 +129,7 @@ public final class BrainCoordinator {
     public void reset(AIPlayerEntity bot) {
         conversations.remove(bot.getUuid());
         manualModes.remove(bot.getUuid());
+        BotRuntimeOptions.INSTANCE.clear(bot);
         BotLog.comm(bot, "conversation_reset");
     }
 
@@ -220,7 +221,11 @@ public final class BrainCoordinator {
     private void submit(AIPlayerEntity bot, BotConversation conversation) {
         List<ChatMessage> historySnapshot = MemoryStore.INSTANCE.prepareHistory(bot, List.copyOf(conversation.history));
         AIBotConfig.Brain brainConfig = AIBotConfig.get().brain();
-        List<ToolDefinition> toolsSnapshot = toolRegistry.tools(brainConfig, brainConfig.exposesLowLevelTools() || manualMode(bot));
+        List<ToolDefinition> toolsSnapshot = toolRegistry.tools(
+                brainConfig,
+                brainConfig.exposesLowLevelTools() || manualMode(bot),
+                BotRuntimeOptions.INSTANCE.memoryToolsEnabled(bot),
+                brainConfig.coordinationToolsEnabled());
         executor.submit(bot, historySnapshot, toolsSnapshot, this::onResponse, this::onError);
     }
 

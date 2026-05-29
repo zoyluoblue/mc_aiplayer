@@ -12,18 +12,18 @@ public final class AIBotClient implements ClientModInitializer {
         AIPayloads.register();
         AIBotKeyBindings.register();
         AIBotClientNetworking.register();
-        BotChatCapture.register();
         ClientTickEvents.END_CLIENT_TICK.register(this::onClientTick);
     }
 
     private void onClientTick(MinecraftClient client) {
-        if (!AIBotKeyBindings.shouldTogglePanel(client)) {
+        BotPanelScreen.Mode mode = AIBotKeyBindings.pollToggle(client);
+        if (mode == null) {
             return;
         }
-        if (client.currentScreen instanceof BotPanelScreen) {
+        if (client.currentScreen instanceof BotPanelScreen panel && panel.mode() == mode) {
             client.setScreen(null);
         } else {
-            client.setScreen(new BotPanelScreen());
+            client.setScreen(new BotPanelScreen(mode));
         }
     }
 }

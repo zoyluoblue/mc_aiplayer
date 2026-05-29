@@ -1,9 +1,11 @@
 package io.github.zoyluo.aibot.client;
 
 import io.github.zoyluo.aibot.network.payload.BotCommandC2S;
+import io.github.zoyluo.aibot.network.payload.SetOptionC2S;
 import io.github.zoyluo.aibot.network.payload.SubscribeBotC2S;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.resource.language.I18n;
 
 public final class BotCommandBridge {
     private BotCommandBridge() {
@@ -26,7 +28,7 @@ public final class BotCommandBridge {
         }
         BotClientState.INSTANCE.addTranscript("user", text.trim());
         if (!hasPermission()) {
-            BotClientState.INSTANCE.addTranscript("system", "Need OP permission to control AIBot.");
+            BotClientState.INSTANCE.addTranscript("system", I18n.translate("screen.aibot.permission.need_op"));
             return;
         }
         if (ClientPlayNetworking.canSend(BotCommandC2S.ID)) {
@@ -38,7 +40,7 @@ public final class BotCommandBridge {
 
     public static void command(String botName, String action, String arg1, String arg2, int count) {
         if (!hasPermission()) {
-            BotClientState.INSTANCE.addTranscript("system", "Need OP permission to control AIBot.");
+            BotClientState.INSTANCE.addTranscript("system", I18n.translate("screen.aibot.permission.need_op"));
             return;
         }
         if (ClientPlayNetworking.canSend(BotCommandC2S.ID)) {
@@ -55,6 +57,7 @@ public final class BotCommandBridge {
             case "craft" -> "aibot task assign " + botName + " craft " + arg1 + " " + count;
             case "smelt" -> "aibot task assign " + botName + " smelt " + arg1 + " " + arg2 + " " + count;
             case "eat" -> "aibot task assign " + botName + " eat";
+            case "sleep" -> "aibot task assign " + botName + " sleep";
             case "abort" -> "aibot task abort " + botName;
             case "reset" -> "aibot brain reset " + botName;
             default -> "aibot status";
@@ -65,6 +68,16 @@ public final class BotCommandBridge {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.getNetworkHandler() != null) {
             client.getNetworkHandler().sendChatCommand(command);
+        }
+    }
+
+    public static void setOption(String botName, String key, boolean value) {
+        if (!hasPermission()) {
+            BotClientState.INSTANCE.addTranscript("system", I18n.translate("screen.aibot.permission.need_op"));
+            return;
+        }
+        if (ClientPlayNetworking.canSend(SetOptionC2S.ID)) {
+            ClientPlayNetworking.send(new SetOptionC2S(botName == null ? "" : botName, key, value));
         }
     }
 

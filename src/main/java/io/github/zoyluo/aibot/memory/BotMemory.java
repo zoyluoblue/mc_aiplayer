@@ -7,8 +7,10 @@ import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -84,6 +86,22 @@ public final class BotMemory {
 
     public boolean hasActiveGoal() {
         return currentGoalStep().isPresent();
+    }
+
+    public String goalTitle() {
+        return goalTitle;
+    }
+
+    public int goalCurrentStepIndex() {
+        return goalSteps.isEmpty() ? 0 : Math.min(goalCursor, goalSteps.size());
+    }
+
+    public int goalTotalSteps() {
+        return goalSteps.size();
+    }
+
+    public List<String> goalSteps() {
+        return List.copyOf(new ArrayList<>(goalSteps));
     }
 
     public String goalDriveStatus(String lastResult) {

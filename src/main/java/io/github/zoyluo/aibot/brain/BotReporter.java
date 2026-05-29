@@ -1,6 +1,5 @@
 package io.github.zoyluo.aibot.brain;
 
-import io.github.zoyluo.aibot.AIBotConfig;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.network.AIBotServerNetworking;
 import io.github.zoyluo.aibot.task.TaskState;
@@ -24,7 +23,7 @@ public final class BotReporter {
     }
 
     public void onAssigned(AIPlayerEntity bot, TaskStatus status) {
-        if (!enabled()) {
+        if (!enabled(bot)) {
             return;
         }
         ReportState state = new ReportState(status.name(), status.description(), 25);
@@ -33,7 +32,7 @@ public final class BotReporter {
     }
 
     public void onStatus(MinecraftServer server, AIPlayerEntity bot, TaskStatus status) {
-        if (!enabled()) {
+        if (!enabled(bot)) {
             return;
         }
         if (status.name().equals("idle")) {
@@ -90,8 +89,8 @@ public final class BotReporter {
         AIBotServerNetworking.INSTANCE.sendBotChat(bot, "system", text);
     }
 
-    private static boolean enabled() {
-        return AIBotConfig.get().brain().verboseReportsEnabled();
+    private static boolean enabled(AIPlayerEntity bot) {
+        return BotRuntimeOptions.INSTANCE.verboseReportsEnabled(bot);
     }
 
     private static String progressText(TaskStatus status, int milestone) {

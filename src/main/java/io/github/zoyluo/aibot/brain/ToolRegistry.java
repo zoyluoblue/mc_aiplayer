@@ -75,11 +75,18 @@ public final class ToolRegistry {
     }
 
     public List<ToolDefinition> tools(AIBotConfig.Brain config, boolean exposeLowLevelTools) {
+        return tools(config, exposeLowLevelTools, config.memoryToolsEnabled(), config.coordinationToolsEnabled());
+    }
+
+    public List<ToolDefinition> tools(AIBotConfig.Brain config,
+                                      boolean exposeLowLevelTools,
+                                      boolean memoryToolsEnabled,
+                                      boolean coordinationToolsEnabled) {
         return tools.values().stream()
                 .filter(tool -> switch (tool.group()) {
                     case CORE -> true;
-                    case MEMORY -> config.memoryToolsEnabled();
-                    case COORDINATION -> config.coordinationToolsEnabled();
+                    case MEMORY -> memoryToolsEnabled;
+                    case COORDINATION -> coordinationToolsEnabled;
                     case LOW_LEVEL -> exposeLowLevelTools;
                 })
                 .toList();

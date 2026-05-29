@@ -20,6 +20,14 @@ public record BotSnapshotS2C(
         boolean brainBusy,
         int promptTokens,
         int completionTokens,
+        String goalTitle,
+        String goalCurrentStep,
+        int goalCurrentStepIndex,
+        int goalTotalSteps,
+        List<String> goalSteps,
+        boolean manualMode,
+        boolean memoryToolsEnabled,
+        boolean verboseReportsEnabled,
         List<ItemEntry> inventory
 ) implements CustomPayload {
     public static final Id<BotSnapshotS2C> ID = new Id<>(Identifier.of(AIBotMod.MOD_ID, "bot_snapshot"));
@@ -37,6 +45,14 @@ public record BotSnapshotS2C(
                 buf.readBoolean(),
                 buf.readInt(),
                 buf.readInt(),
+                buf.readString(),
+                buf.readString(),
+                buf.readInt(),
+                buf.readInt(),
+                readStrings(buf),
+                buf.readBoolean(),
+                buf.readBoolean(),
+                buf.readBoolean(),
                 readInventory(buf));
     }
 
@@ -51,12 +67,32 @@ public record BotSnapshotS2C(
         buf.writeBoolean(brainBusy);
         buf.writeInt(promptTokens);
         buf.writeInt(completionTokens);
+        buf.writeString(goalTitle);
+        buf.writeString(goalCurrentStep);
+        buf.writeInt(goalCurrentStepIndex);
+        buf.writeInt(goalTotalSteps);
+        buf.writeInt(goalSteps.size());
+        for (String step : goalSteps) {
+            buf.writeString(step);
+        }
+        buf.writeBoolean(manualMode);
+        buf.writeBoolean(memoryToolsEnabled);
+        buf.writeBoolean(verboseReportsEnabled);
         buf.writeInt(inventory.size());
         for (ItemEntry entry : inventory) {
             buf.writeString(entry.itemId());
             buf.writeInt(entry.count());
             buf.writeInt(entry.slot());
         }
+    }
+
+    private static List<String> readStrings(RegistryByteBuf buf) {
+        int size = buf.readInt();
+        List<String> values = new ArrayList<>(size);
+        for (int index = 0; index < size; index++) {
+            values.add(buf.readString());
+        }
+        return values;
     }
 
     private static List<ItemEntry> readInventory(RegistryByteBuf buf) {

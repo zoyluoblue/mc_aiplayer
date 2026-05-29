@@ -113,7 +113,7 @@ Minecraft 1.21.3、Fabric Loader 0.18.4、Yarn 1.21.3+build.2、fabric-loom 1.16
 **改动**:任务 `assigned/关键phase/completed/failed` 节点经 `sendBotChat`(面板通道,OPT-7)播中文摘要(**只播节点+限频+去重**);长任务 25/50/75/100% 各播一次;失败 reason → 中文友好(`need:x`→缺少X、`pickup_timeout`→没捡到掉落物、`stuck`→卡住换办法)。给 LLM 的仍是原始 reason(RL-1)。
 **验收**:`gather 石头` → 面板"开始挖石头 → 已挖 5/10 → 完成"中文播报;失败给人话。
 
-## WO-RL-11 · 面板增强:任务进度 / 目标看板 / 设置页  (PLAN §RL-11)
+## WO-RL-11 · 面板增强:任务进度 / 目标看板 / 设置页  (PLAN §RL-11) ✅ done: TaskCard/GoalCard/SettingsCard、goal/option payload、SetOptionC2S 写回与 OP 校验已实现, compileJava/compileClientJava 通过。
 **文件**:新 `client/screen/ui/cards/TaskCard`、`GoalCard`;`network/payload/BotSnapshotS2C`(加 `goalTitle/goalCurrentStep/goalTotalSteps`,双端 codec 同步);新 `SetOptionC2S`;`BotPanelScreen`(`Mode.SETTINGS` 或子视图);`buildCards`
 **改动**:TaskCard 当前任务+进度条+阶段;GoalCard 目标步骤+当前步高亮;设置页落地开关(手动模式/记忆/播报),经 `SetOptionC2S` 写回(`hasPermissionLevel(2)` 校验)。
 **约束**:payload 双端注册 + codec 字段读写顺序一致;设置写回 OP 校验。

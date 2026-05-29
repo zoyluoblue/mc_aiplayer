@@ -1,18 +1,23 @@
 package io.github.zoyluo.aibot.network;
 
 import io.github.zoyluo.aibot.brain.BrainCoordinator;
+import io.github.zoyluo.aibot.brain.BotRuntimeOptions;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
+import io.github.zoyluo.aibot.memory.BotMemory;
+import io.github.zoyluo.aibot.memory.BotMemoryStore;
 import io.github.zoyluo.aibot.network.payload.BotChatS2C;
 import io.github.zoyluo.aibot.network.payload.BotCommandC2S;
 import io.github.zoyluo.aibot.network.payload.BotSnapshotS2C;
+import io.github.zoyluo.aibot.network.payload.SetOptionC2S;
 import io.github.zoyluo.aibot.network.payload.SubscribeBotC2S;
 import io.github.zoyluo.aibot.task.CraftTask;
 import io.github.zoyluo.aibot.task.EatTask;
 import io.github.zoyluo.aibot.task.MineTask;
 import io.github.zoyluo.aibot.task.MoveTask;
 import io.github.zoyluo.aibot.task.SmeltTask;
+import io.github.zoyluo.aibot.task.SleepTask;
 import io.github.zoyluo.aibot.task.Task;
 import io.github.zoyluo.aibot.task.TaskManager;
 import io.github.zoyluo.aibot.task.TaskStatus;
@@ -24,7 +29,6 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 
@@ -50,6 +54,8 @@ public final class AIBotServerNetworking {
                 context.server().execute(() -> handleSubscribe(context.player(), payload)));
         ServerPlayNetworking.registerGlobalReceiver(BotCommandC2S.ID, (payload, context) ->
                 context.server().execute(() -> handleCommand(context.player(), payload)));
+        ServerPlayNetworking.registerGlobalReceiver(SetOptionC2S.ID, (payload, context) ->
+                context.server().execute(() -> handleSetOption(context.player(), payload)));
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) ->
                 subscriptions.remove(handler.player.getUuid()));
     }
@@ -68,7 +74,7 @@ public final class AIBotServerNetworking {
             if (!ServerPlayNetworking.canSend(viewer, BotSnapshotS2C.ID)) {
                 continue;
             }
-            AIPlayerManager.INSTANCE.getByName(entry.getValue())
+            resolveBot(viewer, entry.getValue())
                     .map(this::snapshot)
                     .ifPresent(snapshot -> ServerPlayNetworking.send(viewer, snapshot));
         }
@@ -85,10 +91,19 @@ public final class AIBotServerNetworking {
         }
         String normalized = normalize(bot.getGameProfile().getName());
         for (Map.Entry<UUID, String> entry : subscriptions.entrySet()) {
-            if (!normalize(entry.getValue()).equals(normalized)) {
+            ServerPlayerEntity viewer = bot.getServer().getPlayerManager().getPlayer(entry.getKey());
+            if (viewer == null) {
                 continue;
             }
-            ServerPlayerEntity viewer = bot.getServer().getPlayerManager().getPlayer(entry.getKey());
+            String subscribedName = entry.getValue();
+            if (subscribedName == null || subscribedName.isBlank()) {
+                subscribedName = AIPlayerManager.INSTANCE.botOf(viewer.getUuid())
+                        .map(owned -> owned.getGameProfile().getName())
+                        .orElse("");
+            }
+            if (!normalize(subscribedName).equals(normalized)) {
+                continue;
+            }
             if (viewer != null && ServerPlayNetworking.canSend(viewer, BotChatS2C.ID)) {
                 ServerPlayNetworking.send(viewer, new BotChatS2C(bot.getGameProfile().getName(), role, text));
             }
@@ -97,16 +112,19 @@ public final class AIBotServerNetworking {
 
     private void handleSubscribe(ServerPlayerEntity player, SubscribeBotC2S payload) {
         if (!player.hasPermissionLevel(2)) {
-            sendSystem(player, payload.botName(), "Need OP permission to use the AIBot panel.");
+            sendSystem(player, payload.botName(), "需要 OP 权限才能使用 AIBot 面板。");
             return;
         }
         if (payload.subscribe()) {
-            subscriptions.put(player.getUuid(), payload.botName());
-            AIPlayerManager.INSTANCE.getByName(payload.botName())
+            String botName = resolveBot(player, payload.botName())
+                    .map(bot -> bot.getGameProfile().getName())
+                    .orElse(payload.botName());
+            subscriptions.put(player.getUuid(), botName);
+            resolveBot(player, botName)
                     .map(this::snapshot)
                     .filter(snapshot -> ServerPlayNetworking.canSend(player, BotSnapshotS2C.ID))
                     .ifPresent(snapshot -> ServerPlayNetworking.send(player, snapshot));
-            sendSystem(player, payload.botName(), "Subscribed to " + payload.botName());
+            sendSystem(player, botName, botName == null || botName.isBlank() ? "未找到你的 AI 助手。" : "已订阅 " + botName);
         } else {
             subscriptions.remove(player.getUuid());
         }
@@ -114,12 +132,12 @@ public final class AIBotServerNetworking {
 
     private void handleCommand(ServerPlayerEntity player, BotCommandC2S payload) {
         if (!player.hasPermissionLevel(2)) {
-            sendSystem(player, payload.botName(), "Need OP permission to control AIBot.");
+            sendSystem(player, payload.botName(), "需要 OP 权限才能控制 AIBot。");
             return;
         }
-        Optional<AIPlayerEntity> bot = AIPlayerManager.INSTANCE.getByName(payload.botName());
+        Optional<AIPlayerEntity> bot = resolveBot(player, payload.botName());
         if (bot.isEmpty()) {
-            sendSystem(player, payload.botName(), "No such bot: " + payload.botName());
+            sendSystem(player, payload.botName(), "找不到 AI 助手: " + (payload.botName().isBlank() ? "我的助手" : payload.botName()));
             return;
         }
         try {
@@ -127,8 +145,28 @@ public final class AIBotServerNetworking {
         } catch (RuntimeException exception) {
             BotLog.error(bot.get(), "panel_command_exception", exception, "action", payload.action());
             String reason = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
-            sendSystem(player, payload.botName(), "Command failed: " + reason);
+            sendSystem(player, payload.botName(), "命令执行失败: " + reason);
         }
+    }
+
+    private void handleSetOption(ServerPlayerEntity player, SetOptionC2S payload) {
+        if (!player.hasPermissionLevel(2)) {
+            sendSystem(player, payload.botName(), "需要 OP 权限才能修改 AIBot 设置。");
+            return;
+        }
+        Optional<AIPlayerEntity> bot = resolveBot(player, payload.botName());
+        if (bot.isEmpty()) {
+            sendSystem(player, payload.botName(), "找不到 AI 助手: " + (payload.botName().isBlank() ? "我的助手" : payload.botName()));
+            return;
+        }
+        AIPlayerEntity target = bot.get();
+        switch (payload.key()) {
+            case "manual" -> BrainCoordinator.INSTANCE.setManualMode(target, payload.value());
+            case "memory" -> BotRuntimeOptions.INSTANCE.setMemoryToolsEnabled(target, payload.value());
+            case "reports" -> BotRuntimeOptions.INSTANCE.setVerboseReportsEnabled(target, payload.value());
+            default -> throw new IllegalArgumentException("unknown_option: " + payload.key());
+        }
+        sendSystem(player, target.getGameProfile().getName(), "设置已更新: " + payload.key() + "=" + payload.value());
     }
 
     private void dispatch(ServerPlayerEntity player, AIPlayerEntity bot, BotCommandC2S payload) {
@@ -139,10 +177,11 @@ public final class AIBotServerNetworking {
             case "craft" -> assign(bot, new CraftTask(requiredItem(payload.arg1()), count(payload)));
             case "smelt" -> assign(bot, new SmeltTask(requiredItem(payload.arg1()), requiredItem(payload.arg2()), count(payload)));
             case "eat" -> assign(bot, new EatTask());
+            case "sleep" -> assign(bot, new SleepTask());
             case "abort" -> {
                 TaskManager.INSTANCE.abort(bot);
                 bot.getActionPack().stopAll();
-                sendSystem(player, bot.getGameProfile().getName(), "Task aborted.");
+                sendSystem(player, bot.getGameProfile().getName(), "任务已停止。");
             }
             case "chat" -> {
                 sendBotChat(bot, "user", payload.arg1());
@@ -150,7 +189,7 @@ public final class AIBotServerNetworking {
             }
             case "reset" -> {
                 BrainCoordinator.INSTANCE.reset(bot);
-                sendSystem(player, bot.getGameProfile().getName(), "Brain reset.");
+                sendSystem(player, bot.getGameProfile().getName(), "大脑已重置。");
             }
             default -> throw new IllegalArgumentException("unknown_action: " + payload.action());
         }
@@ -163,6 +202,7 @@ public final class AIBotServerNetworking {
     private BotSnapshotS2C snapshot(AIPlayerEntity bot) {
         TaskStatus task = TaskManager.INSTANCE.status(bot);
         BrainCoordinator.BrainStatus brain = BrainCoordinator.INSTANCE.status(bot);
+        BotMemory memory = BotMemoryStore.INSTANCE.of(bot.getUuid());
         ArrayList<BotSnapshotS2C.ItemEntry> inventory = new ArrayList<>();
         for (int slot = 0; slot < bot.getInventory().main.size(); slot++) {
             ItemStack stack = bot.getInventory().main.get(slot);
@@ -181,14 +221,28 @@ public final class AIBotServerNetworking {
                 brain.busy(),
                 brain.promptTokens(),
                 brain.completionTokens(),
+                memory.goalTitle(),
+                memory.currentGoalStep().orElse(""),
+                memory.goalCurrentStepIndex(),
+                memory.goalTotalSteps(),
+                memory.goalSteps(),
+                BrainCoordinator.INSTANCE.manualMode(bot),
+                BotRuntimeOptions.INSTANCE.memoryToolsEnabled(bot),
+                BotRuntimeOptions.INSTANCE.verboseReportsEnabled(bot),
                 inventory);
     }
 
     private void sendSystem(ServerPlayerEntity player, String botName, String text) {
-        player.sendMessage(Text.literal("[AIBot] " + text), false);
         if (ServerPlayNetworking.canSend(player, BotChatS2C.ID)) {
             ServerPlayNetworking.send(player, new BotChatS2C(botName, "system", text));
         }
+    }
+
+    private Optional<AIPlayerEntity> resolveBot(ServerPlayerEntity player, String botName) {
+        if (botName == null || botName.isBlank()) {
+            return AIPlayerManager.INSTANCE.botOf(player.getUuid());
+        }
+        return AIPlayerManager.INSTANCE.getByName(botName);
     }
 
     private static int count(BotCommandC2S payload) {

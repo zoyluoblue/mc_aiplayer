@@ -12,7 +12,7 @@ public final class BotClientState {
     public static final BotClientState INSTANCE = new BotClientState();
 
     private static final int MAX_TRANSCRIPT = 80;
-    private String targetBot = "Bob";
+    private String targetBot = "";
     private BotSnapshotS2C snapshot;
     private final Deque<ChatLine> transcript = new ArrayDeque<>();
 
@@ -24,7 +24,7 @@ public final class BotClientState {
     }
 
     public synchronized void setTargetBot(String targetBot) {
-        String cleaned = targetBot == null || targetBot.isBlank() ? "Bob" : targetBot.trim();
+        String cleaned = targetBot == null ? "" : targetBot.trim();
         if (!this.targetBot.equals(cleaned)) {
             transcript.clear();
             snapshot = null;
@@ -33,7 +33,7 @@ public final class BotClientState {
     }
 
     public synchronized boolean matchesTarget(String botName) {
-        return normalize(targetBot).equals(normalize(botName));
+        return targetBot.isBlank() || normalize(targetBot).equals(normalize(botName));
     }
 
     public synchronized BotSnapshotS2C snapshot() {
@@ -45,6 +45,9 @@ public final class BotClientState {
 
     public synchronized void setSnapshot(BotSnapshotS2C snapshot) {
         if (matchesTarget(snapshot.botName())) {
+            if (targetBot.isBlank()) {
+                targetBot = snapshot.botName();
+            }
             this.snapshot = snapshot;
         }
     }

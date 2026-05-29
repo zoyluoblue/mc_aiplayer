@@ -82,6 +82,7 @@ public final class ReasonText {
             case "strip_mine" -> "鱼骨挖矿";
             case "farm" -> "农场工作";
             case "breed" -> "繁殖动物";
+            case "fish" -> "钓鱼";
             case "follow" -> "跟随";
             case "hold" -> "待命";
             case "guard" -> "护卫";

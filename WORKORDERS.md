@@ -163,7 +163,7 @@ Minecraft 1.21.3、Fabric Loader 0.18.4、Yarn 1.21.3+build.2、fabric-loom 1.16
 **约束**:`⚠️VERIFY` 弓蓄力 `useItem` / `PersistentProjectileEntity`。
 **验收**:给弓箭剑盾甲 → 远弓近剑被围格挡低血撤退回血再战。
 
-## WO-RL-19 · 钓鱼  (PLAN §RL-19)
+## WO-RL-19 · 钓鱼  (PLAN §RL-19) ✅ done: 新增 FishTask 自包含钓鱼循环, 接入 fish 工具与 assign_task fish, WAIT_BITE isWaiting 豁免, compileJava/compileClientJava 通过。
 **文件**:新 `task/FishTask`、工具 `fish`
 **改动**:`FIND_WATER→CAST(useItem 鱼竿)→WAIT_BITE(检测咬钩)→REEL→COLLECT→LOOP`;`WAIT_BITE` 阶段 `isWaiting()` 豁免;咬钩检测读 `ServerPlayerEntity.fishHook` / owner==bot 的 `FishingBobberEntity` 状态,不稳则定时兜底收竿。
 **约束**:`⚠️VERIFY` `fishHook` / `FishingBobberEntity` 咬钩状态字段。

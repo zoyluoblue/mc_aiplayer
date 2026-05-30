@@ -47,6 +47,10 @@ public final class IdleCoordinator {
         if (TaskManager.INSTANCE.getActive(bot).isPresent()) {
             return false;
         }
+        // GOALFIX-GF1 P0-A:bot 有活跃目标计划时,空闲分配让位给 GoalExecutor(防步骤间隙抢任务板作业)。
+        if (io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.hasActivePlan(bot)) {
+            return false;
+        }
         UUID currentJob = claimedJobs.remove(bot.getUuid());
         if (currentJob != null) {
             finishClaimedJob(bot, currentJob);

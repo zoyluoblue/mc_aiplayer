@@ -96,7 +96,8 @@ public final class ActionPack {
             nextPathfindTick = now + PATHFIND_FAILURE_COOLDOWN_TICKS;
             return ActionResult.failed("pathfinding_failed: NO_START");
         }
-        AStarPathfinder finder = new AStarPathfinder(player.getServerWorld(), player.getBlockPos(), goal);
+        boolean canPillar = PathExecutor.hasPlaceableBlock(player);
+        AStarPathfinder finder = new AStarPathfinder(player.getServerWorld(), player.getBlockPos(), goal, canPillar);
         PathfindingResult result = finder.findPath();
         if (!result.success()) {
             lastPathGoal = immutableGoal;

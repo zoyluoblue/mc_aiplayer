@@ -41,7 +41,9 @@ public final class CostModel {
         int dx = Math.abs(from.getX() - to.getX());
         int dy = Math.abs(from.getY() - to.getY());
         int dz = Math.abs(from.getZ() - to.getZ());
-        return dx + dz + 1.5D * dy;
+        int diagonal = Math.min(dx, dz);
+        int straight = Math.max(dx, dz) - diagonal;
+        return straight + 1.41D * diagonal + 1.5D * dy;
     }
 
     private static double turnPenalty(Node current, BlockPos next) {

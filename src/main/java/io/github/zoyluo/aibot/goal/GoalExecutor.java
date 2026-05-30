@@ -31,6 +31,13 @@ public final class GoalExecutor {
     }
 
     public boolean submit(AIPlayerEntity bot, Goal goal) {
+        // GOALFIX-GF3:幂等——同一 bot 已有相同目标的活跃计划时,忽略重复 submit
+        //(防大脑连点 mine_ore/achieve_goal 覆盖计划、打断进行中的步骤)。
+        ActivePlan existing = activePlans.get(bot.getUuid());
+        if (existing != null && existing.goal.equals(goal)) {
+            BotLog.task(bot, "goal_submit_ignored", "goal", goal, "reason", "duplicate_active_plan");
+            return true;
+        }
         GoalPlanner.GoalPlan plan = GoalPlanner.plan(bot, goal);
         if (!plan.success()) {
             report(bot, "目标暂时无法规划:" + String.join(", ", plan.unresolved()));
@@ -57,7 +64,19 @@ public final class GoalExecutor {
         if (plan == null) {
             return false;
         }
-        if (TaskManager.INSTANCE.getActive(bot).isPresent()) {
+        Optional<Task> active = TaskManager.INSTANCE.getActive(bot);
+        if (active.isPresent()) {
+            // GOALFIX-GF1 P0-A:活跃任务不是本执行器派发的实例 → 说明被玩家显式指令打断,
+            // 放弃当前目标计划并让位(返回 false,后续 IdleCoordinator 看到 active 占用会自行早退)。
+            if (plan.currentTask != null && active.get() != plan.currentTask) {
+                BotLog.task(bot, "goal_abandoned", "goal", plan.goal, "reason", "foreign_task_assigned");
+                activePlans.remove(bot.getUuid());
+                return false;
+            }
+            return true;
+        }
+        // GOALFIX-GF1 P0-B:当前步被安全网暂停(生存任务抢占)→ 等待 resume,不要误判为步骤结束而跳步。
+        if (TaskManager.INSTANCE.hasPaused(bot)) {
             return true;
         }
         if (plan.current == null) {
@@ -68,6 +87,7 @@ public final class GoalExecutor {
         if (status.state() == TaskState.COMPLETED) {
             BotLog.task(bot, "goal_step_completed", "step", plan.current.describe());
             plan.current = null;
+            plan.currentTask = null;
             assignNext(bot, plan);
             return true;
         }
@@ -75,7 +95,8 @@ public final class GoalExecutor {
             handleStepFailure(server, bot, plan, status.failureReason());
             return true;
         }
-        assignNext(bot, plan);
+        // GOALFIX-GF1 P0-B:其它状态(如上一任务残留的 lastStatus)→ 防御性 no-op,
+        // 步骤推进只由 COMPLETED 分支驱动,失败由 FAILED 分支驱动。
         return true;
     }
 
@@ -103,6 +124,7 @@ public final class GoalExecutor {
             return;
         }
         plan.current = step;
+        plan.currentTask = task.get();
         int done = plan.totalSteps - plan.steps.size();
         BotLog.task(bot, "goal_step", "index", done, "total", plan.totalSteps, "step", step.describe());
         TaskManager.INSTANCE.assign(bot, task.get());
@@ -127,6 +149,7 @@ public final class GoalExecutor {
         plan.steps.addAll(fresh.steps());
         plan.totalSteps = fresh.steps().size();
         plan.current = null;
+        plan.currentTask = null;
         report(bot, "遇到问题,我重新规划了一次。");
         assignNext(bot, plan);
     }
@@ -150,6 +173,7 @@ public final class GoalExecutor {
         private final Goal goal;
         private final ArrayDeque<GoalStep> steps;
         private GoalStep current;
+        private Task currentTask;
         private int totalSteps;
         private boolean replanned;
 

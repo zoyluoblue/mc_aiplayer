@@ -197,7 +197,13 @@ public final class DeepSeekApiClient {
     static ChatResponse parseResponse(String body) throws DeepSeekApiException {
         try {
             JsonObject root = JsonParser.parseString(body).getAsJsonObject();
-            JsonObject choice = root.getAsJsonArray("choices").get(0).getAsJsonObject();
+            JsonArray choices = root.has("choices") && root.get("choices").isJsonArray()
+                    ? root.getAsJsonArray("choices")
+                    : null;
+            if (choices == null || choices.isEmpty()) {
+                throw new DeepSeekApiException("empty_choices");
+            }
+            JsonObject choice = choices.get(0).getAsJsonObject();
             JsonObject message = choice.getAsJsonObject("message");
             String content = nullableString(message.get("content"));
             String finishReason = nullableString(choice.get("finish_reason"));
@@ -222,6 +228,9 @@ public final class DeepSeekApiClient {
                     "cache_hit", cacheHitTokens,
                     "finish_reason", finishReason);
             return new ChatResponse(content, toolCalls, finishReason, promptTokens, completionTokens, cacheHitTokens);
+        } catch (DeepSeekApiException exception) {
+            BotLog.warn(LogCategory.API, null, "api_parse_error", "reason", exception.getMessage(), "body_excerpt", body.substring(0, Math.min(200, body.length())));
+            throw exception;
         } catch (RuntimeException exception) {
             BotLog.error("api_parse_error", exception, "body_excerpt", body.substring(0, Math.min(200, body.length())));
             throw new DeepSeekApiException("bad_response: " + exception.getMessage(), exception);

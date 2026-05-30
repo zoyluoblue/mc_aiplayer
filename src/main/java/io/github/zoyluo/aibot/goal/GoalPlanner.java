@@ -1,7 +1,6 @@
 package io.github.zoyluo.aibot.goal;
 
 import io.github.zoyluo.aibot.AIBotConfig;
-import io.github.zoyluo.aibot.action.InventoryAction;
 import io.github.zoyluo.aibot.craft.AcquisitionHints;
 import io.github.zoyluo.aibot.craft.RecipeRegistry;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
@@ -17,14 +16,12 @@ import net.minecraft.registry.Registries;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
 public final class GoalPlanner {
-    private static final int DEFAULT_MAX_DEPTH = 12;
 
     private GoalPlanner() {
     }
@@ -214,15 +211,20 @@ public final class GoalPlanner {
             if (!ensureItem(Items.FURNACE, 1, depth + 1, visiting)) {
                 return false;
             }
-            if (!ensureItem(recipe.input(), counts.getOrDefault(recipe.input(), 0) + missing, depth + 1, visiting)) {
+            // GOALFIX-GF2:需要 missing 个 input 来熔炼 missing 个产物;优先用已有库存,只补缺口
+            // (ensureItem 内部 missing = desired - available),不要在已有量之上再多挖一份。
+            if (!ensureItem(recipe.input(), missing, depth + 1, visiting)) {
                 return false;
             }
-            int fuelLogs = Math.max(1, missing);
-            if (!ensureItem(Items.OAK_LOG, counts.getOrDefault(Items.OAK_LOG, 0) + fuelLogs, depth + 1, visiting)) {
+            // GOALFIX-GF2:1 个原木在熔炉可烧 1.5 个物品,燃料按 ceil(missing/1.5) 估算,避免高估 ~33%。
+            // GOALFIX-GF3:燃料优先用背包已有的任意原木种类(与 chooseIngredient 一致),无则默认橡木。
+            Item fuel = preferredFuelLog();
+            int fuelLogs = Math.max(1, (int) Math.ceil(missing / 1.5));
+            if (!ensureItem(fuel, fuelLogs, depth + 1, visiting)) {
                 return false;
             }
             consumeItem(recipe.input(), missing);
-            consumeItem(Items.OAK_LOG, fuelLogs);
+            consumeItem(fuel, fuelLogs);
             counts.merge(recipe.output(), missing, Integer::sum);
             addStep(GoalStep.smelt(recipe.input(), recipe.output(), missing));
             return true;
@@ -259,6 +261,16 @@ public final class GoalPlanner {
 
         private void consumeItem(Item item, int count) {
             counts.put(item, Math.max(0, counts.getOrDefault(item, 0) - count));
+        }
+
+        // GOALFIX-GF3:选熔炼燃料——优先背包已有的任意原木种类(spruce/birch…),都没有则默认橡木。
+        private Item preferredFuelLog() {
+            for (Item log : RecipeRegistry.LOGS) {
+                if (counts.getOrDefault(log, 0) > 0) {
+                    return log;
+                }
+            }
+            return Items.OAK_LOG;
         }
 
         private int countAny(Set<Item> items) {

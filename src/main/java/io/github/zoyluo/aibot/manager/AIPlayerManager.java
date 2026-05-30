@@ -90,7 +90,10 @@ public final class AIPlayerManager {
         if (stepHeight != null) {
             stepHeight.setBaseValue(0.6D);
         }
-        player.interactionManager.changeGameMode(gameMode);
+        // AI 助手固定生存模式:创造模式破方块不掉落、冒险模式禁止破坏/放置,都会让采集/建造失效。
+        // 故忽略传入的 gameMode(可能是召唤者的创造,或旧存档恢复的 creative),一律 SURVIVAL。
+        GameMode effectiveMode = GameMode.SURVIVAL;
+        player.interactionManager.changeGameMode(effectiveMode);
 
         players.put(player.getUuid(), player);
         nameIndex.put(normalizedName, player.getUuid());
@@ -99,13 +102,13 @@ public final class AIPlayerManager {
             ownerIndex.put(ownerUuid, player.getUuid());
             botOwners.put(player.getUuid(), ownerUuid);
         }
-        BotLog.lifecycle(player, "bot_spawned", "pos", LogFields.pos(player.getBlockPos()), "mode", gameMode.getName());
+        BotLog.lifecycle(player, "bot_spawned", "pos", LogFields.pos(player.getBlockPos()), "mode", effectiveMode.getName());
         return Optional.of(player);
     }
 
     public Optional<AIPlayerEntity> respawnFromRecord(MinecraftServer server, BotRecord record) {
         RestoreTarget target = restoreTarget(server, record);
-        GameMode gameMode = GameMode.byName(record.gameMode(), GameMode.SURVIVAL);
+        GameMode gameMode = GameMode.SURVIVAL;  // AI 助手一律生存,忽略旧存档可能存的 creative
         Optional<AIPlayerEntity> spawned = spawn(
                 server,
                 record.name(),

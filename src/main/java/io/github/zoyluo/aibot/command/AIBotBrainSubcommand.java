@@ -33,6 +33,12 @@ public final class AIBotBrainSubcommand {
                 .then(literal("reset")
                         .then(botName()
                                 .executes(context -> reset(context.getSource(), StringArgumentType.getString(context, "name")))))
+                .then(literal("manual")
+                        .then(botName()
+                                .then(literal("on")
+                                        .executes(context -> manual(context.getSource(), StringArgumentType.getString(context, "name"), true)))
+                                .then(literal("off")
+                                        .executes(context -> manual(context.getSource(), StringArgumentType.getString(context, "name"), false)))))
                 .then(literal("say")
                         .then(botName()
                                 .then(argument("text", MessageArgumentType.message())
@@ -102,6 +108,16 @@ public final class AIBotBrainSubcommand {
         }
         BrainCoordinator.INSTANCE.reset(bot.get());
         source.sendFeedback(() -> Text.literal("[AIBot] brain reset " + name), false);
+        return 1;
+    }
+
+    private static int manual(ServerCommandSource source, String name, boolean enabled) {
+        Optional<AIPlayerEntity> bot = getBot(source, name);
+        if (bot.isEmpty()) {
+            return 0;
+        }
+        BrainCoordinator.INSTANCE.setManualMode(bot.get(), enabled);
+        source.sendFeedback(() -> Text.literal("[AIBot] manual low-level tools " + (enabled ? "on" : "off") + " for " + name), false);
         return 1;
     }
 

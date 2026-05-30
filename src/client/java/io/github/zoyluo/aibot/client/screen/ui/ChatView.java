@@ -9,9 +9,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 public final class ChatView implements PanelComponent {
-    private static final int BUBBLE_PAD = 6;
-    private static final int GAP = 6;
-    private static final int ROLE_H = 10;
+    private static final int BUBBLE_PAD = 4;
+    private static final int GAP = 4;
     private static final int EDGE_PAD = 8;
     private static final int SCROLL_W = 5;
 
@@ -60,7 +59,8 @@ public final class ChatView implements PanelComponent {
                 return;
             }
             List<RenderLine> renderLines = layout(renderer);
-            int drawY = y + h - scrollOffset - EDGE_PAD;
+            // 气泡自底向上排:scrollOffset=0 贴底显示最新;scrollOffset 增大 => 整体下移,顶部的历史消息进入视野
+            int drawY = y + h - EDGE_PAD + scrollOffset;
             for (int index = renderLines.size() - 1; index >= 0; index--) {
                 RenderLine line = renderLines.get(index);
                 drawY -= line.height();
@@ -78,7 +78,9 @@ public final class ChatView implements PanelComponent {
         if (mouseX < x || mouseX > x + w || mouseY < y || mouseY > y + h || contentHeight <= h) {
             return false;
         }
-        scrollOffset = clamp(scrollOffset + (int) Math.round(amount * 16.0D), 0, Math.max(0, contentHeight - h + 16));
+        // 向上滚(amount>0)=> 回看更早历史 => scrollOffset 增大;上限 = 内容超出视口的高度
+        int maxOffset = Math.max(0, contentHeight - h + EDGE_PAD * 2);
+        scrollOffset = clamp(scrollOffset + (int) Math.round(amount * 16.0D), 0, maxOffset);
         stickBottom = scrollOffset == 0;
         return true;
     }
@@ -95,9 +97,9 @@ public final class ChatView implements PanelComponent {
                 bubbleW = Math.max(bubbleW, renderer.getWidth(part));
             }
             String label = roleLabel(line.role());
-            bubbleW = Math.max(bubbleW, renderer.getWidth(label));
+            bubbleW = Math.max(bubbleW, renderer.getWidth(label + " "));
             bubbleW = Math.min(bubbleMax, bubbleW + BUBBLE_PAD * 2);
-            int bubbleH = ROLE_H + wrapped.size() * Theme.LINE_H + BUBBLE_PAD * 2;
+            int bubbleH = wrapped.size() * Theme.LINE_H + BUBBLE_PAD * 2;
             result.add(new RenderLine(line.role(), label, wrapped, bubbleW, bubbleH));
             height += bubbleH + GAP;
         }
@@ -105,7 +107,7 @@ public final class ChatView implements PanelComponent {
         if (stickBottom) {
             scrollOffset = 0;
         } else {
-            scrollOffset = clamp(scrollOffset, 0, Math.max(0, contentHeight - h + 16));
+            scrollOffset = clamp(scrollOffset, 0, Math.max(0, contentHeight - h + EDGE_PAD * 2));
         }
         return result;
     }
@@ -123,12 +125,6 @@ public final class ChatView implements PanelComponent {
             case "system" -> 0xF03A3019;
             default -> 0xF0242830;
         };
-        int labelColor = switch (line.role()) {
-            case "user" -> 0xFFD9EAFF;
-            case "bot" -> 0xFFD7F9DB;
-            case "system" -> 0xFFFFE1A3;
-            default -> Theme.TEXT_DIM;
-        };
         int bx = switch (line.role()) {
             case "user" -> x + w - line.width() - EDGE_PAD - SCROLL_W;
             case "system" -> x + Math.max(EDGE_PAD, (w - line.width()) / 2);
@@ -139,8 +135,8 @@ public final class ChatView implements PanelComponent {
         context.drawHorizontalLine(bx, bx + line.width() - 1, by + line.height() - 1, border);
         context.drawVerticalLine(bx, by, by + line.height() - 1, border);
         context.drawVerticalLine(bx + line.width() - 1, by, by + line.height() - 1, border);
-        context.drawTextWithShadow(renderer, line.label(), bx + BUBBLE_PAD, by + BUBBLE_PAD, labelColor);
-        int ty = by + BUBBLE_PAD + ROLE_H;
+        // 不再单独占一行画"系统/你/Bob"标签:角色由边框色 + 背景色 + 左右对齐区分(更紧凑,显示更多历史)
+        int ty = by + BUBBLE_PAD;
         for (String part : line.parts()) {
             context.drawTextWithShadow(renderer, part, bx + BUBBLE_PAD, ty, Theme.TEXT_STRONG);
             ty += Theme.LINE_H;
@@ -170,8 +166,9 @@ public final class ChatView implements PanelComponent {
         int trackX = x + w - SCROLL_W;
         int trackH = h - 12;
         int thumbH = Math.max(18, trackH * h / Math.max(h, contentHeight));
-        int maxOffset = Math.max(1, contentHeight - h + 16);
-        int thumbY = y + 6 + (trackH - thumbH) * scrollOffset / maxOffset;
+        int maxOffset = Math.max(1, contentHeight - h + EDGE_PAD * 2);
+        // scrollOffset=0(看最新)=> 滑块在底部;offset 增大(回看历史)=> 滑块上移
+        int thumbY = y + 6 + (trackH - thumbH) * (maxOffset - Math.min(scrollOffset, maxOffset)) / maxOffset;
         context.fill(trackX, y + 6, trackX + 2, y + h - 6, 0xFF252B35);
         context.fill(trackX - 1, thumbY, trackX + 3, thumbY + thumbH, Theme.ACCENT);
     }

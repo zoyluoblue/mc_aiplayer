@@ -5,12 +5,11 @@ import io.github.zoyluo.aibot.client.BotCommandBridge;
 import io.github.zoyluo.aibot.client.screen.ui.ChatView;
 import io.github.zoyluo.aibot.client.screen.ui.PanelComponent;
 import io.github.zoyluo.aibot.client.screen.ui.Theme;
+import io.github.zoyluo.aibot.client.screen.ui.cards.GoalCard;
 import io.github.zoyluo.aibot.client.screen.ui.cards.InventoryCard;
 import io.github.zoyluo.aibot.client.screen.ui.cards.QuickActionCard;
-import io.github.zoyluo.aibot.client.screen.ui.cards.GoalCard;
 import io.github.zoyluo.aibot.client.screen.ui.cards.SettingsCard;
 import io.github.zoyluo.aibot.client.screen.ui.cards.StatusCard;
-import io.github.zoyluo.aibot.client.screen.ui.cards.TaskCard;
 import io.github.zoyluo.aibot.network.payload.BotSnapshotS2C;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
@@ -31,6 +30,7 @@ public final class BotPanelScreen extends Screen {
     }
 
     private final List<PanelComponent> leftCards = new ArrayList<>();
+    private final List<PanelComponent> laidOutCards = new ArrayList<>();
     private final List<ClickableWidget> panelWidgets = new ArrayList<>();
     private final Mode mode;
     private ChatView chat;
@@ -65,12 +65,13 @@ public final class BotPanelScreen extends Screen {
         buildCards();
         layoutComponents();
         if (mode == Mode.CHAT_STATUS) {
-            input = new TextFieldWidget(textRenderer, px + leftW + Theme.GUTTER + Theme.PAD, py + ph - Theme.INPUT_H - Theme.PAD + 1,
+            int stripY = py + ph - Theme.INPUT_H - Theme.PAD + 1;
+            input = new TextFieldWidget(textRenderer, px + leftW + Theme.GUTTER + Theme.PAD, stripY,
                     Math.max(60, rightW - Theme.PAD * 2 - 54), 18, Text.translatable("chat.aibot.input"));
             input.setMaxLength(512);
             input.setSuggestion(Theme.tr("chat.aibot.input"));
             sendButton = ButtonWidget.builder(Text.translatable("btn.aibot.send"), button -> sendChat())
-                    .dimensions(px + pw - Theme.PAD - 48, py + ph - Theme.INPUT_H - Theme.PAD + 1, 48, 18)
+                    .dimensions(px + pw - Theme.PAD - 48, stripY, 48, 18)
                     .build();
             register(input);
             register(sendButton);
@@ -87,8 +88,9 @@ public final class BotPanelScreen extends Screen {
                 .build();
         register(settingsButton);
         register(closeButton);
-        leftCards.forEach(card -> card.addWidgets(this::register));
-        layoutComponents();
+        for (PanelComponent card : laidOutCards) {
+            card.addWidgets(this::register);
+        }
         BotCommandBridge.subscribe(target, true);
         if (input != null) {
             setInitialFocus(input);
@@ -96,8 +98,8 @@ public final class BotPanelScreen extends Screen {
     }
 
     private void register(ClickableWidget widget) {
-        addDrawableChild(widget);   // 仍注册以接管点击/焦点/输入路由
-        panelWidgets.add(widget);   // 但渲染由本类手动负责(见 render),绕开 super.render 的背景模糊 pass
+        addDrawableChild(widget);   // 注册以接管点击/焦点/输入路由
+        panelWidgets.add(widget);   // 渲染由本类手动负责(见 render),绕开 super.render 的背景模糊 pass
     }
 
     @Override
@@ -116,7 +118,7 @@ public final class BotPanelScreen extends Screen {
         if (chat != null && chat.mouseScrolled(mouseX, mouseY, verticalAmount)) {
             return true;
         }
-        for (PanelComponent card : leftCards) {
+        for (PanelComponent card : laidOutCards) {
             if (card.mouseScrolled(mouseX, mouseY, verticalAmount)) {
                 return true;
             }
@@ -126,7 +128,7 @@ public final class BotPanelScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        for (PanelComponent card : leftCards) {
+        for (PanelComponent card : laidOutCards) {
             if (card.mouseClicked(mouseX, mouseY, button)) {
                 return true;
             }
@@ -149,7 +151,7 @@ public final class BotPanelScreen extends Screen {
         drawTitleBar(context);
         BotSnapshotS2C snapshot = BotClientState.INSTANCE.snapshot();
         List<BotClientState.ChatLine> transcript = BotClientState.INSTANCE.transcript();
-        for (PanelComponent card : leftCards) {
+        for (PanelComponent card : laidOutCards) {
             card.refresh(snapshot, transcript);
             card.render(context, mouseX, mouseY, delta, textRenderer);
         }
@@ -160,9 +162,7 @@ public final class BotPanelScreen extends Screen {
         if (mode == Mode.CHAT_STATUS) {
             drawInputStrip(context);
         }
-        // 手动渲染控件,不调用 super.render()——绕开 1.21 屏幕背景模糊/暗化 pass。
-        // 否则该 pass 会在控件渲染之前把"已画进帧缓冲的面板内容(标题/状态/背包/对话)"一并模糊,
-        // 而控件在 pass 之后才画 → 形成"控件清晰、面板内容发糊"的现象。
+        // 手动渲染控件,不调用 super.render()——绕开 1.21 屏幕背景模糊/暗化 pass(否则面板内容会被模糊,而控件清晰)。
         for (ClickableWidget widget : panelWidgets) {
             widget.render(context, mouseX, mouseY, delta);
         }
@@ -172,13 +172,14 @@ public final class BotPanelScreen extends Screen {
         boolean docked = width >= 420;
         if (mode == Mode.ACTIONS) {
             pw = docked ? Math.min(260, Math.max(220, (int) (width * 0.24F))) : Math.max(220, width - 20);
-            ph = Math.min(170, Math.max(150, height - 96));
+            ph = Math.max(150, Math.min(height - 24, 180));
         } else if (mode == Mode.SETTINGS) {
             pw = docked ? Math.min(300, Math.max(260, (int) (width * 0.28F))) : Math.max(240, width - 20);
-            ph = Math.min(170, Math.max(150, height - 96));
+            ph = Math.max(150, Math.min(height - 24, 190));
         } else {
             pw = docked ? Math.min(520, Math.max(360, (int) (width * 0.48F))) : Math.max(240, width - 20);
-            ph = Math.min(Math.max(260, height - 96), 380);
+            // 关键:ph 必须能装进屏幕(含上下边距),否则底部输入框会被挤出屏幕下沿
+            ph = Math.max(160, Math.min(height - 24, 380));
         }
         px = docked ? width - pw - 12 : (width - pw) / 2;
         py = 12;
@@ -198,31 +199,35 @@ public final class BotPanelScreen extends Screen {
             chat = null;
             return;
         }
+        // CHAT_STATUS:状态(含血/饱食/进度/任务)+ 背包 + 目标。按可用高度自动取舍,放不下的跳过(不外漏)。
         leftCards.add(new StatusCard());
-        leftCards.add(new TaskCard());
-        leftCards.add(new GoalCard());
         leftCards.add(new InventoryCard());
+        leftCards.add(new GoalCard());
         chat = new ChatView();
     }
 
     private void layoutComponents() {
+        laidOutCards.clear();
         int leftX = px + Theme.PAD;
         int cardY = py + Theme.TITLE_H + Theme.PAD;
         int cardW = leftW - Theme.PAD * 2;
-        int bottom = py + ph - Theme.PAD;
+        // CHAT_STATUS 左栏底线要给底部输入条留位;其它模式用到面板底
+        int bottom = py + ph - Theme.PAD - (mode == Mode.CHAT_STATUS ? Theme.INPUT_H : 0);
         for (PanelComponent card : leftCards) {
-            int cardH = Math.min(card.preferredHeight(), Math.max(46, bottom - cardY));
-            card.setBounds(leftX, cardY, cardW, cardH);
-            cardY += cardH + Theme.GUTTER;
-            if (cardY >= bottom) {
-                break;
+            int remaining = bottom - cardY;
+            if (remaining < 40) {
+                break;  // 放不下就不再布局,避免未布局卡以默认 (0,0) 渲染到面板外
             }
+            int cardH = Math.min(card.preferredHeight(), remaining);
+            card.setBounds(leftX, cardY, cardW, cardH);
+            laidOutCards.add(card);
+            cardY += cardH + Theme.GUTTER;
         }
         if (chat != null) {
             int rightX = px + leftW + Theme.GUTTER;
             int rightY = py + Theme.TITLE_H + Theme.PAD;
             int chatH = ph - Theme.TITLE_H - Theme.PAD * 3 - Theme.INPUT_H;
-            chat.setBounds(rightX + Theme.PAD, rightY, rightW - Theme.PAD * 2, chatH);
+            chat.setBounds(rightX + Theme.PAD, rightY, rightW - Theme.PAD * 2, Math.max(40, chatH));
         }
     }
 
@@ -256,6 +261,9 @@ public final class BotPanelScreen extends Screen {
     }
 
     private void sendChat() {
+        if (input == null) {
+            return;
+        }
         String text = input.getText().trim();
         if (text.isEmpty()) {
             return;

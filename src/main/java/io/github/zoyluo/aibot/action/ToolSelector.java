@@ -52,8 +52,15 @@ public final class ToolSelector {
 
     private static float score(ItemStack stack, BlockState state) {
         if (stack.isEmpty()) {
-            return 1.0F;
+            return state.isToolRequired() ? 0.001F : 1.0F;
         }
-        return stack.getMiningSpeedMultiplier(state);
+        float speed = stack.getMiningSpeedMultiplier(state);
+        if (stack.isDamageable() && stack.getDamage() >= stack.getMaxDamage() - 1) {
+            return 0.001F;
+        }
+        if (state.isToolRequired() && !stack.isSuitableFor(state)) {
+            return Math.max(0.001F, speed * 0.01F);
+        }
+        return speed;
     }
 }

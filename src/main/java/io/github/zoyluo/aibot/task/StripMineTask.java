@@ -211,11 +211,15 @@ public final class StripMineTask extends AbstractTask {
         if (shouldDescendToOreLayer(bot)) {
             int targetY = Math.max(bot.getServerWorld().getBottomY() + 6, OreScan.preferredMiningY(targetOres));
             descentStepsPlanned = Math.max(0, origin.getY() - targetY);
+            // FLOW-1:斜楼梯下挖——每级 横移1格 + 下降1格(1:1),形成可回头走的阶梯,
+            // 而非竖直直坠。每级 DESCEND 步会挖 stand + 其上方 2 格(身位),其下方为实心地面。
+            BlockPos cursor = origin;
             for (int step = 1; step <= descentStepsPlanned; step++) {
-                miningOrigin = origin.offset(direction, step).down(step).toImmutable();
-                steps.addLast(new Step(miningOrigin, StepKind.DESCEND, 0));
+                cursor = cursor.offset(direction).down().toImmutable();
+                steps.addLast(new Step(cursor, StepKind.DESCEND, 0));
             }
-            note = "descending_to_y:" + targetY;
+            miningOrigin = cursor;
+            note = "descending_stairs_to_y:" + targetY;
         }
         Direction left = direction.rotateYCounterclockwise();
         Direction right = direction.rotateYClockwise();

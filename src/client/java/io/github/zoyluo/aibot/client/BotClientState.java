@@ -11,7 +11,7 @@ import java.util.Locale;
 public final class BotClientState {
     public static final BotClientState INSTANCE = new BotClientState();
 
-    private static final int MAX_TRANSCRIPT = 80;
+    private static final int MAX_TRANSCRIPT = 300;  // 保留最近 300 条对话,配合 ChatView 上拉回溯
     private String targetBot = "";
     private BotSnapshotS2C snapshot;
     private final Deque<ChatLine> transcript = new ArrayDeque<>();

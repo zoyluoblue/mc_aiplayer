@@ -37,14 +37,23 @@ public final class AStarPathfinder {
     private final long maxMillis;
 
     public AStarPathfinder(ServerWorld world, BlockPos start, BlockPos goal) {
-        this(world, start, goal, DEFAULT_MAX_NODES, DEFAULT_MAX_MILLIS);
+        this(world, start, goal, DEFAULT_MAX_NODES, DEFAULT_MAX_MILLIS, false);
     }
 
     public AStarPathfinder(ServerWorld world, BlockPos start, BlockPos goal, int maxNodes, long maxMillis) {
+        this(world, start, goal, maxNodes, maxMillis, false);
+    }
+
+    // NAV-9:canPillar=true 允许垫方块越障(由有方块的调用方传入)。
+    public AStarPathfinder(ServerWorld world, BlockPos start, BlockPos goal, boolean canPillar) {
+        this(world, start, goal, DEFAULT_MAX_NODES, DEFAULT_MAX_MILLIS, canPillar);
+    }
+
+    public AStarPathfinder(ServerWorld world, BlockPos start, BlockPos goal, int maxNodes, long maxMillis, boolean canPillar) {
         this.world = world;
         this.start = start.toImmutable();
         this.goal = goal.toImmutable();
-        this.enumerator = new NeighborEnumerator();
+        this.enumerator = new NeighborEnumerator(canPillar);
         this.maxNodes = maxNodes;
         this.maxMillis = maxMillis;
     }
@@ -99,7 +108,7 @@ public final class AStarPathfinder {
                 if (closed.contains(neighbor.pos())) {
                     continue;
                 }
-                double tentativeG = current.gCost() + CostModel.stepCost(neighbor.moveType(), neighbor.fallHeight());
+                double tentativeG = current.gCost() + CostModel.stepCost(current, neighbor, world);
                 double knownG = gScore.getOrDefault(neighbor.pos(), Double.POSITIVE_INFINITY);
                 if (knownG <= tentativeG) {
                     continue;

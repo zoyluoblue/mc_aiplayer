@@ -67,6 +67,13 @@ public final class BotReporter {
         states.remove(bot.getUuid());
     }
 
+    public void onGoalMessage(AIPlayerEntity bot, String text) {
+        if (!enabled(bot)) {
+            return;
+        }
+        AIBotServerNetworking.INSTANCE.sendBotChat(bot, "system", text);
+    }
+
     private void reportProgress(MinecraftServer server, AIPlayerEntity bot, TaskStatus status, ReportState state) {
         int percent = (int) Math.floor(status.progress() * 100.0D);
         if (percent < state.nextMilestone || state.nextMilestone >= 100) {

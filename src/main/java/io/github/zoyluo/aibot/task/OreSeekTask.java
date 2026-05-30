@@ -57,6 +57,9 @@ public final class OreSeekTask extends AbstractTask {
     private final Set<Block> targetOres;
     private final Set<Item> targetDrops;
     private final int targetCount;
+    // MINE-DIG:true=矿石模式(挖净整条矿脉);false=定向挖掘模式(逐块挖目标方块,如挖石头做圆石,
+    // 不泛洪整片,避免"挖3块石头变挖64块"。供 GoalExecutor 的 MINE 步定向下挖到埋藏方块用)。
+    private final boolean veinMode;
 
     private Phase phase = Phase.SCAN;
     private BlockPos entryPos;
@@ -79,12 +82,25 @@ public final class OreSeekTask extends AbstractTask {
     private BlockPos currentDescendBlock;
 
     public OreSeekTask(Set<Block> targetOres, int targetCount) {
-        Set<Block> expanded = targetOres == null || targetOres.isEmpty()
+        this(targetOres, targetCount, true);
+    }
+
+    /**
+     * MINE-DIG:定向挖掘任意目标方块(逐块,不泛洪矿脉)。用于 GoalExecutor 的 MINE 步——
+     * 例如"挖 3 块石头做圆石":地表 bot 找不到裸露石头时,本任务会定向往下挖到埋藏的石层并逐块挖取。
+     */
+    public static OreSeekTask digBlocks(Set<Block> blocks, int count) {
+        return new OreSeekTask(blocks, count, false);
+    }
+
+    private OreSeekTask(Set<Block> targetOres, int targetCount, boolean veinMode) {
+        Set<Block> resolved = targetOres == null || targetOres.isEmpty()
                 ? OreScan.COMMON_ORES
-                : OreScan.expandOreFamilies(targetOres);
-        this.targetOres = expanded;
-        this.targetDrops = HarvestCore.expectedDropsFor(expanded);
+                : (veinMode ? OreScan.expandOreFamilies(targetOres) : Set.copyOf(targetOres));
+        this.targetOres = resolved;
+        this.targetDrops = HarvestCore.expectedDropsFor(resolved);
         this.targetCount = Math.max(1, targetCount);
+        this.veinMode = veinMode;
     }
 
     @Override
@@ -324,6 +340,10 @@ public final class OreSeekTask extends AbstractTask {
 
     private void collectVeinFrom(AIPlayerEntity bot, BlockPos seed) {
         veinQueue.clear();
+        // MINE-DIG:定向挖掘模式不泛洪——只挖被定位的单块,然后 SCAN 重新找下一块最近目标。
+        if (!veinMode) {
+            return;
+        }
         if (seed != null) {
             // veinFrom 需要种子仍是矿;此时已挖空,改为扫种子周围找同脉相邻矿
             for (Direction dir : Direction.values()) {

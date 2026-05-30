@@ -157,7 +157,9 @@ public final class GoalExecutor {
     private static Optional<Task> stepToTask(AIPlayerEntity bot, GoalStep step) {
         return switch (step.kind()) {
             case GATHER -> Optional.of(new GatherQuotaTask(step.item(), step.count()));
-            case MINE -> Optional.of(new MineTask(step.block(), step.count()));
+            // MINE-DIG:MINE 步走定向挖掘器(OreSeekTask 定向模式),能往下挖到埋藏的石层;
+            // MineTask 只能挖裸露方块,地表 bot 对埋在草皮下的石头会 no_reachable_target_block_in_range。
+            case MINE -> Optional.of(OreSeekTask.digBlocks(java.util.Set.of(step.block()), step.count()));
             case MINE_ORE -> Optional.of(new OreSeekTask(step.ores(), step.count()));
             case CRAFT -> Optional.of(new CraftTask(step.item(), step.count()));
             case SMELT -> Optional.of(new SmeltTask(step.input(), step.output(), step.count()));

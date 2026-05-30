@@ -2,12 +2,18 @@ package io.github.zoyluo.aibot.pathfinding;
 
 import io.github.zoyluo.aibot.action.ActionPack;
 import io.github.zoyluo.aibot.action.ActionResult;
+import io.github.zoyluo.aibot.action.BuildAction;
+import io.github.zoyluo.aibot.action.InventoryAction;
 import io.github.zoyluo.aibot.action.LookAction;
 import io.github.zoyluo.aibot.action.MiningController;
 import io.github.zoyluo.aibot.action.WalkToController;
+import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.log.LogCategory;
 import io.github.zoyluo.aibot.log.LogFields;
+import net.minecraft.block.Blocks;
+import net.minecraft.item.BlockItem;
+import net.minecraft.item.ItemStack;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
@@ -17,6 +23,8 @@ import java.util.List;
 public final class PathExecutor {
     private static final int STUCK_TICKS_LIMIT = 60;
     private static final int REPLAN_COOLDOWN_TICKS = 40;
+    private static final int LOOKAHEAD = 4;
+    private static final int NODE_RETRY = 2;
 
     private List<Node> path;
     private int index = 1;
@@ -29,6 +37,8 @@ public final class PathExecutor {
     private int stuckTicks;
     private int totalTicks;
     private int lastReplanTick = -REPLAN_COOLDOWN_TICKS;
+    private int activeWalkTargetIndex = -1;
+    private int nodeRetry;
 
     public PathExecutor(List<Node> path, BlockPos originalGoal) {
         this.path = List.copyOf(path);
@@ -57,13 +67,17 @@ public final class PathExecutor {
         }
 
         ActionResult result = switch (next.moveType()) {
-            case WALK, JUMP_UP, DROP_DOWN -> tickWalk(pack, next);
+            case WALK, DIAGONAL, JUMP_UP, DROP_DOWN -> tickWalk(pack, next);
             case DIG_THROUGH -> tickDigThrough(pack, next);
+            case PILLAR_UP -> tickPillar(pack, next);
         };
         if (!result.isInProgress()) {
             return result;
         }
-        return checkProgress(pack, next);
+        Node progressNode = activeWalkTargetIndex >= index && activeWalkTargetIndex < path.size()
+                ? path.get(activeWalkTargetIndex)
+                : next;
+        return checkProgress(pack, progressNode);
     }
 
     public void abort(ActionPack pack) {
@@ -75,15 +89,33 @@ public final class PathExecutor {
     }
 
     private ActionResult tickWalk(ActionPack pack, Node next) {
+        if (arrivedAt(pack.player().getBlockPos(), next.pos())) {
+            advance();
+            return ActionResult.IN_PROGRESS;
+        }
         if (subWalker == null) {
-            subWalker = new WalkToController(Vec3d.ofCenter(next.pos()));
+            activeWalkTargetIndex = chooseWalkTargetIndex(pack);
+            Node target = path.get(activeWalkTargetIndex);
+            if (activeWalkTargetIndex > index) {
+                BotLog.path(pack.player(), "path_skip",
+                        "from_index", index,
+                        "to_index", activeWalkTargetIndex,
+                        "from", LogFields.pos(next.pos()),
+                        "to", LogFields.pos(target.pos()));
+            }
+            subWalker = new WalkToController(Vec3d.ofCenter(target.pos()));
+        }
+        Node target = path.get(activeWalkTargetIndex);
+        if (arrivedAt(pack.player().getBlockPos(), target.pos())) {
+            advanceTo(activeWalkTargetIndex + 1);
+            return ActionResult.IN_PROGRESS;
         }
         ActionResult result = subWalker.tick(pack);
         if (result.isSuccess()) {
-            advance();
+            advanceTo(activeWalkTargetIndex + 1);
         }
         if (result.isFailed()) {
-            return handleStuck(pack, "walk_failed: " + result.reason());
+            return handleWalkFailure(pack, "walk_failed: " + result.reason());
         }
         return ActionResult.IN_PROGRESS;
     }
@@ -112,9 +144,52 @@ public final class PathExecutor {
             advance();
         }
         if (walk.isFailed()) {
-            return handleStuck(pack, "dig_walk_failed: " + walk.reason());
+            return handleWalkFailure(pack, "dig_walk_failed: " + walk.reason());
         }
         return ActionResult.IN_PROGRESS;
+    }
+
+    // NAV-9:垫方块上升一格。看向脚下→起跳→升空瞬间在原脚位放支撑方块→落到其上。
+    private ActionResult tickPillar(ActionPack pack, Node next) {
+        AIPlayerEntity player = pack.player();
+        BlockPos placeSlot = next.pos().down(); // 当前脚位,支撑方块放这里
+        if (player.getBlockY() >= next.pos().getY() && player.isOnGround()) {
+            advance();
+            return ActionResult.IN_PROGRESS;
+        }
+        int slot = findPlaceableBlock(player);
+        if (slot < 0) {
+            return handleStuck(pack, "pillar_no_block");
+        }
+        InventoryAction.equipFromSlot(player, slot);
+        LookAction.lookAtBlock(player, placeSlot, Direction.UP);
+        pack.setForward(0.0F);
+        pack.setJumping(true);
+        pack.jumpOnce();
+        double rise = player.getY() - placeSlot.getY();
+        if (rise > 0.5D && rise < 1.2D && player.getServerWorld().getBlockState(placeSlot).isAir()) {
+            BuildAction.placeBlockAt(player, placeSlot);
+        }
+        return ActionResult.IN_PROGRESS;
+    }
+
+    private static int findPlaceableBlock(AIPlayerEntity player) {
+        var main = player.getInventory().main;
+        for (int i = 0; i < main.size(); i++) {
+            ItemStack stack = main.get(i);
+            if (stack.isEmpty() || !(stack.getItem() instanceof BlockItem blockItem)) {
+                continue;
+            }
+            var block = blockItem.getBlock();
+            // 只用不受重力、廉价的实心填充块(避免沙砾掉落、避免浪费贵重方块)
+            if (block == Blocks.COBBLESTONE || block == Blocks.DIRT || block == Blocks.STONE
+                    || block == Blocks.COBBLED_DEEPSLATE || block == Blocks.DEEPSLATE
+                    || block == Blocks.NETHERRACK || block == Blocks.ANDESITE
+                    || block == Blocks.DIORITE || block == Blocks.GRANITE) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private ActionResult checkProgress(ActionPack pack, Node next) {
@@ -132,14 +207,71 @@ public final class PathExecutor {
     }
 
     private void advance() {
+        advanceTo(index + 1);
+    }
+
+    private void advanceTo(int nextIndex) {
         Node next = path.get(index);
         BotLog.path(null, "path_advance", "index", index, "total", path.size(), "move_type", next.moveType(), "pos", LogFields.pos(next.pos()));
-        index++;
+        index = Math.max(index + 1, Math.min(nextIndex, path.size()));
         subWalker = null;
         subMiner = null;
         digWalking = false;
         stuckTicks = 0;
         lastPos = null;
+        activeWalkTargetIndex = -1;
+        nodeRetry = 0;
+    }
+
+    private int chooseWalkTargetIndex(ActionPack pack) {
+        int best = index;
+        BlockPos from = pack.player().getBlockPos();
+        int max = Math.min(path.size() - 1, index + LOOKAHEAD);
+        for (int candidate = index + 1; candidate <= max; candidate++) {
+            if (!canStringPullTo(from, candidate)) {
+                break;
+            }
+            best = candidate;
+        }
+        return best;
+    }
+
+    private boolean canStringPullTo(BlockPos from, int candidateIndex) {
+        for (int i = index; i <= candidateIndex; i++) {
+            MoveType type = path.get(i).moveType();
+            if (type != MoveType.WALK && type != MoveType.DIAGONAL && type != MoveType.JUMP_UP) {
+                return false;
+            }
+        }
+        BlockPos target = path.get(candidateIndex).pos();
+        int dy = target.getY() - from.getY();
+        return dy >= -1 && dy <= 1;
+    }
+
+    private static boolean arrivedAt(BlockPos current, BlockPos target) {
+        int dx = current.getX() - target.getX();
+        int dz = current.getZ() - target.getZ();
+        return dx * dx + dz * dz <= 1 && Math.abs(current.getY() - target.getY()) <= 1;
+    }
+
+    private ActionResult handleWalkFailure(ActionPack pack, String reason) {
+        if (reason.contains("stuck_blocked") && nodeRetry < NODE_RETRY) {
+            nodeRetry++;
+            int previous = index;
+            index = Math.max(1, index - 1);
+            subWalker = null;
+            activeWalkTargetIndex = -1;
+            stuckTicks = 0;
+            lastPos = null;
+            pack.stopMovement();
+            BotLog.path(pack.player(), "path_node_retry",
+                    "reason", reason,
+                    "retry", nodeRetry,
+                    "from_index", previous,
+                    "to_index", index);
+            return ActionResult.IN_PROGRESS;
+        }
+        return handleStuck(pack, reason);
     }
 
     private ActionResult handleStuck(ActionPack pack, String reason) {

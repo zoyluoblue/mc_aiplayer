@@ -31,6 +31,8 @@ public final class BrainCoordinator {
     private final Map<UUID, BotConversation> conversations = new ConcurrentHashMap<>();
     private final Map<UUID, Boolean> manualModes = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> nextGoalWakeTick = new ConcurrentHashMap<>();
+    // FLOW-2:大脑分配长任务后置 true;任务结束后 idle-watcher 据此自动唤醒大脑决定下一步(无需人催)。
+    private final Map<UUID, Boolean> awaitingTask = new ConcurrentHashMap<>();
     private ToolRegistry toolRegistry = new ToolRegistry();
     private ActionDispatcher dispatcher = new ActionDispatcher(toolRegistry);
     private AsyncDecisionExecutor executor;
@@ -112,6 +114,11 @@ public final class BrainCoordinator {
 
         ReplayRecorder.INSTANCE.onDecision(bot, conversation.lastPerceptionDigest, List.of(), response.content());
         conversation.busy = false;
+        // FLOW-2:大脑收尾时若仍有活跃任务(这轮是"分配长任务后停下"),标记等待任务完成;
+        // 任务结束后由 idle-watcher 自动唤醒大脑决定下一步,无需人催。
+        if (TaskManager.INSTANCE.getActive(bot).isPresent()) {
+            awaitingTask.put(bot.getUuid(), true);
+        }
         trimHistory(conversation);
         BotLog.comm(bot, "conversation_done", "finish_reason", response.finishReason());
     }
@@ -129,6 +136,7 @@ public final class BrainCoordinator {
     public void reset(AIPlayerEntity bot) {
         conversations.remove(bot.getUuid());
         manualModes.remove(bot.getUuid());
+        awaitingTask.remove(bot.getUuid());
         BotRuntimeOptions.INSTANCE.clear(bot);
         BotLog.comm(bot, "conversation_reset");
     }
@@ -153,7 +161,9 @@ public final class BrainCoordinator {
     public boolean maybeWakeForFailureOrGoal(AIPlayerEntity bot) {
         boolean hasFailure = TaskManager.INSTANCE.peekFailure(bot).isPresent();
         boolean hasGoal = BotMemoryStore.INSTANCE.of(bot.getUuid()).hasActiveGoal();
-        if (!hasFailure && !shouldWakeForGoal(bot, hasGoal)) {
+        // FLOW-2:idle-watcher 仅在无活跃任务时调用本方法,故 awaiting=true 即代表"大脑分配的任务已结束"。
+        boolean taskJustFinished = Boolean.TRUE.equals(awaitingTask.get(bot.getUuid()));
+        if (!hasFailure && !shouldWakeForGoal(bot, hasGoal) && !taskJustFinished) {
             return false;
         }
         ensureConfigured();
@@ -171,12 +181,29 @@ public final class BrainCoordinator {
         conversation.continuationTaskPolls = 0;
         conversation.maxTurnsHintInjected = false;
         if (hasFailure && maybeInjectFailure(bot, conversation)) {
+            awaitingTask.remove(bot.getUuid());
             trimHistory(conversation);
             submit(bot, conversation);
             return true;
         }
         if (hasGoal && maybeInjectGoalContinuation(bot, conversation, "当前没有正在执行的任务,但还有长期目标未完成。请继续推进当前步骤;需要时先分配一个高层任务。")) {
+            awaitingTask.remove(bot.getUuid());
             nextGoalWakeTick.put(bot.getUuid(), bot.getServer().getTicks() + 200);
+            trimHistory(conversation);
+            submit(bot, conversation);
+            return true;
+        }
+        // FLOW-2:大脑分配的任务已结束、且无失败无长期目标 → 自动唤醒大脑决定下一步,无需人催。
+        if (taskJustFinished) {
+            awaitingTask.remove(bot.getUuid());
+            TaskStatus status = TaskManager.INSTANCE.status(bot);
+            PerceptionSnapshot snapshot = PerceptionCollector.collect(bot);
+            conversation.lastPerceptionDigest = perceptionDigest(snapshot);
+            conversation.history.add(ChatMessage.user(
+                    "上一个任务已结束:" + status.name() + "(状态 " + status.state() + ":" + status.description()
+                    + ")。请判断:若玩家的整体要求已达成,用 say 向玩家中文汇报完成并停止;"
+                    + "否则继续执行下一步(分配下一个高层任务)。\n\nCurrent state:\n" + snapshot.toJson()));
+            BotLog.comm(bot, "task_done_wake", "name", status.name(), "state", String.valueOf(status.state()));
             trimHistory(conversation);
             submit(bot, conversation);
             return true;
@@ -398,13 +425,13 @@ public final class BrainCoordinator {
                 Rules:
                 1. Understand the human's intent first, then break it into tool calls.
                 2. Coordinates are integers (block positions).
-                3. Prefer high-level deterministic tasks for survival work. Use assign_task for mining/count-based gathering, and use craft, smelt, and eat for those actions. For ore blocks matching *_ore, use strip_mine with target_ores; mine is only for exposed nearby blocks.
+                3. Prefer high-level deterministic tasks for survival work. For ores or raw ore materials, use mine_ore; it automatically prepares the required pickaxe before mining. For an item/tool goal such as iron_pickaxe or iron_ingot, use achieve_goal. Do not manually decompose these into gather/craft/mine steps unless the goal tool fails.
                 4. Low-level tools such as move_to, mine_block, select_hotbar, and place_block are for one-off manual actions only. Do not use them for gathering materials or placing a crafting table for recipes unless the human explicitly asks for manual control.
                 5. High-level tasks such as craft, smelt, eat, or assign_task run over multiple ticks. Start only one such task at a time, then use get_task_status or the Current state task field on later turns until it is COMPLETED or FAILED before assigning the next task.
                 6. Always reply to humans in Simplified Chinese. Use the say tool to reply to humans. Keep replies short (one sentence).
                 7. For survival crafting, call plan_craft first when materials may be missing. Use missing[].source to choose assign_task mine, smelt, craft, or forage before retrying craft for the intended target. CraftTask expands recipe-table intermediates such as planks and sticks, so do not craft planks or sticks as standalone steps unless the human asks for those items.
                 8. For 3x3 recipes, do not manually select or place a crafting table. If a crafting table is nearby or in inventory, the craft task can use or place it.
-                9. To make an iron pickaxe from scratch, use this pattern as needed: assign_task mine oak_log count 3, craft crafting_table, craft wooden_pickaxe, assign_task mine stone count 11 or cobblestone count 11, craft stone_pickaxe, assign_task strip_mine target_ores minecraft:iron_ore length 64 and strip_mine target_ores minecraft:coal_ore length 32 if fuel is missing, craft furnace if no furnace is available, smelt raw_iron into iron_ingot count 3, then craft iron_pickaxe.
+                9. For "挖铁矿", call mine_ore with ore=minecraft:iron_ore. For "做一把铁镐" or "给我铁锭", call achieve_goal with item=minecraft:iron_pickaxe or minecraft:iron_ingot. The deterministic goal executor will plan gathering, crafting, mining, and smelting.
                 10. After each action, look at the next world state (passed in user messages) and decide the next step.
                 11. When the task is complete or impossible, say so and stop calling tools.
 

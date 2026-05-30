@@ -15,6 +15,8 @@ import io.github.zoyluo.aibot.coordination.Job;
 import io.github.zoyluo.aibot.coordination.TaskBoard;
 import io.github.zoyluo.aibot.craft.AcquisitionHints;
 import io.github.zoyluo.aibot.craft.CraftingHelper;
+import io.github.zoyluo.aibot.goal.Goal;
+import io.github.zoyluo.aibot.goal.GoalExecutor;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
 import io.github.zoyluo.aibot.memory.BotMemory;
 import io.github.zoyluo.aibot.memory.BotMemoryStore;
@@ -261,14 +263,24 @@ public final class ToolRegistry {
             return ok("assigned: " + task.name());
         });
 
-        register("mine_ore", "PREFERRED way to obtain ores (e.g. minecraft:iron_ore or raw item minecraft:raw_iron). Bot locates the nearest matching ore using full world data, digs a direct tunnel to it, mines the whole vein, then finds the next; it only digs a descending staircase to a deeper layer when no ore is nearby. Use this instead of strip_mine.", objectSchema()
+        register("mine_ore", "PREFERRED way to obtain ores (e.g. minecraft:iron_ore or raw item minecraft:raw_iron). Starts a deterministic goal plan: prepare the required pickaxe first, then mine the ore. Do not manually break this into gather/craft/mine steps.", objectSchema()
                 .property("ore", stringSchema("ore block id or raw item, e.g. minecraft:iron_ore or minecraft:raw_iron"))
                 .property("count", integerSchema("how many ore blocks to mine"))
                 .required("ore")
                 .build(), (bot, args) -> {
-            Task task = new OreSeekTask(oreTargetsFrom(requiredString(args, "ore")), optionalInt(args, "count", 1));
-            TaskManager.INSTANCE.assign(bot, task);
-            return ok("assigned: " + task.name());
+            boolean started = GoalExecutor.INSTANCE.submit(bot,
+                    new Goal.MineOre(oreTargetsFrom(requiredString(args, "ore")), optionalInt(args, "count", 1)));
+            return started ? ok("goal_assigned: mine_ore") : fail("goal_plan_failed");
+        });
+
+        register("achieve_goal", "Achieve an item/tool inventory goal with deterministic planning. Use this for requests like make an iron pickaxe or obtain 10 iron ingots; do not manually decompose the steps.", objectSchema()
+                .property("item", stringSchema("target item/tool id, for example minecraft:iron_pickaxe or minecraft:iron_ingot"))
+                .property("count", integerSchema("desired inventory count"))
+                .required("item")
+                .build(), (bot, args) -> {
+            boolean started = GoalExecutor.INSTANCE.submit(bot,
+                    new Goal.HaveItem(requiredItem(args, "item"), optionalInt(args, "count", 1)));
+            return started ? ok("goal_assigned: achieve_goal") : fail("goal_plan_failed");
         });
 
         register("find_container", "Find the nearest reachable inventory container such as a chest", objectSchema()
@@ -562,7 +574,14 @@ public final class ToolRegistry {
                 .required("task_type")
                 .required("params")
                 .build(), (bot, args) -> {
-            Task task = createTask(bot, requiredString(args, "task_type"), args.getAsJsonObject("params"));
+            String taskType = requiredString(args, "task_type");
+            JsonObject params = args.getAsJsonObject("params");
+            if ("mine_ore".equals(taskType)) {
+                boolean started = GoalExecutor.INSTANCE.submit(bot,
+                        new Goal.MineOre(oreTargetsFrom(requiredString(params, "ore")), optionalInt(params, "count", 1)));
+                return started ? ok("goal_assigned: mine_ore") : fail("goal_plan_failed");
+            }
+            Task task = createTask(bot, taskType, params);
             TaskManager.INSTANCE.assign(bot, task);
             return ok("assigned: " + task.name());
         });

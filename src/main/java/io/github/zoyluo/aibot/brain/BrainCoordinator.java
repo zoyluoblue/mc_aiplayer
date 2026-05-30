@@ -159,6 +159,12 @@ public final class BrainCoordinator {
     }
 
     public boolean maybeWakeForFailureOrGoal(AIPlayerEntity bot) {
+        // GOALFIX-GF1 P0-A:bot 有活跃的确定性目标计划时,自动唤醒(FLOW-2/失败注入)一律让位给
+        // GoalExecutor,避免两个编排器在步骤间隙抢 assign。awaitingTask 不清除:目标计划自身完成、
+        // 从 activePlans 移除后,下一次本方法才会据 awaitingTask 唤醒大脑判断整体意图是否达成。
+        if (io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.hasActivePlan(bot)) {
+            return false;
+        }
         boolean hasFailure = TaskManager.INSTANCE.peekFailure(bot).isPresent();
         boolean hasGoal = BotMemoryStore.INSTANCE.of(bot.getUuid()).hasActiveGoal();
         // FLOW-2:idle-watcher 仅在无活跃任务时调用本方法,故 awaiting=true 即代表"大脑分配的任务已结束"。

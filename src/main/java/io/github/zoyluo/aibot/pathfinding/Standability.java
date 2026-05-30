@@ -3,6 +3,7 @@ package io.github.zoyluo.aibot.pathfinding;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.fluid.FluidState;
+import net.minecraft.registry.tag.BlockTags;
 import net.minecraft.registry.tag.FluidTags;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
@@ -13,7 +14,8 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class Standability {
-    private static final Map<Long, Boolean> CACHE = new ConcurrentHashMap<>(4096);
+    private static final Map<CacheKey, Boolean> CACHE = new ConcurrentHashMap<>(4096);
+    private static volatile long version;
 
     private Standability() {
     }
@@ -22,8 +24,13 @@ public final class Standability {
         CACHE.clear();
     }
 
+    public static void invalidateAll() {
+        version++;
+        CACHE.clear();
+    }
+
     public static boolean isStandable(ServerWorld world, BlockPos pos) {
-        long key = pos.asLong();
+        CacheKey key = new CacheKey(world.getRegistryKey().getValue().toString(), version, pos);
         Boolean cached = CACHE.get(key);
         if (cached != null) {
             return cached;
@@ -107,6 +114,10 @@ public final class Standability {
         if (isDangerous(feet) || isDangerous(head) || isDangerous(below)) {
             return false;
         }
+        // NAV-11:梯子/藤蔓等可攀爬方块,站在其中即可,无需下方支撑。
+        if (feet.isIn(BlockTags.CLIMBABLE)) {
+            return true;
+        }
         if (below.isAir()) {
             return false;
         }
@@ -126,5 +137,11 @@ public final class Standability {
                 || state.isOf(Blocks.WITHER_ROSE)
                 || state.isOf(Blocks.POWDER_SNOW)
                 || state.isOf(Blocks.POINTED_DRIPSTONE);
+    }
+
+    private record CacheKey(String dimension, long version, BlockPos pos) {
+        private CacheKey {
+            pos = pos.toImmutable();
+        }
     }
 }

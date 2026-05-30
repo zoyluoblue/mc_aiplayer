@@ -9,7 +9,9 @@ import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.item.Item;
 import net.minecraft.registry.Registries;
+import net.minecraft.registry.tag.FluidTags;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Direction;
 
 import java.util.Set;
 
@@ -157,9 +159,25 @@ public final class MineTask extends AbstractTask {
             fail("need_better_tool:" + ToolTier.requiredPickaxeItemId(targetBlock));
             return;
         }
+        // GOALFIX-GF2:挖前危险闸——目标相邻有岩浆时不破块(破块会引出岩浆烧死自己),安全失败让上层另想办法。
+        if (lavaAdjacent(bot, targetPos)) {
+            BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.TASK, bot, "mine_hazard_skip",
+                    "pos", targetPos.getX() + "," + targetPos.getY() + "," + targetPos.getZ());
+            fail("mine_hazard_lava");
+            return;
+        }
         inventoryCountBeforeMining = HarvestCore.countInventoryItems(bot, targetDrops);
         pickupSweepAttempted = false;
         HarvestCore.startMining(bot, targetPos);
         phase = Phase.MINING;
+    }
+
+    private static boolean lavaAdjacent(AIPlayerEntity bot, BlockPos pos) {
+        for (Direction direction : Direction.values()) {
+            if (bot.getServerWorld().getFluidState(pos.offset(direction)).isIn(FluidTags.LAVA)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

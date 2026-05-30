@@ -5,9 +5,11 @@ import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.pathfinding.Standability;
 import net.minecraft.block.Block;
+import net.minecraft.block.Blocks;
 import net.minecraft.entity.ItemEntity;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
@@ -15,6 +17,7 @@ import net.minecraft.util.math.Direction;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 public final class HarvestCore {
     private HarvestCore() {
@@ -37,18 +40,26 @@ public final class HarvestCore {
     }
 
     public static Optional<ItemEntity> nearestDrop(AIPlayerEntity bot, Item item, double radius) {
+        return nearestDropAnyOf(bot, item == null ? null : Set.of(item), radius);
+    }
+
+    public static Optional<ItemEntity> nearestDropAnyOf(AIPlayerEntity bot, Set<Item> items, double radius) {
         return bot.getServerWorld()
                 .getEntitiesByClass(ItemEntity.class, bot.getBoundingBox().expand(radius),
-                        entity -> !entity.getStack().isEmpty() && (item == null || entity.getStack().isOf(item)))
+                        entity -> !entity.getStack().isEmpty() && matches(entity.getStack(), items))
                 .stream()
                 .min(Comparator.comparingDouble(entity -> entity.distanceTo(bot)));
     }
 
     public static boolean forcePickupNearby(AIPlayerEntity bot, Item item, double maxH, double maxV) {
+        return forcePickupNearbyAnyOf(bot, item == null ? null : Set.of(item), maxH, maxV);
+    }
+
+    public static boolean forcePickupNearbyAnyOf(AIPlayerEntity bot, Set<Item> items, double maxH, double maxV) {
         Box box = bot.getBoundingBox().expand(maxH, maxV, maxH);
         List<ItemEntity> drops = bot.getServerWorld().getEntitiesByClass(ItemEntity.class, box,
                 entity -> !entity.getStack().isEmpty()
-                        && (item == null || entity.getStack().isOf(item))
+                        && matches(entity.getStack(), items)
                         && canForcePickup(bot, entity, maxH, maxV));
         boolean picked = false;
         for (ItemEntity drop : drops) {
@@ -78,12 +89,21 @@ public final class HarvestCore {
         return forcePickupNearby(bot, item, pickup.forceRadiusH(), pickup.forceRadiusV());
     }
 
+    public static boolean forcePickupNearbyAnyOf(AIPlayerEntity bot, Set<Item> items) {
+        AIBotConfig.Pickup pickup = AIBotConfig.get().pickup();
+        return forcePickupNearbyAnyOf(bot, items, pickup.forceRadiusH(), pickup.forceRadiusV());
+    }
+
     public static void chaseDrop(AIPlayerEntity bot, Item item, double radius) {
-        if (forcePickupNearby(bot, item)) {
+        chaseDropAnyOf(bot, item == null ? null : Set.of(item), radius);
+    }
+
+    public static void chaseDropAnyOf(AIPlayerEntity bot, Set<Item> items, double radius) {
+        if (forcePickupNearbyAnyOf(bot, items)) {
             bot.getActionPack().stopMovement();
             return;
         }
-        nearestDrop(bot, item, radius).ifPresent(drop -> {
+        nearestDropAnyOf(bot, items, radius).ifPresent(drop -> {
             if (bot.distanceTo(drop) > 1.3F) {
                 if (bot.getActionPack().isPathExecutorIdle() && bot.getActionPack().isWalkToIdle()) {
                     ActionResult result = bot.getActionPack().startPathTo(pickupStandPos(bot, drop.getBlockPos()));
@@ -98,9 +118,13 @@ public final class HarvestCore {
     }
 
     public static int sweepPickup(AIPlayerEntity bot, Item item, double radius, int maxTargets) {
+        return sweepPickupAnyOf(bot, item == null ? null : Set.of(item), radius, maxTargets);
+    }
+
+    public static int sweepPickupAnyOf(AIPlayerEntity bot, Set<Item> items, double radius, int maxTargets) {
         int picked = 0;
         for (int i = 0; i < maxTargets; i++) {
-            if (!forcePickupNearby(bot, item)) {
+            if (!forcePickupNearbyAnyOf(bot, items)) {
                 break;
             }
             picked++;
@@ -108,7 +132,7 @@ public final class HarvestCore {
         if (picked > 0) {
             return picked;
         }
-        nearestDrop(bot, item, radius).ifPresent(drop -> {
+        nearestDropAnyOf(bot, items, radius).ifPresent(drop -> {
             if (bot.getActionPack().isPathExecutorIdle() && bot.getActionPack().isWalkToIdle()) {
                 ActionResult result = bot.getActionPack().startPathTo(pickupStandPos(bot, drop.getBlockPos()));
                 if (result.isFailed()) {
@@ -121,6 +145,10 @@ public final class HarvestCore {
 
     public static int sweepPickup(AIPlayerEntity bot, Item item, int maxTargets) {
         return sweepPickup(bot, item, AIBotConfig.get().pickup().sweepRadius(), maxTargets);
+    }
+
+    public static int sweepPickupAnyOf(AIPlayerEntity bot, Set<Item> items, int maxTargets) {
+        return sweepPickupAnyOf(bot, items, AIBotConfig.get().pickup().sweepRadius(), maxTargets);
     }
 
     public static int totalInventoryCount(AIPlayerEntity bot) {
@@ -136,6 +164,67 @@ public final class HarvestCore {
             }
         }
         return count;
+    }
+
+    public static int countInventoryItems(AIPlayerEntity bot, Set<Item> items) {
+        int count = 0;
+        for (ItemStack stack : bot.getInventory().main) {
+            if (!stack.isEmpty() && matches(stack, items)) {
+                count += stack.getCount();
+            }
+        }
+        for (ItemStack stack : bot.getInventory().offHand) {
+            if (!stack.isEmpty() && matches(stack, items)) {
+                count += stack.getCount();
+            }
+        }
+        return count;
+    }
+
+    public static Set<Item> expectedDropsFor(Set<Block> blocks) {
+        if (blocks == null || blocks.isEmpty()) {
+            return Set.of();
+        }
+        java.util.LinkedHashSet<Item> result = new java.util.LinkedHashSet<>();
+        for (Block block : blocks) {
+            result.addAll(expectedDropsFor(block));
+        }
+        return Set.copyOf(result);
+    }
+
+    public static Set<Item> expectedDropsFor(Block block) {
+        if (block == Blocks.STONE) {
+            return Set.of(Items.COBBLESTONE);
+        }
+        if (block == Blocks.DEEPSLATE) {
+            return Set.of(Items.COBBLED_DEEPSLATE);
+        }
+        if (block == Blocks.COAL_ORE || block == Blocks.DEEPSLATE_COAL_ORE) {
+            return Set.of(Items.COAL);
+        }
+        if (block == Blocks.IRON_ORE || block == Blocks.DEEPSLATE_IRON_ORE) {
+            return Set.of(Items.RAW_IRON);
+        }
+        if (block == Blocks.COPPER_ORE || block == Blocks.DEEPSLATE_COPPER_ORE) {
+            return Set.of(Items.RAW_COPPER);
+        }
+        if (block == Blocks.GOLD_ORE || block == Blocks.DEEPSLATE_GOLD_ORE) {
+            return Set.of(Items.RAW_GOLD);
+        }
+        if (block == Blocks.REDSTONE_ORE || block == Blocks.DEEPSLATE_REDSTONE_ORE) {
+            return Set.of(Items.REDSTONE);
+        }
+        if (block == Blocks.LAPIS_ORE || block == Blocks.DEEPSLATE_LAPIS_ORE) {
+            return Set.of(Items.LAPIS_LAZULI);
+        }
+        if (block == Blocks.DIAMOND_ORE || block == Blocks.DEEPSLATE_DIAMOND_ORE) {
+            return Set.of(Items.DIAMOND);
+        }
+        if (block == Blocks.EMERALD_ORE || block == Blocks.DEEPSLATE_EMERALD_ORE) {
+            return Set.of(Items.EMERALD);
+        }
+        Item item = block.asItem();
+        return item == Items.AIR ? Set.of() : Set.of(item);
     }
 
     public static boolean isInventoryFull(AIPlayerEntity bot) {
@@ -208,6 +297,13 @@ public final class HarvestCore {
         double dx = drop.getX() - bot.getX();
         double dz = drop.getZ() - bot.getZ();
         return dx * dx + dz * dz <= maxH * maxH && Math.abs(drop.getY() - bot.getY()) <= maxV;
+    }
+
+    private static boolean matches(ItemStack stack, Set<Item> items) {
+        if (items == null || items.isEmpty()) {
+            return true;
+        }
+        return items.contains(stack.getItem());
     }
 
     public record TargetChoice(BlockPos pos, BlockPos stand, boolean direct) {

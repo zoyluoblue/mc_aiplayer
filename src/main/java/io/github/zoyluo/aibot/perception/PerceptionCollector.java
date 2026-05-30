@@ -178,6 +178,9 @@ public final class PerceptionCollector {
         if (state.isIn(BlockTags.BEDS)) {
             addHighlight(highlights, "nearest_bed", id, pos, distance);
         }
+        if (state.isOf(Blocks.CRAFTING_TABLE)) {
+            addHighlight(highlights, "nearest_crafting_table", id, pos, distance);
+        }
     }
 
     private static void addHighlight(Map<String, List<PerceptionSnapshot.NearbyBlock>> highlights,
@@ -203,6 +206,7 @@ public final class PerceptionCollector {
                 blockHighlights.getOrDefault("nearest_furnace", List.of()),
                 blockHighlights.getOrDefault("nearest_chest", List.of()),
                 blockHighlights.getOrDefault("nearest_bed", List.of()),
+                blockHighlights.getOrDefault("nearest_crafting_table", List.of()),
                 hostiles);
     }
 

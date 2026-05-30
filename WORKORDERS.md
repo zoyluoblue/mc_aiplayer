@@ -229,3 +229,12 @@ Minecraft 1.21.3、Fabric Loader 0.18.4、Yarn 1.21.3+build.2、fabric-loom 1.16
   - **现象**:`no_block_found` 后 LLM 重试**同一个** `mine iron_ore` 共 4 次(count 1→4)才放弃。
   - **改**:(a) MineTask 目标是 `*_ore` 且扫不到 → reason 带建议,如 `no_exposed_ore:use_strip_mine`;(b) RL-1 同(任务+原因)重复 ≥2 次时,注入消息**明确要求换方法**(别再 `mine` 同一矿,改 `strip_mine`/下挖)。
   - **验收**:地表挖矿失败一次后,LLM 即改用 `strip_mine`,不再重复 `mine` 同一矿石。
+
+- [ ] **FIX-5(P0,采集无产出的真正主因)** AI 助手强制生存模式(不跟随召唤者 gamemode)
+  - **现象**:`gather/mine birch_log` → `mine_complete` 瞬间完成但 `pickup_timeout`(本会话 mine_complete=2 / pickup_collected=0 / give=0)。日志 `bot_spawned … mode='creative'`、`bots.json "gameMode":"creative"`,`mine_start`与`mine_complete`同秒(创造瞬破)。
+  - **根因**:`AIPlayerManager.spawn` 用 `executor.interactionManager.getGameMode()` 跟随召唤者;玩家在创造 → bot 创造。**创造模式破方块不掉落物品**,所以永远没东西可捡。
+  - **改**:
+    (a) `AIPlayerManager.spawn`:固定 `GameMode.SURVIVAL`(不再读 executor 的模式)。可加配置 `survival.forceSurvival`(默认 true)留开关。
+    (b) `respawnFromRecord` / 持久化:恢复时也强制 survival(忽略 `BotRecord` 里存的 creative);或持久化只存/恢复 survival。
+  - **验收**:玩家处于创造模式时 spawn Bob → Bob 仍是 survival;砍木正常掉落、`pickup_collected>0`、`gather/mine` 产物进背包。
+  - **注意(现有存档)**:当前 Bob 已被存成 creative —— 改完后需 `/aibot despawn Bob` 再 `spawn`(或删 `run/saves/*/aibot/bots.json`),让它以 survival 重新回来。

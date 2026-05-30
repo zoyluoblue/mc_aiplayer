@@ -3,6 +3,7 @@ package io.github.zoyluo.aibot.action;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.log.LogFields;
+import io.github.zoyluo.aibot.pathfinding.AStarPathfinder;
 import net.minecraft.item.BlockItem;
 import net.minecraft.item.ItemStack;
 import net.minecraft.util.Hand;
@@ -38,6 +39,7 @@ public final class BuildAction {
         if (result.isAccepted()) {
             player.swingHand(hand);
             player.updateLastActionTime();
+            AStarPathfinder.invalidateCache("block_place");
             BotLog.action(player, "place", "pos", LogFields.pos(against.offset(face)), "face", face, "item", item);
             return ActionResult.SUCCESS;
         }
@@ -88,6 +90,7 @@ public final class BuildAction {
         }
         player.swingHand(hand);
         player.updateLastActionTime();
+        AStarPathfinder.invalidateCache("block_place_fallback");
         BotLog.action(player, "place_fallback", "pos", LogFields.pos(pos), "item", item);
         return ActionResult.SUCCESS;
     }

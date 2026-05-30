@@ -8,8 +8,20 @@ public record ToolDefinition(
         String name,
         String description,
         JsonObject parametersSchema,
-        Handler handler
+        Handler handler,
+        Group group
 ) {
+    public ToolDefinition(String name, String description, JsonObject parametersSchema, Handler handler) {
+        this(name, description, parametersSchema, handler, Group.CORE);
+    }
+
+    public enum Group {
+        CORE,
+        MEMORY,
+        COORDINATION,
+        LOW_LEVEL
+    }
+
     @FunctionalInterface
     public interface Handler {
         ToolResult invoke(AIPlayerEntity bot, JsonObject args);

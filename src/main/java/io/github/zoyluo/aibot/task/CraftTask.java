@@ -6,6 +6,7 @@ import io.github.zoyluo.aibot.action.InventoryAction;
 import io.github.zoyluo.aibot.craft.CraftingHelper;
 import io.github.zoyluo.aibot.craft.RecipeRegistry;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
+import io.github.zoyluo.aibot.log.BotLog;
 import net.minecraft.block.Blocks;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
@@ -77,6 +78,12 @@ public final class CraftTask extends AbstractTask {
     }
 
     private void plan(AIPlayerEntity bot) {
+        // 幂等短路:工作台/熔炉这类功能方块,若附近已有(够得着)或背包已有,直接完成,不浪费材料重复制造。
+        if (utilityAlreadyAvailable(bot)) {
+            BotLog.action(bot, "craft_skipped_already_available", "item", Registries.ITEM.getId(target).toString());
+            complete();
+            return;
+        }
         plan = CraftingHelper.plan(bot, target, targetCount);
         if (!plan.success()) {
             fail("need: " + plan.missingDescription());
@@ -128,7 +135,11 @@ public final class CraftTask extends AbstractTask {
         }
         CraftingHelper.CraftStep step = plan.steps().get(nextStep);
         RecipeRegistry.Recipe recipe = step.recipe();
-        if (recipe.needsCraftingTable() && nearbyCraftingTable(bot) == null) {
+        // 工作台"持有即可":附近有工作台方块 或 背包里有工作台物品,都允许 3x3 合成(直接背包变换)。
+        // 避免"放下→走远→找不到→重造"的循环,也不在世界里留一地工作台。
+        if (recipe.needsCraftingTable()
+                && nearbyCraftingTable(bot) == null
+                && InventoryAction.findItem(bot, Items.CRAFTING_TABLE).isEmpty()) {
             phase = Phase.ENSURING_TABLE;
             return;
         }
@@ -197,5 +208,27 @@ public final class CraftTask extends AbstractTask {
                 .map(item -> Registries.ITEM.getId(item).toString())
                 .toList();
         return String.join("|", ids) + " x" + count;
+    }
+
+    /** 目标是工作台/熔炉时,附近已有(够得着)或背包已有则视为"已具备",无需重复制造。 */
+    private boolean utilityAlreadyAvailable(AIPlayerEntity bot) {
+        if (target == Items.CRAFTING_TABLE) {
+            return nearbyCraftingTable(bot) != null
+                    || InventoryAction.findItem(bot, Items.CRAFTING_TABLE).isPresent();
+        }
+        if (target == Items.FURNACE) {
+            return nearbyBlock(bot, Blocks.FURNACE) != null
+                    || InventoryAction.findItem(bot, Items.FURNACE).isPresent();
+        }
+        return false;
+    }
+
+    private static BlockPos nearbyBlock(AIPlayerEntity bot, net.minecraft.block.Block block) {
+        BlockPos origin = bot.getBlockPos();
+        return BlockPos.stream(origin.add(-8, -2, -8), origin.add(8, 3, 8))
+                .filter(pos -> bot.getServerWorld().getBlockState(pos).isOf(block))
+                .map(BlockPos::toImmutable)
+                .findFirst()
+                .orElse(null);
     }
 }

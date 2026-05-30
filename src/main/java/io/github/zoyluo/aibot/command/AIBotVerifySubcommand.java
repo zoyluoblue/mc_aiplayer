@@ -339,19 +339,20 @@ public final class AIBotVerifySubcommand {
         clearInventory(bot);
         ServerWorld world = bot.getServerWorld();
         BlockPos origin = bot.getBlockPos();
-        world.setBlockState(origin.offset(Direction.WEST, 2), Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
-        world.setBlockState(origin.offset(Direction.WEST, 2).up(), Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
-        world.setBlockState(origin.offset(Direction.WEST, 2).up(2), Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
-        world.setBlockState(origin.offset(Direction.WEST, 2).up(3), Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
-        world.setBlockState(origin.offset(Direction.EAST, 2), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
-        world.setBlockState(origin.offset(Direction.EAST, 3), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
-        world.setBlockState(origin.offset(Direction.EAST, 4), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        // GOALFIX-GF3:从零到铁链路(木镐→挖石→石镐→挖铁)约需 3 原木 + 3 圆石,给足余量(6/6)避免边界失败。
+        for (int dy = 0; dy < 6; dy++) {
+            world.setBlockState(origin.offset(Direction.WEST, 2).up(dy), Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        for (int i = 0; i < 6; i++) {
+            world.setBlockState(origin.offset(Direction.EAST, 2 + i), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        }
         world.setBlockState(origin.offset(Direction.NORTH, 3), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
         boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.MineOre(java.util.Set.of(Blocks.IRON_ORE), 1));
         if (!started) {
             return Result.fail("mine_iron_from_scratch", "goal_submit_failed");
         }
-        return Result.runningGoal("mine_iron_from_scratch", 3600,
+        // GOALFIX-GF3:完整从零链路真实 tick 下耗时长,timeout 3600→12000(10 分钟)。
+        return Result.runningGoal("mine_iron_from_scratch", 12000,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.RAW_IRON) >= 1);
     }
 

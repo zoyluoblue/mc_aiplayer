@@ -44,6 +44,7 @@ public record PerceptionSnapshot(
             List<NearbyBlock> nearest_furnace,
             List<NearbyBlock> nearest_chest,
             List<NearbyBlock> nearest_bed,
+            List<NearbyBlock> nearest_crafting_table,
             List<NearbyEntity> nearest_hostile
     ) {
     }

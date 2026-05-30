@@ -33,8 +33,10 @@ public final class AStarPathfinder {
     private final BlockPos start;
     private final BlockPos goal;
     private final NeighborEnumerator enumerator;
+    private final boolean canPillar;
     private final int maxNodes;
     private final long maxMillis;
+    private static volatile long cacheVersion;
 
     public AStarPathfinder(ServerWorld world, BlockPos start, BlockPos goal) {
         this(world, start, goal, DEFAULT_MAX_NODES, DEFAULT_MAX_MILLIS, false);
@@ -53,9 +55,19 @@ public final class AStarPathfinder {
         this.world = world;
         this.start = start.toImmutable();
         this.goal = goal.toImmutable();
+        this.canPillar = canPillar;
         this.enumerator = new NeighborEnumerator(canPillar);
         this.maxNodes = maxNodes;
         this.maxMillis = maxMillis;
+    }
+
+    public static void invalidateCache(String reason) {
+        synchronized (RESULT_CACHE) {
+            cacheVersion++;
+            RESULT_CACHE.clear();
+        }
+        Standability.invalidateAll();
+        BotLog.path(null, "findpath_cache_invalidated", "reason", reason, "version", cacheVersion);
     }
 
     public PathfindingResult findPath() {
@@ -70,7 +82,7 @@ public final class AStarPathfinder {
         if (effectiveGoal == null) {
             return done(PathfindingResult.failure(FailureReason.GOAL_NOT_STANDABLE, 0, elapsed(startTime)));
         }
-        CacheKey cacheKey = new CacheKey(world.getRegistryKey().getValue().toString(), effectiveStart, effectiveGoal, maxNodes, maxMillis);
+        CacheKey cacheKey = new CacheKey(world.getRegistryKey().getValue().toString(), effectiveStart, effectiveGoal, maxNodes, maxMillis, canPillar, cacheVersion);
         PathfindingResult cached = cached(cacheKey, startTime);
         if (cached != null) {
             return cached;
@@ -186,7 +198,7 @@ public final class AStarPathfinder {
         return System.currentTimeMillis() - startTime;
     }
 
-    private record CacheKey(String dimension, BlockPos start, BlockPos goal, int maxNodes, long maxMillis) {
+    private record CacheKey(String dimension, BlockPos start, BlockPos goal, int maxNodes, long maxMillis, boolean canPillar, long version) {
         private CacheKey {
             start = start.toImmutable();
             goal = goal.toImmutable();

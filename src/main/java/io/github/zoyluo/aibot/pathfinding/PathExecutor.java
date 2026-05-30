@@ -87,6 +87,10 @@ public final class PathExecutor {
         return totalTicks;
     }
 
+    public static boolean hasPlaceableBlock(AIPlayerEntity player) {
+        return findPlaceableBlock(player) >= 0;
+    }
+
     private ActionResult tickWalk(ActionPack pack, Node next) {
         if (arrivedAt(pack.player().getBlockPos(), next.pos())) {
             advance();
@@ -180,15 +184,18 @@ public final class PathExecutor {
                 continue;
             }
             var block = blockItem.getBlock();
-            // 只用不受重力、廉价的实心填充块(避免沙砾掉落、避免浪费贵重方块)
-            if (block == Blocks.COBBLESTONE || block == Blocks.DIRT || block == Blocks.STONE
-                    || block == Blocks.COBBLED_DEEPSLATE || block == Blocks.DEEPSLATE
-                    || block == Blocks.NETHERRACK || block == Blocks.ANDESITE
-                    || block == Blocks.DIORITE || block == Blocks.GRANITE) {
+            if (isPathFillerBlock(block)) {
                 return i;
             }
         }
         return -1;
+    }
+
+    private static boolean isPathFillerBlock(net.minecraft.block.Block block) {
+        return block == Blocks.COBBLESTONE || block == Blocks.DIRT || block == Blocks.STONE
+                || block == Blocks.COBBLED_DEEPSLATE || block == Blocks.DEEPSLATE
+                || block == Blocks.NETHERRACK || block == Blocks.ANDESITE
+                || block == Blocks.DIORITE || block == Blocks.GRANITE;
     }
 
     private ActionResult checkProgress(ActionPack pack, Node next) {
@@ -220,6 +227,7 @@ public final class PathExecutor {
         lastPos = null;
         activeWalkTargetIndex = -1;
         nodeRetry = 0;
+        replanTried = false;
     }
 
     private int chooseWalkTargetIndex(ActionPack pack) {
@@ -227,7 +235,7 @@ public final class PathExecutor {
         BlockPos from = pack.player().getBlockPos();
         int max = Math.min(path.size() - 1, index + AIBotConfig.get().nav().lookahead());
         for (int candidate = index + 1; candidate <= max; candidate++) {
-            if (!canStringPullTo(from, candidate)) {
+            if (!canStringPullTo(pack, from, candidate)) {
                 break;
             }
             best = candidate;
@@ -235,7 +243,7 @@ public final class PathExecutor {
         return best;
     }
 
-    private boolean canStringPullTo(BlockPos from, int candidateIndex) {
+    private boolean canStringPullTo(ActionPack pack, BlockPos from, int candidateIndex) {
         for (int i = index; i <= candidateIndex; i++) {
             MoveType type = path.get(i).moveType();
             if (type != MoveType.WALK && type != MoveType.DIAGONAL && type != MoveType.JUMP_UP) {
@@ -244,7 +252,41 @@ public final class PathExecutor {
         }
         BlockPos target = path.get(candidateIndex).pos();
         int dy = target.getY() - from.getY();
-        return dy >= -1 && dy <= 1;
+        if (dy < -1 || dy > 1) {
+            return false;
+        }
+        return lineClearForStringPull(pack.player().getServerWorld(), from, target);
+    }
+
+    private static boolean lineClearForStringPull(net.minecraft.server.world.ServerWorld world, BlockPos from, BlockPos target) {
+        int dx = target.getX() - from.getX();
+        int dy = target.getY() - from.getY();
+        int dz = target.getZ() - from.getZ();
+        int samples = Math.max(1, Math.max(Math.abs(dx), Math.abs(dz)) * 2);
+        for (int i = 1; i <= samples; i++) {
+            double t = (double) i / samples;
+            BlockPos sample = BlockPos.ofFloored(
+                    from.getX() + 0.5D + dx * t,
+                    from.getY() + dy * t,
+                    from.getZ() + 0.5D + dz * t);
+            if (!passableColumn(world, sample)) {
+                return false;
+            }
+            if (!hasSupport(world, sample) && !sample.equals(from)) {
+                return false;
+            }
+        }
+        return Standability.isStandable(world, target);
+    }
+
+    private static boolean passableColumn(net.minecraft.server.world.ServerWorld world, BlockPos feet) {
+        return world.getBlockState(feet).getCollisionShape(world, feet).isEmpty()
+                && world.getBlockState(feet.up()).getCollisionShape(world, feet.up()).isEmpty();
+    }
+
+    private static boolean hasSupport(net.minecraft.server.world.ServerWorld world, BlockPos feet) {
+        BlockPos below = feet.down();
+        return !world.getBlockState(below).getCollisionShape(world, below).isEmpty();
     }
 
     private static boolean arrivedAt(BlockPos current, BlockPos target) {
@@ -287,7 +329,8 @@ public final class PathExecutor {
                 cleanup(pack);
                 return ActionResult.failed(reason + "; replan_failed: NO_START");
             }
-            AStarPathfinder finder = new AStarPathfinder(pack.player().getServerWorld(), pack.player().getBlockPos(), originalGoal);
+            boolean canPillar = hasPlaceableBlock(pack.player());
+            AStarPathfinder finder = new AStarPathfinder(pack.player().getServerWorld(), pack.player().getBlockPos(), originalGoal, canPillar);
             PathfindingResult fresh = finder.findPath();
             if (fresh.success()) {
                 BotLog.path(pack.player(), "path_replan", "at_node", reason, "new_path_size", fresh.path().size());
@@ -298,6 +341,7 @@ public final class PathExecutor {
                 digWalking = false;
                 stuckTicks = 0;
                 lastPos = null;
+                replanTried = false;
                 return ActionResult.IN_PROGRESS;
             }
             reason = reason + "; replan_failed: " + fresh.reason();

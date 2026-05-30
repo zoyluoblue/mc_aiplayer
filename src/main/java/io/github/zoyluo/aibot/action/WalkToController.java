@@ -74,12 +74,13 @@ public final class WalkToController {
         }
         lastPos = current;
 
-        if (hardStuckTicks > nav.hardLimit()) {
+        boolean sidling = noProgressTicks >= nav.sidleAfter();
+        if (hardStuckTicks > nav.hardLimit() && !sidling) {
             pack.stopMovement();
             logStuck(pack, "hard", current, move, world);
             return ActionResult.failed("stuck_hard");
         }
-        if (noProgressTicks >= nav.sidleAfter()) {
+        if (sidling) {
             sidleTicks++;
         }
         if (sidleTicks > nav.sidleLimit()) {

@@ -4,6 +4,7 @@ import io.github.zoyluo.aibot.action.HarvestCore;
 import io.github.zoyluo.aibot.action.InventoryAction;
 import io.github.zoyluo.aibot.craft.RecipeRegistry;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
+import io.github.zoyluo.aibot.log.BotLog;
 import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
 import net.minecraft.item.BlockItem;
@@ -17,6 +18,11 @@ import java.util.Set;
 
 public final class GatherQuotaTask extends AbstractTask {
     private static final int SEARCH_RADIUS = 16;
+    // F1:近处(16格)找不到资源时自动扩大半径走远找(32→48),而不是立刻失败交还大脑乱试。
+    private static final int MAX_SEARCH_RADIUS = 48;
+    private static final int SEARCH_DOWN = 6;
+    private static final int SEARCH_UP = 12;
+    private static final int LARGE_SCAN_THROTTLE_TICKS = 10; // 大半径扫描限频,护 TPS
 
     private enum Phase {
         SURVEY,
@@ -39,6 +45,8 @@ public final class GatherQuotaTask extends AbstractTask {
     private int pickupTicks;
     private boolean pickupSweepAttempted;
     private StockpileTask stockpileTask;
+    private int searchRadius = SEARCH_RADIUS;
+    private int lastScanTick = -100;
 
     public GatherQuotaTask(Item targetItem, int targetCount) {
         this.targetItem = targetItem;
@@ -98,8 +106,22 @@ public final class GatherQuotaTask extends AbstractTask {
             phase = Phase.DEPOSIT;
             return;
         }
-        HarvestCore.TargetChoice choice = HarvestCore.nearestReachableBlock(bot, harvestBlocks, SEARCH_RADIUS, 4, 8);
+        // F1:大半径扫描限频,避免每 tick 扫 48 格立方体拖 TPS。
+        int now = bot.getServer().getTicks();
+        if (searchRadius > SEARCH_RADIUS && now - lastScanTick < LARGE_SCAN_THROTTLE_TICKS) {
+            return;
+        }
+        lastScanTick = now;
+        HarvestCore.TargetChoice choice = HarvestCore.nearestReachableBlock(bot, harvestBlocks, searchRadius, SEARCH_DOWN, SEARCH_UP);
         if (choice == null) {
+            // F1:近处没有 → 自动扩大半径走远找,而不是立刻失败交还大脑乱试/空手挖/求助。
+            if (searchRadius < MAX_SEARCH_RADIUS) {
+                searchRadius = Math.min(MAX_SEARCH_RADIUS, searchRadius * 2);
+                BotLog.action(bot, "gather_expand_search",
+                        "radius", searchRadius,
+                        "item", Registries.ITEM.getId(targetItem).toString());
+                return;
+            }
             fail("no_resource_nearby");
             return;
         }

@@ -175,11 +175,10 @@ public final class GoalExecutor {
     private static String humanGoalFailure(String reason) {
         String r = reason == null ? "" : reason;
         if (r.contains("no_resource_nearby") || r.contains("no_reachable") || r.contains("no_ore_found")) {
-            return "我在当前位置找不到所需的基础资源(树木/石头/矿石),无法从零开始。"
-                    + "请把我带到资源附近,或直接给我木头/镐;我不会乱走探索以免走进水里或悬崖遇险。";
+            return "我在较大范围内都没找到可用的树木/石头/矿石,暂时无法继续。我会待在原地,不乱走也不空手挖。";
         }
-        if (r.startsWith("need_better_tool")) {
-            return "我缺少合适的工具继续挖掘(" + r + ")。请帮我准备工具,或换一个目标。";
+        if (r.startsWith("need_better_tool") || r.startsWith("need_pickaxe")) {
+            return "我还缺合适的镐,正在自动准备;若准备不出来我会停下,不会空手硬挖。";
         }
         return "目标失败:" + (r.isBlank() ? "步骤失败" : r);
     }

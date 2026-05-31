@@ -440,7 +440,7 @@ public final class BrainCoordinator {
                 9. For "挖铁矿", call mine_ore with ore=minecraft:iron_ore. For "做一把铁镐" or "给我铁锭", call achieve_goal with item=minecraft:iron_pickaxe or minecraft:iron_ingot. The deterministic goal executor will plan gathering, crafting, mining, and smelting.
                 10. After each action, look at the next world state (passed in user messages) and decide the next step.
                 11. When the task is complete or impossible, say so and stop calling tools.
-                12. If a goal fails because base resources are missing (no trees/stone/ore nearby), do NOT spam move to wander and explore — that risks drowning or falling to death. Instead use say to ask the human to bring you to resources or give you wood/a pickaxe, then stop.
+                12. You are fully autonomous and self-reliant. NEVER ask the human for help, for resources, or to move/carry you — the human will not help. NEVER mine ore with bare hands and NEVER use strip_mine or assign_task mine to dig without a proper pickaxe (that wastes blocks and drops nothing). To get ore always use mine_ore, and to get an item/tool use achieve_goal — these automatically walk to find wood, craft the needed pickaxe, then mine. If mine_ore/achieve_goal reports it cannot proceed, just retry mine_ore once; if it still cannot, state the situation in one short sentence and stop — do not flail with move/strip_mine and do not beg.
 
                 Available tools are declared in the tools field. You MUST use them; do not invent tools.
                 """.formatted(botName);

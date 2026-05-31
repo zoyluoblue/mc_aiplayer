@@ -5,6 +5,7 @@ import io.github.zoyluo.aibot.brain.BotReporter;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.task.CraftTask;
+import io.github.zoyluo.aibot.task.DigDownTask;
 import io.github.zoyluo.aibot.task.GatherQuotaTask;
 import io.github.zoyluo.aibot.task.MineTask;
 import io.github.zoyluo.aibot.task.MoveTask;
@@ -162,9 +163,9 @@ public final class GoalExecutor {
     private static Optional<Task> stepToTask(AIPlayerEntity bot, GoalStep step) {
         return switch (step.kind()) {
             case GATHER -> Optional.of(new GatherQuotaTask(step.item(), step.count()));
-            // MINE-DIG:MINE 步走定向挖掘器(OreSeekTask 定向模式),能往下挖到埋藏的石层;
-            // MineTask 只能挖裸露方块,地表 bot 对埋在草皮下的石头会 no_reachable_target_block_in_range。
-            case MINE -> Optional.of(OreSeekTask.digBlocks(java.util.Set.of(step.block()), step.count()));
+            // DIGDOWN(实测#8):MINE 步改用 DigDownTask——站着就近垂直下挖,不定位/不寻路,
+            // 永不"够不到/走不过去"空转。取代旧的 OreSeekTask.digBlocks(它会锁定垂直够不到的石头 stuck)。
+            case MINE -> Optional.of(new DigDownTask(step.block(), step.count()));
             case MINE_ORE -> Optional.of(new OreSeekTask(step.ores(), step.count()));
             case CRAFT -> Optional.of(new CraftTask(step.item(), step.count()));
             case SMELT -> Optional.of(new SmeltTask(step.input(), step.output(), step.count()));

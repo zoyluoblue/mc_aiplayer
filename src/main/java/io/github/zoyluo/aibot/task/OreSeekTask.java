@@ -49,7 +49,7 @@ public final class OreSeekTask extends AbstractTask {
     private static final int VERTICAL_SCAN = 8;
     private static final int VEIN_CAP = 64;
     private static final double REACH_SQUARED = 20.25D; // 4.5^2
-    private static final int APPROACH_TIMEOUT_TICKS = 300;
+    private static final int APPROACH_TIMEOUT_TICKS = 600; // MINE-DIG fix:挖斜通道接近被埋矿需要时间,15s→30s
     private static final int DESCEND_STEPS = 4;
     private static final double TOOL_DURABILITY_FLOOR = 0.10D;
     private static final int FREE_SLOTS_RETURN = 2;
@@ -266,6 +266,11 @@ public final class OreSeekTask extends AbstractTask {
     // 定向走廊:朝 targetOre 方向逐格挖 2 高隧道推进(A* 到不了矿时的兜底)
     private void digCorridorStep(AIPlayerEntity bot) {
         ServerWorld world = bot.getServerWorld();
+        // MINE-DIG fix:防坠落闸——bot 悬空/坠落时 feet 坐标飘忽,据此算方向会把通道挖偏。
+        // 等落地站稳再挖下一格,保证定向通道一格一格成形。
+        if (!bot.isOnGround()) {
+            return;
+        }
         BlockPos feet = bot.getBlockPos();
         BlockPos step = stepToward(feet, targetOre);
         if (step == null || step.equals(feet)) {
@@ -536,18 +541,26 @@ public final class OreSeekTask extends AbstractTask {
     }
 
     // 朝 target 的下一格(优先竖直分量,再较大的水平分量;避免对角穿墙角)
+    // MINE-DIG fix:稳定阶梯式逼近。目标在下方时走"前方下台阶"(水平+down),而不是垂直挖脚下——
+    // 后者会让 bot 自由坠落、feet 漂移、通道挖偏(实测一路掉到 Y12 还够不到 dist=8 的铁矿)。
     private static BlockPos stepToward(BlockPos from, BlockPos target) {
-        int dy = Integer.compare(target.getY(), from.getY());
-        if (dy < 0) {
-            return from.down();
-        }
         int dx = target.getX() - from.getX();
         int dz = target.getZ() - from.getZ();
+        int dy = target.getY() - from.getY();
+        Direction horiz = null;
         if (Math.abs(dx) >= Math.abs(dz) && dx != 0) {
-            return from.offset(dx > 0 ? Direction.EAST : Direction.WEST);
+            horiz = dx > 0 ? Direction.EAST : Direction.WEST;
+        } else if (dz != 0) {
+            horiz = dz > 0 ? Direction.SOUTH : Direction.NORTH;
         }
-        if (dz != 0) {
-            return from.offset(dz > 0 ? Direction.SOUTH : Direction.NORTH);
+        if (horiz != null) {
+            BlockPos ahead = from.offset(horiz);
+            // 目标更低 → 下台阶(前方再低一格),bot 走下去而非坠落;否则平推。
+            return dy < 0 ? ahead.down() : ahead;
+        }
+        // 水平已对齐,只剩纯垂直分量。
+        if (dy < 0) {
+            return from.down();
         }
         if (dy > 0) {
             return from.up();

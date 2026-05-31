@@ -75,6 +75,7 @@ public final class AIBotVerifySubcommand {
             "pickup_blocked",
             "mine_to_iron",
             "mine_iron_from_scratch",
+            "mine_buried_iron",
             "nav_descend");
     private static final Map<UUID, VerifyRun> RUNS = new ConcurrentHashMap<>();
 
@@ -168,6 +169,7 @@ public final class AIBotVerifySubcommand {
             case "pickup_blocked" -> verifyPickupBlocked(bot);
             case "mine_to_iron" -> assignMineToIron(bot);
             case "mine_iron_from_scratch" -> assignMineIronFromScratch(bot);
+            case "mine_buried_iron" -> assignMineBuriedIron(bot);
             case "nav_descend" -> assignNavDescend(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
@@ -353,6 +355,34 @@ public final class AIBotVerifySubcommand {
         }
         // GOALFIX-GF3:完整从零链路真实 tick 下耗时长,timeout 3600→12000(10 分钟)。
         return Result.runningGoal("mine_iron_from_scratch", 12000,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.RAW_IRON) >= 1);
+    }
+
+    /**
+     * REGRESSION:隔离"接近被埋矿"的定向通道逻辑(bbf8364 阶梯下降/防坠落)。给钻石镐排除工具/合成变量,
+     * 把铁矿用 3 格石头墙封死(走路够不到,必须挖通道),断言能挖到 raw_iron 且不死。
+     * 这条专测 OreSeek 的 APPROACH→digCorridorStep→MINE_ORE,不走 LLM,确定性可复现。
+     */
+    private static Result assignMineBuriedIron(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        InventoryAction.giveItem(bot, new ItemStack(Items.DIAMOND_PICKAXE, 1));
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        // 北向 +3..+6 砌实心石墙(2 高)+ 铺底,bot 走到 +2 后必须挖通 3 格石头才够到 +6 的铁矿。
+        for (int d = 3; d <= 6; d++) {
+            BlockPos col = origin.offset(Direction.NORTH, d);
+            world.setBlockState(col, Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+            world.setBlockState(col.up(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+            world.setBlockState(col.down(), Blocks.COBBLESTONE.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        BlockPos ore = origin.offset(Direction.NORTH, 6);
+        world.setBlockState(ore, Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.MineOre(java.util.Set.of(Blocks.IRON_ORE), 1));
+        if (!started) {
+            return Result.fail("mine_buried_iron", "goal_submit_failed");
+        }
+        return Result.runningGoal("mine_buried_iron", 2400,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.RAW_IRON) >= 1);
     }
 

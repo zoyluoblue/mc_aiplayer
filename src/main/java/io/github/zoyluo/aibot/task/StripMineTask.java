@@ -177,6 +177,13 @@ public final class StripMineTask extends AbstractTask {
             fail("strip_mine_timeout");
             return;
         }
+        // F2:工具前置闸——完全没镐时禁止空手刷坑道(避免"不做工具直接手挖")。
+        // 引导改用 mine_ore(确定性目标会自动备镐再挖),全程自力更生不求助。
+        if (ToolTier.bestPickaxeTier(bot) <= ToolTier.NONE) {
+            BotLog.action(bot, "strip_mine_tool_gate", "result", "fail", "reason", "no_pickaxe");
+            fail("need_pickaxe:use mine_ore to auto-prepare a pickaxe first");
+            return;
+        }
         switch (phase) {
             case PREP -> prep(bot);
             case TUNNEL -> tunnel(bot);

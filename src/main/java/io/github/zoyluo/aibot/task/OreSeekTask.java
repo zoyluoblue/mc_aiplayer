@@ -72,6 +72,9 @@ public final class OreSeekTask extends AbstractTask {
     private boolean miningStarted;
     private boolean toolGateChecked;
     private int invBeforeMining;
+    // MINE-DIG fix:开工时背包里目标掉落物的固定基线。collected 用"当前背包 - 基线"的绝对增量计,
+    // 避免每挖一块就重设基线导致掉落物飞行延迟把 gained 永远算成 0(定向挖石死循环的根因)。
+    private int invBaseline;
     private int collected;
     private int veinPickupTicks;
 
@@ -133,6 +136,7 @@ public final class OreSeekTask extends AbstractTask {
         phase = Phase.SCAN;
         entryPos = bot.getBlockPos().toImmutable();
         toolGateChecked = false;
+        invBaseline = HarvestCore.countInventoryItems(bot, targetDrops);
     }
 
     @Override
@@ -365,11 +369,14 @@ public final class OreSeekTask extends AbstractTask {
             if (currentVeinBlock == null) {
                 // 矿脉挖完:结算拾取增量
                 HarvestCore.sweepPickupAnyOf(bot, targetDrops, 12);
-                int gained = Math.max(0, HarvestCore.countInventoryItems(bot, targetDrops) - invBeforeMining);
-                if (gained <= 0 && veinPickupTicks-- > 0 && HarvestCore.nearestDropAnyOf(bot, targetDrops, 6.0D).isPresent()) {
+                // MINE-DIG fix:绝对增量结算(当前背包 - 开工基线)。刚挖的掉落物可能还在飞,
+                // total 暂时不增→留在原地等它落袋再结算,不会像旧的每轮基线那样把 gained 永远算成 0。
+                int total = Math.max(0, HarvestCore.countInventoryItems(bot, targetDrops) - invBaseline);
+                if (total <= collected && veinPickupTicks-- > 0 && HarvestCore.nearestDropAnyOf(bot, targetDrops, 6.0D).isPresent()) {
                     return;
                 }
-                collected += gained;
+                int gained = Math.max(0, total - collected);
+                collected = Math.max(collected, total);
                 targetOre = null;
                 BotLog.action(bot, "oreseek_collected", "gained", gained, "total", collected + "/" + targetCount);
                 phase = Phase.SCAN;

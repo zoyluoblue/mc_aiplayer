@@ -160,7 +160,14 @@ public final class GoalPlanner {
                 consume(ingredient, need);
             }
             counts.merge(item, recipe.outputCount() * crafts, Integer::sum);
-            addStep(GoalStep.craft(item, recipe.outputCount() * crafts));
+            // Fix C:中间体木板不下发独立 CRAFT 步——木板配方是树种专属(oak_planks←oak_log),
+            // 但下游 stick/crafting_table/工具配方都接受任意 planks 家族,其 CraftTask 会按背包里实际
+            // 采到的原木种类(可能是桦木/云杉…)自动展开木板。若仍下发 "CRAFT oak_planks" 步,在只有
+            // 桦木的生物群系会失败。仅当木板本身是顶层目标(depth==0,如 achieve_goal planks)才保留,
+            // 否则该目标会没有任何产出步骤。原木的 GATHER 步仍照常下发(在 acquireBaseItem)。
+            if (!(depth > 0 && RecipeRegistry.PLANKS.contains(item))) {
+                addStep(GoalStep.craft(item, recipe.outputCount() * crafts));
+            }
             return true;
         }
 

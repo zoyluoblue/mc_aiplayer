@@ -234,13 +234,14 @@ public final class DangerWatcher {
     }
 
     private static boolean shouldPauseForThreat(Task active, Threat threat, Task nextTask) {
+        // 已在战斗/逃跑 → 不二次暂停(让其自行重定向)。
         if (active instanceof CombatTask || active instanceof EvadeTask) {
             return false;
         }
-        if (threat.type() == Threat.Type.LOW_HP) {
-            return false;
-        }
-        return !(nextTask instanceof CombatTask);
+        // FREEZE fix:其它进行中的任务(挖矿/采集/合成…)遇任何威胁一律**暂停保留**,打完/逃完再 resume,
+        // 而不是被后续 assign 直接 abort 销毁。旧逻辑对"敌对→战斗"和 LOW_HP 都返回 false=不暂停=销毁当前任务,
+        // 导致 GoalExecutor 把它判为 foreign 而整体放弃目标(实测刷怪时挖矿目标被反复放弃、空转发呆)。
+        return true;
     }
 
     private boolean canAssignThreatTask(MinecraftServer server, AIPlayerEntity bot, Threat threat) {

@@ -34,6 +34,18 @@ public final class HarvestCore {
                 .orElse(null);
     }
 
+    // MINE-DIG/Fix C:在一组候选方块里找最近可达的(如"任意原木"),供 GatherQuotaTask 跨树种采集。
+    public static TargetChoice nearestReachableBlock(AIPlayerEntity bot, Set<Block> targetBlocks, int horizontalRadius, int down, int up) {
+        BlockPos origin = bot.getBlockPos();
+        return BlockPos.stream(origin.add(-horizontalRadius, -down, -horizontalRadius), origin.add(horizontalRadius, up, horizontalRadius))
+                .filter(pos -> targetBlocks.contains(bot.getServerWorld().getBlockState(pos).getBlock()))
+                .map(BlockPos::toImmutable)
+                .map(pos -> targetChoice(bot, pos))
+                .filter(choice -> choice != null)
+                .min(Comparator.comparingDouble(choice -> choice.pos().getSquaredDistance(origin)))
+                .orElse(null);
+    }
+
     public static void startMining(AIPlayerEntity bot, BlockPos targetPos) {
         ToolSelector.equipBestTool(bot, bot.getServerWorld().getBlockState(targetPos));
         MiningAction.startMining(bot, targetPos, Direction.getFacing(bot.getEyePos().subtract(targetPos.toCenterPos())));

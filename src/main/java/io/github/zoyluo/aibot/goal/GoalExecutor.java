@@ -66,9 +66,14 @@ public final class GoalExecutor {
         }
         Optional<Task> active = TaskManager.INSTANCE.getActive(bot);
         if (active.isPresent()) {
-            // GOALFIX-GF1 P0-A:活跃任务不是本执行器派发的实例 → 说明被玩家显式指令打断,
-            // 放弃当前目标计划并让位(返回 false,后续 IdleCoordinator 看到 active 占用会自行早退)。
             if (plan.currentTask != null && active.get() != plan.currentTask) {
+                // FREEZE fix:有外来活跃任务时,先看我们的 step 是否被暂存进 paused 池。
+                // 生存任务(战斗/逃跑/进食)抢占会把当前 step pauseFor 进 paused 池——这是临时抢占,
+                // 打完会 resume,绝不能放弃整个目标(实测:刷怪→combat→goal_abandoned×12→从零重规划空转)。
+                if (TaskManager.INSTANCE.hasPaused(bot)) {
+                    return true;
+                }
+                // step 既不活跃也不在暂停池 = 被玩家显式指令真正替换 → 放弃目标让位。
                 BotLog.task(bot, "goal_abandoned", "goal", plan.goal, "reason", "foreign_task_assigned");
                 activePlans.remove(bot.getUuid());
                 return false;

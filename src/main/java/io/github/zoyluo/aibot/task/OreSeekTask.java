@@ -53,6 +53,9 @@ public final class OreSeekTask extends AbstractTask {
     private static final int DESCEND_STEPS = 4;
     private static final double TOOL_DURABILITY_FLOOR = 0.10D;
     private static final int FREE_SLOTS_RETURN = 2;
+    // FREEZE fix:无进展看门狗——超过此 tick 数(20s)既没采到东西也没真正破块,就判定卡死并失败,
+    // 把"发呆几小时"转成干净失败让 GoalExecutor 接手,绝不再无限空转。
+    private static final int NO_PROGRESS_LIMIT = 400;
 
     private final Set<Block> targetOres;
     private final Set<Item> targetDrops;
@@ -77,6 +80,9 @@ public final class OreSeekTask extends AbstractTask {
     private int invBaseline;
     private int collected;
     private int veinPickupTicks;
+    // FREEZE fix:最近一次"取得进展"(采到东西 或 真正破掉一块)的 elapsed;用于无进展看门狗。
+    private int lastProgressTick;
+    private boolean minedAnyBlock;
 
     private final Deque<BlockPos> veinQueue = new ArrayDeque<>();
     private BlockPos currentVeinBlock;
@@ -137,12 +143,20 @@ public final class OreSeekTask extends AbstractTask {
         entryPos = bot.getBlockPos().toImmutable();
         toolGateChecked = false;
         invBaseline = HarvestCore.countInventoryItems(bot, targetDrops);
+        lastProgressTick = 0;
     }
 
     @Override
     protected void onTick(AIPlayerEntity bot) {
         if (elapsed > 12000) {
             fail("oreseek_timeout collected=" + collected);
+            return;
+        }
+        // FREEZE fix:无进展看门狗。RETURN/DONE 是收尾阶段不算卡死;其余阶段超时无进展即失败,
+        // 避免 SCAN↔APPROACH 找到"幻影方块"却永远不挖的死循环把 bot 冻住几小时。
+        if (phase != Phase.RETURN && phase != Phase.DONE
+                && elapsed - lastProgressTick > NO_PROGRESS_LIMIT) {
+            fail("oreseek_no_progress collected=" + collected + " phase=" + phase);
             return;
         }
         switch (phase) {
@@ -299,6 +313,8 @@ public final class OreSeekTask extends AbstractTask {
             if (bot.getActionPack().isMiningIdle() && canReach(bot, toMine)) {
                 ToolSelector.equipBestTool(bot, world.getBlockState(toMine));
                 MiningAction.startMining(bot, toMine, Direction.getFacing(bot.getEyePos().subtract(toMine.toCenterPos())));
+                minedAnyBlock = true;
+                lastProgressTick = elapsed; // FREEZE fix:挖通道也算进展,正常掘进时看门狗不误杀
             } else if (!canReach(bot, toMine)) {
                 bot.getActionPack().startWalkTo(step.toCenterPos());
             }
@@ -311,11 +327,23 @@ public final class OreSeekTask extends AbstractTask {
     // ───────────── MINE_ORE → MINE_VEIN ─────────────
     private void mineOre(AIPlayerEntity bot) {
         ServerWorld world = bot.getServerWorld();
-        if (targetOre == null || world.getBlockState(targetOre).isAir()) {
-            // 已挖掉 → 取整条矿脉
-            collectVeinFrom(bot, targetOre);
-            veinPickupTicks = 100;
-            phase = Phase.MINE_VEIN;
+        if (targetOre == null) {
+            phase = Phase.SCAN;
+            return;
+        }
+        if (world.getBlockState(targetOre).isAir()) {
+            // FREEZE fix:区分"我真的把它挖掉了" vs "幻影"(SCAN 把它当目标块,但进 MINE_ORE 时已是空气,
+            // 且我们从没对它开过挖)。前者→正常去取脉/结算;后者→必须加入 ignored 不再重复锁定,
+            // 否则 SCAN 会一直重找同一片空气格,导致永不破块的死循环(实测发呆几小时的真凶)。
+            if (miningStarted) {
+                collectVeinFrom(bot, targetOre);
+                veinPickupTicks = 100;
+                phase = Phase.MINE_VEIN;
+            } else {
+                ignored.add(targetOre);
+                targetOre = null;
+                phase = Phase.SCAN;
+            }
             return;
         }
         if (OreScan.adjacentHazard(world, targetOre)) {
@@ -343,6 +371,12 @@ public final class OreSeekTask extends AbstractTask {
                 ignored.add(targetOre);
                 targetOre = null;
                 phase = Phase.SCAN;
+            } else {
+                // FREEZE fix:真正对目标块开挖了 → 标记,使上面的 air 分支识别为"已挖掉"而非幻影,
+                // 并刷新无进展看门狗。
+                miningStarted = true;
+                minedAnyBlock = true;
+                lastProgressTick = elapsed;
             }
         }
     }
@@ -382,6 +416,9 @@ public final class OreSeekTask extends AbstractTask {
                 }
                 int gained = Math.max(0, total - collected);
                 collected = Math.max(collected, total);
+                if (gained > 0) {
+                    lastProgressTick = elapsed; // FREEZE fix:真采到东西=进展,刷新看门狗
+                }
                 targetOre = null;
                 BotLog.action(bot, "oreseek_collected", "gained", gained, "total", collected + "/" + targetCount);
                 phase = Phase.SCAN;
@@ -408,6 +445,8 @@ public final class OreSeekTask extends AbstractTask {
             ToolSelector.equipBestTool(bot, world.getBlockState(currentVeinBlock));
             MiningAction.startMining(bot, currentVeinBlock,
                     Direction.getFacing(bot.getEyePos().subtract(currentVeinBlock.toCenterPos())));
+            minedAnyBlock = true;
+            lastProgressTick = elapsed; // FREEZE fix:挖脉也算进展
         }
     }
 
@@ -462,6 +501,8 @@ public final class OreSeekTask extends AbstractTask {
             ToolSelector.equipBestTool(bot, world.getBlockState(currentDescendBlock));
             MiningAction.startMining(bot, currentDescendBlock,
                     Direction.getFacing(bot.getEyePos().subtract(currentDescendBlock.toCenterPos())));
+            minedAnyBlock = true;
+            lastProgressTick = elapsed; // FREEZE fix:下探掘进也算进展
         }
     }
 

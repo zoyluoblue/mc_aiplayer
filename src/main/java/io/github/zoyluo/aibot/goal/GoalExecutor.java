@@ -134,7 +134,7 @@ public final class GoalExecutor {
         if (plan.replanned || !AIBotConfig.get().goal().replanOnFailureEnabled()) {
             activePlans.remove(bot.getUuid());
             BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.TASK, bot, "goal_failed", "goal", plan.goal, "reason", reason);
-            report(bot, "目标失败:" + (reason == null || reason.isBlank() ? "步骤失败" : reason));
+            report(bot, humanGoalFailure(reason));
             return;
         }
         plan.replanned = true;
@@ -169,6 +169,19 @@ public final class GoalExecutor {
 
     private static void report(AIPlayerEntity bot, String text) {
         BotReporter.INSTANCE.onGoalMessage(bot, text);
+    }
+
+    // P1:目标失败时给出可执行的中文引导,避免大脑收到原始 reason 后用 move 乱走探索而遇险。
+    private static String humanGoalFailure(String reason) {
+        String r = reason == null ? "" : reason;
+        if (r.contains("no_resource_nearby") || r.contains("no_reachable") || r.contains("no_ore_found")) {
+            return "我在当前位置找不到所需的基础资源(树木/石头/矿石),无法从零开始。"
+                    + "请把我带到资源附近,或直接给我木头/镐;我不会乱走探索以免走进水里或悬崖遇险。";
+        }
+        if (r.startsWith("need_better_tool")) {
+            return "我缺少合适的工具继续挖掘(" + r + ")。请帮我准备工具,或换一个目标。";
+        }
+        return "目标失败:" + (r.isBlank() ? "步骤失败" : r);
     }
 
     private static final class ActivePlan {

@@ -41,6 +41,15 @@ public final class DangerWatcher {
     }
 
     public boolean scanBot(MinecraftServer server, AIPlayerEntity bot) {
+        // SAFE-DEAD:死亡的 bot 不再无限派 evade(僵尸循环)。满血复活到地表,清任务/计划,中文告知。
+        if (bot.getHealth() <= 0.0F || !bot.isAlive()) {
+            AIPlayerManager.INSTANCE.respawnDeadBot(bot);
+            TaskManager.INSTANCE.abort(bot);
+            io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.clear(bot);
+            BrainCoordinator.INSTANCE.sendPanelChat(bot, "system",
+                    bot.getGameProfile().getName() + " 死亡后已自动复活到地面。");
+            return true;
+        }
         Optional<Threat> threat = collectTopThreat(bot);
         Optional<Task> active = TaskManager.INSTANCE.getActive(bot);
         if (threat.isPresent()) {

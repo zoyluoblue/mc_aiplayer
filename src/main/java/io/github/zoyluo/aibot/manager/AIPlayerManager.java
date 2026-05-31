@@ -49,6 +49,24 @@ public final class AIPlayerManager {
     private AIPlayerManager() {
     }
 
+    /**
+     * SAFE-DEAD:bot 死亡(hp<=0)后停在原地无限收到 evade,不会自动重生(假玩家无客户端发重生包,
+     * ServerPlayerEntity 死后也不会被移除)。这里满血复活并传送到地表安全点,清空残留死亡状态。
+     * 返回 true=已复活。
+     */
+    public boolean respawnDeadBot(AIPlayerEntity bot) {
+        ServerWorld world = bot.getServerWorld();
+        BlockPos surface = world.getTopPosition(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, bot.getBlockPos());
+        bot.setHealth(20.0F);
+        bot.deathTime = 0;
+        bot.getHungerManager().setFoodLevel(20);
+        bot.teleport(world, surface.getX() + 0.5D, surface.getY(), surface.getZ() + 0.5D,
+                Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+        bot.extinguish();
+        BotLog.danger(bot, "bot_respawned_after_death", "pos", LogFields.pos(surface));
+        return true;
+    }
+
     public Optional<AIPlayerEntity> spawn(MinecraftServer server,
                                           String name,
                                           ServerWorld world,

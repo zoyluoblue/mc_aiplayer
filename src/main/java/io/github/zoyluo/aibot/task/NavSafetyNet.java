@@ -2,6 +2,7 @@ package io.github.zoyluo.aibot.task;
 
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
+import io.github.zoyluo.aibot.pathfinding.Standability;
 import net.minecraft.block.BlockState;
 import net.minecraft.registry.tag.FluidTags;
 import net.minecraft.server.MinecraftServer;
@@ -9,7 +10,9 @@ import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 
+import java.util.Collections;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -27,6 +30,10 @@ public final class NavSafetyNet {
     public static final NavSafetyNet INSTANCE = new NavSafetyNet();
 
     private static final int AIR_SURFACE_THRESHOLD = 120; // 满 300;低于此且在水下→上浮换气
+    private static final int EMERGENCY_AIR = 60;           // 低于此且上浮无望→紧急传送到可呼吸落点
+    private static final int BREATHE_SCAN_UP = 5;          // 头顶向上找空气的格数
+    private static final int RESCUE_RADIUS_H = 16;
+    private static final int RESCUE_RADIUS_V = 16;
     private final Map<UUID, Integer> nextLogTick = new ConcurrentHashMap<>();
 
     private NavSafetyNet() {
@@ -54,6 +61,14 @@ public final class NavSafetyNet {
 
         // 2) 溺水:在水下且空气将尽 → 上浮换气(水中持续 jump 会上升)
         if (bot.isSubmergedInWater() && bot.getAir() < AIR_SURFACE_THRESHOLD) {
+            // SAFE-DROWN:空气危急且头顶无空气可上浮(被石头封顶的水兜)→ 紧急传送到最近可呼吸落点。
+            // 根因:findNearestStandable 把水当可通过,会返回水下落点;这里要求落点脚位+头位是空气(真能呼吸)。
+            if (bot.getAir() <= EMERGENCY_AIR && !breathableAbove(world, feet)) {
+                if (emergencyTeleportToAir(bot, world, feet)) {
+                    throttledLog(server, bot, "navsafe_drown_teleport", feet);
+                    return true;
+                }
+            }
             bot.getActionPack().setSprinting(false);
             bot.getActionPack().setForward(0.0F);
             bot.getActionPack().setJumping(true);
@@ -62,6 +77,62 @@ public final class NavSafetyNet {
         }
 
         return false;
+    }
+
+    // 头顶 BREATHE_SCAN_UP 格内是否能露头呼吸(遇到非水的可通过格=能呼吸;遇到实体方块顶盖=封死)
+    private static boolean breathableAbove(ServerWorld world, BlockPos feet) {
+        for (int dy = 1; dy <= BREATHE_SCAN_UP; dy++) {
+            BlockPos p = feet.up(dy);
+            BlockState s = world.getBlockState(p);
+            boolean water = s.getFluidState().isIn(FluidTags.WATER);
+            boolean solid = !s.getCollisionShape(world, p).isEmpty();
+            if (!water && !solid) {
+                return true;   // 非水的空气格 → 上浮能呼吸
+            }
+            if (solid) {
+                return false;  // 撞到实体方块顶盖,上浮无望
+            }
+        }
+        return false;
+    }
+
+    private boolean emergencyTeleportToAir(AIPlayerEntity bot, ServerWorld world, BlockPos feet) {
+        Optional<BlockPos> safe = findNearestBreathableStandable(world, feet);
+        if (safe.isEmpty()) {
+            return false;
+        }
+        BlockPos to = safe.get();
+        bot.getActionPack().stopAll();
+        bot.teleport(world, to.getX() + 0.5D, to.getY(), to.getZ() + 0.5D,
+                Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+        Standability.clearCache();
+        return true;
+    }
+
+    // 最近的"可站 + 脚位与头位都是空气(可呼吸,不是水)"落点
+    private static Optional<BlockPos> findNearestBreathableStandable(ServerWorld world, BlockPos origin) {
+        BlockPos.Mutable cursor = new BlockPos.Mutable();
+        BlockPos best = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (int dx = -RESCUE_RADIUS_H; dx <= RESCUE_RADIUS_H; dx++) {
+            for (int dz = -RESCUE_RADIUS_H; dz <= RESCUE_RADIUS_H; dz++) {
+                for (int dy = -RESCUE_RADIUS_V; dy <= RESCUE_RADIUS_V; dy++) {
+                    cursor.set(origin.getX() + dx, origin.getY() + dy, origin.getZ() + dz);
+                    if (!Standability.isStandable(world, cursor)) {
+                        continue;
+                    }
+                    if (!world.getBlockState(cursor).isAir() || !world.getBlockState(cursor.up()).isAir()) {
+                        continue;   // 脚位或头位是水/方块 → 不可呼吸
+                    }
+                    double distance = cursor.getSquaredDistance(origin);
+                    if (distance < bestDistance) {
+                        bestDistance = distance;
+                        best = cursor.toImmutable();
+                    }
+                }
+            }
+        }
+        return Optional.ofNullable(best);
     }
 
     private static void escapeLava(AIPlayerEntity bot, ServerWorld world, BlockPos feet) {

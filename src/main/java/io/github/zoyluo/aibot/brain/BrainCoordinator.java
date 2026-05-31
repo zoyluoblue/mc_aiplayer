@@ -52,6 +52,17 @@ public final class BrainCoordinator {
     public boolean handleMessage(AIPlayerEntity bot, String senderName, String text) {
         ensureConfigured();
         BotConversation conversation = conversations.computeIfAbsent(bot.getUuid(), ignored -> new BotConversation());
+        // GOALFIX-CONT:一条新的玩家消息=显式重定向。若此时有自治目标计划在跑,清掉它并解除 busy,
+        // 让新指令能立即执行——既符合"显式玩家指令可打断"原则,也避免 goal 期间 busy 长时间为 true
+        // 导致玩家被"正在思考"挡住、无法叫停跑飞的目标。
+        if (io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.hasActivePlan(bot)) {
+            io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.clear(bot);
+            TaskManager.INSTANCE.abort(bot);
+            synchronized (conversation) {
+                conversation.busy = false;
+            }
+            BotLog.comm(bot, "goal_cleared_by_user_message");
+        }
         synchronized (conversation) {
             if (conversation.busy) {
                 sendPanelChat(bot, "system", bot.getGameProfile().getName() + " 正在思考,请稍等。");
@@ -268,6 +279,14 @@ public final class BrainCoordinator {
                     if (conversations.get(bot.getUuid()) != conversation || !conversation.busy) {
                         return;
                     }
+                    // GOALFIX-CONT:确定性目标计划运行期间,绝不重新唤醒大脑——即便在两个 step 之间
+                    // getActive() 短暂为空的那 1 tick(否则大脑会醒来调 assign_task 把 goal 的当前 step
+                    // abort 掉,正是实测#6的真凶)。纯等待轮询,不计入上限、不强制唤醒;goal 结束后
+                    // hasActivePlan 转 false,下一轮续航自然把结果交还大脑汇报。
+                    if (io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.hasActivePlan(bot)) {
+                        scheduleContinuation(bot, conversation);
+                        return;
+                    }
                     if (TaskManager.INSTANCE.getActive(bot).isPresent()) {
                         conversation.continuationTaskPolls++;
                         if (conversation.continuationTaskPolls >= MAX_CONTINUATION_TASK_POLLS) {
@@ -437,7 +456,7 @@ public final class BrainCoordinator {
                 6. Always reply to humans in Simplified Chinese. Use the say tool to reply to humans. Keep replies short (one sentence).
                 7. For survival crafting, call plan_craft first when materials may be missing. Use missing[].source to choose assign_task mine, smelt, craft, or forage before retrying craft for the intended target. CraftTask expands recipe-table intermediates such as planks and sticks, so do not craft planks or sticks as standalone steps unless the human asks for those items.
                 8. For 3x3 recipes, do not manually select or place a crafting table. If a crafting table is nearby or in inventory, the craft task can use or place it.
-                9. For "挖铁矿", call mine_ore with ore=minecraft:iron_ore. For "做一把铁镐" or "给我铁锭", call achieve_goal with item=minecraft:iron_pickaxe or minecraft:iron_ingot. The deterministic goal executor will plan gathering, crafting, mining, and smelting.
+                9. For "挖铁矿", call mine_ore with ore=minecraft:iron_ore. For "做一把铁镐" or "给我铁锭", call achieve_goal with item=minecraft:iron_pickaxe or minecraft:iron_ingot. The deterministic goal executor will plan gathering, crafting, mining, and smelting. CRITICAL: a single mine_ore/achieve_goal call runs the ENTIRE multi-step plan autonomously (gather wood, craft tools, mine stone, mine ore). After you call it, STOP immediately — do NOT call any other tool (no say, no inventory, no assign_task, no mine, no strip_mine) and do NOT narrate intermediate steps. The system executes every step itself and will notify you only when the whole goal is finished or has truly failed. Calling other tools meanwhile will abort the goal and break it.
                 10. After each action, look at the next world state (passed in user messages) and decide the next step.
                 11. When the task is complete or impossible, say so and stop calling tools.
                 12. You are fully autonomous and self-reliant. NEVER ask the human for help, for resources, or to move/carry you — the human will not help. NEVER mine ore with bare hands and NEVER use strip_mine or assign_task mine to dig without a proper pickaxe (that wastes blocks and drops nothing). To get ore always use mine_ore, and to get an item/tool use achieve_goal — these automatically walk to find wood, craft the needed pickaxe, then mine. If mine_ore/achieve_goal reports it cannot proceed, just retry mine_ore once; if it still cannot, state the situation in one short sentence and stop — do not flail with move/strip_mine and do not beg.

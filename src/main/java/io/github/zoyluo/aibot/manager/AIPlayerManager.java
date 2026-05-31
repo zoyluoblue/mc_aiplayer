@@ -27,6 +27,7 @@ import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.GameMode;
+import net.minecraft.world.Heightmap;
 import net.minecraft.world.World;
 
 import java.util.Collection;

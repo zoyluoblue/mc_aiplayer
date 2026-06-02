@@ -30,8 +30,18 @@ public final class DangerWatcher {
     private final Map<UUID, Integer> nextResupplyAttemptTick = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> nextNightAttemptTick = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> observedSleepCompletionTicks = new ConcurrentHashMap<>();
+    private final Map<UUID, TrapRecord> trapRecords = new ConcurrentHashMap<>();
+
+    // 第1层 困死退避:逃避类任务(evade/shelter)在同一格反复触发却没脱身,即判"被困",
+    // 退避一段时间不再空派、并按间隔节流求助。终结"夜间困坑底每 2 秒 shelter/evade 死循环刷屏"。
+    private static final int TRAP_REPEAT_LIMIT = 4;      // 同格反复避险 4 次 → 判被困
+    private static final int TRAP_BACKOFF_TICKS = 600;   // 被困后退避 30s 不再空派威胁任务
+    private static final int TRAP_HELP_INTERVAL = 1200;  // 求助消息最短间隔 60s(防刷屏)
 
     private DangerWatcher() {
+    }
+
+    private record TrapRecord(BlockPos pos, int repeatCount, int lastHelpTick) {
     }
 
     public void scanAll(MinecraftServer server) {
@@ -58,6 +68,9 @@ public final class DangerWatcher {
                     && shouldAssignThreatTask(active, top)
                     && canAssignThreatTask(server, bot, top)) {
                 Task task = decideCombatOrEvade(bot, top);
+                if (trappedBackoff(server, bot, task)) {
+                    return true; // 被困:退避并(节流)求助,不再每 2 秒空派 shelter/evade
+                }
                 if (active.isPresent() && shouldPauseForThreat(active.get(), top, task)) {
                     TaskManager.INSTANCE.pauseFor(bot, "threat: " + top.type());
                 }
@@ -170,6 +183,39 @@ public final class DangerWatcher {
             return new EmergencyShelterTask();
         }
         return new EvadeTask(threat);
+    }
+
+    // 第1层:困死退避 + 求助。仅针对逃避类(evade/shelter);战斗(canFight→CombatTask)不拦。
+    // bot 反复在同一格触发逃避却没移动(被围/困坑底)→ 累加;达阈值即退避(长 cooldown 静默等救援)
+    // 并节流向玩家求助,而非每 2 秒空派一次 shelter/evade 刷屏。bot 真在逃(位置变)则计数自然重置。
+    private boolean trappedBackoff(MinecraftServer server, AIPlayerEntity bot, Task next) {
+        if (!(next instanceof EvadeTask) && !(next instanceof EmergencyShelterTask)) {
+            trapRecords.remove(bot.getUuid());
+            return false;
+        }
+        int now = server.getTicks();
+        BlockPos here = bot.getBlockPos().toImmutable();
+        TrapRecord rec = trapRecords.get(bot.getUuid());
+        if (rec == null || !rec.pos().isWithinDistance(here, 2.5D)) {
+            trapRecords.put(bot.getUuid(), new TrapRecord(here, 1, 0));
+            return false;
+        }
+        int repeat = rec.repeatCount() + 1;
+        if (repeat < TRAP_REPEAT_LIMIT) {
+            trapRecords.put(bot.getUuid(), new TrapRecord(rec.pos(), repeat, rec.lastHelpTick()));
+            return false;
+        }
+        nextThreatAttemptTick.put(bot.getUuid(), now + TRAP_BACKOFF_TICKS);
+        if (now - rec.lastHelpTick() >= TRAP_HELP_INTERVAL) {
+            BrainCoordinator.INSTANCE.sendPanelChat(bot, "system",
+                    bot.getGameProfile().getName() + " 被困在 (" + here.getX() + "," + here.getY() + "," + here.getZ()
+                            + "),反复避险都没能脱身。请把我传送到安全开阔的地面。");
+            BotLog.danger(bot, "trapped_backoff", "pos", here.getX() + "," + here.getY() + "," + here.getZ(), "repeat", repeat);
+            trapRecords.put(bot.getUuid(), new TrapRecord(here, 0, now));
+        } else {
+            trapRecords.put(bot.getUuid(), new TrapRecord(here, repeat, rec.lastHelpTick()));
+        }
+        return true;
     }
 
     private boolean maybeStartNightTask(MinecraftServer server, AIPlayerEntity bot, Optional<Task> active) {

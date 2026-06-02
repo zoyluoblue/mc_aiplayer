@@ -32,6 +32,12 @@ public final class GoalPlanner {
             Items.IRON_HELMET, Items.IRON_CHESTPLATE, Items.IRON_LEGGINGS, Items.IRON_BOOTS);
     private static final EquipmentSlot[] ARMOR_SLOTS = {
             EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET};
+    // 第4层 备粮用:常见食物(生/熟肉 + 面包)。
+    private static final List<Item> FOOD_ITEMS = List.of(
+            Items.BEEF, Items.COOKED_BEEF, Items.PORKCHOP, Items.COOKED_PORKCHOP,
+            Items.MUTTON, Items.COOKED_MUTTON, Items.CHICKEN, Items.COOKED_CHICKEN,
+            Items.RABBIT, Items.COOKED_RABBIT, Items.BREAD);
+    private static final int FOOD_TARGET = 4;
 
     public record GoalPlan(Goal goal, List<GoalStep> steps, List<String> unresolved) {
         public boolean success() {
@@ -153,8 +159,12 @@ public final class GoalPlanner {
                 return false;
             }
             // 第3层:深层贵重矿(需铁镐及以上,如钻石/金/红石/绿宝石)下矿凶险 → 先备一身铁甲+铁剑再开挖。
-            if (tier >= ToolTier.IRON && !ensureArmor(depth + 1, visiting)) {
-                return false;
+            if (tier >= ToolTier.IRON) {
+                if (!ensureArmor(depth + 1, visiting)) {
+                    return false;
+                }
+                // 第4层:再备点粮(best-effort,周围没动物不阻断)。
+                ensureFood(depth + 1, visiting);
             }
             addStep(GoalStep.mineOre(expanded, remaining));
             for (Item drop : drops) {
@@ -175,6 +185,20 @@ public final class GoalPlanner {
                     && !ensureItem(Items.IRON_SWORD, 1, depth + 1, visiting)) {
                 return false;
             }
+            return true;
+        }
+
+        // 第4层 备粮(best-effort):食物不足则下一个 HUNT 步,运行期去猎肉续航;没动物时 GoalExecutor
+        // 跳过此步(见 handleStepFailure),不阻断挖矿目标。总返回 true,不影响规划成败。
+        private boolean ensureFood(int depth, Set<String> visiting) {
+            int food = 0;
+            for (Item f : FOOD_ITEMS) {
+                food += counts.getOrDefault(f, 0);
+            }
+            if (food >= FOOD_TARGET) {
+                return true;
+            }
+            addStep(GoalStep.hunt(FOOD_TARGET - food));
             return true;
         }
 

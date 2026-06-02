@@ -23,7 +23,8 @@ public record GoalStep(Kind kind,
         CRAFT,
         SMELT,
         MOVE,
-        FARM
+        FARM,
+        HUNT
     }
 
     public GoalStep {
@@ -61,6 +62,11 @@ public record GoalStep(Kind kind,
         return new GoalStep(Kind.FARM, produce, count, crop, Set.of(), seed, null, null);
     }
 
+    /** 第4层:HUNT 步——猎杀动物获取 count 个生肉(best-effort:周围没动物时跳过,不阻断挖矿目标)。 */
+    public static GoalStep hunt(int count) {
+        return new GoalStep(Kind.HUNT, null, count, null, Set.of(), null, null, null);
+    }
+
     public GoalStep withCount(int newCount) {
         return new GoalStep(kind, item, newCount, block, ores, input, output, pos);
     }
@@ -88,6 +94,7 @@ public record GoalStep(Kind kind,
             case SMELT -> "SMELT " + Registries.ITEM.getId(input) + " -> " + Registries.ITEM.getId(output) + " x" + count;
             case MOVE -> "MOVE " + pos.getX() + "," + pos.getY() + "," + pos.getZ();
             case FARM -> "FARM " + Registries.BLOCK.getId(block) + " x" + count;
+            case HUNT -> "HUNT meat x" + count;
         };
     }
 }

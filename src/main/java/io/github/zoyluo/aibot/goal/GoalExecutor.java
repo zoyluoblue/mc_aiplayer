@@ -8,6 +8,7 @@ import io.github.zoyluo.aibot.task.CraftTask;
 import io.github.zoyluo.aibot.task.DigDownTask;
 import io.github.zoyluo.aibot.task.FarmTask;
 import io.github.zoyluo.aibot.task.GatherQuotaTask;
+import io.github.zoyluo.aibot.task.HuntTask;
 import io.github.zoyluo.aibot.task.MineTask;
 import io.github.zoyluo.aibot.task.MoveTask;
 import io.github.zoyluo.aibot.task.OreDigTask;
@@ -138,6 +139,13 @@ public final class GoalExecutor {
     }
 
     private void handleStepFailure(MinecraftServer server, AIPlayerEntity bot, ActivePlan plan, String reason) {
+        // 第4层:best-effort 步骤(如 HUNT 备粮)失败不阻断整体目标——跳过它直接继续下一步。
+        // 这样"挖钻石前备点肉"在周围没动物时也不会让整条挖矿目标 goal_failed(续航仍由饥饿链兜底)。
+        if (plan.current != null && plan.current.kind() == GoalStep.Kind.HUNT) {
+            BotLog.task(bot, "goal_step_skipped_besteffort", "step", plan.current.describe(), "reason", reason);
+            assignNext(bot, plan);
+            return;
+        }
         if (plan.replanned || !AIBotConfig.get().goal().replanOnFailureEnabled()) {
             activePlans.remove(bot.getUuid());
             BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.TASK, bot, "goal_failed", "goal", plan.goal, "reason", reason);
@@ -185,6 +193,8 @@ public final class GoalExecutor {
             // P3:FARM 步 → 数量受限的 FarmTask(就地开垦/播种/等熟/收割,收够 count 个产出即完成)。
             case FARM -> Optional.of(new FarmTask(bot.getBlockPos(), 4, step.input(), step.block(),
                     true, false, step.item(), step.count()));
+            // 第4层:HUNT 步 → HuntTask 猎杀动物取生肉(备粮)。
+            case HUNT -> Optional.of(new HuntTask(step.count()));
         };
     }
 

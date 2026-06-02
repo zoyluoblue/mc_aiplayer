@@ -16,6 +16,7 @@ import io.github.zoyluo.aibot.task.BlueprintLoader;
 import io.github.zoyluo.aibot.task.BuildTask;
 import io.github.zoyluo.aibot.task.CombatTask;
 import io.github.zoyluo.aibot.task.DigDownTask;
+import io.github.zoyluo.aibot.task.OreDigTask;
 import io.github.zoyluo.aibot.task.ContainerTask;
 import io.github.zoyluo.aibot.task.CraftTask;
 import io.github.zoyluo.aibot.task.FarmTask;
@@ -78,7 +79,20 @@ public final class AIBotVerifySubcommand {
             "mine_iron_from_scratch",
             "mine_buried_iron",
             "dig_down",
+            "ore_dig_buried",
+            "mine_iron_pocket",
+            "mine_with_mob",
             "nav_descend");
+
+    // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
+    private static final List<String> MINING_SUITE = List.of(
+            "dig_down",
+            "ore_dig_buried",
+            "mine_to_iron",
+            "mine_buried_iron",
+            "mine_iron_pocket",
+            "mine_with_mob",
+            "mine_iron_from_scratch");
     private static final Map<UUID, VerifyRun> RUNS = new ConcurrentHashMap<>();
 
     private AIBotVerifySubcommand() {
@@ -93,11 +107,13 @@ public final class AIBotVerifySubcommand {
                         .suggests((context, builder) -> {
                             ALL_FEATURES.forEach(builder::suggest);
                             builder.suggest("all");
+                            builder.suggest("mining");
                             return builder.buildFuture();
                         })
                         .executes(context -> {
                             String feature = StringArgumentType.getString(context, "feature");
-                            return start(context.getSource(), "all".equals(feature) ? ALL_FEATURES : List.of(feature));
+                            // "all"/"mining" 组别名在 start→expandFeatures 里展开;单用例直接传名。
+                            return start(context.getSource(), List.of(feature));
                         }));
     }
 
@@ -146,6 +162,8 @@ public final class AIBotVerifySubcommand {
             String feature = raw.toLowerCase(java.util.Locale.ROOT);
             if ("all".equals(feature)) {
                 features.addAll(ALL_FEATURES);
+            } else if ("mining".equals(feature)) {
+                features.addAll(MINING_SUITE); // 挖矿回归套件别名
             } else if (ALL_FEATURES.contains(feature)) {
                 features.add(feature);
             }
@@ -173,6 +191,9 @@ public final class AIBotVerifySubcommand {
             case "mine_iron_from_scratch" -> assignMineIronFromScratch(bot);
             case "mine_buried_iron" -> assignMineBuriedIron(bot);
             case "dig_down" -> assignDigDown(bot);
+            case "ore_dig_buried" -> assignOreDigBuried(bot);
+            case "mine_iron_pocket" -> assignMineIronPocket(bot);
+            case "mine_with_mob" -> assignMineWithMob(bot);
             case "nav_descend" -> assignNavDescend(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
@@ -409,6 +430,95 @@ public final class AIBotVerifySubcommand {
         Task task = new DigDownTask(Blocks.STONE, 3);
         return assignTask(bot, "dig_down", task, 1200,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.COBBLESTONE) >= 3);
+    }
+
+    /**
+     * REGRESSION(实测#10):MINE_ORE 走 OreDigTask。给石镐、把铁矿用石头包埋(走路够不到,必须挖隧道接近),
+     * 断言能挖到 raw_iron 不卡。专测 OreDigTask 的扫描→直挖隧道→挖脉,绕开 OreSeek 的 A* 接近 stall。
+     */
+    private static Result assignOreDigBuried(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        InventoryAction.giveItem(bot, new ItemStack(Items.STONE_PICKAXE, 1));
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        // 脚下 y-1..-4 实心石头,铁矿埋在 y-3 正下方稍偏:bot 必须竖直挖穿石头才够到。
+        for (int dy = 1; dy <= 5; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    world.setBlockState(origin.add(dx, -dy, dz), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                }
+            }
+        }
+        world.setBlockState(origin.down(3), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(origin.down(4), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL); // 一条小脉,测泛洪
+        Task task = new OreDigTask(java.util.Set.of(Blocks.IRON_ORE, Blocks.DEEPSLATE_IRON_ORE), 2);
+        return assignTask(bot, "ore_dig_buried", task, 2400,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.RAW_IRON) >= 2);
+    }
+
+    /**
+     * REGRESSION(实测#8/#10):狭窄出生坑里空手"挖铁矿"全链。把 bot 围在 5x5 石墙小坑(模拟真实困境地形),
+     * 坑里给一棵小树(原木)、脚下石层、深处铁矿;走 GoalExecutor 完整倒推,断言最终拿到 raw_iron 不卡不死。
+     * 这是端到端冒烟:砍树→木镐→挖石→石镐→挖铁,全程 BlockMiner 原语。
+     */
+    private static Result assignMineIronPocket(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        // 5x5 石墙(4 高)围出狭窄坑,逼出"地形受限"变量。
+        for (int dy = 0; dy <= 3; dy++) {
+            for (int dx = -2; dx <= 2; dx++) {
+                for (int dz = -2; dz <= 2; dz++) {
+                    if (Math.abs(dx) == 2 || Math.abs(dz) == 2) {
+                        world.setBlockState(origin.add(dx, dy, dz), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                    }
+                }
+            }
+        }
+        // 坑里一棵小树(2 段原木,叶子省略)。
+        world.setBlockState(origin.offset(Direction.EAST), Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(origin.offset(Direction.EAST).up(), Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
+        // 脚下石层 + 深处铁矿。
+        for (int dy = 1; dy <= 8; dy++) {
+            world.setBlockState(origin.down(dy), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        world.setBlockState(origin.down(5), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.MineOre(java.util.Set.of(Blocks.IRON_ORE), 1));
+        if (!started) {
+            return Result.fail("mine_iron_pocket", "goal_submit_failed");
+        }
+        return Result.runningGoal("mine_iron_pocket", 12000,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.RAW_IRON) >= 1);
+    }
+
+    /**
+     * REGRESSION(实测#7):挖矿中刷怪。给石镐、脚下石层埋铁矿,提交挖铁目标后立刻刷一只僵尸。
+     * 断言目标**存活到完成**(挖到 raw_iron)——验证 DangerWatcher 暂停而非放弃目标、打完 resume 继续挖。
+     */
+    private static Result assignMineWithMob(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        InventoryAction.giveItem(bot, new ItemStack(Items.STONE_PICKAXE, 1));
+        InventoryAction.giveItem(bot, new ItemStack(Items.IRON_SWORD, 1));
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        for (int dy = 1; dy <= 6; dy++) {
+            world.setBlockState(origin.down(dy), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        world.setBlockState(origin.down(3), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        ZombieEntity zombie = EntityType.ZOMBIE.create(world, SpawnReason.COMMAND);
+        if (zombie != null) {
+            zombie.refreshPositionAndAngles(bot.getX() + 2.0D, bot.getY(), bot.getZ() + 2.0D, 0.0F, 0.0F);
+            world.spawnEntity(zombie);
+        }
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.MineOre(java.util.Set.of(Blocks.IRON_ORE), 1));
+        if (!started) {
+            return Result.fail("mine_with_mob", "goal_submit_failed");
+        }
+        return Result.runningGoal("mine_with_mob", 4800,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.RAW_IRON) >= 1);
     }
 
     private static Result assignNavDescend(AIPlayerEntity bot) {

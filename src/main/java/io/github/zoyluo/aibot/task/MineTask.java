@@ -1,5 +1,6 @@
 package io.github.zoyluo.aibot.task;
 
+import io.github.zoyluo.aibot.action.BlockMiner;
 import io.github.zoyluo.aibot.action.HarvestCore;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
@@ -26,6 +27,7 @@ public final class MineTask extends AbstractTask {
     private final Block targetBlock;
     private final int countNeeded;
     private final Set<Item> targetDrops;
+    private final BlockMiner miner = new BlockMiner();
     private Phase phase = Phase.SEARCHING;
     private BlockPos targetPos;
     private int countSoFar;
@@ -111,12 +113,16 @@ public final class MineTask extends AbstractTask {
 
     private void mine(AIPlayerEntity bot) {
         if (targetPos == null || !bot.getServerWorld().getBlockState(targetPos).isOf(targetBlock)) {
+            miner.cancel(bot);
             pickupTicks = 120;
             phase = Phase.PICKING_UP;
             return;
         }
-        if (bot.getActionPack().isMiningIdle() && elapsed % 200 == 0) {
-            startMiningTarget(bot);
+        // P1-a:挖掘走 BlockMiner(只在空闲发起、绝不重发清零进度);破块/超时进入拾取阶段。
+        BlockMiner.Status status = miner.tick(bot);
+        if (status == BlockMiner.Status.DONE || status == BlockMiner.Status.FAILED) {
+            pickupTicks = 120;
+            phase = Phase.PICKING_UP;
         }
     }
 
@@ -168,8 +174,14 @@ public final class MineTask extends AbstractTask {
         }
         inventoryCountBeforeMining = HarvestCore.countInventoryItems(bot, targetDrops);
         pickupSweepAttempted = false;
-        HarvestCore.startMining(bot, targetPos);
+        miner.begin(bot, targetPos); // P1-a:BlockMiner 接管挖掘,mine() 阶段每 tick 推进
         phase = Phase.MINING;
+    }
+
+    @Override
+    protected void onAbort(AIPlayerEntity bot) {
+        miner.cancel(bot);
+        bot.getActionPack().stopAll();
     }
 
     private static boolean lavaAdjacent(AIPlayerEntity bot, BlockPos pos) {

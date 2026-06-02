@@ -5,7 +5,7 @@ import io.github.zoyluo.aibot.action.ActionResult;
 import io.github.zoyluo.aibot.action.BuildAction;
 import io.github.zoyluo.aibot.action.ContainerAction;
 import io.github.zoyluo.aibot.action.InventoryAction;
-import io.github.zoyluo.aibot.action.MiningAction;
+import io.github.zoyluo.aibot.action.BlockMiner;
 import io.github.zoyluo.aibot.action.ToolSelector;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
@@ -68,6 +68,7 @@ public final class StripMineTask extends AbstractTask {
     private final Deque<BlockPos> blocksToMine = new ArrayDeque<>();
     private final Deque<BlockPos> veinBlocks = new ArrayDeque<>();
     private final Set<BlockPos> queuedVeinBlocks = new HashSet<>();
+    private final BlockMiner miner = new BlockMiner();
     private Phase phase = Phase.PREP;
     private Step currentStep;
     private BlockPos origin;
@@ -343,16 +344,12 @@ public final class StripMineTask extends AbstractTask {
             fail("block_out_of_reach: " + shortPos(currentMiningBlock));
             return;
         }
-        if (!miningStarted && bot.getActionPack().isMiningIdle()) {
-            BlockState state = bot.getServerWorld().getBlockState(currentMiningBlock);
-            ToolSelector.equipBestTool(bot, state);
-            ActionResult result = MiningAction.startMining(bot, currentMiningBlock,
-                    Direction.getFacing(bot.getEyePos().subtract(currentMiningBlock.toCenterPos())));
-            if (result.isFailed()) {
-                fail(result.reason());
-                return;
-            }
-            miningStarted = true;
+        // P1-b:挖掘走共享 BlockMiner(只在空闲发起、绝不重发清零进度、正确 face)。
+        if (miner.target() == null || !miner.target().equals(currentMiningBlock)) {
+            miner.begin(bot, currentMiningBlock);
+        }
+        if (miner.tick(bot) == BlockMiner.Status.FAILED) {
+            fail(miner.failureReason());
         }
     }
 
@@ -412,17 +409,13 @@ public final class StripMineTask extends AbstractTask {
             }
             bot.getActionPack().stopAll();
         }
-        if (!miningStarted && bot.getActionPack().isMiningIdle()) {
-            BlockState state = bot.getServerWorld().getBlockState(currentVeinBlock);
-            ToolSelector.equipBestTool(bot, state);
-            ActionResult result = MiningAction.startMining(bot, currentVeinBlock,
-                    Direction.getFacing(bot.getEyePos().subtract(currentVeinBlock.toCenterPos())));
-            if (result.isFailed()) {
-                note = result.reason();
-                currentVeinBlock = null;
-                return;
-            }
-            miningStarted = true;
+        // P1-b:矿脉块挖掘也走 BlockMiner。
+        if (miner.target() == null || !miner.target().equals(currentVeinBlock)) {
+            miner.begin(bot, currentVeinBlock);
+        }
+        if (miner.tick(bot) == BlockMiner.Status.FAILED) {
+            note = miner.failureReason();
+            currentVeinBlock = null;
         }
     }
 

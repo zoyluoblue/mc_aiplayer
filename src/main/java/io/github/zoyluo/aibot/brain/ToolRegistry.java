@@ -41,7 +41,7 @@ import io.github.zoyluo.aibot.task.MoveTask;
 import io.github.zoyluo.aibot.task.SleepTask;
 import io.github.zoyluo.aibot.task.SmeltTask;
 import io.github.zoyluo.aibot.task.StockpileTask;
-import io.github.zoyluo.aibot.task.OreSeekTask;
+import io.github.zoyluo.aibot.task.OreDigTask;
 import io.github.zoyluo.aibot.task.StripMineTask;
 import io.github.zoyluo.aibot.task.Task;
 import io.github.zoyluo.aibot.task.TaskManager;
@@ -269,7 +269,7 @@ public final class ToolRegistry {
                 .required("ore")
                 .build(), (bot, args) -> {
             if (!AIBotConfig.get().goal().autoToolFillEnabled()) {
-                Task task = new OreSeekTask(oreTargetsFrom(requiredString(args, "ore")), optionalInt(args, "count", 1));
+                Task task = new OreDigTask(oreTargetsFrom(requiredString(args, "ore")), optionalInt(args, "count", 1));
                 TaskManager.INSTANCE.assign(bot, task);
                 return ok("assigned: " + task.name());
             }
@@ -583,7 +583,7 @@ public final class ToolRegistry {
             JsonObject params = args.getAsJsonObject("params");
             if ("mine_ore".equals(taskType)) {
                 if (!AIBotConfig.get().goal().autoToolFillEnabled()) {
-                    Task task = new OreSeekTask(oreTargetsFrom(requiredString(params, "ore")), optionalInt(params, "count", 1));
+                    Task task = new OreDigTask(oreTargetsFrom(requiredString(params, "ore")), optionalInt(params, "count", 1));
                     TaskManager.INSTANCE.assign(bot, task);
                     return ok("assigned: " + task.name());
                 }
@@ -596,7 +596,7 @@ public final class ToolRegistry {
                 if (OreScan.isOreBlock(block)) {
                     int count = optionalInt(params, "count", 1);
                     if (!AIBotConfig.get().goal().autoToolFillEnabled()) {
-                        Task task = new OreSeekTask(OreScan.oreFamily(block), count);
+                        Task task = new OreDigTask(OreScan.oreFamily(block), count);
                         TaskManager.INSTANCE.assign(bot, task);
                         return ok("assigned: " + task.name());
                     }
@@ -639,9 +639,9 @@ public final class ToolRegistry {
             case "mine" -> {
                 Block block = blockWithAlias(params, "block", "block_type");
                 int count = optionalInt(params, "count", 1);
-                yield OreScan.isOreBlock(block) ? new OreSeekTask(OreScan.oreFamily(block), count) : new MineTask(block, count);
+                yield OreScan.isOreBlock(block) ? new OreDigTask(OreScan.oreFamily(block), count) : new MineTask(block, count);
             }
-            case "mine_ore" -> new OreSeekTask(oreTargetsFrom(requiredString(params, "ore")), optionalInt(params, "count", 1));
+            case "mine_ore" -> new OreDigTask(oreTargetsFrom(requiredString(params, "ore")), optionalInt(params, "count", 1));
             case "gather" -> new GatherQuotaTask(requiredItem(params, "item"), optionalInt(params, "count", 1));
             case "fish" -> new FishTask(optionalInt(params, "max_catches", 1), optionalInt(params, "max_ticks", 6000));
             case "trade" -> new TradeTask(optionalItem(params, "target_item"), optionalInt(params, "max_distance", 16));

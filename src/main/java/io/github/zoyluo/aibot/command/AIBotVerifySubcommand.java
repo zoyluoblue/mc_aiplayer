@@ -20,8 +20,8 @@ import io.github.zoyluo.aibot.task.OreDigTask;
 import io.github.zoyluo.aibot.task.ContainerTask;
 import io.github.zoyluo.aibot.task.CraftTask;
 import io.github.zoyluo.aibot.task.FarmTask;
+import io.github.zoyluo.aibot.task.MineTask;
 import io.github.zoyluo.aibot.task.MoveTask;
-import io.github.zoyluo.aibot.task.OreSeekTask;
 import io.github.zoyluo.aibot.task.SleepTask;
 import io.github.zoyluo.aibot.task.StripMineTask;
 import io.github.zoyluo.aibot.task.Task;
@@ -79,6 +79,7 @@ public final class AIBotVerifySubcommand {
             "mine_iron_from_scratch",
             "mine_buried_iron",
             "dig_down",
+            "mine_exposed",
             "ore_dig_buried",
             "mine_iron_pocket",
             "mine_with_mob",
@@ -87,6 +88,7 @@ public final class AIBotVerifySubcommand {
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
             "dig_down",
+            "mine_exposed",
             "ore_dig_buried",
             "mine_to_iron",
             "mine_buried_iron",
@@ -191,6 +193,7 @@ public final class AIBotVerifySubcommand {
             case "mine_iron_from_scratch" -> assignMineIronFromScratch(bot);
             case "mine_buried_iron" -> assignMineBuriedIron(bot);
             case "dig_down" -> assignDigDown(bot);
+            case "mine_exposed" -> assignMineExposed(bot);
             case "ore_dig_buried" -> assignOreDigBuried(bot);
             case "mine_iron_pocket" -> assignMineIronPocket(bot);
             case "mine_with_mob" -> assignMineWithMob(bot);
@@ -335,6 +338,20 @@ public final class AIBotVerifySubcommand {
                 ignored -> bot.getBlockPos().getSquaredDistance(goal) <= 4.0D);
     }
 
+    /**
+     * REGRESSION(P1-a):MineTask 走 BlockMiner 挖一个**裸露**的指定方块。
+     * 给石镐、正前方放一块裸露铁矿,断言挖到 raw_iron——验证 MineTask 的"找最近裸露块→挖"在新原语下正常。
+     */
+    private static Result assignMineExposed(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        InventoryAction.giveItem(bot, new ItemStack(Items.STONE_PICKAXE, 1));
+        BlockPos ore = bot.getBlockPos().offset(Direction.NORTH, 2);
+        bot.getServerWorld().setBlockState(ore, Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        return assignTask(bot, "mine_exposed", new MineTask(Blocks.IRON_ORE, 1), 800,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.RAW_IRON) >= 1);
+    }
+
     private static Result verifyPickupBlocked(AIPlayerEntity bot) {
         prepareArea(bot);
         clearInventory(bot);
@@ -355,7 +372,7 @@ public final class AIBotVerifySubcommand {
         InventoryAction.giveItem(bot, new ItemStack(Items.DIAMOND_PICKAXE, 1));
         BlockPos ore = bot.getBlockPos().offset(Direction.NORTH, 2);
         bot.getServerWorld().setBlockState(ore, Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
-        return assignTask(bot, "mine_to_iron", new OreSeekTask(java.util.Set.of(Blocks.IRON_ORE), 1),
+        return assignTask(bot, "mine_to_iron", new OreDigTask(java.util.Set.of(Blocks.IRON_ORE), 1),
                 1200,
                 ignored -> InventoryAction.countItem(bot, Items.RAW_IRON) >= 1);
     }

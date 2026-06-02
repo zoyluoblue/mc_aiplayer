@@ -209,7 +209,8 @@ public final class DangerWatcher {
 
     private Task decideCombatOrEvade(AIPlayerEntity bot, Threat threat) {
         AIBotConfig.Combat combat = AIBotConfig.get().combat();
-        if (canFight(bot, threat, combat)) {
+        // combat 困死:连续多次 combat 被 stuck 中止(目标够不到——如僵尸在下方矿洞/墙后)→ 别再站桩等死,改逃跑。
+        if (canFight(bot, threat, combat) && !combatStuck(bot)) {
             return new CombatTask(threat.entity().getType(), 1, combat.retreatHp());
         }
         if (!bot.getServerWorld().isDay()
@@ -272,10 +273,9 @@ public final class DangerWatcher {
         if (now < nextNightAttemptTick.getOrDefault(bot.getUuid(), 0)) {
             return false;
         }
+        // 睡觉功能暂时取消(以后再加):夜间不睡床,只在有火把时补光防刷怪。
         Task task;
-        if (SleepTask.hasBedAccess(bot)) {
-            task = new SleepTask();
-        } else if (InventoryAction.countItem(bot, net.minecraft.item.Items.TORCH) > 0) {
+        if (InventoryAction.countItem(bot, net.minecraft.item.Items.TORCH) > 0) {
             task = new LightAreaTask(8, 8);
         } else {
             nextNightAttemptTick.put(bot.getUuid(), now + 600);
@@ -285,6 +285,15 @@ public final class DangerWatcher {
         nextNightAttemptTick.put(bot.getUuid(), now + 600);
         BotLog.danger(bot, "night_task_started", "task", task.name());
         return true;
+    }
+
+    // combat 困死检测:连续 ≥2 次 combat 被 StuckWatcher 中止(stuck:combat),说明目标够不到 → 改逃,别站桩被打死。
+    private boolean combatStuck(AIPlayerEntity bot) {
+        Optional<TaskManager.FailureRecord> fail = TaskManager.INSTANCE.peekFailure(bot);
+        return fail.isPresent()
+                && "combat".equals(fail.get().name())
+                && fail.get().reason().contains("stuck")
+                && fail.get().count() >= 2;
     }
 
     private boolean canFight(AIPlayerEntity bot, Threat threat, AIBotConfig.Combat combat) {

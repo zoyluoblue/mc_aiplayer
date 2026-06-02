@@ -38,6 +38,8 @@ public final class InventoryView implements PanelComponent {
 
     // setBounds 时算好的各分区原点,render 与 hit-test 共用,保证像素一致。
     private int gridX;
+    private int equipRowY;
+    private int aiLabelY;
     private int aiGridY;
     private int plLabelY;
     private int plMainY;
@@ -45,11 +47,15 @@ public final class InventoryView implements PanelComponent {
 
     private BotSnapshotS2C snapshot;
     private final ItemStack[] aiSlots = new ItemStack[AI_ROWS * COLS];
+    private final ItemStack[] equipSlots = new ItemStack[6]; // 0头/1胸/2腿/3脚/4主手/5副手
 
     public InventoryView(String target) {
         this.target = target;
         for (int i = 0; i < aiSlots.length; i++) {
             aiSlots[i] = ItemStack.EMPTY;
+        }
+        for (int i = 0; i < equipSlots.length; i++) {
+            equipSlots[i] = ItemStack.EMPTY;
         }
     }
 
@@ -60,7 +66,9 @@ public final class InventoryView implements PanelComponent {
         this.w = w;
         this.h = h;
         this.gridX = x + Math.max(0, (w - COLS * SLOT) / 2);
-        this.aiGridY = y + 11;
+        this.equipRowY = y + 11;                  // 装备行(标题在 y)
+        this.aiLabelY = equipRowY + SLOT + 5;     // AI 背包标题
+        this.aiGridY = aiLabelY + 11;
         int aiBottom = aiGridY + AI_ROWS * SLOT;
         this.plLabelY = aiBottom + 6;
         this.plMainY = plLabelY + 11;
@@ -69,8 +77,8 @@ public final class InventoryView implements PanelComponent {
 
     @Override
     public int preferredHeight() {
-        // 11(ai 标题)+72(ai 4 行)+6+11(玩家标题)+54(主 3 行)+3+18(快捷栏)
-        return 11 + AI_ROWS * SLOT + 6 + 11 + PL_MAIN_ROWS * SLOT + 3 + SLOT;
+        // 装备:11(标题)+18(一行)+5;AI:11+72;玩家:6+11+54+3+18
+        return 11 + SLOT + 5 + 11 + AI_ROWS * SLOT + 6 + 11 + PL_MAIN_ROWS * SLOT + 3 + SLOT;
     }
 
     @Override
@@ -79,11 +87,20 @@ public final class InventoryView implements PanelComponent {
         for (int i = 0; i < aiSlots.length; i++) {
             aiSlots[i] = ItemStack.EMPTY;
         }
+        for (int i = 0; i < equipSlots.length; i++) {
+            equipSlots[i] = ItemStack.EMPTY;
+        }
         if (snapshot != null) {
             for (BotSnapshotS2C.ItemEntry entry : snapshot.inventory()) {
                 int slot = entry.slot();
                 if (slot >= 0 && slot < aiSlots.length) {
                     aiSlots[slot] = stack(entry);
+                }
+            }
+            for (BotSnapshotS2C.ItemEntry entry : snapshot.equipment()) {
+                int slot = entry.slot();
+                if (slot >= 0 && slot < equipSlots.length) {
+                    equipSlots[slot] = stack(entry);
                 }
             }
         }
@@ -93,9 +110,21 @@ public final class InventoryView implements PanelComponent {
     public void render(DrawContext context, int mouseX, int mouseY, float delta, TextRenderer renderer) {
         PlayerInventory playerInv = playerInventory();
 
-        // —— AI 背包 ——
-        context.drawTextWithShadow(renderer, Theme.tr("inventory.aibot.section_ai"), gridX, y, Theme.TEXT_DIM);
         ItemStack hovered = ItemStack.EMPTY;
+
+        // —— AI 装备(头/胸/腿/脚/主手/副手,只展示不转移)——
+        context.drawTextWithShadow(renderer, Theme.tr("inventory.aibot.section_equip"), gridX, y, Theme.TEXT_DIM);
+        for (int i = 0; i < equipSlots.length; i++) {
+            int gx = gridX + i * SLOT;
+            boolean hot = inCell(mouseX, mouseY, gx, equipRowY);
+            drawSlot(context, renderer, gx, equipRowY, equipSlots[i], hot);
+            if (hot && !equipSlots[i].isEmpty()) {
+                hovered = equipSlots[i];
+            }
+        }
+
+        // —— AI 背包 ——
+        context.drawTextWithShadow(renderer, Theme.tr("inventory.aibot.section_ai"), gridX, aiLabelY, Theme.TEXT_DIM);
         for (int slot = 0; slot < aiSlots.length; slot++) {
             int gx = gridX + (slot % COLS) * SLOT;
             int gy = aiGridY + (slot / COLS) * SLOT;

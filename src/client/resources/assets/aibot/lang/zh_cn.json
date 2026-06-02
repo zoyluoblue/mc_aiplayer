@@ -62,6 +62,7 @@
   "status.aibot.brain.idle": "○ 空闲",
   "status.aibot.tokens": "tokens %s/%s",
   "inventory.aibot.empty": "背包为空",
+  "inventory.aibot.section_equip": "AI 装备(头/胸/腿/脚/主手/副手)",
   "inventory.aibot.section_ai": "AI 背包(点击拿出)",
   "inventory.aibot.section_self": "我的背包(点击放入 · Shift 单个)",
   "quick.aibot.id": "物品/方块 ID",

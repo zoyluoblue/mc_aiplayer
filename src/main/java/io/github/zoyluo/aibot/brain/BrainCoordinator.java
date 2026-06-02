@@ -113,8 +113,25 @@ public final class BrainCoordinator {
             maybeInjectMaxTurnsHint(conversation);
             if (conversation.turnsInCurrentRequest >= AIBotConfig.get().brain().maxTurnsPerRequest()) {
                 BotLog.warn(LogCategory.COMM, bot, "max_turns_reached", "turns", conversation.turnsInCurrentRequest, "last_response", response.finishReason());
-                sendPanelChat(bot, "system", "工具调用轮次已达到上限。我会先停下来,请改用更高层任务或补充目标。");
                 conversation.busy = false;
+                // P1 善后(实测:max_turns 后 bot 卡 FAILED 发呆 13 分钟)。
+                // 仅当此刻没有正常运行中的任务/计划(即确实是反复失败耗尽轮次)才复位,避免误杀
+                // 第 N 轮刚合法分配、仍在跑的长任务。
+                boolean hasRunningWork = TaskManager.INSTANCE.getActive(bot).isPresent()
+                        || io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.hasActivePlan(bot);
+                if (hasRunningWork) {
+                    // 有任务在跑:标记等待,任务结束后由 idle-watcher 唤醒大脑接续,不至于无人接手。
+                    awaitingTask.put(bot.getUuid(), true);
+                    sendPanelChat(bot, "system", "工具调用轮次已达上限,我先停止思考;手头任务会继续跑完,完成后我再判断下一步。");
+                } else {
+                    // 全部尝试都失败了:停掉残留动作、清失败缓存与遗留目标计划,复位为干净空闲,
+                    // 不再无声发呆,也不无限重试。等玩家给更具体的目标或补齐前置条件。
+                    io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.clear(bot);
+                    TaskManager.INSTANCE.resetToIdle(bot);
+                    bot.getActionPack().stopAll();
+                    awaitingTask.remove(bot.getUuid());
+                    sendPanelChat(bot, "system", "我反复尝试仍没能完成(已达工具调用轮次上限),已停下并复位为空闲。请把目标说得更具体些,或先帮我准备好前置条件,我再继续。");
+                }
                 trimHistory(conversation);
                 return;
             }

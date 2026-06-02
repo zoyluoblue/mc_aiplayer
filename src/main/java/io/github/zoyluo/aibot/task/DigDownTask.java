@@ -147,9 +147,13 @@ public final class DigDownTask extends AbstractTask {
         }
         BlockState belowState = world.getBlockState(below);
 
-        // 脚下已空(刚挖完正在下落)→ 本 tick 不挖,等 bot 落到新位置,下一 tick feet 自然更新。
-        // 看门狗用"破块"刷新,下落只占几 tick,不会误触发。
+        // 脚下已空(刚挖空这一格)→ 主动下沉一格。
+        // 关键(实测卡死根因):bot 是 ServerPlayerEntity,服务端**不跑 travel()**(真实玩家的移动/重力由
+        // 客户端驱动,fake player 没有客户端),所以挖空脚下**不会被动下落**——dig_down 全程 y 恒定、
+        // below 永远是 air、看门狗 200t 后判 no_progress 卡死(diag 7 连拍 pos 一字不变即铁证)。
+        // 这里主动把 bot 沉进刚挖空的格子继续掘进;下沉后刚破块的掉落物正好落入拾取半径,一并修掉 collected=0。
         if (belowState.isAir()) {
+            bot.getActionPack().descendInto(below);
             return;
         }
         // 流体安全:脚下是岩浆/水,或正下方是岩浆 → 硬停,交 GoalExecutor/大脑处理。

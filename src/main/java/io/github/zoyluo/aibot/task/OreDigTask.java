@@ -285,7 +285,11 @@ public final class OreDigTask extends AbstractTask {
         }
         BlockState s = world.getBlockState(below);
         if (s.isAir()) {
-            return; // 正在下落,等
+            // bot 无被动重力(ServerPlayerEntity 服务端不跑 travel(),fake player 没客户端驱动)——
+            // 挖空脚下不会自动下落(与 DigDownTask 同根因)。主动下沉到刚挖空的格子,
+            // 否则竖直换层会站着空转直到看门狗失败(ore_dig_buried 矿在正下方时必卡)。
+            bot.getActionPack().descendInto(below);
+            return;
         }
         if (s.getFluidState().isIn(FluidTags.LAVA) || s.getFluidState().isIn(FluidTags.WATER)
                 || world.getBlockState(below.down()).getFluidState().isIn(FluidTags.LAVA)) {

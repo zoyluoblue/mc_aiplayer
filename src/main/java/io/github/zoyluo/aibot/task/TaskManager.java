@@ -46,6 +46,27 @@ public final class TaskManager {
         }
     }
 
+    /**
+     * 把 bot 彻底复位到干净的空闲:停掉活跃/暂停任务、清失败记录与状态缓存,使 status() 返回 idle。
+     * 供大脑在"反复失败已放弃"(max_turns)等场景善后调用——否则遗留任务 FAILED 后 lastStatus 会长期
+     * 缓存 FAILED(面板/诊断一直显示卡死),pendingFailure 滞留也会让 idle-watcher 空转(实测发呆 13 分钟根因)。
+     */
+    public void resetToIdle(AIPlayerEntity bot) {
+        UUID uuid = bot.getUuid();
+        Task current = active.remove(uuid);
+        if (current != null) {
+            current.abort(bot);
+        }
+        Task pausedTask = paused.remove(uuid);
+        if (pausedTask != null) {
+            pausedTask.abort(bot);
+        }
+        lastFailure.remove(uuid);
+        pendingFailure.remove(uuid);
+        lastStatus.put(uuid, TaskStatus.idle());
+        BotReporter.INSTANCE.onStatus(bot.getServer(), bot, TaskStatus.idle());
+    }
+
     public Optional<Task> getActive(AIPlayerEntity bot) {
         return Optional.ofNullable(active.get(bot.getUuid()));
     }

@@ -149,6 +149,24 @@ public final class ActionPack {
         return true;
     }
 
+    /**
+     * 主动把 bot 下沉一格到指定(已为空气的)格子。
+     * 关键:bot 是 ServerPlayerEntity,服务端**不跑 travel()**(真实玩家的移动/重力由客户端驱动,
+     * fake player 没有客户端),因此**没有被动重力**——挖空脚下不会自动下落。竖井下挖类任务
+     *(DigDownTask / OreDigTask.digDownOneLayer)必须靠本方法主动驱动下沉,否则会站着空转直到看门狗失败
+     *(实测:dig_down 全程 y 恒定、200t no_progress 卡死的共享根因)。
+     * 幂等:bot 已在该层或更低则不动。teleport 会清零 fallDistance,不会摔伤。
+     */
+    public void descendInto(BlockPos target) {
+        if (player.getBlockPos().getY() <= target.getY()) {
+            return;
+        }
+        stopMovement();
+        player.teleport(player.getServerWorld(),
+                target.getX() + 0.5D, target.getY(), target.getZ() + 0.5D,
+                Collections.emptySet(), player.getYaw(), player.getPitch(), false);
+    }
+
     public ActionResult startMining(BlockPos pos, Direction face) {
         this.mining = new MiningController(pos, face);
         this.pathExecutor = null;

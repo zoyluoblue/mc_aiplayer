@@ -3,6 +3,7 @@ package io.github.zoyluo.aibot.client.screen;
 import io.github.zoyluo.aibot.client.BotClientState;
 import io.github.zoyluo.aibot.client.BotCommandBridge;
 import io.github.zoyluo.aibot.client.screen.ui.ChatView;
+import io.github.zoyluo.aibot.client.screen.ui.InventoryView;
 import io.github.zoyluo.aibot.client.screen.ui.PanelComponent;
 import io.github.zoyluo.aibot.client.screen.ui.Theme;
 import io.github.zoyluo.aibot.client.screen.ui.cards.GoalCard;
@@ -26,7 +27,8 @@ public final class BotPanelScreen extends Screen {
     public enum Mode {
         CHAT_STATUS,
         ACTIONS,
-        SETTINGS
+        SETTINGS,
+        INVENTORY
     }
 
     private final List<PanelComponent> leftCards = new ArrayList<>();
@@ -36,6 +38,7 @@ public final class BotPanelScreen extends Screen {
     private ChatView chat;
     private TextFieldWidget input;
     private ButtonWidget sendButton;
+    private ButtonWidget inventoryButton;
     private ButtonWidget settingsButton;
     private ButtonWidget closeButton;
     private int px;
@@ -49,6 +52,7 @@ public final class BotPanelScreen extends Screen {
     public BotPanelScreen(Mode mode) {
         super(Text.translatable(mode == Mode.ACTIONS ? "screen.aibot.actions_panel"
                 : mode == Mode.SETTINGS ? "screen.aibot.settings_panel"
+                : mode == Mode.INVENTORY ? "screen.aibot.inventory_panel"
                 : "screen.aibot.panel"));
         this.mode = mode;
     }
@@ -76,6 +80,13 @@ public final class BotPanelScreen extends Screen {
             register(input);
             register(sendButton);
         }
+        inventoryButton = ButtonWidget.builder(Text.translatable(mode == Mode.INVENTORY ? "btn.aibot.chat" : "btn.aibot.inventory"), button -> {
+                    if (client != null) {
+                        client.setScreen(new BotPanelScreen(mode == Mode.INVENTORY ? Mode.CHAT_STATUS : Mode.INVENTORY));
+                    }
+                })
+                .dimensions(px + pw - 134, py + 4, 40, 14)
+                .build();
         settingsButton = ButtonWidget.builder(Text.translatable(mode == Mode.SETTINGS ? "btn.aibot.chat" : "btn.aibot.settings"), button -> {
                     if (client != null) {
                         client.setScreen(new BotPanelScreen(mode == Mode.SETTINGS ? Mode.CHAT_STATUS : Mode.SETTINGS));
@@ -86,6 +97,7 @@ public final class BotPanelScreen extends Screen {
         closeButton = ButtonWidget.builder(Text.translatable("btn.aibot.close"), button -> close())
                 .dimensions(px + pw - 46, py + 4, 38, 14)
                 .build();
+        register(inventoryButton);
         register(settingsButton);
         register(closeButton);
         for (PanelComponent card : laidOutCards) {
@@ -176,6 +188,10 @@ public final class BotPanelScreen extends Screen {
         } else if (mode == Mode.SETTINGS) {
             pw = docked ? Math.min(300, Math.max(260, (int) (width * 0.28F))) : Math.max(240, width - 20);
             ph = Math.max(150, Math.min(height - 24, 190));
+        } else if (mode == Mode.INVENTORY) {
+            // 需容下 9 列 × 18px 网格(162)+ 左右内边距;高度容两段网格(AI 4 行 + 玩家 4 行)
+            pw = docked ? Math.min(240, Math.max(200, (int) (width * 0.24F))) : Math.max(200, width - 20);
+            ph = Math.max(200, Math.min(height - 24, 232));
         } else {
             pw = docked ? Math.min(520, Math.max(360, (int) (width * 0.48F))) : Math.max(240, width - 20);
             // 关键:ph 必须能装进屏幕(含上下边距),否则底部输入框会被挤出屏幕下沿
@@ -183,7 +199,7 @@ public final class BotPanelScreen extends Screen {
         }
         px = docked ? width - pw - 12 : (width - pw) / 2;
         py = 12;
-        leftW = mode == Mode.ACTIONS || mode == Mode.SETTINGS ? pw : Math.max(160, Math.round(pw * 0.42F));
+        leftW = mode == Mode.ACTIONS || mode == Mode.SETTINGS || mode == Mode.INVENTORY ? pw : Math.max(160, Math.round(pw * 0.42F));
         rightW = pw - leftW - Theme.GUTTER;
     }
 
@@ -196,6 +212,11 @@ public final class BotPanelScreen extends Screen {
         }
         if (mode == Mode.SETTINGS) {
             leftCards.add(new SettingsCard(target));
+            chat = null;
+            return;
+        }
+        if (mode == Mode.INVENTORY) {
+            leftCards.add(new InventoryView(target));
             chat = null;
             return;
         }
@@ -235,6 +256,7 @@ public final class BotPanelScreen extends Screen {
         String name = displayTarget();
         String titleKey = mode == Mode.ACTIONS ? "screen.aibot.actions_title"
                 : mode == Mode.SETTINGS ? "screen.aibot.settings_title"
+                : mode == Mode.INVENTORY ? "screen.aibot.inventory_title"
                 : "screen.aibot.title";
         context.drawTextWithShadow(textRenderer, Theme.tr(titleKey, name), px + Theme.PAD, py + 6, Theme.TEXT_STRONG);
         context.drawHorizontalLine(px + Theme.PAD, px + pw - Theme.PAD - 1, py + Theme.TITLE_H, Theme.BORDER);

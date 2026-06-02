@@ -9,6 +9,7 @@ import io.github.zoyluo.aibot.memory.BotMemory;
 import io.github.zoyluo.aibot.memory.BotMemoryStore;
 import io.github.zoyluo.aibot.network.payload.BotChatS2C;
 import io.github.zoyluo.aibot.network.payload.BotCommandC2S;
+import io.github.zoyluo.aibot.network.payload.BotItemMoveC2S;
 import io.github.zoyluo.aibot.network.payload.BotSnapshotS2C;
 import io.github.zoyluo.aibot.network.payload.SetOptionC2S;
 import io.github.zoyluo.aibot.network.payload.SubscribeBotC2S;
@@ -56,6 +57,8 @@ public final class AIBotServerNetworking {
                 context.server().execute(() -> handleCommand(context.player(), payload)));
         ServerPlayNetworking.registerGlobalReceiver(SetOptionC2S.ID, (payload, context) ->
                 context.server().execute(() -> handleSetOption(context.player(), payload)));
+        ServerPlayNetworking.registerGlobalReceiver(BotItemMoveC2S.ID, (payload, context) ->
+                context.server().execute(() -> handleItemMove(context.player(), payload)));
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) ->
                 subscriptions.remove(handler.player.getUuid()));
     }
@@ -167,6 +170,86 @@ public final class AIBotServerNetworking {
             default -> throw new IllegalArgumentException("unknown_option: " + payload.key());
         }
         sendSystem(player, target.getGameProfile().getName(), "设置已更新: " + payload.key() + "=" + payload.value());
+    }
+
+    // 面板背包:在玩家与 AI 之间移动物品。直接操作 Inventory(G3,不开 ScreenHandler);已在 server 线程(G2)。
+    // 任何人可拿放(按用户要求,不校验权限)。
+    private void handleItemMove(ServerPlayerEntity player, BotItemMoveC2S payload) {
+        Optional<AIPlayerEntity> bot = resolveBot(player, payload.botName());
+        if (bot.isEmpty()) {
+            return;
+        }
+        AIPlayerEntity target = bot.get();
+        var botInv = target.getInventory();
+        var playerInv = player.getInventory();
+        if (payload.direction() == BotItemMoveC2S.TAKE) {
+            // 从 AI main[slot] 拿到玩家背包
+            int slot = payload.slot();
+            if (slot < 0 || slot >= botInv.main.size()) {
+                return;
+            }
+            ItemStack src = botInv.main.get(slot);
+            if (src.isEmpty()) {
+                return;
+            }
+            int move = payload.amount() <= 0 ? src.getCount() : Math.min(payload.amount(), src.getCount());
+            ItemStack moving = src.copy();
+            moving.setCount(move);
+            boolean inserted = playerInv.insertStack(moving); // moving 被原地改为"未放入的剩余"
+            int placed = move - moving.getCount();
+            if (placed > 0) {
+                src.decrement(placed);
+                botInv.markDirty();
+            }
+        } else {
+            // 把玩家 inventory.main[slot] 放进 AI 背包
+            int slot = payload.slot();
+            if (slot < 0 || slot >= playerInv.main.size()) {
+                return;
+            }
+            ItemStack src = playerInv.main.get(slot);
+            if (src.isEmpty()) {
+                return;
+            }
+            int move = payload.amount() <= 0 ? src.getCount() : Math.min(payload.amount(), src.getCount());
+            ItemStack moving = src.copy();
+            moving.setCount(move);
+            int placed = insertIntoBot(botInv, moving);
+            if (placed > 0) {
+                src.decrement(placed);
+                playerInv.markDirty();
+            }
+        }
+        // 立即回推一帧快照(含双方背包),UI 不必等 10-tick 周期刷新。
+        if (ServerPlayNetworking.canSend(player, BotSnapshotS2C.ID)) {
+            ServerPlayNetworking.send(player, snapshot(target));
+        }
+    }
+
+    // 把 stack 尽量插入 AI 背包 main 区(先堆叠到同类,再填空槽),返回实际放入数量。
+    private static int insertIntoBot(net.minecraft.entity.player.PlayerInventory botInv, ItemStack moving) {
+        int want = moving.getCount();
+        // 1) 堆叠到已有同类未满槽
+        for (int i = 0; i < botInv.main.size() && !moving.isEmpty(); i++) {
+            ItemStack dst = botInv.main.get(i);
+            if (!dst.isEmpty() && ItemStack.areItemsAndComponentsEqual(dst, moving) && dst.getCount() < dst.getMaxCount()) {
+                int room = dst.getMaxCount() - dst.getCount();
+                int add = Math.min(room, moving.getCount());
+                dst.increment(add);
+                moving.decrement(add);
+            }
+        }
+        // 2) 填空槽
+        for (int i = 0; i < botInv.main.size() && !moving.isEmpty(); i++) {
+            if (botInv.main.get(i).isEmpty()) {
+                botInv.main.set(i, moving.copy());
+                moving.setCount(0);
+            }
+        }
+        if (want != moving.getCount()) {
+            botInv.markDirty();
+        }
+        return want - moving.getCount();
     }
 
     private void dispatch(ServerPlayerEntity player, AIPlayerEntity bot, BotCommandC2S payload) {

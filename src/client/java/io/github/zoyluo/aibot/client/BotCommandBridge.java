@@ -1,6 +1,7 @@
 package io.github.zoyluo.aibot.client;
 
 import io.github.zoyluo.aibot.network.payload.BotCommandC2S;
+import io.github.zoyluo.aibot.network.payload.BotItemMoveC2S;
 import io.github.zoyluo.aibot.network.payload.SetOptionC2S;
 import io.github.zoyluo.aibot.network.payload.SubscribeBotC2S;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
@@ -68,6 +69,13 @@ public final class BotCommandBridge {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.getNetworkHandler() != null) {
             client.getNetworkHandler().sendChatCommand(command);
+        }
+    }
+
+    /** 在玩家与 AI 之间移动物品。direction:BotItemMoveC2S.TAKE/PUT;slot=源容器槽位;amount<=0=整堆。任何人可拿放。 */
+    public static void moveItem(String botName, int direction, int slot, int amount) {
+        if (ClientPlayNetworking.canSend(BotItemMoveC2S.ID)) {
+            ClientPlayNetworking.send(new BotItemMoveC2S(clean(botName), direction, slot, amount));
         }
     }
 

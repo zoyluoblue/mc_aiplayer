@@ -156,11 +156,16 @@ public final class DigDownTask extends AbstractTask {
             bot.getActionPack().descendInto(below);
             return;
         }
-        // 流体安全:脚下是岩浆/水,或正下方是岩浆 → 硬停,交 GoalExecutor/大脑处理。
+        // 岩浆(脚下或其正下方)致命、不可穿 → 硬停交还。
         if (belowState.getFluidState().isIn(FluidTags.LAVA)
-                || belowState.getFluidState().isIn(FluidTags.WATER)
                 || world.getBlockState(below.down()).getFluidState().isIn(FluidTags.LAVA)) {
-            fail("dig_down_blocked_fluid collected=" + collected);
+            fail("dig_down_blocked_lava collected=" + collected);
+            return;
+        }
+        // 水不致命:当作可穿过,下沉穿过水柱继续找下方固体。地下水脉极常见,旧逻辑"遇水即 fail"
+        // 是挖矿失败的主要来源(实测 15 次 dig/ore_dig_blocked_fluid);溺水有 NavSafetyNet 兜底上浮。
+        if (belowState.getFluidState().isIn(FluidTags.WATER)) {
+            bot.getActionPack().descendInto(below);
             return;
         }
         // 脚下是实心方块(石头/泥土/任何固体)→ 挖它,穿过去往下。

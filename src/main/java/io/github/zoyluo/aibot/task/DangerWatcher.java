@@ -124,8 +124,11 @@ public final class DangerWatcher {
             task = ResupplyTask.tool(item);
         } else {
             AIBotConfig.Survival survival = AIBotConfig.get().survival();
+            // 没食物时:周围有猎物 → 让路给 maybeEat 的猎食(野外猎肉比翻箱找小麦可靠,见第2层饥饿链),
+            // 周围没猎物才走 ResupplyTask.food()(翻储备箱)。修"饿了反复 resupply 找小麦失败而不去猎肉"。
             if (bot.getHungerManager().getFoodLevel() <= survival.hungerEatThreshold()
-                    && InventoryAction.findFoodSlot(bot) < 0) {
+                    && InventoryAction.findFoodSlot(bot) < 0
+                    && !HuntTask.hasPreyNearby(bot)) {
                 task = ResupplyTask.food();
             }
         }

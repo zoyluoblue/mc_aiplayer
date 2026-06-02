@@ -291,9 +291,14 @@ public final class OreDigTask extends AbstractTask {
             bot.getActionPack().descendInto(below);
             return;
         }
-        if (s.getFluidState().isIn(FluidTags.LAVA) || s.getFluidState().isIn(FluidTags.WATER)
+        // 岩浆致命 → 硬停;水不致命 → 下沉穿过继续(与 DigDownTask 一致,地下水脉常见,旧逻辑遇水即 fail)。
+        if (s.getFluidState().isIn(FluidTags.LAVA)
                 || world.getBlockState(below.down()).getFluidState().isIn(FluidTags.LAVA)) {
-            fail("ore_dig_blocked_fluid collected=" + collected);
+            fail("ore_dig_blocked_lava collected=" + collected);
+            return;
+        }
+        if (s.getFluidState().isIn(FluidTags.WATER)) {
+            bot.getActionPack().descendInto(below);
             return;
         }
         BlockMiner.Status st = miner.target() != null && miner.target().equals(below)

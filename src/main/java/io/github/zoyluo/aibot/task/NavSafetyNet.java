@@ -34,6 +34,7 @@ public final class NavSafetyNet {
     private static final int BREATHE_SCAN_UP = 5;          // 头顶向上找空气的格数
     private static final int RESCUE_RADIUS_H = 16;
     private static final int RESCUE_RADIUS_V = 16;
+    private static final int SUFFOCATION_CLIMB_UP = 24;   // 窒息脱困优先垂直向上钻出的最大格数(地表方向)
     private final Map<UUID, Integer> nextLogTick = new ConcurrentHashMap<>();
 
     private NavSafetyNet() {
@@ -46,8 +47,8 @@ public final class NavSafetyNet {
         ServerWorld world = bot.getServerWorld();
         BlockPos feet = bot.getBlockPos();
 
-        // 0) 窒息/卡方块:脚位或头位有实体碰撞体时先尝试挪到附近可站点。
-        if (blockedColumn(world, feet) && bot.getActionPack().snapPlayerToNearestStandable("navsafe_suffocation")) {
+        // 0) 窒息/卡方块:脚位或头位有实体碰撞体时,优先**向上**钻出地表(修"越救越深")。
+        if (blockedColumn(world, feet) && escapeSuffocation(bot, world, feet)) {
             throttledLog(server, bot, "navsafe_suffocation_snap", feet);
             return true;
         }
@@ -77,6 +78,29 @@ public final class NavSafetyNet {
         }
 
         return false;
+    }
+
+    /**
+     * 窒息脱困:优先**垂直向上**找第一个可站点(地表方向)并传送上去。
+     * 修"越救越深"——旧实现用 snapPlayerToNearestStandable 找欧氏最近可站点,bot 被埋时最近点
+     * 往往在下方/侧下方,反复 snap 把 bot 一格格往坑里拽(实测 994 列 64→63→62→61 困死)。
+     * 向上钻出是被埋的正解(Standability.isStandable 已保证落点脚位+头位空气、脚下有支撑=能站能呼吸);
+     * 向上 SUFFOCATION_CLIMB_UP 格内无解(深埋封顶)才回退到全向最近可站点,至少脱离当前窒息格。
+     */
+    private boolean escapeSuffocation(AIPlayerEntity bot, ServerWorld world, BlockPos feet) {
+        int top = world.getBottomY() + world.getHeight();
+        for (int dy = 1; dy <= SUFFOCATION_CLIMB_UP && feet.getY() + dy < top - 1; dy++) {
+            BlockPos candidate = feet.up(dy);
+            if (Standability.isStandable(world, candidate)) {
+                bot.getActionPack().stopAll();
+                bot.teleport(world, candidate.getX() + 0.5D, candidate.getY(), candidate.getZ() + 0.5D,
+                        Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+                Standability.clearCache();
+                return true;
+            }
+        }
+        // 向上无解(深埋/封顶)→ 回退原逻辑:全向最近可站点。
+        return bot.getActionPack().snapPlayerToNearestStandable("navsafe_suffocation");
     }
 
     // 头顶 BREATHE_SCAN_UP 格内是否能露头呼吸(遇到非水的可通过格=能呼吸;遇到实体方块顶盖=封死)

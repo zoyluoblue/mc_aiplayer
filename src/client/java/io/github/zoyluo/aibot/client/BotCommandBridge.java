@@ -2,6 +2,7 @@ package io.github.zoyluo.aibot.client;
 
 import io.github.zoyluo.aibot.network.payload.BotCommandC2S;
 import io.github.zoyluo.aibot.network.payload.BotItemMoveC2S;
+import io.github.zoyluo.aibot.network.payload.BotTeleportC2S;
 import io.github.zoyluo.aibot.network.payload.SetOptionC2S;
 import io.github.zoyluo.aibot.network.payload.SubscribeBotC2S;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
@@ -76,6 +77,13 @@ public final class BotCommandBridge {
     public static void moveItem(String botName, int direction, int slot, int amount) {
         if (ClientPlayNetworking.canSend(BotItemMoveC2S.ID)) {
             ClientPlayNetworking.send(new BotItemMoveC2S(clean(botName), direction, slot, amount));
+        }
+    }
+
+    /** 传送。direction:BotTeleportC2S.TO_AI(玩家→AI 附近)/ RECALL_AI(AI→玩家附近)。 */
+    public static void teleport(String botName, int direction) {
+        if (ClientPlayNetworking.canSend(BotTeleportC2S.ID)) {
+            ClientPlayNetworking.send(new BotTeleportC2S(clean(botName), direction));
         }
     }
 

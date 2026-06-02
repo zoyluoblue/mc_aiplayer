@@ -10,6 +10,7 @@ import io.github.zoyluo.aibot.memory.BotMemoryStore;
 import io.github.zoyluo.aibot.network.payload.BotChatS2C;
 import io.github.zoyluo.aibot.network.payload.BotCommandC2S;
 import io.github.zoyluo.aibot.network.payload.BotItemMoveC2S;
+import io.github.zoyluo.aibot.network.payload.BotTeleportC2S;
 import io.github.zoyluo.aibot.network.payload.BotSnapshotS2C;
 import io.github.zoyluo.aibot.network.payload.SetOptionC2S;
 import io.github.zoyluo.aibot.network.payload.SubscribeBotC2S;
@@ -59,6 +60,8 @@ public final class AIBotServerNetworking {
                 context.server().execute(() -> handleSetOption(context.player(), payload)));
         ServerPlayNetworking.registerGlobalReceiver(BotItemMoveC2S.ID, (payload, context) ->
                 context.server().execute(() -> handleItemMove(context.player(), payload)));
+        ServerPlayNetworking.registerGlobalReceiver(BotTeleportC2S.ID, (payload, context) ->
+                context.server().execute(() -> handleTeleport(context.player(), payload)));
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) ->
                 subscriptions.remove(handler.player.getUuid()));
     }
@@ -174,6 +177,30 @@ public final class AIBotServerNetworking {
 
     // 面板背包:在玩家与 AI 之间移动物品。直接操作 Inventory(G3,不开 ScreenHandler);已在 server 线程(G2)。
     // 任何人可拿放(按用户要求,不校验权限)。
+    private void handleTeleport(ServerPlayerEntity player, BotTeleportC2S payload) {
+        Optional<AIPlayerEntity> bot = resolveBot(player, payload.botName());
+        if (bot.isEmpty()) {
+            return;
+        }
+        AIPlayerEntity target = bot.get();
+        if (payload.direction() == BotTeleportC2S.TO_AI) {
+            // 玩家 → AI 附近 10 格内可站立方块。
+            net.minecraft.server.world.ServerWorld world = target.getServerWorld();
+            io.github.zoyluo.aibot.pathfinding.Standability.findNearestStandable(world, target.getBlockPos(), 10, 8, 8)
+                    .ifPresent(p -> player.teleport(world, p.getX() + 0.5D, p.getY(), p.getZ() + 0.5D,
+                            java.util.Set.of(), player.getYaw(), player.getPitch(), true));
+        } else {
+            // AI → 玩家附近 10 格内可站立方块(先停手头动作再传)。
+            net.minecraft.server.world.ServerWorld world = player.getServerWorld();
+            io.github.zoyluo.aibot.pathfinding.Standability.findNearestStandable(world, player.getBlockPos(), 10, 8, 8)
+                    .ifPresent(p -> {
+                        target.getActionPack().stopAll();
+                        target.teleport(world, p.getX() + 0.5D, p.getY(), p.getZ() + 0.5D,
+                                java.util.Set.of(), target.getYaw(), target.getPitch(), true);
+                    });
+        }
+    }
+
     private void handleItemMove(ServerPlayerEntity player, BotItemMoveC2S payload) {
         Optional<AIPlayerEntity> bot = resolveBot(player, payload.botName());
         if (bot.isEmpty()) {

@@ -20,6 +20,8 @@ public final class SettingsCard extends PanelCard {
     private ButtonWidget manualButton;
     private ButtonWidget memoryButton;
     private ButtonWidget reportsButton;
+    private ButtonWidget teleportToButton;  // 传送至 AI(玩家→AI 附近)
+    private ButtonWidget recallButton;      // 召回 AI(AI→玩家附近)
 
     public SettingsCard(String target) {
         this.target = target == null ? "" : target;
@@ -32,7 +34,7 @@ public final class SettingsCard extends PanelCard {
 
     @Override
     protected int bodyHeight() {
-        return 86;
+        return 118;
     }
 
     @Override
@@ -52,8 +54,14 @@ public final class SettingsCard extends PanelCard {
         manualButton = button("settings.aibot.manual", () -> toggle("manual", snapshot == null || !snapshot.manualMode()));
         memoryButton = button("settings.aibot.memory", () -> toggle("memory", snapshot == null || !snapshot.memoryToolsEnabled()));
         reportsButton = button("settings.aibot.reports", () -> toggle("reports", snapshot == null || !snapshot.verboseReportsEnabled()));
+        teleportToButton = button("settings.aibot.tp_to_ai",
+                () -> BotCommandBridge.teleport(target, io.github.zoyluo.aibot.network.payload.BotTeleportC2S.TO_AI));
+        recallButton = button("settings.aibot.recall_ai",
+                () -> BotCommandBridge.teleport(target, io.github.zoyluo.aibot.network.payload.BotTeleportC2S.RECALL_AI));
         layoutWidgets();
         updateLabels();
+        sink.accept(teleportToButton);
+        sink.accept(recallButton);
         sink.accept(manualButton);
         sink.accept(memoryButton);
         sink.accept(reportsButton);
@@ -77,12 +85,20 @@ public final class SettingsCard extends PanelCard {
     }
 
     private void layoutWidgets() {
-        if (manualButton == null) {
+        if (teleportToButton == null) {
             return;
         }
         int bx = x + Theme.PAD;
-        int by = y + 55;
         int bw = w - Theme.PAD * 2;
+        // 传送行:两个按钮横排(各占一半)。
+        int half = (bw - 4) / 2;
+        int tpY = y + 32;
+        teleportToButton.setPosition(bx, tpY);
+        teleportToButton.setDimensions(half, BUTTON_H);
+        recallButton.setPosition(bx + half + 4, tpY);
+        recallButton.setDimensions(half, BUTTON_H);
+        // 三个开关竖排。
+        int by = tpY + 24;
         manualButton.setPosition(bx, by);
         manualButton.setDimensions(bw, BUTTON_H);
         memoryButton.setPosition(bx, by + 22);

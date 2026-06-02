@@ -83,6 +83,9 @@ public final class AIBotVerifySubcommand {
             "ore_dig_buried",
             "mine_iron_pocket",
             "mine_with_mob",
+            "achieve_iron_ingot",
+            "achieve_iron_pickaxe",
+            "achieve_diamond",
             "nav_descend");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
@@ -94,7 +97,10 @@ public final class AIBotVerifySubcommand {
             "mine_buried_iron",
             "mine_iron_pocket",
             "mine_with_mob",
-            "mine_iron_from_scratch");
+            "mine_iron_from_scratch",
+            "achieve_iron_ingot",
+            "achieve_iron_pickaxe",
+            "achieve_diamond");
     private static final Map<UUID, VerifyRun> RUNS = new ConcurrentHashMap<>();
 
     private AIBotVerifySubcommand() {
@@ -197,6 +203,9 @@ public final class AIBotVerifySubcommand {
             case "ore_dig_buried" -> assignOreDigBuried(bot);
             case "mine_iron_pocket" -> assignMineIronPocket(bot);
             case "mine_with_mob" -> assignMineWithMob(bot);
+            case "achieve_iron_ingot" -> assignAchieveIronIngot(bot);
+            case "achieve_iron_pickaxe" -> assignAchieveIronPickaxe(bot);
+            case "achieve_diamond" -> assignAchieveDiamond(bot);
             case "nav_descend" -> assignNavDescend(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
@@ -536,6 +545,78 @@ public final class AIBotVerifySubcommand {
         }
         return Result.runningGoal("mine_with_mob", 4800,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.RAW_IRON) >= 1);
+    }
+
+    /**
+     * REGRESSION(P2):achieve_goal 铁锭——空手→倒推→砍树→木镐→挖石→石镐→挖铁→熔炼→铁锭。
+     * 全料齐备(树/石/铁矿)+ 一座熔炉 + 充足燃料就在身边,断言最终背包出现 iron_ingot。测熔炼链。
+     */
+    private static Result assignAchieveIronIngot(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        for (int dy = 0; dy < 8; dy++) {
+            world.setBlockState(origin.offset(Direction.WEST, 2).up(dy), Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        for (int dy = 1; dy <= 8; dy++) {
+            world.setBlockState(origin.down(dy), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        world.setBlockState(origin.down(4), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.IRON_INGOT, 1));
+        if (!started) {
+            return Result.fail("achieve_iron_ingot", "goal_submit_failed");
+        }
+        return Result.runningGoal("achieve_iron_ingot", 12000,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.IRON_INGOT) >= 1);
+    }
+
+    /**
+     * REGRESSION(P2):achieve_goal 铁镐——空手→整条倒推含熔炼 3 铁锭→合成铁镐。最深的工具链。
+     */
+    private static Result assignAchieveIronPickaxe(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        for (int dy = 0; dy < 12; dy++) {
+            world.setBlockState(origin.offset(Direction.WEST, 2).up(dy), Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        for (int dy = 1; dy <= 10; dy++) {
+            world.setBlockState(origin.down(dy), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        // 3 个铁矿(铁镐需 3 铁锭)。
+        world.setBlockState(origin.down(4), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(origin.down(5), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(origin.down(6), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.IRON_PICKAXE, 1));
+        if (!started) {
+            return Result.fail("achieve_iron_pickaxe", "goal_submit_failed");
+        }
+        return Result.runningGoal("achieve_iron_pickaxe", 16000,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.IRON_PICKAXE) >= 1);
+    }
+
+    /**
+     * REGRESSION(P2):achieve_goal 钻石——给铁镐(隔离工具链),脚下石层埋钻石矿,断言挖到 diamond。
+     * 测"金/红石/钻石/绿宝石需铁镐"这条新映射 + OreDig 挖高级矿。
+     */
+    private static Result assignAchieveDiamond(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        InventoryAction.giveItem(bot, new ItemStack(Items.IRON_PICKAXE, 1));
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        for (int dy = 1; dy <= 6; dy++) {
+            world.setBlockState(origin.down(dy), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        world.setBlockState(origin.down(3), Blocks.DIAMOND_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.DIAMOND, 1));
+        if (!started) {
+            return Result.fail("achieve_diamond", "goal_submit_failed");
+        }
+        return Result.runningGoal("achieve_diamond", 4800,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.DIAMOND) >= 1);
     }
 
     private static Result assignNavDescend(AIPlayerEntity bot) {

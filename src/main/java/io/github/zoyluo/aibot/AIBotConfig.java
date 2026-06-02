@@ -111,7 +111,7 @@ public record AIBotConfig(
                 new Combat(10, 2),
                 new Night(true, 8),
                 new Mining(2, 0.10D, true),
-                new Goal(12, true, true),
+                new Goal(16, true, true), // P2:钻石从零(石镐→铁→铁镐→钻)递归较深,12→16 留头
                 new Nav(1.0D, 12, 60, 30, 4, 2, 3.0D, 3),
                 new Pickup(1.5D, 1.0D, 8.0D));
     }

@@ -185,17 +185,11 @@ public final class GoalPlanner {
                 counts.merge(Items.COBBLESTONE, missing, Integer::sum);
                 return true;
             }
-            if (item == Items.RAW_IRON) {
-                return ensureMineOre(Set.of(Blocks.IRON_ORE), missing, depth + 1, visiting);
-            }
-            if (item == Items.RAW_COPPER) {
-                return ensureMineOre(Set.of(Blocks.COPPER_ORE), missing, depth + 1, visiting);
-            }
-            if (item == Items.RAW_GOLD) {
-                return ensureMineOre(Set.of(Blocks.GOLD_ORE), missing, depth + 1, visiting);
-            }
-            if (item == Items.COAL) {
-                return ensureMineOre(Set.of(Blocks.COAL_ORE), missing, depth + 1, visiting);
+            // P2:矿物掉落物 → 对应矿石(统一映射表)。挖该矿所需镐档由 ToolTier 决定,
+            // ensureMineOre 内部会先 ensurePickaxeTier 自动补齐镐链(如钻石需铁镐 → 先倒推铁镐)。
+            Block oreOf = oreBlockFor(item);
+            if (oreOf != null) {
+                return ensureMineOre(Set.of(oreOf), missing, depth + 1, visiting);
             }
             SmeltRecipe smelt = smeltRecipeFor(item);
             if (smelt != null) {
@@ -325,6 +319,35 @@ public final class GoalPlanner {
                 return Items.WOODEN_PICKAXE;
             }
             return Items.AIR;
+        }
+
+        // P2:矿物掉落物 → 对应矿石方块。覆盖全部常见矿(深板岩变种由 OreDigTask/expandOreFamilies 处理)。
+        private static Block oreBlockFor(Item item) {
+            if (item == Items.RAW_IRON) {
+                return Blocks.IRON_ORE;
+            }
+            if (item == Items.RAW_COPPER) {
+                return Blocks.COPPER_ORE;
+            }
+            if (item == Items.RAW_GOLD) {
+                return Blocks.GOLD_ORE;
+            }
+            if (item == Items.COAL) {
+                return Blocks.COAL_ORE;
+            }
+            if (item == Items.REDSTONE) {
+                return Blocks.REDSTONE_ORE;
+            }
+            if (item == Items.LAPIS_LAZULI) {
+                return Blocks.LAPIS_ORE;
+            }
+            if (item == Items.DIAMOND) {
+                return Blocks.DIAMOND_ORE;
+            }
+            if (item == Items.EMERALD) {
+                return Blocks.EMERALD_ORE;
+            }
+            return null;
         }
 
         private static SmeltRecipe smeltRecipeFor(Item output) {

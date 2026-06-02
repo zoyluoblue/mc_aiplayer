@@ -86,6 +86,7 @@ public final class AIBotVerifySubcommand {
             "achieve_iron_ingot",
             "achieve_iron_pickaxe",
             "achieve_diamond",
+            "farm_wheat_from_scratch",
             "nav_descend");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
@@ -206,6 +207,7 @@ public final class AIBotVerifySubcommand {
             case "achieve_iron_ingot" -> assignAchieveIronIngot(bot);
             case "achieve_iron_pickaxe" -> assignAchieveIronPickaxe(bot);
             case "achieve_diamond" -> assignAchieveDiamond(bot);
+            case "farm_wheat_from_scratch" -> assignFarmWheatFromScratch(bot);
             case "nav_descend" -> assignNavDescend(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
@@ -617,6 +619,34 @@ public final class AIBotVerifySubcommand {
         }
         return Result.runningGoal("achieve_diamond", 4800,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.DIAMOND) >= 1);
+    }
+
+    /**
+     * REGRESSION(P3):harvest_crop 小麦。给木锄,周围铺一排**成熟**小麦(age=7,免去等成长的不确定),
+     * 走 GoalExecutor HarvestCrop 目标,断言收到 ≥3 个 wheat。测农业链:有锄→FARM 步→收割计数完成。
+     */
+    private static Result assignFarmWheatFromScratch(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        InventoryAction.giveItem(bot, new ItemStack(Items.WOODEN_HOE, 1));
+        InventoryAction.giveItem(bot, new ItemStack(Items.WHEAT_SEEDS, 8));
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        net.minecraft.block.BlockState matureWheat =
+                Blocks.WHEAT.getDefaultState().with(net.minecraft.state.property.Properties.AGE_7, 7);
+        // 在 bot 周围铺 5 块成熟小麦(farmland + 成熟作物)。
+        for (int i = 1; i <= 5; i++) {
+            BlockPos farmland = origin.offset(Direction.NORTH, i);
+            world.setBlockState(farmland, Blocks.FARMLAND.getDefaultState(), Block.NOTIFY_ALL);
+            world.setBlockState(farmland.up(), matureWheat, Block.NOTIFY_ALL);
+        }
+        boolean started = GoalExecutor.INSTANCE.submit(bot,
+                new Goal.HarvestCrop(Blocks.WHEAT, Items.WHEAT_SEEDS, Items.WHEAT, 3));
+        if (!started) {
+            return Result.fail("farm_wheat_from_scratch", "goal_submit_failed");
+        }
+        return Result.runningGoal("farm_wheat_from_scratch", 4800,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.WHEAT) >= 3);
     }
 
     private static Result assignNavDescend(AIPlayerEntity bot) {

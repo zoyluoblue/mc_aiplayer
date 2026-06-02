@@ -43,6 +43,10 @@ public final class FarmTask extends AbstractTask {
     private final Block crop;
     private final boolean keepTending;
     private final boolean harvestOnly;
+    // P3:数量受限模式(GoalExecutor FARM 步用)。produceItem!=null 时,收到 targetHarvest 个产出即 complete。
+    private final Item produceItem;
+    private final int targetHarvest;
+    private int produceBaseline;
     private final List<FarmTarget> targets = new ArrayList<>();
     private final List<BlockPos> depositContainers = new ArrayList<>();
     private Phase phase = Phase.SURVEY;
@@ -56,12 +60,20 @@ public final class FarmTask extends AbstractTask {
     private String note = "";
 
     public FarmTask(BlockPos areaCenter, int radius, Item seed, Block crop, boolean keepTending, boolean harvestOnly) {
+        this(areaCenter, radius, seed, crop, keepTending, harvestOnly, null, 0);
+    }
+
+    /** P3:数量受限构造——produceItem 收到 targetHarvest 个即完成(供 GoalExecutor FARM 步)。 */
+    public FarmTask(BlockPos areaCenter, int radius, Item seed, Block crop, boolean keepTending,
+                    boolean harvestOnly, Item produceItem, int targetHarvest) {
         this.areaCenter = areaCenter.toImmutable();
         this.radius = Math.max(1, radius);
         this.seed = seed;
         this.crop = crop;
         this.keepTending = keepTending;
         this.harvestOnly = harvestOnly;
+        this.produceItem = produceItem;
+        this.targetHarvest = Math.max(0, targetHarvest);
     }
 
     @Override
@@ -91,12 +103,25 @@ public final class FarmTask extends AbstractTask {
     protected void onStart(AIPlayerEntity bot) {
         phase = Phase.SURVEY;
         lastDepositActionCount = completedActions;
+        produceBaseline = produceItem == null ? 0 : InventoryAction.countItem(bot, produceItem);
     }
 
     @Override
     protected void onTick(AIPlayerEntity bot) {
+        // P3:数量受限模式——收够目标产出即完成(优先于其它阶段判断)。
+        if (produceItem != null
+                && InventoryAction.countItem(bot, produceItem) - produceBaseline >= targetHarvest) {
+            complete();
+            return;
+        }
         if (!keepTending && elapsed > 2400) {
             fail("farm_timeout");
+            return;
+        }
+        // P3:数量受限模式有自己的硬超时(等作物成熟要时间,但不能无限),复用 keepTending 的巡逻逻辑。
+        if (produceItem != null && elapsed > 12000) {
+            fail("farm_quota_timeout collected="
+                    + (InventoryAction.countItem(bot, produceItem) - produceBaseline) + "/" + targetHarvest);
             return;
         }
         switch (phase) {

@@ -6,6 +6,7 @@ import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.task.CraftTask;
 import io.github.zoyluo.aibot.task.DigDownTask;
+import io.github.zoyluo.aibot.task.FarmTask;
 import io.github.zoyluo.aibot.task.GatherQuotaTask;
 import io.github.zoyluo.aibot.task.MineTask;
 import io.github.zoyluo.aibot.task.MoveTask;
@@ -181,6 +182,9 @@ public final class GoalExecutor {
             case CRAFT -> Optional.of(new CraftTask(step.item(), step.count()));
             case SMELT -> Optional.of(new SmeltTask(step.input(), step.output(), step.count()));
             case MOVE -> Optional.of(new MoveTask(bot, step.pos()));
+            // P3:FARM 步 → 数量受限的 FarmTask(就地开垦/播种/等熟/收割,收够 count 个产出即完成)。
+            case FARM -> Optional.of(new FarmTask(bot.getBlockPos(), 4, step.input(), step.block(),
+                    true, false, step.item(), step.count()));
         };
     }
 

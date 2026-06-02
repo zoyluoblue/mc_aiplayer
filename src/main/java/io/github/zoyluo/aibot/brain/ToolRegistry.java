@@ -288,6 +288,20 @@ public final class ToolRegistry {
             return started ? ok("goal_assigned: achieve_goal") : fail("goal_plan_failed");
         });
 
+        register("harvest_crop", "Grow and harvest a crop with deterministic planning. Use for requests like 种小麦/收点小麦/get wheat. Crop is wheat, carrot, or potato. The system auto-prepares a hoe, tills, plants, waits for growth, and harvests; do not decompose manually.", objectSchema()
+                .property("crop", stringSchema("crop: wheat, carrot, or potato"))
+                .property("count", integerSchema("how many to harvest"))
+                .required("crop")
+                .build(), (bot, args) -> {
+            FarmAction.CropSpec spec = FarmAction.cropSpec(requiredString(args, "crop"));
+            net.minecraft.item.Item produce = spec.crop() == net.minecraft.block.Blocks.WHEAT
+                    ? net.minecraft.item.Items.WHEAT
+                    : spec.seed(); // 胡萝卜/土豆:产出即种子物品
+            boolean started = GoalExecutor.INSTANCE.submit(bot,
+                    new Goal.HarvestCrop(spec.crop(), spec.seed(), produce, optionalInt(args, "count", 1)));
+            return started ? ok("goal_assigned: harvest_crop") : fail("goal_plan_failed");
+        });
+
         register("find_container", "Find the nearest reachable inventory container such as a chest", objectSchema()
                 .property("radius", integerSchema("search radius"))
                 .build(), (bot, args) -> ContainerTask.nearestContainer(bot, optionalInt(args, "radius", 8))

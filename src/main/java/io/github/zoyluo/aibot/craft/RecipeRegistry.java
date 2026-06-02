@@ -77,6 +77,11 @@ public final class RecipeRegistry {
         sword(Items.WOODEN_SWORD, PLANKS, 2);
         sword(Items.STONE_SWORD, List.of(Items.COBBLESTONE), 2);
         sword(Items.IRON_SWORD, List.of(Items.IRON_INGOT), 2);
+
+        // P3:锄头(2 头料 + 2 木棍),供农业链倒推。
+        tool(Items.WOODEN_HOE, PLANKS, 2);
+        tool(Items.STONE_HOE, List.of(Items.COBBLESTONE), 2);
+        tool(Items.IRON_HOE, List.of(Items.IRON_INGOT), 2);
     }
 
     private static void tool(Item output, List<Item> head, int headCount) {

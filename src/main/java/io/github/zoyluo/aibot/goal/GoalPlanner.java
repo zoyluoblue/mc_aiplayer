@@ -87,7 +87,35 @@ public final class GoalPlanner {
                 case Goal.HaveItem haveItem -> ensureItem(haveItem.item(), haveItem.count(), depth, visiting);
                 case Goal.HavePickaxeTier havePickaxeTier -> ensurePickaxeTier(havePickaxeTier.tier(), depth, visiting);
                 case Goal.MineOre mineOre -> ensureMineOre(mineOre.ores(), mineOre.count(), depth, visiting);
+                case Goal.HarvestCrop harvestCrop -> ensureHarvestCrop(harvestCrop, depth, visiting);
             };
+        }
+
+        // P3:收获作物——已有足量产出则空;否则倒推锄头(任意木镐档锄,这里用 wooden_hoe)+ 种子,再下 FARM 步。
+        private boolean ensureHarvestCrop(Goal.HarvestCrop g, int depth, Set<String> visiting) {
+            int owned = counts.getOrDefault(g.produce(), 0);
+            int remaining = Math.max(0, g.count() - owned);
+            if (remaining <= 0) {
+                return true;
+            }
+            // 锄头:背包没有任意锄就倒推一把木锄(FarmAction 用任意 HoeItem,木锄足矣)。
+            if (!hasAnyHoe() && !ensureItem(Items.WOODEN_HOE, 1, depth + 1, visiting)) {
+                return false;
+            }
+            // 种子不在倒推里求:FarmTask 运行期会就地找已有作物/草获取并从收割中续种;
+            // 若确实没种子,FarmTask 自身会 fail 并由 GoalExecutor 中文汇报,不在纯函数里假设世界有草。
+            addStep(GoalStep.farm(g.crop(), g.seed(), g.produce(), remaining));
+            counts.merge(g.produce(), remaining, Integer::sum);
+            return true;
+        }
+
+        private boolean hasAnyHoe() {
+            return counts.getOrDefault(Items.WOODEN_HOE, 0) > 0
+                    || counts.getOrDefault(Items.STONE_HOE, 0) > 0
+                    || counts.getOrDefault(Items.IRON_HOE, 0) > 0
+                    || counts.getOrDefault(Items.DIAMOND_HOE, 0) > 0
+                    || counts.getOrDefault(Items.GOLDEN_HOE, 0) > 0
+                    || counts.getOrDefault(Items.NETHERITE_HOE, 0) > 0;
         }
 
         private boolean ensurePickaxeTier(int tier, int depth, Set<String> visiting) {

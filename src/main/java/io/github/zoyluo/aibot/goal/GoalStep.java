@@ -22,7 +22,8 @@ public record GoalStep(Kind kind,
         MINE_ORE,
         CRAFT,
         SMELT,
-        MOVE
+        MOVE,
+        FARM
     }
 
     public GoalStep {
@@ -55,6 +56,11 @@ public record GoalStep(Kind kind,
         return new GoalStep(Kind.MOVE, null, 1, null, Set.of(), null, null, pos);
     }
 
+    /** P3:FARM 步——block=作物方块,input=种子,item=产出物,count=要收的数量。 */
+    public static GoalStep farm(Block crop, Item seed, Item produce, int count) {
+        return new GoalStep(Kind.FARM, produce, count, crop, Set.of(), seed, null, null);
+    }
+
     public GoalStep withCount(int newCount) {
         return new GoalStep(kind, item, newCount, block, ores, input, output, pos);
     }
@@ -81,6 +87,7 @@ public record GoalStep(Kind kind,
             case CRAFT -> "CRAFT " + Registries.ITEM.getId(item) + " x" + count;
             case SMELT -> "SMELT " + Registries.ITEM.getId(input) + " -> " + Registries.ITEM.getId(output) + " x" + count;
             case MOVE -> "MOVE " + pos.getX() + "," + pos.getY() + "," + pos.getZ();
+            case FARM -> "FARM " + Registries.BLOCK.getId(block) + " x" + count;
         };
     }
 }

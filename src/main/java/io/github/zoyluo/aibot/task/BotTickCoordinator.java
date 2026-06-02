@@ -29,6 +29,7 @@ public final class BotTickCoordinator {
                 continue;
             }
             if (!handled && runBackground) {
+                io.github.zoyluo.aibot.action.EquipAction.equipBestArmor(bot); // 第3层:平时也自动穿上背包里更好的护甲
                 IdleCoordinator.INSTANCE.tickBot(bot);
             }
         }

@@ -8,6 +8,7 @@ import io.github.zoyluo.aibot.mining.OreScan;
 import io.github.zoyluo.aibot.mining.ToolTier;
 import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
+import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
@@ -25,6 +26,12 @@ public final class GoalPlanner {
 
     private GoalPlanner() {
     }
+
+    // 第3层 装备前置用:铁甲四件 + 对应装备槽。
+    private static final List<Item> IRON_ARMOR = List.of(
+            Items.IRON_HELMET, Items.IRON_CHESTPLATE, Items.IRON_LEGGINGS, Items.IRON_BOOTS);
+    private static final EquipmentSlot[] ARMOR_SLOTS = {
+            EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET};
 
     public record GoalPlan(Goal goal, List<GoalStep> steps, List<String> unresolved) {
         public boolean success() {
@@ -57,6 +64,10 @@ public final class GoalPlanner {
         }
         for (ItemStack stack : bot.getInventory().offHand) {
             add(counts, stack);
+        }
+        // 第3层:计入已穿装备槽,避免"已穿铁甲"被 ensureArmor 当成缺失而重复制作。
+        for (EquipmentSlot slot : ARMOR_SLOTS) {
+            add(counts, bot.getEquippedStack(slot));
         }
         return counts;
     }
@@ -137,13 +148,32 @@ public final class GoalPlanner {
             if (remaining <= 0) {
                 return true;
             }
-            if (!ensurePickaxeTier(ToolTier.requiredPickaxeTier(expanded), depth + 1, visiting)) {
+            int tier = ToolTier.requiredPickaxeTier(expanded);
+            if (!ensurePickaxeTier(tier, depth + 1, visiting)) {
+                return false;
+            }
+            // 第3层:深层贵重矿(需铁镐及以上,如钻石/金/红石/绿宝石)下矿凶险 → 先备一身铁甲+铁剑再开挖。
+            if (tier >= ToolTier.IRON && !ensureArmor(depth + 1, visiting)) {
                 return false;
             }
             addStep(GoalStep.mineOre(expanded, remaining));
             for (Item drop : drops) {
                 counts.merge(drop, remaining, Integer::sum);
                 break;
+            }
+            return true;
+        }
+
+        // 第3层 装备前置:确保一身铁甲 + 铁剑(库存或已穿都算——inventoryCounts 已计入装备槽)。
+        private boolean ensureArmor(int depth, Set<String> visiting) {
+            for (Item piece : IRON_ARMOR) {
+                if (counts.getOrDefault(piece, 0) <= 0 && !ensureItem(piece, 1, depth + 1, visiting)) {
+                    return false;
+                }
+            }
+            if (counts.getOrDefault(Items.IRON_SWORD, 0) <= 0
+                    && !ensureItem(Items.IRON_SWORD, 1, depth + 1, visiting)) {
+                return false;
             }
             return true;
         }

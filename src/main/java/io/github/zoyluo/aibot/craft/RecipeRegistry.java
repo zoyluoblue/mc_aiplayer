@@ -82,6 +82,12 @@ public final class RecipeRegistry {
         tool(Items.WOODEN_HOE, PLANKS, 2);
         tool(Items.STONE_HOE, List.of(Items.COBBLESTONE), 2);
         tool(Items.IRON_HOE, List.of(Items.IRON_INGOT), 2);
+
+        // 第3层:铁甲(装备前置倒推用)。vanilla 用量——头5/胸8/腿7/脚4,纯铁锭无木棍。
+        armor(Items.IRON_HELMET, 5);
+        armor(Items.IRON_CHESTPLATE, 8);
+        armor(Items.IRON_LEGGINGS, 7);
+        armor(Items.IRON_BOOTS, 4);
     }
 
     private static void tool(Item output, List<Item> head, int headCount) {
@@ -90,6 +96,11 @@ public final class RecipeRegistry {
 
     private static void sword(Item output, List<Item> head, int headCount) {
         put(new Recipe(output, 1, List.of(new Ingredient(head, headCount), new Ingredient(STICKS, 1)), true));
+    }
+
+    // 第3层:护甲(纯金属,无木棍)。
+    private static void armor(Item output, int ingotCount) {
+        put(new Recipe(output, 1, List.of(new Ingredient(List.of(Items.IRON_INGOT), ingotCount)), true));
     }
 
     private static void put(Recipe recipe) {

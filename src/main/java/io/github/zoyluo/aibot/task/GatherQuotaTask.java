@@ -5,6 +5,7 @@ import io.github.zoyluo.aibot.action.InventoryAction;
 import io.github.zoyluo.aibot.craft.RecipeRegistry;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
+import io.github.zoyluo.aibot.pathfinding.Standability;
 import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
 import net.minecraft.item.BlockItem;
@@ -47,6 +48,7 @@ public final class GatherQuotaTask extends AbstractTask {
     private StockpileTask stockpileTask;
     private int searchRadius = SEARCH_RADIUS;
     private int lastScanTick = -100;
+    private boolean surfaceTried; // B:地下找不到树时,上浮到地表重试一次的兜底标志
 
     public GatherQuotaTask(Item targetItem, int targetCount) {
         this.targetItem = targetItem;
@@ -97,6 +99,29 @@ public final class GatherQuotaTask extends AbstractTask {
         }
     }
 
+    // B:bot 在地下(头顶不见天)且附近找不到可达资源时,上浮到正上方最近的"露天可站点",再重试采集。
+    // teleport 上浮(会清 fallDistance);已在露天则不动。是"集中采集"之外的兜底,极少触发。
+    private boolean trySurface(AIPlayerEntity bot) {
+        var world = bot.getServerWorld();
+        BlockPos feet = bot.getBlockPos();
+        if (world.isSkyVisible(feet)) {
+            return false;
+        }
+        int top = world.getBottomY() + world.getHeight();
+        for (int dy = 1; feet.getY() + dy < top - 1 && dy <= 80; dy++) {
+            BlockPos candidate = feet.up(dy);
+            if (Standability.isStandable(world, candidate) && world.isSkyVisible(candidate)) {
+                bot.getActionPack().stopAll();
+                bot.teleport(world, candidate.getX() + 0.5D, candidate.getY(), candidate.getZ() + 0.5D,
+                        java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+                BotLog.action(bot, "gather_surfaced",
+                        "to", candidate.getX() + "," + candidate.getY() + "," + candidate.getZ());
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void survey(AIPlayerEntity bot) {
         if (harvestBlocks.isEmpty()) {
             fail("unsupported_resource_type");
@@ -120,6 +145,13 @@ public final class GatherQuotaTask extends AbstractTask {
                 BotLog.action(bot, "gather_expand_search",
                         "radius", searchRadius,
                         "item", Registries.ITEM.getId(targetItem).toString());
+                return;
+            }
+            // B:扩到最大半径仍找不到可达资源 → 若 bot 在地下(头顶不见天),先上浮到地表再试一轮
+            //(兜底;正常情况下"集中采集"已让木头在地表一次备足,不会走到这一步)。
+            if (!surfaceTried && trySurface(bot)) {
+                surfaceTried = true;
+                searchRadius = SEARCH_RADIUS;
                 return;
             }
             fail("no_resource_nearby");

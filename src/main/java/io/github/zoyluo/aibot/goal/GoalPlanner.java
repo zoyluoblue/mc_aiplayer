@@ -17,6 +17,7 @@ import net.minecraft.registry.Registries;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -56,7 +57,32 @@ public final class GoalPlanner {
     public static GoalPlan plan(AIPlayerEntity bot, Goal goal) {
         Planner planner = new Planner(inventoryCounts(bot), Math.max(1, AIBotConfig.get().goal().maxPlanDepth()));
         planner.ensureGoal(goal, 0, new HashSet<>());
-        return new GoalPlan(goal, List.copyOf(planner.steps), List.copyOf(planner.unresolved));
+        return new GoalPlan(goal, List.copyOf(mergeGathers(planner.steps)), List.copyOf(planner.unresolved));
+    }
+
+    // 第A层 集中采集(挖钻石失败根因修复):把所有 GATHER 同类需求合并并**提到计划最前**,
+    // 让 bot 先在地表一次砍够全部木头(GATHER 无前置依赖,后续 CRAFT 都在其后,依赖不破)。
+    // 否则计划会交错"地下挖矿(把 bot 带到 y≈59)"与"地表砍树(够不到地表树)"→ no_resource_nearby → goal_failed。
+    private static List<GoalStep> mergeGathers(List<GoalStep> steps) {
+        Map<Item, Integer> gatherTotals = new LinkedHashMap<>();
+        for (GoalStep step : steps) {
+            if (step.kind() == GoalStep.Kind.GATHER) {
+                gatherTotals.merge(step.item(), step.count(), Integer::sum);
+            }
+        }
+        if (gatherTotals.isEmpty()) {
+            return steps;
+        }
+        List<GoalStep> result = new ArrayList<>();
+        for (Map.Entry<Item, Integer> entry : gatherTotals.entrySet()) {
+            result.add(GoalStep.gather(entry.getKey(), entry.getValue()));
+        }
+        for (GoalStep step : steps) {
+            if (step.kind() != GoalStep.Kind.GATHER) {
+                result.add(step);
+            }
+        }
+        return result;
     }
 
     public static List<GoalStep> planSteps(AIPlayerEntity bot, Goal goal) {

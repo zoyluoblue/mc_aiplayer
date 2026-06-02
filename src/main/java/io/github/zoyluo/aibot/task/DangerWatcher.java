@@ -31,12 +31,14 @@ public final class DangerWatcher {
     private final Map<UUID, Integer> nextNightAttemptTick = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> observedSleepCompletionTicks = new ConcurrentHashMap<>();
     private final Map<UUID, TrapRecord> trapRecords = new ConcurrentHashMap<>();
+    private final Map<UUID, Integer> nextHuntAttemptTick = new ConcurrentHashMap<>();
 
     // 第1层 困死退避:逃避类任务(evade/shelter)在同一格反复触发却没脱身,即判"被困",
     // 退避一段时间不再空派、并按间隔节流求助。终结"夜间困坑底每 2 秒 shelter/evade 死循环刷屏"。
     private static final int TRAP_REPEAT_LIMIT = 4;      // 同格反复避险 4 次 → 判被困
     private static final int TRAP_BACKOFF_TICKS = 600;   // 被困后退避 30s 不再空派威胁任务
     private static final int TRAP_HELP_INTERVAL = 1200;  // 求助消息最短间隔 60s(防刷屏)
+    private static final int HUNT_FOOD_TARGET = 3;       // 第2层 饥饿链:没食物时主动猎取的生肉数量
 
     private DangerWatcher() {
     }
@@ -154,6 +156,10 @@ public final class DangerWatcher {
             return false;
         }
         if (InventoryAction.findFoodSlot(bot) < 0) {
+            // 第2层 饥饿链:没有任何食物 → 若周围有可猎动物,主动猎杀获取生肉,而非干等饿死。
+            if (huntForFood(server, bot, active)) {
+                return true;
+            }
             nextEatAttemptTick.put(bot.getUuid(), now + 100);
             return false;
         }
@@ -168,6 +174,33 @@ public final class DangerWatcher {
         TaskManager.INSTANCE.assign(bot, new EatTask());
         nextEatAttemptTick.put(bot.getUuid(), now + 100);
         BotLog.danger(bot, "hunger_eat_started", "food", foodLevel, "critical", critical);
+        return true;
+    }
+
+    // 第2层 饥饿链:没食物时主动猎食(获取生肉)。仅在不处于威胁应对(evade/combat)时派;周围无猎物则不空派。
+    private boolean huntForFood(MinecraftServer server, AIPlayerEntity bot, Optional<Task> active) {
+        if (active.isPresent()) {
+            if (active.get() instanceof HuntTask) {
+                return true; // 已在猎食,保持
+            }
+            if (active.get() instanceof EvadeTask || active.get() instanceof CombatTask) {
+                return false; // 正在应对威胁,别打断
+            }
+        }
+        int now = server.getTicks();
+        if (now < nextHuntAttemptTick.getOrDefault(bot.getUuid(), 0)) {
+            return false;
+        }
+        if (!HuntTask.hasPreyNearby(bot)) {
+            nextHuntAttemptTick.put(bot.getUuid(), now + 200); // 周围没猎物,过会儿再看
+            return false;
+        }
+        if (active.isPresent()) {
+            TaskManager.INSTANCE.pauseFor(bot, "hunt_for_food");
+        }
+        TaskManager.INSTANCE.assign(bot, new HuntTask(HUNT_FOOD_TARGET));
+        nextHuntAttemptTick.put(bot.getUuid(), now + 400);
+        BotLog.danger(bot, "hunt_for_food_started", "food", bot.getHungerManager().getFoodLevel());
         return true;
     }
 

@@ -15,6 +15,7 @@ import io.github.zoyluo.aibot.persist.BotPersistence;
 import io.github.zoyluo.aibot.task.BlueprintLoader;
 import io.github.zoyluo.aibot.task.BuildTask;
 import io.github.zoyluo.aibot.task.CombatTask;
+import io.github.zoyluo.aibot.task.DigDownTask;
 import io.github.zoyluo.aibot.task.ContainerTask;
 import io.github.zoyluo.aibot.task.CraftTask;
 import io.github.zoyluo.aibot.task.FarmTask;
@@ -76,6 +77,7 @@ public final class AIBotVerifySubcommand {
             "mine_to_iron",
             "mine_iron_from_scratch",
             "mine_buried_iron",
+            "dig_down",
             "nav_descend");
     private static final Map<UUID, VerifyRun> RUNS = new ConcurrentHashMap<>();
 
@@ -170,6 +172,7 @@ public final class AIBotVerifySubcommand {
             case "mine_to_iron" -> assignMineToIron(bot);
             case "mine_iron_from_scratch" -> assignMineIronFromScratch(bot);
             case "mine_buried_iron" -> assignMineBuriedIron(bot);
+            case "dig_down" -> assignDigDown(bot);
             case "nav_descend" -> assignNavDescend(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
@@ -384,6 +387,28 @@ public final class AIBotVerifySubcommand {
         }
         return Result.runningGoal("mine_buried_iron", 2400,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.RAW_IRON) >= 1);
+    }
+
+    /**
+     * REGRESSION(实测#9):DigDownTask 站着挖竖井取圆石。复现"地表 bot,脚下是表层土、相邻无裸露石头"
+     * 的场景——旧实现会秒报 no_reachable / 反复重发 startMining 清零进度卡死。
+     * 给木镐,脚下铺 2 层泥土再下是石头,bot 必须挖穿泥土到石层、采够 3 个圆石且不卡。
+     */
+    private static Result assignDigDown(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        InventoryAction.giveItem(bot, new ItemStack(Items.WOODEN_PICKAXE, 1));
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        // 脚下:y-1、y-2 铺泥土(表层土),y-3 起向下铺石头柱;模拟"草地下挖到石层"。
+        world.setBlockState(origin.down(), Blocks.DIRT.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(origin.down(2), Blocks.DIRT.getDefaultState(), Block.NOTIFY_ALL);
+        for (int dy = 3; dy <= 10; dy++) {
+            world.setBlockState(origin.down(dy), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        Task task = new DigDownTask(Blocks.STONE, 3);
+        return assignTask(bot, "dig_down", task, 1200,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.COBBLESTONE) >= 3);
     }
 
     private static Result assignNavDescend(AIPlayerEntity bot) {

@@ -151,6 +151,15 @@ public final class GoalExecutor {
             report(bot, fresh.success() ? "目标已停止:没有可继续执行的步骤。" : "目标重规划失败:" + String.join(", ", fresh.unresolved()));
             return;
         }
+        // 防呆:若重规划的第一步与刚失败的步骤完全相同,且失败是"硬卡死"类(挖不动/卡住/超时),
+        // 重试只会原样再失败一次(实测#9 的 replan 风暴根因)。直接判失败,交大脑/玩家换思路。
+        if (plan.current != null && plan.current.equals(fresh.steps().get(0)) && isHardFailure(reason)) {
+            activePlans.remove(bot.getUuid());
+            BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.TASK, bot, "goal_failed",
+                    "goal", plan.goal, "reason", "replan_same_step:" + reason);
+            report(bot, humanGoalFailure(reason));
+            return;
+        }
         plan.steps.clear();
         plan.steps.addAll(fresh.steps());
         plan.totalSteps = fresh.steps().size();
@@ -175,6 +184,18 @@ public final class GoalExecutor {
 
     private static void report(AIPlayerEntity bot, String text) {
         BotReporter.INSTANCE.onGoalMessage(bot, text);
+    }
+
+    // 硬卡死类失败:原样重试只会再失败(挖不动/卡住/超时/够不到)。区别于"缺料/缺镐"这类重规划能补的。
+    private static boolean isHardFailure(String reason) {
+        if (reason == null) {
+            return false;
+        }
+        return reason.contains("no_progress")
+                || reason.contains("dig_down_blocked")
+                || reason.contains("stuck:")
+                || reason.contains("timeout")
+                || reason.contains("no_reachable");
     }
 
     // P1:目标失败时给出可执行的中文引导,避免大脑收到原始 reason 后用 move 乱走探索而遇险。

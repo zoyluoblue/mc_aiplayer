@@ -18,6 +18,10 @@ import java.util.Optional;
 public final class ActionPack {
     private static final int PATHFIND_SUCCESS_COOLDOWN_TICKS = 5;
     private static final int PATHFIND_FAILURE_COOLDOWN_TICKS = 20;
+    // NAV-OPT 两阶段寻路预算:纯步行只搜空气格(空间小,给足额度);挖穿限额更小,压住被困/地下时的 3D 体积爆搜。
+    private static final int WALK_MAX_NODES = 10_000;
+    private static final int DIG_MAX_NODES = 4_000;
+    private static final long PATHFIND_MAX_MILLIS = 50L;
 
     private final AIPlayerEntity player;
 
@@ -97,8 +101,19 @@ public final class ActionPack {
             return ActionResult.failed("pathfinding_failed: NO_START");
         }
         boolean canPillar = PathExecutor.hasPlaceableBlock(player);
-        AStarPathfinder finder = new AStarPathfinder(player.getServerWorld(), player.getBlockPos(), goal, canPillar);
-        PathfindingResult result = finder.findPath();
+        ServerWorld world = player.getServerWorld();
+        BlockPos from = player.getBlockPos();
+        // NAV-OPT 两阶段寻路:先纯步行(禁挖,搜索空间=空气格,收敛快、不会被挖穿邻居撑爆到 SEARCH_LIMIT);
+        // 纯步行无解再允许挖穿兜底(隧道/破障),挖穿预算更小以限制被困/地下时的 3D 体积爆搜。
+        PathfindingResult result =
+                new AStarPathfinder(world, from, goal, WALK_MAX_NODES, PATHFIND_MAX_MILLIS, canPillar, false).findPath();
+        if (!result.success()) {
+            PathfindingResult dig =
+                    new AStarPathfinder(world, from, goal, DIG_MAX_NODES, PATHFIND_MAX_MILLIS, canPillar, true).findPath();
+            if (dig.success()) {
+                result = dig;
+            }
+        }
         if (!result.success()) {
             lastPathGoal = immutableGoal;
             activePathGoal = null;

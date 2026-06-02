@@ -3,6 +3,7 @@ package io.github.zoyluo.aibot.action;
 import io.github.zoyluo.aibot.AIBotConfig;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
+import io.github.zoyluo.aibot.pathfinding.AStarPathfinder;
 import io.github.zoyluo.aibot.pathfinding.Standability;
 import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
@@ -20,30 +21,33 @@ import java.util.Optional;
 import java.util.Set;
 
 public final class HarvestCore {
+    // NAV-OPT(第0层B):可达性"名副其实"——只验证最近 N 个候选,用纯步行小预算 A*,兼顾准确与性能。
+    private static final int REACH_VERIFY_LIMIT = 8;
+    private static final int REACH_MAX_NODES = 3_000;
+    private static final long REACH_MAX_MILLIS = 30L;
+
     private HarvestCore() {
     }
 
     public static TargetChoice nearestReachableBlock(AIPlayerEntity bot, Block targetBlock, int horizontalRadius, int down, int up) {
         BlockPos origin = bot.getBlockPos();
-        return BlockPos.stream(origin.add(-horizontalRadius, -down, -horizontalRadius), origin.add(horizontalRadius, up, horizontalRadius))
-                .filter(pos -> bot.getServerWorld().getBlockState(pos).isOf(targetBlock))
-                .map(BlockPos::toImmutable)
-                .map(pos -> targetChoice(bot, pos))
-                .filter(choice -> choice != null)
-                .min(Comparator.comparingDouble(choice -> choice.pos().getSquaredDistance(origin)))
-                .orElse(null);
+        return firstWalkReachable(bot, origin,
+                BlockPos.stream(origin.add(-horizontalRadius, -down, -horizontalRadius), origin.add(horizontalRadius, up, horizontalRadius))
+                        .filter(pos -> bot.getServerWorld().getBlockState(pos).isOf(targetBlock))
+                        .map(BlockPos::toImmutable)
+                        .map(pos -> targetChoice(bot, pos))
+                        .filter(choice -> choice != null));
     }
 
     // MINE-DIG/Fix C:在一组候选方块里找最近可达的(如"任意原木"),供 GatherQuotaTask 跨树种采集。
     public static TargetChoice nearestReachableBlock(AIPlayerEntity bot, Set<Block> targetBlocks, int horizontalRadius, int down, int up) {
         BlockPos origin = bot.getBlockPos();
-        return BlockPos.stream(origin.add(-horizontalRadius, -down, -horizontalRadius), origin.add(horizontalRadius, up, horizontalRadius))
-                .filter(pos -> targetBlocks.contains(bot.getServerWorld().getBlockState(pos).getBlock()))
-                .map(BlockPos::toImmutable)
-                .map(pos -> targetChoice(bot, pos))
-                .filter(choice -> choice != null)
-                .min(Comparator.comparingDouble(choice -> choice.pos().getSquaredDistance(origin)))
-                .orElse(null);
+        return firstWalkReachable(bot, origin,
+                BlockPos.stream(origin.add(-horizontalRadius, -down, -horizontalRadius), origin.add(horizontalRadius, up, horizontalRadius))
+                        .filter(pos -> targetBlocks.contains(bot.getServerWorld().getBlockState(pos).getBlock()))
+                        .map(BlockPos::toImmutable)
+                        .map(pos -> targetChoice(bot, pos))
+                        .filter(choice -> choice != null));
     }
 
     public static void startMining(AIPlayerEntity bot, BlockPos targetPos) {
@@ -278,6 +282,26 @@ public final class HarvestCore {
     public static boolean canDirectMine(AIPlayerEntity bot, BlockPos target) {
         // 允许挖脚下/低处方块(够得着即可)——地表往下挖石头的核心。
         return canReach(bot, target);
+    }
+
+    // NAV-OPT(第0层B):候选按距离近→远,返回第一个**纯步行真能走到**的;只验证最近 REACH_VERIFY_LIMIT 个
+    // (纯步行小预算 A*),兼顾准确与性能。旧逻辑只看"目标相邻有空格"却不验证 bot 走得到,导致 GOTO 反复失败 stuck。
+    private static TargetChoice firstWalkReachable(AIPlayerEntity bot, BlockPos origin, java.util.stream.Stream<TargetChoice> candidates) {
+        return candidates
+                .sorted(Comparator.comparingDouble(choice -> choice.pos().getSquaredDistance(origin)))
+                .limit(REACH_VERIFY_LIMIT)
+                .filter(choice -> isWalkReachable(bot, choice))
+                .findFirst()
+                .orElse(null);
+    }
+
+    public static boolean isWalkReachable(AIPlayerEntity bot, TargetChoice choice) {
+        BlockPos stand = choice.stand();
+        if (stand == null || bot.getBlockPos().equals(stand)) {
+            return true; // 够得着直接挖 / 已在站位,无需寻路
+        }
+        return new AStarPathfinder(bot.getServerWorld(), bot.getBlockPos(), stand,
+                REACH_MAX_NODES, REACH_MAX_MILLIS, false, false).findPath().success();
     }
 
     public static TargetChoice targetChoice(AIPlayerEntity bot, BlockPos target) {

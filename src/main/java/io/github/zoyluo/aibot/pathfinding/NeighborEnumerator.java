@@ -20,14 +20,24 @@ public final class NeighborEnumerator {
     };
 
     private final boolean canPillar;
+    private final boolean allowDig;
 
     public NeighborEnumerator() {
-        this(false);
+        this(false, true);
     }
 
     // NAV-9:canPillar=true 时允许"垫方块上升"邻接(仅当 bot 背包有可放置方块时由 A* 传入)。
     public NeighborEnumerator(boolean canPillar) {
+        this(canPillar, true);
+    }
+
+    // NAV-OPT:allowDig=false 时**禁用 DIG_THROUGH 邻居**——只在空气格上做"纯步行"搜索。
+    // 用于两阶段寻路的第一阶段:绝大多数移动靠纯步行即可达,搜索空间小(只空气格)、收敛快;
+    // 而启用挖穿会把每个相邻实心方块都当邻居,使搜索退化成"3D 体积扩散",被困/地下时极易撑爆到
+    // SEARCH_LIMIT(实测 5 格距离的 move 都 SEARCH_LIMIT 的机制根因)。纯步行无解再开第二阶段挖穿。
+    public NeighborEnumerator(boolean canPillar, boolean allowDig) {
         this.canPillar = canPillar;
+        this.allowDig = allowDig;
     }
 
     public List<NeighborCandidate> getNeighbors(BlockPos current, ServerWorld world) {
@@ -51,7 +61,7 @@ public final class NeighborEnumerator {
                 continue;
             }
 
-            if (isMineable(world, target) && hasHeadroom(world, target)) {
+            if (allowDig && isMineable(world, target) && hasHeadroom(world, target)) {
                 result.add(new NeighborCandidate(target, MoveType.DIG_THROUGH, 0));
             }
         }

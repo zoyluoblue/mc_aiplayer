@@ -131,6 +131,7 @@ public final class GoalPlanner {
                 case Goal.HavePickaxeTier havePickaxeTier -> ensurePickaxeTier(havePickaxeTier.tier(), depth, visiting);
                 case Goal.MineOre mineOre -> ensureMineOre(mineOre.ores(), mineOre.count(), depth, visiting);
                 case Goal.HarvestCrop harvestCrop -> ensureHarvestCrop(harvestCrop, depth, visiting);
+                case Goal.Armor ignored -> ensureArmor(depth, visiting);
             };
         }
 

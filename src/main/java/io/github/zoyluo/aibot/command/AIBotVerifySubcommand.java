@@ -86,6 +86,7 @@ public final class AIBotVerifySubcommand {
             "achieve_iron_ingot",
             "achieve_iron_pickaxe",
             "achieve_diamond",
+            "achieve_armor",
             "farm_wheat_from_scratch",
             "nav_descend");
 
@@ -207,6 +208,7 @@ public final class AIBotVerifySubcommand {
             case "achieve_iron_ingot" -> assignAchieveIronIngot(bot);
             case "achieve_iron_pickaxe" -> assignAchieveIronPickaxe(bot);
             case "achieve_diamond" -> assignAchieveDiamond(bot);
+            case "achieve_armor" -> assignAchieveArmor(bot);
             case "farm_wheat_from_scratch" -> assignFarmWheatFromScratch(bot);
             case "nav_descend" -> assignNavDescend(bot);
             default -> Result.fail(feature, "unknown_feature");
@@ -597,6 +599,28 @@ public final class AIBotVerifySubcommand {
         }
         return Result.runningGoal("achieve_iron_pickaxe", 16000,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.IRON_PICKAXE) >= 1);
+    }
+
+    // Phase1:装备目标。给足铁锭+木头(聚焦"做甲穿甲",省去挖 24 铁的耗时),achieve Goal.Armor 应做出 4 甲+剑并自动穿上。
+    private static Result assignAchieveArmor(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        InventoryAction.giveItem(bot, new ItemStack(Items.IRON_INGOT, 30));
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        for (int dy = 0; dy < 6; dy++) {
+            world.setBlockState(origin.offset(Direction.WEST, 2).up(dy), Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.Armor());
+        if (!started) {
+            return Result.fail("achieve_armor", "goal_submit_failed");
+        }
+        // 断言:做出并(自动)穿上铁胸甲 + 拥有铁剑 —— 代表 ensureArmor 全套生效。
+        return Result.runningGoal("achieve_armor", 12000,
+                ignored -> bot.isAlive()
+                        && bot.getEquippedStack(net.minecraft.entity.EquipmentSlot.CHEST).isOf(Items.IRON_CHESTPLATE)
+                        && (InventoryAction.countItem(bot, Items.IRON_SWORD) >= 1
+                                || bot.getMainHandStack().isOf(Items.IRON_SWORD)));
     }
 
     /**

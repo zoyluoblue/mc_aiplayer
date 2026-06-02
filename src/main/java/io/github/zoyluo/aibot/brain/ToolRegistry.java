@@ -302,6 +302,12 @@ public final class ToolRegistry {
             return started ? ok("goal_assigned: harvest_crop") : fail("goal_plan_failed");
         });
 
+        register("achieve_armor", "Make and equip a full set of iron armor plus an iron sword with deterministic planning. Use for 武装起来/做一身装备/给我穿上盔甲/gear up. Auto-plans mining, smelting and crafting; do not decompose manually.", objectSchema()
+                .build(), (bot, args) -> {
+            boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.Armor());
+            return started ? ok("goal_assigned: achieve_armor") : fail("goal_plan_failed");
+        });
+
         register("find_container", "Find the nearest reachable inventory container such as a chest", objectSchema()
                 .property("radius", integerSchema("search radius"))
                 .build(), (bot, args) -> ContainerTask.nearestContainer(bot, optionalInt(args, "radius", 8))

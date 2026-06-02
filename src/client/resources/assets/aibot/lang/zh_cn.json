@@ -109,6 +109,8 @@
   "settings.aibot.manual": "手动低层工具",
   "settings.aibot.memory": "记忆工具",
   "settings.aibot.reports": "进度播报",
+  "settings.aibot.tp_to_ai": "传送至 AI",
+  "settings.aibot.recall_ai": "召回 AI",
   "settings.aibot.on": "开",
   "settings.aibot.off": "关"
 }

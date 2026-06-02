@@ -108,6 +108,8 @@
   "settings.aibot.manual": "Manual low-level tools",
   "settings.aibot.memory": "Memory tools",
   "settings.aibot.reports": "Progress reports",
+  "settings.aibot.tp_to_ai": "TP to AI",
+  "settings.aibot.recall_ai": "Recall AI",
   "settings.aibot.on": "on",
   "settings.aibot.off": "off"
 }

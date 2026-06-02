@@ -28,7 +28,8 @@ public record BotSnapshotS2C(
         boolean manualMode,
         boolean memoryToolsEnabled,
         boolean verboseReportsEnabled,
-        List<ItemEntry> inventory
+        List<ItemEntry> inventory,
+        List<ItemEntry> equipment
 ) implements CustomPayload {
     public static final Id<BotSnapshotS2C> ID = new Id<>(Identifier.of(AIBotMod.MOD_ID, "bot_snapshot"));
     public static final PacketCodec<RegistryByteBuf, BotSnapshotS2C> CODEC = PacketCodec.of(BotSnapshotS2C::write, BotSnapshotS2C::new);
@@ -53,6 +54,7 @@ public record BotSnapshotS2C(
                 buf.readBoolean(),
                 buf.readBoolean(),
                 buf.readBoolean(),
+                readInventory(buf),
                 readInventory(buf));
     }
 
@@ -80,6 +82,12 @@ public record BotSnapshotS2C(
         buf.writeBoolean(verboseReportsEnabled);
         buf.writeInt(inventory.size());
         for (ItemEntry entry : inventory) {
+            buf.writeString(entry.itemId());
+            buf.writeInt(entry.count());
+            buf.writeInt(entry.slot());
+        }
+        buf.writeInt(equipment.size());
+        for (ItemEntry entry : equipment) {
             buf.writeString(entry.itemId());
             buf.writeInt(entry.count());
             buf.writeInt(entry.slot());

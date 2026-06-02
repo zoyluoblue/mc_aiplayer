@@ -61,6 +61,7 @@
   "status.aibot.brain.idle": "idle",
   "status.aibot.tokens": "tokens %s/%s",
   "inventory.aibot.empty": "Inventory is empty",
+  "inventory.aibot.section_equip": "AI equipment (armor + hands)",
   "inventory.aibot.section_ai": "AI inventory (click to take)",
   "inventory.aibot.section_self": "My inventory (click to put · Shift = one)",
   "quick.aibot.id": "Item/block id",

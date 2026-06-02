@@ -293,6 +293,19 @@ public final class AIBotServerNetworking {
                 inventory.add(new BotSnapshotS2C.ItemEntry(Registries.ITEM.getId(stack.getItem()).toString(), stack.getCount(), slot));
             }
         }
+        // UI:全身装备(头/胸/腿/脚/主手/副手),slot index 0..5,供背包面板的装备区展示。
+        ArrayList<BotSnapshotS2C.ItemEntry> equipment = new ArrayList<>();
+        net.minecraft.entity.EquipmentSlot[] equipSlots = {
+                net.minecraft.entity.EquipmentSlot.HEAD, net.minecraft.entity.EquipmentSlot.CHEST,
+                net.minecraft.entity.EquipmentSlot.LEGS, net.minecraft.entity.EquipmentSlot.FEET,
+                net.minecraft.entity.EquipmentSlot.MAINHAND, net.minecraft.entity.EquipmentSlot.OFFHAND};
+        for (int slotIndex = 0; slotIndex < equipSlots.length; slotIndex++) {
+            ItemStack equipped = bot.getEquippedStack(equipSlots[slotIndex]);
+            if (!equipped.isEmpty()) {
+                equipment.add(new BotSnapshotS2C.ItemEntry(
+                        Registries.ITEM.getId(equipped.getItem()).toString(), equipped.getCount(), slotIndex));
+            }
+        }
         return new BotSnapshotS2C(
                 bot.getGameProfile().getName(),
                 bot.getHealth(),
@@ -312,7 +325,8 @@ public final class AIBotServerNetworking {
                 BrainCoordinator.INSTANCE.manualMode(bot),
                 BotRuntimeOptions.INSTANCE.memoryToolsEnabled(bot),
                 BotRuntimeOptions.INSTANCE.verboseReportsEnabled(bot),
-                inventory);
+                inventory,
+                equipment);
     }
 
     private void sendSystem(ServerPlayerEntity player, String botName, String text) {

@@ -189,9 +189,9 @@ public final class BotPanelScreen extends Screen {
             pw = docked ? Math.min(300, Math.max(260, (int) (width * 0.28F))) : Math.max(240, width - 20);
             ph = Math.max(150, Math.min(height - 24, 190));
         } else if (mode == Mode.INVENTORY) {
-            // 需容下 9 列 × 18px 网格(162)+ 左右内边距;高度容两段网格(AI 4 行 + 玩家 4 行)
+            // 需容下 9 列 × 18px 网格(162)+ 左右内边距;高度容装备行 + AI 4 行 + 玩家 4 行
             pw = docked ? Math.min(240, Math.max(200, (int) (width * 0.24F))) : Math.max(200, width - 20);
-            ph = Math.max(200, Math.min(height - 24, 232));
+            ph = Math.max(220, Math.min(height - 24, 272));
         } else {
             pw = docked ? Math.min(520, Math.max(360, (int) (width * 0.48F))) : Math.max(240, width - 20);
             // 关键:ph 必须能装进屏幕(含上下边距),否则底部输入框会被挤出屏幕下沿

@@ -9,7 +9,7 @@ import io.github.zoyluo.aibot.task.DigDownTask;
 import io.github.zoyluo.aibot.task.GatherQuotaTask;
 import io.github.zoyluo.aibot.task.MineTask;
 import io.github.zoyluo.aibot.task.MoveTask;
-import io.github.zoyluo.aibot.task.OreSeekTask;
+import io.github.zoyluo.aibot.task.OreDigTask;
 import io.github.zoyluo.aibot.task.SmeltTask;
 import io.github.zoyluo.aibot.task.Task;
 import io.github.zoyluo.aibot.task.TaskManager;
@@ -175,7 +175,9 @@ public final class GoalExecutor {
             // DIGDOWN(实测#8):MINE 步改用 DigDownTask——站着就近垂直下挖,不定位/不寻路,
             // 永不"够不到/走不过去"空转。取代旧的 OreSeekTask.digBlocks(它会锁定垂直够不到的石头 stuck)。
             case MINE -> Optional.of(new DigDownTask(step.block(), step.count()));
-            case MINE_ORE -> Optional.of(new OreSeekTask(step.ores(), step.count()));
+            // OREDIG(实测#10):MINE_ORE 步改用 OreDigTask(BlockMiner 控制式直挖隧道),
+            // 取代 OreSeekTask——后者"A*接近被埋矿"在 #6/#8/#10 连续 stuck。
+            case MINE_ORE -> Optional.of(new OreDigTask(step.ores(), step.count()));
             case CRAFT -> Optional.of(new CraftTask(step.item(), step.count()));
             case SMELT -> Optional.of(new SmeltTask(step.input(), step.output(), step.count()));
             case MOVE -> Optional.of(new MoveTask(bot, step.pos()));

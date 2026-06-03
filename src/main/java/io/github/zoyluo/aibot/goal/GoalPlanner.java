@@ -132,6 +132,8 @@ public final class GoalPlanner {
                 case Goal.MineOre mineOre -> ensureMineOre(mineOre.ores(), mineOre.count(), depth, visiting);
                 case Goal.HarvestCrop harvestCrop -> ensureHarvestCrop(harvestCrop, depth, visiting);
                 case Goal.Armor ignored -> ensureArmor(depth, visiting);
+                case Goal.Workstation ignored -> ensureWorkstation(depth, visiting);
+                case Goal.Stockpile stockpile -> ensureStockpile(stockpile, depth, visiting);
             };
         }
 
@@ -212,6 +214,33 @@ public final class GoalPlanner {
                     && !ensureItem(Items.IRON_SWORD, 1, depth + 1, visiting)) {
                 return false;
             }
+            return true;
+        }
+
+        // Phase2:基建——备齐工作台/熔炉/箱子各一,再下放置步(PlaceStationsTask 摆到 bot 周围)。
+        private boolean ensureWorkstation(int depth, Set<String> visiting) {
+            if (counts.getOrDefault(Items.CRAFTING_TABLE, 0) <= 0
+                    && !ensureItem(Items.CRAFTING_TABLE, 1, depth + 1, visiting)) {
+                return false;
+            }
+            if (counts.getOrDefault(Items.FURNACE, 0) <= 0
+                    && !ensureItem(Items.FURNACE, 1, depth + 1, visiting)) {
+                return false;
+            }
+            if (counts.getOrDefault(Items.CHEST, 0) <= 0
+                    && !ensureItem(Items.CHEST, 1, depth + 1, visiting)) {
+                return false;
+            }
+            addStep(GoalStep.placeStations());
+            return true;
+        }
+
+        // Phase3:囤货——先获取够 count 个 item,再下 STOCKPILE 步把资源存进附近箱子(best-effort)。
+        private boolean ensureStockpile(Goal.Stockpile g, int depth, Set<String> visiting) {
+            if (!ensureItem(g.item(), g.count(), depth + 1, visiting)) {
+                return false;
+            }
+            addStep(GoalStep.stockpile(g.item()));
             return true;
         }
 

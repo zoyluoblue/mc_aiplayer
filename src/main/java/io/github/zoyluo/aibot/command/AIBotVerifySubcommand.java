@@ -87,6 +87,8 @@ public final class AIBotVerifySubcommand {
             "achieve_iron_pickaxe",
             "achieve_diamond",
             "achieve_armor",
+            "achieve_workstation",
+            "stockpile",
             "farm_wheat_from_scratch",
             "nav_descend");
 
@@ -209,6 +211,8 @@ public final class AIBotVerifySubcommand {
             case "achieve_iron_pickaxe" -> assignAchieveIronPickaxe(bot);
             case "achieve_diamond" -> assignAchieveDiamond(bot);
             case "achieve_armor" -> assignAchieveArmor(bot);
+            case "achieve_workstation" -> assignAchieveWorkstation(bot);
+            case "stockpile" -> assignStockpile(bot);
             case "farm_wheat_from_scratch" -> assignFarmWheatFromScratch(bot);
             case "nav_descend" -> assignNavDescend(bot);
             default -> Result.fail(feature, "unknown_feature");
@@ -621,6 +625,52 @@ public final class AIBotVerifySubcommand {
                         && bot.getEquippedStack(net.minecraft.entity.EquipmentSlot.CHEST).isOf(Items.IRON_CHESTPLATE)
                         && (InventoryAction.countItem(bot, Items.IRON_SWORD) >= 1
                                 || bot.getMainHandStack().isOf(Items.IRON_SWORD)));
+    }
+
+    // Phase2:基建目标。给足木板+圆石(聚焦"做三件套+摆放"),achieve Goal.Workstation 应在周围摆出工作台/熔炉/箱子。
+    private static Result assignAchieveWorkstation(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        InventoryAction.giveItem(bot, new ItemStack(Items.OAK_PLANKS, 20));
+        InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 8));
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.Workstation());
+        if (!started) {
+            return Result.fail("achieve_workstation", "goal_submit_failed");
+        }
+        return Result.runningGoal("achieve_workstation", 8000,
+                ignored -> bot.isAlive()
+                        && hasBlockNearby(bot, Blocks.CRAFTING_TABLE)
+                        && hasBlockNearby(bot, Blocks.FURNACE)
+                        && hasBlockNearby(bot, Blocks.CHEST));
+    }
+
+    private static boolean hasBlockNearby(AIPlayerEntity bot, Block block) {
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        for (BlockPos p : BlockPos.iterate(origin.add(-5, -3, -5), origin.add(5, 3, 5))) {
+            if (world.getBlockState(p).isOf(block)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Phase3:囤货目标。给石镐+石头柱,stockpile 应挖够 6 圆石(无箱子时 STOCKPILE best-effort 跳过,圆石留背包)。
+    private static Result assignStockpile(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        InventoryAction.giveItem(bot, new ItemStack(Items.STONE_PICKAXE, 1));
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        for (int dy = 1; dy <= 12; dy++) {
+            world.setBlockState(origin.down(dy), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.Stockpile(Items.COBBLESTONE, 6));
+        if (!started) {
+            return Result.fail("stockpile", "goal_submit_failed");
+        }
+        return Result.runningGoal("stockpile", 12000,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.COBBLESTONE) >= 6);
     }
 
     /**

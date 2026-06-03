@@ -308,6 +308,22 @@ public final class ToolRegistry {
             return started ? ok("goal_assigned: achieve_armor") : fail("goal_plan_failed");
         });
 
+        register("achieve_workstation", "Set up a base: craft and place a crafting table, furnace and chest nearby. Use for 建个家/搭个工作台/摆好工作台熔炉箱子/set up a base. Auto-plans gathering and crafting; do not decompose manually.", objectSchema()
+                .build(), (bot, args) -> {
+            boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.Workstation());
+            return started ? ok("goal_assigned: achieve_workstation") : fail("goal_plan_failed");
+        });
+
+        register("stockpile", "Obtain N of an item then store everything into a nearby chest. Use for 囤货/囤点/存起来/stockpile N cobblestone. Auto-plans obtaining and depositing; do not decompose manually.", objectSchema()
+                .property("item", stringSchema("item id to stockpile, e.g. minecraft:cobblestone"))
+                .property("count", integerSchema("how many to obtain"))
+                .required("item")
+                .build(), (bot, args) -> {
+            boolean started = GoalExecutor.INSTANCE.submit(bot,
+                    new Goal.Stockpile(requiredItem(args, "item"), optionalInt(args, "count", 1)));
+            return started ? ok("goal_assigned: stockpile") : fail("goal_plan_failed");
+        });
+
         register("find_container", "Find the nearest reachable inventory container such as a chest", objectSchema()
                 .property("radius", integerSchema("search radius"))
                 .build(), (bot, args) -> ContainerTask.nearestContainer(bot, optionalInt(args, "radius", 8))

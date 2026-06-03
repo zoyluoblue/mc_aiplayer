@@ -5,7 +5,7 @@ import net.minecraft.item.Item;
 
 import java.util.Set;
 
-public sealed interface Goal permits Goal.HaveItem, Goal.HavePickaxeTier, Goal.MineOre, Goal.HarvestCrop, Goal.Armor {
+public sealed interface Goal permits Goal.HaveItem, Goal.HavePickaxeTier, Goal.MineOre, Goal.HarvestCrop, Goal.Armor, Goal.Workstation, Goal.Stockpile {
     record HaveItem(Item item, int count) implements Goal {
         public HaveItem {
             count = Math.max(1, count);
@@ -34,5 +34,16 @@ public sealed interface Goal permits Goal.HaveItem, Goal.HavePickaxeTier, Goal.M
 
     /** Phase1:武装起来——成套护甲 + 剑(目前为铁质,复用 GoalPlanner.ensureArmor 倒推)。 */
     record Armor() implements Goal {
+    }
+
+    /** Phase2:基建——备齐并摆好工作台/熔炉/箱子三件套(生产+存储据点)。 */
+    record Workstation() implements Goal {
+    }
+
+    /** Phase3:囤货——获取 count 个 item,并(尽力)存进附近箱子。 */
+    record Stockpile(Item item, int count) implements Goal {
+        public Stockpile {
+            count = Math.max(1, count);
+        }
     }
 }

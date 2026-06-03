@@ -24,7 +24,9 @@ public record GoalStep(Kind kind,
         SMELT,
         MOVE,
         FARM,
-        HUNT
+        HUNT,
+        PLACE_STATIONS,
+        STOCKPILE
     }
 
     public GoalStep {
@@ -67,6 +69,16 @@ public record GoalStep(Kind kind,
         return new GoalStep(Kind.HUNT, null, count, null, Set.of(), null, null, null);
     }
 
+    /** Phase2:放置工作台/熔炉/箱子三件套(方块固定,无参数)。 */
+    public static GoalStep placeStations() {
+        return new GoalStep(Kind.PLACE_STATIONS, null, 1, null, Set.of(), null, null, null);
+    }
+
+    /** Phase3:把背包资源存进附近箱子(best-effort;item 仅作语义标记)。 */
+    public static GoalStep stockpile(Item item) {
+        return new GoalStep(Kind.STOCKPILE, item, 1, null, Set.of(), null, null, null);
+    }
+
     public GoalStep withCount(int newCount) {
         return new GoalStep(kind, item, newCount, block, ores, input, output, pos);
     }
@@ -95,6 +107,8 @@ public record GoalStep(Kind kind,
             case MOVE -> "MOVE " + pos.getX() + "," + pos.getY() + "," + pos.getZ();
             case FARM -> "FARM " + Registries.BLOCK.getId(block) + " x" + count;
             case HUNT -> "HUNT meat x" + count;
+            case PLACE_STATIONS -> "PLACE_STATIONS table+furnace+chest";
+            case STOCKPILE -> "STOCKPILE " + Registries.ITEM.getId(item);
         };
     }
 }

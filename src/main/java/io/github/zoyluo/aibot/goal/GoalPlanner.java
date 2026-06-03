@@ -39,6 +39,7 @@ public final class GoalPlanner {
             Items.MUTTON, Items.COOKED_MUTTON, Items.CHICKEN, Items.COOKED_CHICKEN,
             Items.RABBIT, Items.COOKED_RABBIT, Items.BREAD);
     private static final int FOOD_TARGET = 4;
+    private static final int DESCEND_THRESHOLD = 8; // bot 高于矿层超过这么多格,先下竖井到矿层再挖
 
     public record GoalPlan(Goal goal, List<GoalStep> steps, List<String> unresolved) {
         public boolean success() {
@@ -55,7 +56,7 @@ public final class GoalPlanner {
     }
 
     public static GoalPlan plan(AIPlayerEntity bot, Goal goal) {
-        Planner planner = new Planner(inventoryCounts(bot), Math.max(1, AIBotConfig.get().goal().maxPlanDepth()));
+        Planner planner = new Planner(inventoryCounts(bot), Math.max(1, AIBotConfig.get().goal().maxPlanDepth()), bot.getBlockPos().getY());
         planner.ensureGoal(goal, 0, new HashSet<>());
         return new GoalPlan(goal, List.copyOf(mergeGathers(planner.steps)), List.copyOf(planner.unresolved));
     }
@@ -63,6 +64,24 @@ public final class GoalPlanner {
     // 第A层 集中采集(挖钻石失败根因修复):把所有 GATHER 同类需求合并并**提到计划最前**,
     // 让 bot 先在地表一次砍够全部木头(GATHER 无前置依赖,后续 CRAFT 都在其后,依赖不破)。
     // 否则计划会交错"地下挖矿(把 bot 带到 y≈59)"与"地表砍树(够不到地表树)"→ no_resource_nearby → goal_failed。
+    // 深层贵重矿的最佳挖掘高度(1.18+ 地形);非深层矿返回 MAX_VALUE(不触发"先下矿层")。
+    private static int bestMiningY(Set<Block> ores) {
+        for (Block ore : ores) {
+            if (ore == Blocks.DIAMOND_ORE || ore == Blocks.DEEPSLATE_DIAMOND_ORE
+                    || ore == Blocks.REDSTONE_ORE || ore == Blocks.DEEPSLATE_REDSTONE_ORE) {
+                return -59;
+            }
+            if (ore == Blocks.GOLD_ORE || ore == Blocks.DEEPSLATE_GOLD_ORE
+                    || ore == Blocks.EMERALD_ORE || ore == Blocks.DEEPSLATE_EMERALD_ORE) {
+                return -16;
+            }
+            if (ore == Blocks.LAPIS_ORE || ore == Blocks.DEEPSLATE_LAPIS_ORE) {
+                return -1;
+            }
+        }
+        return Integer.MAX_VALUE;
+    }
+
     private static List<GoalStep> mergeGathers(List<GoalStep> steps) {
         Map<Item, Integer> gatherTotals = new LinkedHashMap<>();
         for (GoalStep step : steps) {
@@ -113,12 +132,14 @@ public final class GoalPlanner {
     private static final class Planner {
         private final Map<Item, Integer> counts;
         private final int maxDepth;
+        private final int botY; // 规划时 bot 的 Y,用于判断深层矿是否需先下竖井到矿层
         private final List<GoalStep> steps = new ArrayList<>();
         private final List<String> unresolved = new ArrayList<>();
 
-        private Planner(Map<Item, Integer> counts, int maxDepth) {
+        private Planner(Map<Item, Integer> counts, int maxDepth, int botY) {
             this.counts = counts;
             this.maxDepth = maxDepth;
+            this.botY = botY;
         }
 
         private boolean ensureGoal(Goal goal, int depth, Set<String> visiting) {
@@ -194,6 +215,12 @@ public final class GoalPlanner {
                 }
                 // 第4层:再备点粮(best-effort,周围没动物不阻断)。
                 ensureFood(depth + 1, visiting);
+            }
+            // 挖深层矿重构 P1:bot 远高于矿层 → 先下竖井到矿层,再挖。否则在错误高度(实测 Y=48)
+            // 反复"锁定斜下方够不到的矿→水平掘隧道→dist 卡死→no_progress",卡死 11 分钟。
+            int mineY = bestMiningY(expanded);
+            if (botY - mineY > DESCEND_THRESHOLD) {
+                addStep(GoalStep.descendToY(mineY));
             }
             addStep(GoalStep.mineOre(expanded, remaining));
             for (Item drop : drops) {

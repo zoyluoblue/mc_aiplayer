@@ -40,6 +40,7 @@ public final class OreDigTask extends AbstractTask {
     private static final int MIN_Y = -60;
     private static final int VEIN_CAP = 64;
     private static final int PICKUP_GRACE_TICKS = 30;
+    private static final int APPROACH_LIMIT = 80;       // P0:锁定矿超过此 tick 仍没靠近 → 判够不到,放弃换矿/下挖
 
     private final Set<Block> targetOres;
     private final Set<Item> targetDrops;
@@ -54,6 +55,8 @@ public final class OreDigTask extends AbstractTask {
     private int lastScanTick = -SCAN_INTERVAL;
     private int pickupGrace;
     private BlockPos targetOre;
+    private double lastTargetDist = Double.MAX_VALUE; // P0:锁定矿的历史最近距离²(监控是否在接近)
+    private int targetApproachTick;
 
     public OreDigTask(Set<Block> targetOres, int targetCount) {
         this.targetOres = targetOres == null || targetOres.isEmpty()
@@ -156,6 +159,20 @@ public final class OreDigTask extends AbstractTask {
                 targetOre = null;
                 return;
             }
+            // P0:接近监控——朝矿挖了一阵仍没靠近(斜下方够不到等)→ 放弃该矿,别原地空转
+            //(实测在 Y=48 反复锁定斜下方钻石、dist 卡死、no_progress 11 分钟的根因)。
+            double dist2 = bot.getEyePos().squaredDistanceTo(targetOre.toCenterPos());
+            if (dist2 < lastTargetDist - 0.25D) {
+                lastTargetDist = dist2;
+                targetApproachTick = elapsed;
+            } else if (elapsed - targetApproachTick > APPROACH_LIMIT) {
+                ignored.add(targetOre);
+                BotLog.action(bot, "ore_dig_unreachable_skip",
+                        "pos", targetOre.getX() + "," + targetOre.getY() + "," + targetOre.getZ());
+                targetOre = null;
+                lastTargetDist = Double.MAX_VALUE;
+                return;
+            }
             if (withinReach(bot, targetOre)) {
                 BlockMiner.Status st = miner.target() != null && miner.target().equals(targetOre)
                         ? miner.tick(bot)
@@ -184,6 +201,8 @@ public final class OreDigTask extends AbstractTask {
         BlockPos found = nearestOre(bot, world);
         if (found != null) {
             targetOre = found;
+            lastTargetDist = Double.MAX_VALUE;  // P0:新锁定矿,重置接近监控
+            targetApproachTick = elapsed;
             BotLog.action(bot, "ore_dig_found",
                     "pos", found.getX() + "," + found.getY() + "," + found.getZ(),
                     "dist", (int) Math.sqrt(bot.getBlockPos().getSquaredDistance(found)),

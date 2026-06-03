@@ -15,6 +15,7 @@ import io.github.zoyluo.aibot.persist.BotPersistence;
 import io.github.zoyluo.aibot.task.BlueprintLoader;
 import io.github.zoyluo.aibot.task.BuildTask;
 import io.github.zoyluo.aibot.task.CombatTask;
+import io.github.zoyluo.aibot.task.DescendToYTask;
 import io.github.zoyluo.aibot.task.DigDownTask;
 import io.github.zoyluo.aibot.task.OreDigTask;
 import io.github.zoyluo.aibot.task.ContainerTask;
@@ -89,6 +90,7 @@ public final class AIBotVerifySubcommand {
             "achieve_armor",
             "achieve_workstation",
             "stockpile",
+            "descend_to_ore",
             "farm_wheat_from_scratch",
             "nav_descend");
 
@@ -213,6 +215,7 @@ public final class AIBotVerifySubcommand {
             case "achieve_armor" -> assignAchieveArmor(bot);
             case "achieve_workstation" -> assignAchieveWorkstation(bot);
             case "stockpile" -> assignStockpile(bot);
+            case "descend_to_ore" -> assignDescendToOre(bot);
             case "farm_wheat_from_scratch" -> assignFarmWheatFromScratch(bot);
             case "nav_descend" -> assignNavDescend(bot);
             default -> Result.fail(feature, "unknown_feature");
@@ -671,6 +674,22 @@ public final class AIBotVerifySubcommand {
         }
         return Result.runningGoal("stockpile", 12000,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.COBBLESTONE) >= 6);
+    }
+
+    // 挖深层矿重构 P1:DescendToYTask 应连续挖竖井下到目标 Y(这是 Y=48 卡死的直接对策——先到矿层)。
+    private static Result assignDescendToOre(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        InventoryAction.giveItem(bot, new ItemStack(Items.IRON_PICKAXE, 1));
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        int targetY = origin.getY() - 20;
+        for (int dy = 1; dy <= 25; dy++) {
+            world.setBlockState(origin.down(dy), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        Task task = new DescendToYTask(targetY);
+        return assignTask(bot, "descend_to_ore", task, 4000,
+                ignored -> bot.isAlive() && bot.getBlockPos().getY() <= targetY);
     }
 
     /**

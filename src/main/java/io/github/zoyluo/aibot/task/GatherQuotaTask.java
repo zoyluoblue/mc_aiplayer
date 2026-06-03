@@ -44,6 +44,7 @@ public final class GatherQuotaTask extends AbstractTask {
     private int countSoFar;
     private int countBeforeHarvest;
     private int pickupTicks;
+    private int pickupMisses; // 连续"砍了但没捡到掉落物"的次数,超限才判 pickup_timeout(避免一棵没捡到就整个采集失败)
     private boolean pickupSweepAttempted;
     private StockpileTask stockpileTask;
     private int searchRadius = SEARCH_RADIUS;
@@ -211,6 +212,10 @@ public final class GatherQuotaTask extends AbstractTask {
             countSoFar = countAccepted(bot);
             if (countSoFar > countBeforeHarvest) {
                 phase = countSoFar >= targetCount ? Phase.DONE : Phase.SURVEY;
+            } else if (countSoFar > 0 && ++pickupMisses <= 3) {
+                // 这棵掉落物没捡到(卡树叶/掉水/despawn),但之前已采过一些 → 别 fail 整个采集,回 SURVEY 砍下一棵补。
+                BotLog.action(bot, "gather_pickup_miss", "have", countSoFar + "/" + targetCount, "miss", pickupMisses);
+                phase = Phase.SURVEY;
             } else {
                 fail("pickup_timeout");
             }

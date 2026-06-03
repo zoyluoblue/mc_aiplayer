@@ -1,6 +1,7 @@
 package io.github.zoyluo.aibot.task;
 
 import io.github.zoyluo.aibot.action.ActionResult;
+import io.github.zoyluo.aibot.action.BlockMiner;
 import io.github.zoyluo.aibot.action.BuildAction;
 import io.github.zoyluo.aibot.action.ContainerAction;
 import io.github.zoyluo.aibot.action.InventoryAction;
@@ -64,6 +65,7 @@ public final class SmeltTask extends AbstractTask {
     private Phase phase = Phase.FINDING_FURNACE;
     private BlockPos furnacePos;
     private int collected;
+    private final BlockMiner clearMiner = new BlockMiner(); // 被围放不下熔炉时,挖一格相邻方块腾位
 
     public SmeltTask(Item input, Item output, int targetCount) {
         this.input = input;
@@ -167,8 +169,11 @@ public final class SmeltTask extends AbstractTask {
         }
         BlockPos pos = adjacentAir(bot);
         if (pos == null) {
-            fail("no_place_for_furnace");
-            return;
+            // 被围(四周方块)放不下 → 挖掉一个相邻可破坏方块腾位(bot 有镐就该自己清场,而非直接失败)。
+            if (!clearSpaceForFurnace(bot)) {
+                fail("no_place_for_furnace");
+            }
+            return; // 挖位中,下 tick adjacentAir 即可找到
         }
         InventoryAction.equipFromSlot(bot, furnaceSlot.getAsInt());
         ActionResult result = BuildAction.placeBlockAt(bot, pos);
@@ -326,6 +331,30 @@ public final class SmeltTask extends AbstractTask {
             }
         }
         return null;
+    }
+
+    // 被围时:挖掉一个水平相邻的可破坏方块,腾出放熔炉的空位。返回 false=四周无可破坏方块(如基岩/流体)。
+    private boolean clearSpaceForFurnace(AIPlayerEntity bot) {
+        var world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        for (Direction direction : Direction.Type.HORIZONTAL) {
+            BlockPos candidate = origin.offset(direction);
+            var s = world.getBlockState(candidate);
+            if (s.isAir() || !s.getFluidState().isEmpty() || s.getHardness(world, candidate) < 0.0F
+                    || world.getBlockEntity(candidate) != null) {
+                continue;
+            }
+            BlockMiner.Status st = clearMiner.target() != null && clearMiner.target().equals(candidate)
+                    ? clearMiner.tick(bot)
+                    : beginClear(bot, candidate);
+            return st != BlockMiner.Status.FAILED;
+        }
+        return false;
+    }
+
+    private BlockMiner.Status beginClear(AIPlayerEntity bot, BlockPos pos) {
+        clearMiner.begin(bot, pos);
+        return clearMiner.tick(bot);
     }
 
     private static FuelChoice chooseFuel(AIPlayerEntity bot, int smeltCount) {

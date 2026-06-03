@@ -91,6 +91,7 @@ public final class AIBotVerifySubcommand {
             "achieve_workstation",
             "stockpile",
             "descend_to_ore",
+            "move_dig_through",
             "farm_wheat_from_scratch",
             "nav_descend");
 
@@ -216,6 +217,7 @@ public final class AIBotVerifySubcommand {
             case "achieve_workstation" -> assignAchieveWorkstation(bot);
             case "stockpile" -> assignStockpile(bot);
             case "descend_to_ore" -> assignDescendToOre(bot);
+            case "move_dig_through" -> assignMoveDigThrough(bot);
             case "farm_wheat_from_scratch" -> assignFarmWheatFromScratch(bot);
             case "nav_descend" -> assignNavDescend(bot);
             default -> Result.fail(feature, "unknown_feature");
@@ -690,6 +692,24 @@ public final class AIBotVerifySubcommand {
         Task task = new DescendToYTask(targetY);
         return assignTask(bot, "descend_to_ore", task, 4000,
                 ignored -> bot.isAlive() && bot.getBlockPos().getY() <= targetY);
+    }
+
+    // 挖掘式移动:bot 被水平石墙围住(头顶留空不窒息),目标在墙外。纯寻路走不通 → MoveTask 应降级挖开墙到达。
+    private static Result assignMoveDigThrough(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        InventoryAction.giveItem(bot, new ItemStack(Items.IRON_PICKAXE, 1));
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        for (Direction direction : Direction.Type.HORIZONTAL) {
+            for (int dy = 0; dy <= 1; dy++) {
+                world.setBlockState(origin.offset(direction).up(dy), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        BlockPos goal = origin.offset(Direction.EAST, 4);
+        Task task = new MoveTask(bot, goal);
+        return assignTask(bot, "move_dig_through", task, 4000,
+                ignored -> bot.isAlive() && bot.getBlockPos().getSquaredDistance(goal) <= 9.0D);
     }
 
     /**

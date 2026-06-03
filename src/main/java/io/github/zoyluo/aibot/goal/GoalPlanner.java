@@ -78,8 +78,14 @@ public final class GoalPlanner {
             if (ore == Blocks.LAPIS_ORE || ore == Blocks.DEEPSLATE_LAPIS_ORE) {
                 return -1;
             }
+            if (ore == Blocks.IRON_ORE || ore == Blocks.DEEPSLATE_IRON_ORE) {
+                return 16;   // 铁峰值 y≈16(实测漏了铁→在山地高处挖铁卡死,导致挖钻石前置失败、目标发散)
+            }
+            if (ore == Blocks.COPPER_ORE || ore == Blocks.DEEPSLATE_COPPER_ORE) {
+                return 48;   // 铜峰值 y≈48
+            }
         }
-        return Integer.MAX_VALUE;
+        return Integer.MAX_VALUE;  // 煤等浅层广布矿不强制下矿
     }
 
     private static List<GoalStep> mergeGathers(List<GoalStep> steps) {

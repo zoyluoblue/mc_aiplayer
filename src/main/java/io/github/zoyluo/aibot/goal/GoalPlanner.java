@@ -158,7 +158,7 @@ public final class GoalPlanner {
                 case Goal.HavePickaxeTier havePickaxeTier -> ensurePickaxeTier(havePickaxeTier.tier(), depth, visiting);
                 case Goal.MineOre mineOre -> ensureMineOre(mineOre.ores(), mineOre.count(), depth, visiting);
                 case Goal.HarvestCrop harvestCrop -> ensureHarvestCrop(harvestCrop, depth, visiting);
-                case Goal.Armor ignored -> ensureArmor(depth, visiting);
+                case Goal.Armor ignored -> ensureArmor(true, depth, visiting);
                 case Goal.Workstation ignored -> ensureWorkstation(depth, visiting);
                 case Goal.Stockpile stockpile -> ensureStockpile(stockpile, depth, visiting);
             };
@@ -216,7 +216,7 @@ public final class GoalPlanner {
             }
             // 第3层:深层贵重矿(需铁镐及以上,如钻石/金/红石/绿宝石)下矿凶险 → 先备一身铁甲+铁剑再开挖。
             if (tier >= ToolTier.IRON) {
-                if (!ensureArmor(depth + 1, visiting)) {
+                if (!ensureArmor(false, depth + 1, visiting)) {
                     return false;
                 }
                 // 第4层:再备点粮(best-effort,周围没动物不阻断)。
@@ -236,14 +236,17 @@ public final class GoalPlanner {
             return true;
         }
 
-        // 第3层 装备前置:确保一身铁甲 + 铁剑(库存或已穿都算——inventoryCounts 已计入装备槽)。
-        private boolean ensureArmor(int depth, Set<String> visiting) {
-            for (Item piece : IRON_ARMOR) {
+        // 装备前置:库存或已穿都算(inventoryCounts 已计入装备槽)。
+        // full=true(主动 achieve_armor):整套四件 + 铁剑。
+        // full=false(挖矿前置,用户选"折中"):只备头盔+胸甲——挡掉大部分伤害,又让计划短一半、少很多失败点。
+        private boolean ensureArmor(boolean full, int depth, Set<String> visiting) {
+            List<Item> pieces = full ? IRON_ARMOR : List.of(Items.IRON_HELMET, Items.IRON_CHESTPLATE);
+            for (Item piece : pieces) {
                 if (counts.getOrDefault(piece, 0) <= 0 && !ensureItem(piece, 1, depth + 1, visiting)) {
                     return false;
                 }
             }
-            if (counts.getOrDefault(Items.IRON_SWORD, 0) <= 0
+            if (full && counts.getOrDefault(Items.IRON_SWORD, 0) <= 0
                     && !ensureItem(Items.IRON_SWORD, 1, depth + 1, visiting)) {
                 return false;
             }

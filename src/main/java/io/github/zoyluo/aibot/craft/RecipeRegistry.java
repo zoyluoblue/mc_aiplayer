@@ -49,6 +49,11 @@ public final class RecipeRegistry {
         return Optional.ofNullable(BY_OUTPUT.get(output));
     }
 
+    // S1:供依赖链审计(/aibot deplint)遍历全部已知配方。
+    public static java.util.Collection<Recipe> all() {
+        return java.util.Collections.unmodifiableCollection(BY_OUTPUT.values());
+    }
+
     private static void registerAll() {
         for (int index = 0; index < LOGS.size(); index++) {
             put(new Recipe(PLANKS.get(index), 4, List.of(new Ingredient(List.of(LOGS.get(index)), 1)), false));
@@ -83,11 +88,41 @@ public final class RecipeRegistry {
         tool(Items.STONE_HOE, List.of(Items.COBBLESTONE), 2);
         tool(Items.IRON_HOE, List.of(Items.IRON_INGOT), 2);
 
-        // 第3层:铁甲(装备前置倒推用)。vanilla 用量——头5/胸8/腿7/脚4,纯铁锭无木棍。
-        armor(Items.IRON_HELMET, 5);
-        armor(Items.IRON_CHESTPLATE, 8);
-        armor(Items.IRON_LEGGINGS, 7);
-        armor(Items.IRON_BOOTS, 4);
+        // 第3层:铁甲(装备前置倒推用)。vanilla 用量——头5/胸8/腿7/脚4,纯金属无木棍。
+        armorOf(Items.IRON_HELMET, Items.IRON_INGOT, 5);
+        armorOf(Items.IRON_CHESTPLATE, Items.IRON_INGOT, 8);
+        armorOf(Items.IRON_LEGGINGS, Items.IRON_INGOT, 7);
+        armorOf(Items.IRON_BOOTS, Items.IRON_INGOT, 4);
+
+        // S1:钻石/金工具(挖钻后升级、高效挖矿)。
+        tool(Items.DIAMOND_PICKAXE, List.of(Items.DIAMOND), 3);
+        tool(Items.DIAMOND_AXE, List.of(Items.DIAMOND), 3);
+        tool(Items.DIAMOND_SHOVEL, List.of(Items.DIAMOND), 1);
+        tool(Items.DIAMOND_HOE, List.of(Items.DIAMOND), 2);
+        sword(Items.DIAMOND_SWORD, List.of(Items.DIAMOND), 2);
+        tool(Items.GOLDEN_PICKAXE, List.of(Items.GOLD_INGOT), 3);
+        sword(Items.GOLDEN_SWORD, List.of(Items.GOLD_INGOT), 2);
+
+        // S1:钻石甲 + 金甲(防具升级链 S30/S34 用)。
+        armorOf(Items.DIAMOND_HELMET, Items.DIAMOND, 5);
+        armorOf(Items.DIAMOND_CHESTPLATE, Items.DIAMOND, 8);
+        armorOf(Items.DIAMOND_LEGGINGS, Items.DIAMOND, 7);
+        armorOf(Items.DIAMOND_BOOTS, Items.DIAMOND, 4);
+        armorOf(Items.GOLDEN_HELMET, Items.GOLD_INGOT, 5);
+        armorOf(Items.GOLDEN_CHESTPLATE, Items.GOLD_INGOT, 8);
+        armorOf(Items.GOLDEN_LEGGINGS, Items.GOLD_INGOT, 7);
+        armorOf(Items.GOLDEN_BOOTS, Items.GOLD_INGOT, 4);
+
+        // S1:盾牌(防具 S32)——6 木板 + 1 铁锭。
+        put(new Recipe(Items.SHIELD, 1, List.of(
+                new Ingredient(PLANKS, 6),
+                new Ingredient(List.of(Items.IRON_INGOT), 1)), true));
+
+        // S1:养殖/圈养基建(模块 E)——栅栏、干草块。
+        put(new Recipe(Items.OAK_FENCE, 3, List.of(
+                new Ingredient(PLANKS, 4),
+                new Ingredient(STICKS, 2)), true));
+        put(new Recipe(Items.HAY_BLOCK, 1, List.of(new Ingredient(List.of(Items.WHEAT), 9)), false));
     }
 
     private static void tool(Item output, List<Item> head, int headCount) {
@@ -98,9 +133,9 @@ public final class RecipeRegistry {
         put(new Recipe(output, 1, List.of(new Ingredient(head, headCount), new Ingredient(STICKS, 1)), true));
     }
 
-    // 第3层:护甲(纯金属,无木棍)。
-    private static void armor(Item output, int ingotCount) {
-        put(new Recipe(output, 1, List.of(new Ingredient(List.of(Items.IRON_INGOT), ingotCount)), true));
+    // 护甲(纯金属,无木棍)。material = 铁锭/钻石/金锭。
+    private static void armorOf(Item output, Item material, int ingotCount) {
+        put(new Recipe(output, 1, List.of(new Ingredient(List.of(material), ingotCount)), true));
     }
 
     private static void put(Recipe recipe) {

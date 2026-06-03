@@ -31,6 +31,8 @@ public final class GoalPlanner {
     // 第3层 装备前置用:铁甲四件 + 对应装备槽。
     private static final List<Item> IRON_ARMOR = List.of(
             Items.IRON_HELMET, Items.IRON_CHESTPLATE, Items.IRON_LEGGINGS, Items.IRON_BOOTS);
+    // 规避加固:挖深矿前备的火把数(供 DangerWatcher 在地下黑暗处点亮防刷怪)。
+    private static final int TORCH_TARGET = 8;
     private static final EquipmentSlot[] ARMOR_SLOTS = {
             EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET};
     // 第4层 备粮用:常见食物(生/熟肉 + 面包)。
@@ -219,6 +221,8 @@ public final class GoalPlanner {
                 if (!ensureArmor(false, depth + 1, visiting)) {
                     return false;
                 }
+                // 规避:备火把(best-effort),供地下黑暗处点亮防刷怪。
+                ensureTorches(depth + 1, visiting);
                 // 第4层:再备点粮(best-effort,周围没动物不阻断)。
                 ensureFood(depth + 1, visiting);
             }
@@ -251,6 +255,15 @@ public final class GoalPlanner {
                 return false;
             }
             return true;
+        }
+
+        // 规避加固:挖深矿(凶险)前备一批火把,供 DangerWatcher 在地下黑暗处点亮防刷怪。
+        // best-effort:能倒推出火把(挖煤+棍)就加进计划;不阻断挖矿目标(有铁镐即能挖煤,基本必成)。
+        private void ensureTorches(int depth, Set<String> visiting) {
+            if (counts.getOrDefault(Items.TORCH, 0) >= TORCH_TARGET) {
+                return;
+            }
+            ensureItem(Items.TORCH, TORCH_TARGET, depth + 1, visiting);
         }
 
         // Phase2:基建——备齐工作台/熔炉/箱子各一,再下放置步(PlaceStationsTask 摆到 bot 周围)。

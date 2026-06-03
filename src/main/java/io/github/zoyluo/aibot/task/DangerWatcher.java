@@ -32,6 +32,8 @@ public final class DangerWatcher {
     private final Map<UUID, Integer> observedSleepCompletionTicks = new ConcurrentHashMap<>();
     private final Map<UUID, TrapRecord> trapRecords = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> nextHuntAttemptTick = new ConcurrentHashMap<>();
+    private final Map<UUID, PosRecord> darkStuckRecords = new ConcurrentHashMap<>(); // 规避:困死陷阱检测
+    private final Map<UUID, Integer> nextEscapeHelpTick = new ConcurrentHashMap<>();  // 撤离求助节流
 
     // 第1层 困死退避:逃避类任务(evade/shelter)在同一格反复触发却没脱身,即判"被困",
     // 退避一段时间不再空派、并按间隔节流求助。终结"夜间困坑底每 2 秒 shelter/evade 死循环刷屏"。
@@ -39,11 +41,15 @@ public final class DangerWatcher {
     private static final int TRAP_BACKOFF_TICKS = 600;   // 被困后退避 30s 不再空派威胁任务
     private static final int TRAP_HELP_INTERVAL = 1200;  // 求助消息最短间隔 60s(防刷屏)
     private static final int HUNT_FOOD_TARGET = 3;       // 第2层 饥饿链:没食物时主动猎取的生肉数量
+    private static final int DARK_STUCK_TICKS = 160;     // 规避:地下黑暗处静止 8s 判"困死陷阱",撤回地面
 
     private DangerWatcher() {
     }
 
     private record TrapRecord(BlockPos pos, int repeatCount, int lastHelpTick) {
+    }
+
+    private record PosRecord(BlockPos pos, int sinceTick) {
     }
 
     public void scanAll(MinecraftServer server) {
@@ -86,6 +92,10 @@ public final class DangerWatcher {
                 return true;
             }
         }
+        // 规避加固(保命兜底):困死在地下黑暗处 → 撤回地面,优先于补给/进食。
+        if (maybeEscapeDarkTrap(server, bot, active)) {
+            return true;
+        }
         if (maybeResupply(server, bot, active)) {
             return true;
         }
@@ -93,6 +103,9 @@ public final class DangerWatcher {
             return true;
         }
         if (maybeStartNightTask(server, bot, active)) {
+            return true;
+        }
+        if (maybeLightDarkArea(server, bot, active)) {
             return true;
         }
         if (active.isEmpty() && BrainCoordinator.INSTANCE.maybeWakeForFailureOrGoal(bot)) {
@@ -287,6 +300,91 @@ public final class DangerWatcher {
         return true;
     }
 
+    // 规避加固:地下/黑暗处(方块光照<8)只要 idle 且有火把,就先点亮——从源头减少怪物在身边刷新。
+    // 不限夜晚(地下白天 light=0 同样刷怪)。仅 active 为空(idle/目标步骤间隙)时派,避免打断挖矿。
+    private boolean maybeLightDarkArea(MinecraftServer server, AIPlayerEntity bot, Optional<Task> active) {
+        if (active.isPresent()) {
+            return false;
+        }
+        var world = bot.getServerWorld();
+        BlockPos feet = bot.getBlockPos();
+        if (world.isSkyVisible(feet)
+                || world.getLightLevel(net.minecraft.world.LightType.BLOCK, feet) >= 8) {
+            return false;
+        }
+        if (InventoryAction.countItem(bot, net.minecraft.item.Items.TORCH) <= 0) {
+            return false; // 没火把点不了——由 GoalPlanner 挖深矿前置备火把兜底
+        }
+        int now = server.getTicks();
+        if (now < nextNightAttemptTick.getOrDefault(bot.getUuid(), 0)) {
+            return false; // 复用夜间节流,避免每次扫描都派
+        }
+        TaskManager.INSTANCE.assign(bot, new LightAreaTask(8, 8));
+        nextNightAttemptTick.put(bot.getUuid(), now + 600);
+        BotLog.danger(bot, "dark_area_lit",
+                "light", world.getLightLevel(net.minecraft.world.LightType.BLOCK, feet));
+        return true;
+    }
+
+    // 规避加固(保命兜底):bot 卡在"地下 + 黑暗"处 = 困死陷阱(随时被刷怪秒杀)。只盯移动类(move)卡住
+    // 与 idle 静止——挖矿/熔炼等有各自看门狗或属合理静止,先让它们 fail。检测到困死就 teleport 撤回
+    // 地面 + 清当前目标 + 求助(节流)。牺牲当次目标换保命;回地面后大脑可重试(届时已备火把更安全)。
+    private boolean maybeEscapeDarkTrap(MinecraftServer server, AIPlayerEntity bot, Optional<Task> active) {
+        if (active.isPresent() && !"move".equals(active.get().name())) {
+            darkStuckRecords.remove(bot.getUuid());
+            return false;
+        }
+        var world = bot.getServerWorld();
+        BlockPos feet = bot.getBlockPos();
+        boolean darkUnderground = !world.isSkyVisible(feet)
+                && world.getLightLevel(net.minecraft.world.LightType.BLOCK, feet) < 8;
+        if (!darkUnderground) {
+            darkStuckRecords.remove(bot.getUuid());
+            return false;
+        }
+        int now = server.getTicks();
+        PosRecord rec = darkStuckRecords.get(bot.getUuid());
+        if (rec == null || !rec.pos().equals(feet)) {
+            darkStuckRecords.put(bot.getUuid(), new PosRecord(feet, now));
+            return false;
+        }
+        if (now - rec.sinceTick() < DARK_STUCK_TICKS) {
+            return false; // 还没卡够久
+        }
+        darkStuckRecords.remove(bot.getUuid());
+        if (!escapeToSurface(bot)) {
+            return false; // 上方没有露天可站点(极少),交还其它逻辑
+        }
+        TaskManager.INSTANCE.abort(bot);
+        io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.clear(bot);
+        BotLog.danger(bot, "dark_trap_escape",
+                "from", feet.getX() + "," + feet.getY() + "," + feet.getZ());
+        if (now >= nextEscapeHelpTick.getOrDefault(bot.getUuid(), 0)) {
+            BrainCoordinator.INSTANCE.sendPanelChat(bot, "system",
+                    bot.getGameProfile().getName() + " 被困在黑暗矿洞太久、有被刷怪秒杀的风险,已撤回地面。");
+            nextEscapeHelpTick.put(bot.getUuid(), now + TRAP_HELP_INTERVAL);
+        }
+        return true;
+    }
+
+    // teleport 上浮到正上方最近的露天可站点(保命兜底,清 fallDistance)。
+    private boolean escapeToSurface(AIPlayerEntity bot) {
+        var world = bot.getServerWorld();
+        BlockPos feet = bot.getBlockPos();
+        int top = world.getBottomY() + world.getHeight();
+        for (int dy = 1; feet.getY() + dy < top - 1 && dy <= 120; dy++) {
+            BlockPos cand = feet.up(dy);
+            if (io.github.zoyluo.aibot.pathfinding.Standability.isStandable(world, cand)
+                    && world.isSkyVisible(cand)) {
+                bot.getActionPack().stopAll();
+                bot.teleport(world, cand.getX() + 0.5D, cand.getY(), cand.getZ() + 0.5D,
+                        java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+                return true;
+            }
+        }
+        return false;
+    }
+
     // combat 困死检测:连续 ≥2 次 combat 被 StuckWatcher 中止(stuck:combat),说明目标够不到 → 改逃,别站桩被打死。
     private boolean combatStuck(AIPlayerEntity bot) {
         Optional<TaskManager.FailureRecord> fail = TaskManager.INSTANCE.peekFailure(bot);
@@ -303,8 +401,8 @@ public final class DangerWatcher {
         if (bot.getHealth() <= combat.retreatHp()) {
             return false;
         }
-        if (threat.entity() instanceof CreeperEntity && bot.distanceTo(threat.entity()) < 6.0F) {
-            return false;
+        if (threat.entity() instanceof CreeperEntity) {
+            return false; // 苦力怕一律不近战(会爆炸秒杀满血 bot),始终改逃
         }
         int hostiles = bot.getServerWorld()
                 .getEntitiesByClass(LivingEntity.class, bot.getBoundingBox().expand(8.0D),
@@ -361,13 +459,17 @@ public final class DangerWatcher {
         if (bot.getHealth() < 6.0F) {
             return Optional.of(new Threat(Threat.Type.LOW_HP, Threat.Severity.HIGH, null, bot.getBlockPos()));
         }
+        // 规避加固:检测半径 8→10,更早发现威胁;苦力怕单列 HIGH(贴近会瞬间爆炸秒杀满血 bot,必须优先逃离)。
         Optional<LivingEntity> hostile = bot.getServerWorld()
-                .getEntitiesByClass(LivingEntity.class, bot.getBoundingBox().expand(8.0D),
+                .getEntitiesByClass(LivingEntity.class, bot.getBoundingBox().expand(10.0D),
                         entity -> entity instanceof HostileEntity && entity.isAlive())
                 .stream()
                 .min(Comparator.comparingDouble(entity -> entity.distanceTo(bot)));
         if (hostile.isPresent()) {
-            return Optional.of(new Threat(Threat.Type.HOSTILE, Threat.Severity.MEDIUM, hostile.get(), hostile.get().getBlockPos()));
+            LivingEntity mob = hostile.get();
+            Threat.Severity severity = mob instanceof CreeperEntity
+                    ? Threat.Severity.HIGH : Threat.Severity.MEDIUM;
+            return Optional.of(new Threat(Threat.Type.HOSTILE, severity, mob, mob.getBlockPos()));
         }
         if (bot.isSubmergedInWater() && bot.getAir() < 50) {
             return Optional.of(new Threat(Threat.Type.DROWNING, Threat.Severity.MEDIUM, null, bot.getBlockPos()));

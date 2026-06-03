@@ -25,7 +25,7 @@ public final class GatherQuotaTask extends AbstractTask {
     private static final int SEARCH_UP = 12;
     private static final int LARGE_SCAN_THROTTLE_TICKS = 10; // 大半径扫描限频,护 TPS
     private static final int MAX_PICKUP_MISSES = 5;  // 连续采不到的容忍棵数,超了才漫游换片
-    private static final int MAX_ROAMS = 3;          // 卡步逃逸:最多漫游换片次数,再不行才 fail
+    private static final int MAX_ROAMS = 5;          // 卡步逃逸:最多漫游换片次数(找树/换片共用,~140 格),再不行才 fail
     private static final int ROAM_DISTANCE = 28;     // 每次漫游的水平距离
 
     private enum Phase {
@@ -196,6 +196,11 @@ public final class GatherQuotaTask extends AbstractTask {
             if (!surfaceTried && trySurface(bot)) {
                 surfaceTried = true;
                 searchRadius = SEARCH_RADIUS;
+                return;
+            }
+            // 这片(已扩到 48 格)没树 → 漫游到远处换片再找,而非直接失败让大脑接管乱跑被秒(实测无树群系)。
+            if (roamToNewArea(bot)) {
+                surfaceTried = false; // 新区域重新允许"上浮兜底"
                 return;
             }
             fail("no_resource_nearby");

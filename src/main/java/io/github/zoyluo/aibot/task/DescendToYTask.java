@@ -140,29 +140,34 @@ public final class DescendToYTask extends AbstractTask {
     // 挖开通往侧列的块(挨岩浆的块不挖,防溃浆淹没);通了就 teleport 平移过去(bot 无被动重力,与 descendInto 一致)。
     // 四面都不可行 → 返回 false,由调用方判失败(交规避层"困死撤离"兜底)。
     private boolean tryLateralDetour(AIPlayerEntity bot, ServerWorld world, BlockPos feet) {
-        for (Direction dir : HORIZONTAL) {
-            BlockPos side = feet.offset(dir);
-            if (isLava(world, side) || isLava(world, side.up()) || isLava(world, side.down())) {
-                continue; // 别往岩浆方向横移
-            }
-            BlockPos solid = firstSolid(world, side, side.up());
-            if (solid != null) {
-                if (adjacentLava(world, solid)) {
-                    continue; // 要挖的块挨着岩浆,挖了会溃浆淹没,换方向
+        // 先在当前层找无岩浆侧列绕;当前层四面都被岩浆封死(大岩浆湖,实测 at_y=50:脚下及四面 side.down 皆岩浆
+        // → 当前层无解 → 整步失败)时,上退一层在岩浆湖顶上方绕——通常能爬到岩浆湖边缘外继续下挖。
+        for (int dy = 0; dy <= 1; dy++) {
+            BlockPos base = feet.up(dy);
+            for (Direction dir : HORIZONTAL) {
+                BlockPos side = base.offset(dir);
+                if (isLava(world, side) || isLava(world, side.up()) || isLava(world, side.down())) {
+                    continue; // 别往岩浆方向横移
                 }
-                if (miner.target() == null || !miner.target().equals(solid)) {
-                    miner.begin(bot, solid);
+                BlockPos solid = firstSolid(world, side, side.up());
+                if (solid != null) {
+                    if (adjacentLava(world, solid)) {
+                        continue; // 要挖的块挨着岩浆,挖了会溃浆淹没,换方向
+                    }
+                    if (miner.target() == null || !miner.target().equals(solid)) {
+                        miner.begin(bot, solid);
+                    }
+                    miner.tick(bot);
+                    return true; // 正在挖通往侧列的路(本 tick 算进展)
                 }
-                miner.tick(bot);
-                return true; // 正在挖通往侧列的路(本 tick 算进展)
+                // 侧列已通(脚位+头位皆空)→ teleport 平移过去(可能上退了一层),下个 tick 在新列继续下挖。
+                miner.cancel(bot);
+                bot.teleport(world, side.getX() + 0.5D, side.getY(), side.getZ() + 0.5D,
+                        java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+                lateralDetours++;
+                BotLog.action(bot, "descend_lava_detour", "dir", dir.asString(), "at_y", side.getY(), "up", dy);
+                return true;
             }
-            // 侧列已通(脚位+头位皆空)→ teleport 平移过去,下个 tick 在新列继续下挖。
-            miner.cancel(bot);
-            bot.teleport(world, side.getX() + 0.5D, side.getY(), side.getZ() + 0.5D,
-                    java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
-            lateralDetours++;
-            BotLog.action(bot, "descend_lava_detour", "dir", dir.asString(), "at_y", side.getY());
-            return true;
         }
         return false;
     }

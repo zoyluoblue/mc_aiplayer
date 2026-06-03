@@ -5,6 +5,7 @@ import io.github.zoyluo.aibot.brain.BotReporter;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.task.CraftTask;
+import io.github.zoyluo.aibot.task.DescendToYTask;
 import io.github.zoyluo.aibot.task.DigDownTask;
 import io.github.zoyluo.aibot.task.FarmTask;
 import io.github.zoyluo.aibot.task.GatherQuotaTask;
@@ -202,6 +203,8 @@ public final class GoalExecutor {
             case PLACE_STATIONS -> Optional.of(new PlaceStationsTask());
             // Phase3:STOCKPILE 步 → 把背包资源存进附近箱子(存所有非工具)。
             case STOCKPILE -> Optional.of(new StockpileTask(true));
+            // 挖深层矿:DESCEND_TO_Y 步 → 连续挖竖井下到矿层。
+            case DESCEND_TO_Y -> Optional.of(new DescendToYTask(step.pos().getY()));
         };
     }
 

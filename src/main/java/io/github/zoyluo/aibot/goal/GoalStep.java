@@ -26,7 +26,8 @@ public record GoalStep(Kind kind,
         FARM,
         HUNT,
         PLACE_STATIONS,
-        STOCKPILE
+        STOCKPILE,
+        DESCEND_TO_Y
     }
 
     public GoalStep {
@@ -79,6 +80,11 @@ public record GoalStep(Kind kind,
         return new GoalStep(Kind.STOCKPILE, item, 1, null, Set.of(), null, null, null);
     }
 
+    /** 挖深层矿:DESCEND_TO_Y 步——下挖到指定 Y(用 pos.y 携带,允许负数;x/z 忽略)。 */
+    public static GoalStep descendToY(int y) {
+        return new GoalStep(Kind.DESCEND_TO_Y, null, 1, null, Set.of(), null, null, new BlockPos(0, y, 0));
+    }
+
     public GoalStep withCount(int newCount) {
         return new GoalStep(kind, item, newCount, block, ores, input, output, pos);
     }
@@ -109,6 +115,7 @@ public record GoalStep(Kind kind,
             case HUNT -> "HUNT meat x" + count;
             case PLACE_STATIONS -> "PLACE_STATIONS table+furnace+chest";
             case STOCKPILE -> "STOCKPILE " + Registries.ITEM.getId(item);
+            case DESCEND_TO_Y -> "DESCEND_TO_Y " + pos.getY();
         };
     }
 }

@@ -24,6 +24,9 @@ public final class GatherQuotaTask extends AbstractTask {
     private static final int SEARCH_DOWN = 6;
     private static final int SEARCH_UP = 12;
     private static final int LARGE_SCAN_THROTTLE_TICKS = 10; // 大半径扫描限频,护 TPS
+    private static final int MAX_PICKUP_MISSES = 5;  // 连续采不到的容忍棵数,超了才漫游换片
+    private static final int MAX_ROAMS = 3;          // 卡步逃逸:最多漫游换片次数,再不行才 fail
+    private static final int ROAM_DISTANCE = 28;     // 每次漫游的水平距离
 
     private enum Phase {
         SURVEY,
@@ -50,6 +53,7 @@ public final class GatherQuotaTask extends AbstractTask {
     private int searchRadius = SEARCH_RADIUS;
     private int lastScanTick = -100;
     private boolean surfaceTried; // B:地下找不到树时,上浮到地表重试一次的兜底标志
+    private int roamCount;        // 卡步逃逸:已漫游换片的次数
 
     public GatherQuotaTask(Item targetItem, int targetCount) {
         this.targetItem = targetItem;
@@ -123,6 +127,45 @@ public final class GatherQuotaTask extends AbstractTask {
         return false;
     }
 
+    // 卡步逃逸:同一片连续多棵采不到 → teleport 到 ROAM_DISTANCE 外的露天地表换片林子重试,
+    // 而非原地死磕被秒。最多 MAX_ROAMS 次,再不行才 fail 交大脑/玩家。
+    private boolean roamToNewArea(AIPlayerEntity bot) {
+        if (++roamCount > MAX_ROAMS) {
+            return false;
+        }
+        var world = bot.getServerWorld();
+        BlockPos feet = bot.getBlockPos();
+        int[][] dirs = {{1, 0}, {0, 1}, {-1, 0}, {0, -1}, {1, 1}, {-1, -1}, {1, -1}, {-1, 1}};
+        int start = Math.floorMod(roamCount, dirs.length);
+        for (int i = 0; i < dirs.length; i++) {
+            int[] d = dirs[(start + i) % dirs.length];
+            BlockPos ground = findGroundAt(world, feet.getX() + d[0] * ROAM_DISTANCE, feet.getZ() + d[1] * ROAM_DISTANCE);
+            if (ground != null) {
+                bot.getActionPack().stopAll();
+                bot.teleport(world, ground.getX() + 0.5D, ground.getY(), ground.getZ() + 0.5D,
+                        java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+                searchRadius = SEARCH_RADIUS;
+                pickupMisses = 0;
+                BotLog.action(bot, "gather_roam",
+                        "to", ground.getX() + "," + ground.getY() + "," + ground.getZ(), "n", roamCount);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // 在 (x,z) 列从高往低找第一个露天可站点(地表)。
+    private BlockPos findGroundAt(net.minecraft.server.world.ServerWorld world, int x, int z) {
+        int topY = Math.min(world.getBottomY() + world.getHeight() - 2, 110);
+        for (int y = topY; y > world.getBottomY() + 1; y--) {
+            BlockPos p = new BlockPos(x, y, z);
+            if (Standability.isStandable(world, p) && world.isSkyVisible(p)) {
+                return p;
+            }
+        }
+        return null;
+    }
+
     private void survey(AIPlayerEntity bot) {
         if (harvestBlocks.isEmpty()) {
             fail("unsupported_resource_type");
@@ -184,6 +227,7 @@ public final class GatherQuotaTask extends AbstractTask {
 
     private void harvest(AIPlayerEntity bot) {
         if (targetPos == null || !isHarvestBlock(bot, targetPos)) {
+            bot.getActionPack().stopAll(); // 砍倒后停稳,别带移动惯性漂离掉落物(实测砍完从树位漂走→捡不到)
             pickupTicks = 120;
             phase = Phase.PICKUP;
             return;
@@ -212,9 +256,13 @@ public final class GatherQuotaTask extends AbstractTask {
             countSoFar = countAccepted(bot);
             if (countSoFar > countBeforeHarvest) {
                 phase = countSoFar >= targetCount ? Phase.DONE : Phase.SURVEY;
-            } else if (countSoFar > 0 && ++pickupMisses <= 3) {
-                // 这棵掉落物没捡到(卡树叶/掉水/despawn),但之前已采过一些 → 别 fail 整个采集,回 SURVEY 砍下一棵补。
+            } else if (++pickupMisses <= MAX_PICKUP_MISSES) {
+                // 没捡到(高处掉落卡叶/够不到)→ 别 fail,回 SURVEY 换棵再砍。关键修:去掉旧的"countSoFar>0"
+                // 限制——实测树稀疏区第一棵就捡不到→countSoFar=0 直接 fail→大脑重规划同样计划→死循环 19 分钟被秒。
                 BotLog.action(bot, "gather_pickup_miss", "have", countSoFar + "/" + targetCount, "miss", pickupMisses);
+                phase = Phase.SURVEY;
+            } else if (roamToNewArea(bot)) {
+                // 同一片连续多棵都采不到 → 漫游到全新区域换片林子重试,而非原地死磕被秒(卡步逃逸)。
                 phase = Phase.SURVEY;
             } else {
                 fail("pickup_timeout");

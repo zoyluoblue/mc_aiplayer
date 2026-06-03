@@ -30,6 +30,7 @@ public final class CombatTask extends AbstractTask {
     private static final int BOW_CHARGE_TICKS = 20;
     private static final int BLOCK_TICKS = 12;
     private static final int HEAL_WAIT_TICKS = 200;
+    private static final int LOST_SIGHT_LIMIT = 50; // 目标被墙挡住(无视线)持续 2.5s → 结束战斗,不傻打到 timeout
 
     private final EntityType<?> targetType;
     private final int targetKills;
@@ -42,6 +43,7 @@ public final class CombatTask extends AbstractTask {
     private int blockTicks;
     private int healTicks;
     private boolean eating;
+    private int lostSightTicks; // 目标连续无视线(被墙挡)的 tick 数
 
     public CombatTask(EntityType<?> targetType, int targetKills, float retreatHpThreshold) {
         this.targetType = targetType;
@@ -76,6 +78,18 @@ public final class CombatTask extends AbstractTask {
         if (elapsed > 2400) {
             fail("combat_timeout");
             return;
+        }
+        // 目标被方块挡住够不到(隔墙/隔隧道)→ 结束战斗,别傻打/空追到 timeout(实测 bug:被阻隔的怪
+        // 让 bot 一直"正在战斗"、中断正常挖矿)。瞬间遮挡不算,持续无视线 2.5s 才收手;够不到即安全,
+        // 用 complete 干净结束让原任务 resume,不 fail 惊动大脑。
+        if (target != null && target.isAlive() && !CombatCore.hasLineOfSight(bot, target)) {
+            if (++lostSightTicks > LOST_SIGHT_LIMIT) {
+                lostSightTicks = 0;
+                complete();
+                return;
+            }
+        } else {
+            lostSightTicks = 0;
         }
         if (bot.getHealth() <= retreatHpThreshold && phase != Phase.RETREAT && phase != Phase.HEAL) {
             phase = Phase.RETREAT;

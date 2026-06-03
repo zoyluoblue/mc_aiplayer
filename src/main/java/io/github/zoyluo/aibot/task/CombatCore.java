@@ -8,9 +8,11 @@ import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.mob.HostileEntity;
+import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.RaycastContext;
 
 import java.util.Comparator;
 import java.util.Optional;
@@ -45,6 +47,18 @@ public final class CombatCore {
 
     public static boolean inMeleeRange(AIPlayerEntity bot, LivingEntity target) {
         return bot.distanceTo(target) <= ATTACK_RANGE;
+    }
+
+    // 视线/可达判定:bot 眼睛 → 目标眼睛之间做一次方块 raycast,中间被实心方块挡住(非 MISS)即视为
+    // 够不到(隔墙/隔隧道)。raycast 只检测方块、不含实体,正好判断"有没有墙挡着"。被挡的怪近战打不到、
+    // 远程射不到、苦力怕炸不到,不应触发/维持战斗(实测 bug:被方块阻隔的怪让 bot 一直"正在战斗")。
+    public static boolean hasLineOfSight(AIPlayerEntity bot, LivingEntity mob) {
+        HitResult hit = bot.getServerWorld().raycast(new RaycastContext(
+                bot.getEyePos(), mob.getEyePos(),
+                RaycastContext.ShapeType.COLLIDER,
+                RaycastContext.FluidHandling.NONE,
+                bot));
+        return hit.getType() == HitResult.Type.MISS;
     }
 
     public static void lookAt(AIPlayerEntity bot, LivingEntity target) {

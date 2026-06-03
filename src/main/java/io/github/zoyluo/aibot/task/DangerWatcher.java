@@ -18,6 +18,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.math.BlockPos;
 
 import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -459,14 +460,17 @@ public final class DangerWatcher {
         if (bot.getHealth() < 6.0F) {
             return Optional.of(new Threat(Threat.Type.LOW_HP, Threat.Severity.HIGH, null, bot.getBlockPos()));
         }
-        // 规避加固:检测半径 8→10,更早发现威胁;苦力怕单列 HIGH(贴近会瞬间爆炸秒杀满血 bot,必须优先逃离)。
-        Optional<LivingEntity> hostile = bot.getServerWorld()
+        // 规避加固:检测半径 10,但只把"能真正威胁到 bot"的敌对怪算进来——bot 眼睛到怪眼睛之间若被实心
+        // 方块阻隔(隔着墙/在另一条隧道),怪根本够不到 bot,不应触发战斗/逃跑(实测 bug:被方块挡着的怪
+        // 让 bot 一直"正在战斗"、中断正常挖矿)。按距离从近到远找第一个有视线(可达)的怪。
+        List<LivingEntity> hostiles = bot.getServerWorld()
                 .getEntitiesByClass(LivingEntity.class, bot.getBoundingBox().expand(10.0D),
-                        entity -> entity instanceof HostileEntity && entity.isAlive())
-                .stream()
-                .min(Comparator.comparingDouble(entity -> entity.distanceTo(bot)));
-        if (hostile.isPresent()) {
-            LivingEntity mob = hostile.get();
+                        entity -> entity instanceof HostileEntity && entity.isAlive());
+        hostiles.sort(Comparator.comparingDouble(bot::distanceTo));
+        for (LivingEntity mob : hostiles) {
+            if (!canReachThreat(bot, mob)) {
+                continue; // 被方块阻隔,够不到 bot → 不算威胁
+            }
             Threat.Severity severity = mob instanceof CreeperEntity
                     ? Threat.Severity.HIGH : Threat.Severity.MEDIUM;
             return Optional.of(new Threat(Threat.Type.HOSTILE, severity, mob, mob.getBlockPos()));
@@ -488,5 +492,12 @@ public final class DangerWatcher {
             return Optional.of(new Threat(Threat.Type.FALLING, Threat.Severity.LOW, null, bot.getBlockPos()));
         }
         return Optional.empty();
+    }
+
+    // 怪物能否真正威胁到 bot:bot 眼睛 → 怪眼睛之间做一次方块 raycast,中间被实心方块挡住(非 MISS)即
+    // 视为够不到(隔墙/隔隧道)。raycast 只检测方块、不含实体,正好判断"有没有墙挡着"。近战怪没视线打不到、
+    // 远程怪没视线射不到、苦力怕没视线也炸不到——一律不算当前威胁(它们绕过来/露头后会被重新检测到)。
+    private static boolean canReachThreat(AIPlayerEntity bot, LivingEntity mob) {
+        return CombatCore.hasLineOfSight(bot, mob);
     }
 }

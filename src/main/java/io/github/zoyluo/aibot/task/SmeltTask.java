@@ -4,6 +4,7 @@ import io.github.zoyluo.aibot.action.ActionResult;
 import io.github.zoyluo.aibot.action.BlockMiner;
 import io.github.zoyluo.aibot.action.BuildAction;
 import io.github.zoyluo.aibot.action.ContainerAction;
+import io.github.zoyluo.aibot.action.DigNav;
 import io.github.zoyluo.aibot.action.InventoryAction;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.memory.BotMemoryStore;
@@ -66,6 +67,7 @@ public final class SmeltTask extends AbstractTask {
     private BlockPos furnacePos;
     private int collected;
     private final BlockMiner clearMiner = new BlockMiner(); // 被围放不下熔炉时,挖一格相邻方块腾位
+    private boolean walkDigging; // 纯寻路到不了现有熔炉时,降级挖掘式朝熔炉挖过去(复用 clearMiner)
 
     public SmeltTask(Item input, Item output, int targetCount) {
         this.input = input;
@@ -91,12 +93,19 @@ public final class SmeltTask extends AbstractTask {
 
     @Override
     public boolean isWaiting() {
-        return phase == Phase.SMELTING;
+        // 挖掘式走向熔炉时 bot 站着挖、位置基本不变 → 视为 waiting,避免 StuckWatcher 误判(本任务总超时兜底)。
+        return phase == Phase.SMELTING || (phase == Phase.WALKING_TO_FURNACE && walkDigging);
     }
 
     @Override
     protected void onStart(AIPlayerEntity bot) {
         phase = Phase.FINDING_FURNACE;
+    }
+
+    @Override
+    protected void onAbort(AIPlayerEntity bot) {
+        clearMiner.cancel(bot);
+        bot.getActionPack().stopAll();
     }
 
     @Override
@@ -139,10 +148,9 @@ public final class SmeltTask extends AbstractTask {
             return;
         }
         ActionResult result = bot.getActionPack().startPathTo(stand);
-        if (result.isFailed()) {
-            fail(result.reason());
-            return;
-        }
+        // 纯寻路到不了现有熔炉(地下被围/自挖隧道复杂,实测 GOAL_UNREACHABLE 会让整条目标 replan 回地表砍木,
+        // bot 在深处回不去而卡死)→ 不失败,降级挖掘式朝熔炉挖过去。
+        walkDigging = result.isFailed();
         phase = Phase.WALKING_TO_FURNACE;
     }
 
@@ -152,12 +160,22 @@ public final class SmeltTask extends AbstractTask {
             return;
         }
         if (bot.getEyePos().squaredDistanceTo(furnacePos.toCenterPos()) <= 20.25D) {
+            clearMiner.cancel(bot);
             bot.getActionPack().stopAll();
             phase = Phase.LOADING;
             return;
         }
+        if (walkDigging) {
+            // 挖掘式朝熔炉挖过去(地下被围也能到);朝向格挨岩浆受阻 → 回 FINDING 另选(LOADING 判定 4.5 格内即停,不会挖到熔炉本身)
+            if (!DigNav.digStep(bot, clearMiner, furnacePos)) {
+                walkDigging = false;
+                phase = Phase.FINDING_FURNACE;
+            }
+            return;
+        }
         if (bot.getActionPack().isPathExecutorIdle() && elapsed > 10) {
-            phase = Phase.FINDING_FURNACE;
+            // 纯寻路走不到 → 降级挖掘式,而非反复重找最终 smelt_timeout 失败触发 replan
+            walkDigging = true;
         }
     }
 

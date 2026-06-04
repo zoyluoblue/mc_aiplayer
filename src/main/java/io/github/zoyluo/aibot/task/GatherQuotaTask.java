@@ -35,6 +35,7 @@ public final class GatherQuotaTask extends AbstractTask {
         HARVEST,
         PICKUP,
         DEPOSIT,
+        ROAM,
         DONE
     }
 
@@ -55,6 +56,7 @@ public final class GatherQuotaTask extends AbstractTask {
     private int lastScanTick = -100;
     private boolean surfaceTried; // B:地下找不到树时,上浮到地表重试一次的兜底标志
     private int roamCount;        // 卡步逃逸:已漫游换片的次数
+    private BlockPos roamTarget;  // 漫游换片的落脚点(走过去,不 teleport)
     private int selfStuckTick;     // A:上次"采到新木"的 tick
     private int selfStuckCount;    // A:上次记录的已采数
 
@@ -99,13 +101,13 @@ public final class GatherQuotaTask extends AbstractTask {
         }
         // A:采集自愈——只看"是否采到新木"(count 是否增长),不看位置。GOTO 缓慢挪动但久采不到(走不到树/
         // 砍不动)也算卡 → 及时漫游换片,而非缓慢耗到 gather_timeout(实测:采到 5 根后走不到剩下的、5min 超时被秒)。
-        if (countSoFar != selfStuckCount) {
-            selfStuckCount = countSoFar;
-            selfStuckTick = elapsed;
-        } else if (elapsed - selfStuckTick > SELF_STUCK_LIMIT && roamToNewArea(bot)) {
-            selfStuckTick = elapsed;
-            phase = Phase.SURVEY;
-            return;
+        if (phase != Phase.ROAM) {
+            if (countSoFar != selfStuckCount) {
+                selfStuckCount = countSoFar;
+                selfStuckTick = elapsed;
+            } else if (elapsed - selfStuckTick > SELF_STUCK_LIMIT && roamToNewArea(bot)) {
+                return; // roamToNewArea 内已设 phase=ROAM(走过去换片),漫游中不再自检
+            }
         }
         switch (phase) {
             case SURVEY -> survey(bot);
@@ -113,6 +115,7 @@ public final class GatherQuotaTask extends AbstractTask {
             case HARVEST -> harvest(bot);
             case PICKUP -> pickup(bot);
             case DEPOSIT -> deposit(bot);
+            case ROAM -> roamMove(bot);
             case DONE -> complete();
         }
     }
@@ -154,11 +157,14 @@ public final class GatherQuotaTask extends AbstractTask {
             int[] d = dirs[(start + i) % dirs.length];
             BlockPos ground = findGroundAt(world, feet.getX() + d[0] * ROAM_DISTANCE, feet.getZ() + d[1] * ROAM_DISTANCE);
             if (ground != null) {
+                // 拟人:走过去换片,不再 teleport 闪现(实测砍树时瞬移很出戏)。
                 bot.getActionPack().stopAll();
-                bot.teleport(world, ground.getX() + 0.5D, ground.getY(), ground.getZ() + 0.5D,
-                        java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+                bot.getActionPack().startPathTo(ground);
+                roamTarget = ground;
                 searchRadius = SEARCH_RADIUS;
                 pickupMisses = 0;
+                selfStuckTick = elapsed;
+                phase = Phase.ROAM;
                 BotLog.action(bot, "gather_roam",
                         "to", ground.getX() + "," + ground.getY() + "," + ground.getZ(), "n", roamCount);
                 return true;
@@ -177,6 +183,17 @@ public final class GatherQuotaTask extends AbstractTask {
             }
         }
         return null;
+    }
+
+    // 漫游中:走向新片落脚点;到达(3 格内)或走不动(寻路空闲)→ 回 SURVEY 在新片找树(途中 SURVEY 也会扫到沿路的树)。
+    private void roamMove(AIPlayerEntity bot) {
+        if (roamTarget == null
+                || bot.getBlockPos().getSquaredDistance(roamTarget) <= 9.0D
+                || bot.getActionPack().isPathExecutorIdle()) {
+            roamTarget = null;
+            searchRadius = SEARCH_RADIUS;
+            phase = Phase.SURVEY;
+        }
     }
 
     private void survey(AIPlayerEntity bot) {
@@ -280,8 +297,7 @@ public final class GatherQuotaTask extends AbstractTask {
                 BotLog.action(bot, "gather_pickup_miss", "have", countSoFar + "/" + targetCount, "miss", pickupMisses);
                 phase = Phase.SURVEY;
             } else if (roamToNewArea(bot)) {
-                // 同一片连续多棵都采不到 → 漫游到全新区域换片林子重试,而非原地死磕被秒(卡步逃逸)。
-                phase = Phase.SURVEY;
+                // 同一片连续多棵都采不到 → 漫游(走过去)换片重试(roamToNewArea 内已设 phase=ROAM)。
             } else {
                 fail("pickup_timeout");
             }

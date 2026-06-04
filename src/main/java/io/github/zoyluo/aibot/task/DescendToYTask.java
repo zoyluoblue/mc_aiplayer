@@ -30,6 +30,8 @@ public final class DescendToYTask extends AbstractTask {
     private final BlockMiner miner = new BlockMiner();
     private int lastProgressTick;
     private int lateralDetours; // 已横移绕岩浆/卡点的次数
+    private int stairDirIndex;  // 台阶斜下的当前水平方向(HORIZONTAL 下标)
+    private boolean started;    // 是否已打 descend_started 日志
 
     public DescendToYTask(int targetY) {
         this.targetY = targetY;
@@ -98,7 +100,7 @@ public final class DescendToYTask extends AbstractTask {
             return;
         }
 
-        // 推进当前挖掘(连续,不受任何限频)。
+        // 推进当前挖掘。
         BlockMiner.Status status = miner.tick(bot);
         if (status == BlockMiner.Status.MINING) {
             return;
@@ -107,31 +109,42 @@ public final class DescendToYTask extends AbstractTask {
             lastProgressTick = elapsed;
         }
 
-        BlockState belowState = world.getBlockState(below);
-        if (belowState.isAir()) {
-            bot.getActionPack().descendInto(below); // bot 无被动重力,主动下沉穿过空气
-            return;
-        }
-        // 岩浆(脚下或其正下方)致命 → 横移到相邻无岩浆列继续下挖(绕过岩浆湖);四面皆岩浆/绕太多次才硬停。
-        if (belowState.getFluidState().isIn(FluidTags.LAVA)
-                || world.getBlockState(below.down()).getFluidState().isIn(FluidTags.LAVA)) {
+        // 台阶式斜向下挖(拟人 + 安全):挖"下一级台阶"(斜前下方),先暴露前方——下一级或其踏面是水/岩浆
+        // 就换方向绕,绝不直挖脚下(避免一镐捅穿到下方的水/岩浆)。像挖楼梯一样一级一级斜下。
+        Direction dir = HORIZONTAL[stairDirIndex];
+        BlockPos ahead = feet.offset(dir);   // 下一级头位 (x+d, y)
+        BlockPos next = ahead.down();         // 下一级站位 (x+d, y-1)
+        if (isLava(world, next) || isLava(world, next.down()) || isLava(world, ahead)
+                || isWater(world, next) || isWater(world, next.down())) {
+            if (rotateStair(world, feet)) {
+                return; // 换了个不挨水/岩浆的斜下方向
+            }
+            // 四个斜下方向都被水/岩浆挡 → 退回横移绕(卡死兜底)。
             if (lateralDetours < MAX_LATERAL && tryLateralDetour(bot, world, feet)) {
                 lastProgressTick = elapsed;
                 return;
             }
             miner.cancel(bot);
-            fail("descend_blocked_lava at_y=" + below.getY());
+            fail("descend_blocked at_y=" + next.getY());
             return;
         }
-        if (belowState.getFluidState().isIn(FluidTags.WATER)) {
-            bot.getActionPack().descendInto(below);
+        // 清出下一级身位:next(脚位) + ahead(头位),挖第一个固体。
+        BlockPos solid = firstSolid(world, next, ahead);
+        if (solid != null) {
+            miner.begin(bot, solid);
+            miner.tick(bot);
+            markStarted(bot, feet);
             return;
         }
-        // 脚下实心 → 挖穿往下。
-        miner.begin(bot, below);
-        miner.tick(bot);
-        if (lastProgressTick == 0) {
-            lastProgressTick = elapsed; // 起步宽限
+        // 身位已通 → 斜下踏到下一级台阶(bot 无被动重力,仍需主动移一格;斜向移近似踏下一级楼梯)。
+        bot.getActionPack().descendInto(next);
+        markStarted(bot, feet);
+    }
+
+    private void markStarted(AIPlayerEntity bot, BlockPos feet) {
+        lastProgressTick = elapsed;
+        if (!started) {
+            started = true;
             BotLog.action(bot, "descend_started", "target_y", targetY, "from_y", feet.getY());
         }
     }
@@ -174,6 +187,24 @@ public final class DescendToYTask extends AbstractTask {
 
     private static boolean isLava(ServerWorld world, BlockPos pos) {
         return world.getBlockState(pos).getFluidState().isIn(FluidTags.LAVA);
+    }
+
+    private static boolean isWater(ServerWorld world, BlockPos pos) {
+        return world.getBlockState(pos).getFluidState().isIn(FluidTags.WATER);
+    }
+
+    // 台阶斜下:换到下一个"不挨水/岩浆"的斜下方向;四面都不行返回 false(交横移兜底)。
+    private boolean rotateStair(ServerWorld world, BlockPos feet) {
+        for (int i = 0; i < HORIZONTAL.length; i++) {
+            stairDirIndex = (stairDirIndex + 1) % HORIZONTAL.length;
+            BlockPos ahead = feet.offset(HORIZONTAL[stairDirIndex]);
+            BlockPos next = ahead.down();
+            if (!isLava(world, next) && !isLava(world, next.down()) && !isLava(world, ahead)
+                    && !isWater(world, next) && !isWater(world, next.down())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean adjacentLava(ServerWorld world, BlockPos pos) {

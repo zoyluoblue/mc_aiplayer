@@ -357,12 +357,13 @@ public final class DangerWatcher {
             return false; // 上方没有露天可站点(极少),交还其它逻辑
         }
         TaskManager.INSTANCE.abort(bot);
-        io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.clear(bot);
+        // 问题4:不再 clear 目标——撤回地面后保留挖钻石目标,GoalExecutor 会重规划/重试当前步继续
+        //(abort 当前困住的 task → handleStepFailure 重规划;bot 在地面、环境变了不再困)。实测:旧逻辑撤回后把任务忘了。
         BotLog.danger(bot, "dark_trap_escape",
                 "from", feet.getX() + "," + feet.getY() + "," + feet.getZ());
         if (now >= nextEscapeHelpTick.getOrDefault(bot.getUuid(), 0)) {
             BrainCoordinator.INSTANCE.sendPanelChat(bot, "system",
-                    bot.getGameProfile().getName() + " 被困在黑暗矿洞太久、有被刷怪秒杀的风险,已撤回地面。");
+                    bot.getGameProfile().getName() + " 被困在黑暗矿洞太久、有被刷怪秒杀的风险,已撤回地面,稍后继续未完成的任务。");
             nextEscapeHelpTick.put(bot.getUuid(), now + TRAP_HELP_INTERVAL);
         }
         return true;

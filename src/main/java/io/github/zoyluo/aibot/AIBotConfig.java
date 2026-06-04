@@ -111,7 +111,7 @@ public record AIBotConfig(
                 new Combat(10, 2),
                 new Night(true, 8),
                 new Mining(2, 0.10D, true),
-                new Goal(16, true, true), // P2:钻石从零(石镐→铁→铁镐→钻)递归较深,12→16 留头
+                new Goal(24, true, true), // S7:配方补全后链更深(熟食/盾/钻装备等),16→24 留余量
                 new Nav(1.0D, 12, 60, 30, 4, 2, 3.0D, 3),
                 new Pickup(2.75D, 2.5D, 8.0D)); // 实测 1.5/1.0 太小:砍树掉落物垂直差>1 就吸不到→countSoFar=0 死循环
     }

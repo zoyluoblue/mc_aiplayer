@@ -75,23 +75,36 @@ public final class GoalPlanner {
     }
 
     private static List<GoalStep> mergeGathers(List<GoalStep> steps) {
+        // GATHER:无前置依赖 → 合并并提到计划最前(一次在地表砍够)。
+        // S9:同物 MINE(如圆石)合并数量到**首次出现位置**——不提最前,因 MINE 依赖镐,提前会无镐空挖。
         Map<Item, Integer> gatherTotals = new LinkedHashMap<>();
+        Map<Block, Integer> mineTotals = new LinkedHashMap<>();
         for (GoalStep step : steps) {
             if (step.kind() == GoalStep.Kind.GATHER) {
                 gatherTotals.merge(step.item(), step.count(), Integer::sum);
+            } else if (step.kind() == GoalStep.Kind.MINE) {
+                mineTotals.merge(step.block(), step.count(), Integer::sum);
             }
         }
-        if (gatherTotals.isEmpty()) {
+        if (gatherTotals.isEmpty() && mineTotals.isEmpty()) {
             return steps;
         }
         List<GoalStep> result = new ArrayList<>();
         for (Map.Entry<Item, Integer> entry : gatherTotals.entrySet()) {
             result.add(GoalStep.gather(entry.getKey(), entry.getValue()));
         }
+        HashSet<Block> emittedMine = new HashSet<>();
         for (GoalStep step : steps) {
-            if (step.kind() != GoalStep.Kind.GATHER) {
-                result.add(step);
+            if (step.kind() == GoalStep.Kind.GATHER) {
+                continue; // 已提到最前
             }
+            if (step.kind() == GoalStep.Kind.MINE) {
+                if (emittedMine.add(step.block())) {
+                    result.add(GoalStep.mine(step.block(), mineTotals.get(step.block()))); // 首次出现:并入总量
+                }
+                continue; // 后续同物 MINE 已合并,跳过
+            }
+            result.add(step);
         }
         return result;
     }
@@ -314,10 +327,19 @@ public final class GoalPlanner {
             return resolved;
         }
 
+        // S7:回滚 steps 到指定大小——craftItem 某配方中途失败时清掉本配方已下发的中间步骤,避免半截残留污染计划。
+        private void rollbackSteps(int to) {
+            while (steps.size() > to) {
+                steps.remove(steps.size() - 1);
+            }
+        }
+
         private boolean craftItem(Item item, int missing, RecipeRegistry.Recipe recipe, int depth, Set<String> visiting) {
             int crafts = divideRoundUp(missing, recipe.outputCount());
+            int stepsBefore = steps.size(); // S7:本配方失败时回滚已下发的中间步骤
             if (recipe.needsCraftingTable() && item != Items.CRAFTING_TABLE) {
                 if (!ensureItem(Items.CRAFTING_TABLE, 1, depth + 1, visiting)) {
+                    rollbackSteps(stepsBefore);
                     return false;
                 }
             }
@@ -326,6 +348,7 @@ public final class GoalPlanner {
                 Item candidate = chooseIngredient(ingredient);
                 if (candidate == null || !ensureItem(candidate, counts.getOrDefault(candidate, 0) + need, depth + 1, visiting)) {
                     unresolved.add("missing:" + ingredient.anyOf() + " x" + need + " for " + id(item));
+                    rollbackSteps(stepsBefore);
                     return false;
                 }
                 consume(ingredient, need);

@@ -8,7 +8,6 @@ import io.github.zoyluo.aibot.mining.OreProspector;
 import io.github.zoyluo.aibot.mining.OreScan;
 import io.github.zoyluo.aibot.mining.ToolTier;
 import net.minecraft.block.Block;
-import net.minecraft.block.BlockState;
 import net.minecraft.item.Item;
 import net.minecraft.registry.tag.FluidTags;
 import net.minecraft.server.world.ServerWorld;
@@ -329,37 +328,60 @@ public final class OreDigTask extends AbstractTask {
         }
     }
 
-    // 向下挖一格换层(脚下任何固体都挖穿;岩浆/基岩则失败)。
+    // 台阶式斜向下换层(拟人 + 安全):绝不直挖脚下——下方可能是水/岩浆,一镐捅穿就溺水/葬身岩浆。
+    // 沿当前掘进方向斜前下方挖"下一级台阶"(ahead 头位 + next 脚位),遇水/岩浆就换斜下方向,
+    // 像挖楼梯一样下到新平面(与 DescendToYTask / DigDownTask 台阶逻辑一致)。
     private void digDownOneLayer(AIPlayerEntity bot, ServerWorld world) {
-        BlockPos below = bot.getBlockPos().down();
-        if (below.getY() <= MIN_Y) {
+        BlockPos feet = bot.getBlockPos();
+        if (feet.down().getY() <= MIN_Y) {
             fail("ore_dig_reached_min_y collected=" + collected);
             return;
         }
-        BlockState s = world.getBlockState(below);
-        if (s.isAir()) {
-            // bot 无被动重力(ServerPlayerEntity 服务端不跑 travel(),fake player 没客户端驱动)——
-            // 挖空脚下不会自动下落(与 DigDownTask 同根因)。主动下沉到刚挖空的格子,
-            // 否则竖直换层会站着空转直到看门狗失败(ore_dig_buried 矿在正下方时必卡)。
-            bot.getActionPack().descendInto(below);
-            return;
-        }
-        // 岩浆致命 → 硬停;水不致命 → 下沉穿过继续(与 DigDownTask 一致,地下水脉常见,旧逻辑遇水即 fail)。
-        if (s.getFluidState().isIn(FluidTags.LAVA)
-                || world.getBlockState(below.down()).getFluidState().isIn(FluidTags.LAVA)) {
+        Direction dir = safeStairDir(world, feet);
+        if (dir == null) {
+            // 四个斜下方向都被水/岩浆挡 → 硬停交还(规避层"困死撤离"兜底)。
             fail("ore_dig_blocked_lava collected=" + collected);
             return;
         }
-        if (s.getFluidState().isIn(FluidTags.WATER)) {
-            bot.getActionPack().descendInto(below);
+        BlockPos ahead = feet.offset(dir);   // 下一级头位 (x+d, y)
+        BlockPos next = ahead.down();         // 下一级站位 (x+d, y-1)
+        BlockPos solid = firstSolid(world, next, ahead);
+        if (solid != null) {
+            BlockMiner.Status st = miner.target() != null && miner.target().equals(solid)
+                    ? miner.tick(bot)
+                    : beginMine(bot, solid);
+            if (st == BlockMiner.Status.DONE) {
+                lastProgressTick = elapsed;
+            }
             return;
         }
-        BlockMiner.Status st = miner.target() != null && miner.target().equals(below)
-                ? miner.tick(bot)
-                : beginMine(bot, below);
-        if (st == BlockMiner.Status.DONE) {
-            lastProgressTick = elapsed;
+        // 身位已通 → 斜下踏到下一级台阶(1 格微位移,非 roam 那种跨图闪现)。
+        bot.getActionPack().descendInto(next);
+        lastProgressTick = elapsed;
+    }
+
+    // 选一个"不挨水/岩浆"的斜下台阶方向:优先沿当前掘进方向(自然延续隧道),否则按 STRIP_DIRS 顺序找;
+    // 四面斜下都被水/岩浆挡返回 null。
+    private Direction safeStairDir(ServerWorld world, BlockPos feet) {
+        int base = stripDirIndex < 0 ? 0 : stripDirIndex;
+        for (int i = 0; i < STRIP_DIRS.length; i++) {
+            Direction dir = STRIP_DIRS[(base + i) % STRIP_DIRS.length];
+            BlockPos ahead = feet.offset(dir);
+            BlockPos next = ahead.down();
+            if (!isLava(world, next) && !isLava(world, next.down()) && !isLava(world, ahead)
+                    && !isWater(world, next) && !isWater(world, next.down())) {
+                return dir;
+            }
         }
+        return null;
+    }
+
+    private static boolean isLava(ServerWorld world, BlockPos pos) {
+        return world.getBlockState(pos).getFluidState().isIn(FluidTags.LAVA);
+    }
+
+    private static boolean isWater(ServerWorld world, BlockPos pos) {
+        return world.getBlockState(pos).getFluidState().isIn(FluidTags.WATER);
     }
 
     private BlockMiner.Status beginMine(AIPlayerEntity bot, BlockPos pos) {

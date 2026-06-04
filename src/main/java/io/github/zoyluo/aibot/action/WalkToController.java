@@ -55,10 +55,13 @@ public final class WalkToController {
         pack.setStrafing(sidle.strafing);
 
         JumpDecision jump = shouldJump(current, move, world, nav);
-        if (jump.jump) {
+        // 拟人化:只在"已落地 + 前方确有台阶/缺口"时点跳一次(单跳),绝不长按跳键。
+        // 旧实现 setJumping(jump.jump) 会在障碍持续存在的多 tick 里一直按住跳——bot 落地即连跳(兔子跳),
+        // 既不像正常玩家,跳跃还会拉低水平速度(实测"边跳边砍树、影响速度")。落地门控确保一台阶只跳一次。
+        if (jump.jump && player.isOnGround()) {
             pack.jumpOnce();
         }
-        pack.setJumping(jump.jump);
+        pack.setJumping(false);
         pack.setSprinting(shouldSprint(horizontalDistance, jump, current, move, world, nav));
 
         if (lastPos != null && current.distanceTo(lastPos) < PROGRESS_EPSILON) {

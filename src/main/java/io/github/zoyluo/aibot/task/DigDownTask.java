@@ -7,11 +7,15 @@ import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.mining.ToolTier;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
+import net.minecraft.block.Blocks;
 import net.minecraft.item.Item;
+import net.minecraft.item.Items;
 import net.minecraft.registry.tag.FluidTags;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Direction;
 
+import java.util.HashSet;
 import java.util.Set;
 
 /**
@@ -38,6 +42,8 @@ public final class DigDownTask extends AbstractTask {
     private final Set<Item> targetDrops;
     private final int targetCount;
     private final BlockMiner miner = new BlockMiner();
+    private static final Direction[] HDIRS = {Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST};
+    private int hdirIndex; // 撞基岩后水平掘进的当前方向
 
     private int invBaseline;
     private int collected;
@@ -46,8 +52,15 @@ public final class DigDownTask extends AbstractTask {
 
     public DigDownTask(Block targetBlock, int targetCount) {
         this.targetBlock = targetBlock;
-        this.targetDrops = HarvestCore.expectedDropsFor(Set.of(targetBlock));
         this.targetCount = Math.max(1, targetCount);
+        Set<Item> drops = new HashSet<>(HarvestCore.expectedDropsFor(Set.of(targetBlock)));
+        if (targetBlock == Blocks.STONE) {
+            // 深层(Y<0)全是深板岩(挖了掉 cobbled_deepslate)、远古遗迹是黑石——都算"石料",
+            // 否则深层永远凑不够 cobblestone、做不了熔炉(实测 Y=-59 死循环根因)。
+            drops.add(Items.COBBLED_DEEPSLATE);
+            drops.add(Items.BLACKSTONE);
+        }
+        this.targetDrops = drops;
     }
 
     @Override
@@ -142,7 +155,9 @@ public final class DigDownTask extends AbstractTask {
         BlockPos feet = bot.getBlockPos();
         BlockPos below = feet.down();
         if (below.getY() <= MIN_Y) {
-            fail("dig_down_reached_min_y collected=" + collected);
+            // 到基岩上方、向下已无空间 → 转水平掘进继续挖石料(实测 Y=-59 时第一步 below 就 <= MIN_Y,
+            // 旧逻辑直接 fail collected=0 → MINE stone 失败 → goal replan 死循环)。
+            digHorizontal(bot, world, feet);
             return;
         }
         BlockState belowState = world.getBlockState(below);
@@ -171,5 +186,44 @@ public final class DigDownTask extends AbstractTask {
         // 脚下是实心方块(石头/泥土/任何固体)→ 挖它,穿过去往下。
         miner.begin(bot, below);
         miner.tick(bot); // 立即发起本格挖掘,不浪费一 tick
+    }
+
+    // 撞基岩(向下到底)后转水平掘进:沿一个方向逐格挖石料,挖通就走进去换列继续。深层全深板岩,
+    // 配合构造里把 cobbled_deepslate 计入 targetDrops,即可在 Y<0 凑够做熔炉的石料,不再死循环。
+    private void digHorizontal(AIPlayerEntity bot, ServerWorld world, BlockPos feet) {
+        for (int tries = 0; tries < HDIRS.length; tries++) {
+            Direction dir = HDIRS[hdirIndex];
+            BlockPos side = feet.offset(dir);
+            if (isLava(world, side) || isLava(world, side.up()) || isLava(world, side.down())) {
+                hdirIndex = (hdirIndex + 1) % HDIRS.length; // 这个方向挨岩浆,换一个
+                continue;
+            }
+            BlockPos solid = firstSolid(world, side, side.up());
+            if (solid != null) {
+                if (miner.target() == null || !miner.target().equals(solid)) {
+                    miner.begin(bot, solid); // 由 onTick 顶部的 miner.tick 推进
+                }
+                return;
+            }
+            // side 脚位+头位皆空 → 走进去换列,继续水平挖
+            miner.cancel(bot);
+            bot.getActionPack().startWalkTo(side.toCenterPos());
+            return;
+        }
+        fail("dig_down_walled collected=" + collected); // 四面皆岩浆,交还安全网
+    }
+
+    private static boolean isLava(ServerWorld world, BlockPos pos) {
+        return world.getBlockState(pos).getFluidState().isIn(FluidTags.LAVA);
+    }
+
+    private static BlockPos firstSolid(ServerWorld world, BlockPos a, BlockPos b) {
+        if (!world.getBlockState(a).isAir()) {
+            return a.toImmutable();
+        }
+        if (!world.getBlockState(b).isAir()) {
+            return b.toImmutable();
+        }
+        return null;
     }
 }

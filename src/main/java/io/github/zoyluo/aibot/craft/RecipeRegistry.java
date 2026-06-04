@@ -36,6 +36,10 @@ public final class RecipeRegistry {
             Items.CHERRY_PLANKS);
 
     private static final List<Item> STICKS = List.of(Items.STICK);
+    // 石料族:普通圆石/深板岩圆石/黑石——三者在 MC 里都能做熔炉与石工具(实测:bot 在 Y=-59 全是深板岩,
+    // 旧配方只认 cobblestone,导致深层做不了熔炉、MINE stone 撞基岩、goal replan 死循环)。
+    private static final List<Item> STONE_LIKE = List.of(
+            Items.COBBLESTONE, Items.COBBLED_DEEPSLATE, Items.BLACKSTONE);
     private static final Map<Item, Recipe> BY_OUTPUT = new HashMap<>();
 
     static {
@@ -66,26 +70,26 @@ public final class RecipeRegistry {
         put(new Recipe(Items.BOWL, 4, List.of(new Ingredient(PLANKS, 3)), false));
         put(new Recipe(Items.BREAD, 1, List.of(new Ingredient(List.of(Items.WHEAT), 3)), false));
 
-        put(new Recipe(Items.FURNACE, 1, List.of(new Ingredient(List.of(Items.COBBLESTONE), 8)), true));
+        put(new Recipe(Items.FURNACE, 1, List.of(new Ingredient(STONE_LIKE, 8)), true));
         put(new Recipe(Items.CHEST, 1, List.of(new Ingredient(PLANKS, 8)), true));
         put(new Recipe(Items.LADDER, 3, List.of(new Ingredient(STICKS, 7)), true));
 
         tool(Items.WOODEN_PICKAXE, PLANKS, 3);
-        tool(Items.STONE_PICKAXE, List.of(Items.COBBLESTONE), 3);
+        tool(Items.STONE_PICKAXE, STONE_LIKE, 3);
         tool(Items.IRON_PICKAXE, List.of(Items.IRON_INGOT), 3);
         tool(Items.WOODEN_AXE, PLANKS, 3);
-        tool(Items.STONE_AXE, List.of(Items.COBBLESTONE), 3);
+        tool(Items.STONE_AXE, STONE_LIKE, 3);
         tool(Items.IRON_AXE, List.of(Items.IRON_INGOT), 3);
         tool(Items.WOODEN_SHOVEL, PLANKS, 1);
-        tool(Items.STONE_SHOVEL, List.of(Items.COBBLESTONE), 1);
+        tool(Items.STONE_SHOVEL, STONE_LIKE, 1);
         tool(Items.IRON_SHOVEL, List.of(Items.IRON_INGOT), 1);
         sword(Items.WOODEN_SWORD, PLANKS, 2);
-        sword(Items.STONE_SWORD, List.of(Items.COBBLESTONE), 2);
+        sword(Items.STONE_SWORD, STONE_LIKE, 2);
         sword(Items.IRON_SWORD, List.of(Items.IRON_INGOT), 2);
 
         // P3:锄头(2 头料 + 2 木棍),供农业链倒推。
         tool(Items.WOODEN_HOE, PLANKS, 2);
-        tool(Items.STONE_HOE, List.of(Items.COBBLESTONE), 2);
+        tool(Items.STONE_HOE, STONE_LIKE, 2);
         tool(Items.IRON_HOE, List.of(Items.IRON_INGOT), 2);
 
         // 第3层:铁甲(装备前置倒推用)。vanilla 用量——头5/胸8/腿7/脚4,纯金属无木棍。

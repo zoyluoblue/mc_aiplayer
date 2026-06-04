@@ -20,11 +20,15 @@ import io.github.zoyluo.aibot.task.Task;
 import io.github.zoyluo.aibot.task.TaskManager;
 import io.github.zoyluo.aibot.task.TaskState;
 import io.github.zoyluo.aibot.task.TaskStatus;
+import net.minecraft.block.Block;
+import net.minecraft.item.Item;
 import net.minecraft.server.MinecraftServer;
 
 import java.util.ArrayDeque;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -33,6 +37,7 @@ public final class GoalExecutor {
 
     private final Map<UUID, ActivePlan> activePlans = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> lastGoalFailTick = new ConcurrentHashMap<>(); // 优化2:goal 整体失败时刻,拦大脑随后手动逐格挖矿
+    private final Map<UUID, Goal> userGoal = new ConcurrentHashMap<>(); // B:用户原始高层目标,防大脑把它降级成其前置子目标(挖钻石→做铁镐)
 
     private GoalExecutor() {
     }
@@ -44,6 +49,14 @@ public final class GoalExecutor {
         if (existing != null && existing.goal.equals(goal)) {
             BotLog.task(bot, "goal_submit_ignored", "goal", goal, "reason", "duplicate_active_plan");
             return true;
+        }
+        // B:保护用户原始目标——大脑不能把它降级成其前置子目标。实测:挖钻石失败后大脑 achieve_goal 做铁镐、
+        // mine_ore 挖铁(都是挖钻石的前置)覆盖了目标,做完铁镐还误报"任务完成、最初要求是挖铁做镐"。
+        Goal ug = userGoal.get(bot.getUuid());
+        if (ug != null && !ug.equals(goal) && isPrerequisiteOf(bot, goal, ug)) {
+            BotLog.task(bot, "goal_downgrade_blocked", "sub", goal, "user", ug);
+            report(bot, "这是当前目标的前置步骤,系统会自动完成,无需单独做。要更换目标请直接告诉我。");
+            return false;
         }
         GoalPlanner.GoalPlan plan = GoalPlanner.plan(bot, goal);
         if (!plan.success()) {
@@ -60,6 +73,7 @@ public final class GoalExecutor {
         }
         ActivePlan active = new ActivePlan(goal, new ArrayDeque<>(plan.steps()), plan.steps().size());
         activePlans.put(bot.getUuid(), active);
+        userGoal.putIfAbsent(bot.getUuid(), goal); // B:首个目标记为"用户原始目标";后续前置子目标被上面拦下,换目标由用户消息清空
         BotLog.task(bot, "goal_plan", "goal", goal, "steps", plan.describeSteps());
         report(bot, "我会按 " + plan.steps().size() + " 步完成目标。");
         assignNext(bot, active);
@@ -189,6 +203,38 @@ public final class GoalExecutor {
     public boolean recentlyFailed(AIPlayerEntity bot, int withinTicks) {
         Integer t = lastGoalFailTick.get(bot.getUuid());
         return t != null && bot.getServer().getTicks() - t < withinTicks;
+    }
+
+    // B:用户发来新消息时清空原始目标记忆(允许用户正常更换目标);由 BrainCoordinator 在收到用户消息时调用。
+    public void clearUserGoal(AIPlayerEntity bot) {
+        userGoal.remove(bot.getUuid());
+    }
+
+    // B:sub 是否是 parent(用户原始目标)的前置——sub 的产物落在 parent 计划某一步的产出里。
+    // 覆盖主 case:做铁镐(HaveItem)/挖铁(MineOre)都是挖钻石计划里的前置步骤,会被拦下。
+    private boolean isPrerequisiteOf(AIPlayerEntity bot, Goal sub, Goal parent) {
+        GoalPlanner.GoalPlan parentPlan = GoalPlanner.plan(bot, parent);
+        Set<Item> items = new HashSet<>();
+        Set<Block> ores = new HashSet<>();
+        for (GoalStep s : parentPlan.steps()) {
+            if (s.item() != null) {
+                items.add(s.item());
+            }
+            if (s.kind() == GoalStep.Kind.MINE_ORE) {
+                ores.addAll(s.ores());
+            }
+        }
+        if (sub instanceof Goal.HaveItem hi) {
+            return items.contains(hi.item());
+        }
+        if (sub instanceof Goal.MineOre mo) {
+            for (Block b : mo.ores()) {
+                if (ores.contains(b)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private static Optional<Task> stepToTask(AIPlayerEntity bot, GoalStep step) {

@@ -27,6 +27,7 @@ public final class GatherQuotaTask extends AbstractTask {
     private static final int MAX_PICKUP_MISSES = 5;  // 连续采不到的容忍棵数,超了才漫游换片
     private static final int MAX_ROAMS = 5;          // 卡步逃逸:最多漫游换片次数(找树/换片共用,~140 格),再不行才 fail
     private static final int ROAM_DISTANCE = 28;     // 每次漫游的水平距离
+    private static final int SELF_STUCK_LIMIT = 160; // A:采集自卡死阈值(< StuckWatcher 200,赶在它 abort 拖垮上层目标前自愈)
 
     private enum Phase {
         SURVEY,
@@ -54,6 +55,9 @@ public final class GatherQuotaTask extends AbstractTask {
     private int lastScanTick = -100;
     private boolean surfaceTried; // B:地下找不到树时,上浮到地表重试一次的兜底标志
     private int roamCount;        // 卡步逃逸:已漫游换片的次数
+    private BlockPos selfStuckPos; // A:自卡死检测——上次记录的位置
+    private int selfStuckTick;     // A:位置/采数上次变化的 tick
+    private int selfStuckCount;    // A:上次记录的已采数
 
     public GatherQuotaTask(Item targetItem, int targetCount) {
         this.targetItem = targetItem;
@@ -92,6 +96,18 @@ public final class GatherQuotaTask extends AbstractTask {
         }
         if (elapsed > 6000) {
             fail("gather_timeout");
+            return;
+        }
+        // A:自卡死自愈——位置与已采数在 SELF_STUCK_LIMIT 内都没变(走不到树/砍不动)→ 漫游换片,
+        // 赶在 StuckWatcher 200t abort 前自救,避免拖垮上层目标(实测 stuck:gather 把挖钻石计划整个拖垮)。
+        BlockPos here = bot.getBlockPos();
+        if (selfStuckPos == null || !here.equals(selfStuckPos) || countSoFar != selfStuckCount) {
+            selfStuckPos = here;
+            selfStuckCount = countSoFar;
+            selfStuckTick = elapsed;
+        } else if (elapsed - selfStuckTick > SELF_STUCK_LIMIT && roamToNewArea(bot)) {
+            selfStuckTick = elapsed;
+            phase = Phase.SURVEY;
             return;
         }
         switch (phase) {

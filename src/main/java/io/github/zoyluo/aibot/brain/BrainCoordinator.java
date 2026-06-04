@@ -81,6 +81,7 @@ public final class BrainCoordinator {
         conversation.turnsInCurrentRequest = 0;
         conversation.continuationTaskPolls = 0;
         conversation.maxTurnsHintInjected = false;
+        io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.clearUserGoal(bot); // B:用户发来新消息→清空原始目标记忆,本条消息触发的首个目标将成为新"用户原始目标"
         submit(bot, conversation);
         return true;
     }

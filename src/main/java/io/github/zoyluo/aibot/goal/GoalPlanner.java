@@ -1,9 +1,12 @@
 package io.github.zoyluo.aibot.goal;
 
 import io.github.zoyluo.aibot.AIBotConfig;
+import io.github.zoyluo.aibot.action.FarmAction;
 import io.github.zoyluo.aibot.craft.AcquisitionHints;
+import io.github.zoyluo.aibot.craft.SmeltChain;
 import io.github.zoyluo.aibot.craft.RecipeRegistry;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
+import io.github.zoyluo.aibot.mining.MiningChain;
 import io.github.zoyluo.aibot.mining.OreScan;
 import io.github.zoyluo.aibot.mining.ToolTier;
 import net.minecraft.block.Block;
@@ -68,26 +71,7 @@ public final class GoalPlanner {
     // 否则计划会交错"地下挖矿(把 bot 带到 y≈59)"与"地表砍树(够不到地表树)"→ no_resource_nearby → goal_failed。
     // 深层贵重矿的最佳挖掘高度(1.18+ 地形);非深层矿返回 MAX_VALUE(不触发"先下矿层")。
     private static int bestMiningY(Set<Block> ores) {
-        for (Block ore : ores) {
-            if (ore == Blocks.DIAMOND_ORE || ore == Blocks.DEEPSLATE_DIAMOND_ORE
-                    || ore == Blocks.REDSTONE_ORE || ore == Blocks.DEEPSLATE_REDSTONE_ORE) {
-                return -59;
-            }
-            if (ore == Blocks.GOLD_ORE || ore == Blocks.DEEPSLATE_GOLD_ORE
-                    || ore == Blocks.EMERALD_ORE || ore == Blocks.DEEPSLATE_EMERALD_ORE) {
-                return -16;
-            }
-            if (ore == Blocks.LAPIS_ORE || ore == Blocks.DEEPSLATE_LAPIS_ORE) {
-                return -1;
-            }
-            if (ore == Blocks.IRON_ORE || ore == Blocks.DEEPSLATE_IRON_ORE) {
-                return 16;   // 铁峰值 y≈16(实测漏了铁→在山地高处挖铁卡死,导致挖钻石前置失败、目标发散)
-            }
-            if (ore == Blocks.COPPER_ORE || ore == Blocks.DEEPSLATE_COPPER_ORE) {
-                return 48;   // 铜峰值 y≈48
-            }
-        }
-        return Integer.MAX_VALUE;  // 煤等浅层广布矿不强制下矿
+        return MiningChain.bestY(ores); // S2:推荐挖掘 Y 层收敛到 MiningChain 单一数据源(混合矿取最深层)
     }
 
     private static List<GoalStep> mergeGathers(List<GoalStep> steps) {
@@ -391,6 +375,21 @@ public final class GoalPlanner {
                 counts.merge(item, missing, Integer::sum);
                 return true;
             }
+            // S4:生肉 → 打猎(best-effort 泛猎;HuntTask 猎 cow/pig/sheep/chicken/rabbit。乐观计入让食物链可倒推,
+            // 运行期实际猎到哪种肉不定,模块 B 的食物消费按"泛食物"处理)。
+            if (item == Items.BEEF || item == Items.PORKCHOP || item == Items.MUTTON
+                    || item == Items.CHICKEN || item == Items.RABBIT) {
+                addStep(GoalStep.hunt(missing));
+                counts.merge(item, missing, Integer::sum);
+                return true;
+            }
+            // S4:作物产出 → 就地种田(开垦/播种/等熟/收割)。
+            FarmAction.CropSpec crop = cropSpecForProduce(item);
+            if (crop != null) {
+                addStep(GoalStep.farm(crop.crop(), crop.seed(), item, missing));
+                counts.merge(item, missing, Integer::sum);
+                return true;
+            }
             unresolved.add("unresolved:" + id(item) + " source=" + AcquisitionHints.source(item));
             return false;
         }
@@ -538,20 +537,21 @@ public final class GoalPlanner {
         }
 
         private static SmeltRecipe smeltRecipeFor(Item output) {
-            if (output == Items.IRON_INGOT) {
-                return new SmeltRecipe(Items.RAW_IRON, Items.IRON_INGOT);
+            // S5:冶炼映射收敛到 SmeltChain 单一源(矿锭/石/木炭 + 熟肉/玻璃/烤土豆)。
+            Item raw = SmeltChain.rawFor(output);
+            return raw == null ? null : new SmeltRecipe(raw, output);
+        }
+
+        // S4:作物产出 → 作物规格(供 FARM 路由),非支持作物返回 null。
+        private static FarmAction.CropSpec cropSpecForProduce(Item produce) {
+            if (produce == Items.WHEAT) {
+                return FarmAction.cropSpec("wheat");
             }
-            if (output == Items.COPPER_INGOT) {
-                return new SmeltRecipe(Items.RAW_COPPER, Items.COPPER_INGOT);
+            if (produce == Items.CARROT) {
+                return FarmAction.cropSpec("carrot");
             }
-            if (output == Items.GOLD_INGOT) {
-                return new SmeltRecipe(Items.RAW_GOLD, Items.GOLD_INGOT);
-            }
-            if (output == Items.STONE) {
-                return new SmeltRecipe(Items.COBBLESTONE, Items.STONE);
-            }
-            if (output == Items.CHARCOAL) {
-                return new SmeltRecipe(Items.OAK_LOG, Items.CHARCOAL);
+            if (produce == Items.POTATO) {
+                return FarmAction.cropSpec("potato");
             }
             return null;
         }

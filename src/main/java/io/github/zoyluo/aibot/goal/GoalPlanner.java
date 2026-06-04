@@ -218,6 +218,14 @@ public final class GoalPlanner {
                 if (!ensureArmor(false, depth + 1, visiting)) {
                     return false;
                 }
+                // 分级装备(用户选):钻石/金/红石/绿宝石等深危矿(都在 Y<0、岩浆+怪多)额外备铁剑+盾——
+                // 主动清怪 + 挡爆炸/远程。best-effort:护甲维持头胸折中(不加腿靴),剑/盾做不出也不阻断挖矿。
+                if (counts.getOrDefault(Items.IRON_SWORD, 0) <= 0) {
+                    ensureItem(Items.IRON_SWORD, 1, depth + 1, visiting);
+                }
+                if (counts.getOrDefault(Items.SHIELD, 0) <= 0) {
+                    ensureItem(Items.SHIELD, 1, depth + 1, visiting);
+                }
                 // 规避:备火把(best-effort),供地下黑暗处点亮防刷怪。
                 ensureTorches(depth + 1, visiting);
                 // 第4层:再备点粮(best-effort,周围没动物不阻断)。

@@ -94,7 +94,7 @@ public record AIBotConfig(
         return new AIBotConfig(
                 new DeepSeek("", "https://api.deepseek.com", "deepseek-chat", 2048, 0.3D, 60, 3, 500),
                 new Perception(16, 20, 10, 10, false),
-                new Brain(36, 6, 24, false, true, false, 3, true),
+                new Brain(36, 6, 12, false, true, false, 3, true), // 优化4:maxTurns 24→12——挖矿失败后大脑手动逐格挖会瞬间耗轮,早止损早复位(善后已有 clear+resetIdle)
                 new Watchdog(200),
                 new Logging(true, "logs/aibot", true, "daily", 50, 30, true, Map.of(
                         "LIFECYCLE", "INFO",

@@ -12,6 +12,7 @@ import net.minecraft.item.Item;
 import net.minecraft.registry.tag.FluidTags;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Direction;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
@@ -41,6 +42,9 @@ public final class OreDigTask extends AbstractTask {
     private static final int VEIN_CAP = 64;
     private static final int PICKUP_GRACE_TICKS = 30;
     private static final int APPROACH_LIMIT = 80;       // P0:锁定矿超过此 tick 仍没靠近 → 判够不到,放弃换矿/下挖
+    private static final int STRIP_SEGMENT = 16;        // S(优化1):矿层扫不到矿时,水平掘进的隧道段长(暴露两侧矿面)
+    private static final Direction[] STRIP_DIRS = {
+            Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST};
 
     private final Set<Block> targetOres;
     private final Set<Item> targetDrops;
@@ -57,6 +61,8 @@ public final class OreDigTask extends AbstractTask {
     private BlockPos targetOre;
     private double lastTargetDist = Double.MAX_VALUE; // P0:锁定矿的历史最近距离²(监控是否在接近)
     private int targetApproachTick;
+    private int stripDirIndex = -1;   // 优化1:矿层水平找矿当前掘进方向(STRIP_DIRS 下标),-1=未开始
+    private int stripStepsLeft;       // 优化1:当前隧道段剩余格数
 
     public OreDigTask(Set<Block> targetOres, int targetCount) {
         this.targetOres = targetOres == null || targetOres.isEmpty()
@@ -209,8 +215,20 @@ public final class OreDigTask extends AbstractTask {
                     "collected", collected + "/" + targetCount);
             return;
         }
-        // 附近没矿:向下挖一格换层再扫(挖脚下,穿过任何固体)。
-        digDownOneLayer(bot, world);
+        // 附近没矿:水平 strip-mine 掘进暴露新矿面(每前进一格,下一轮 nearestOre 都会扫到隧道两侧新矿);
+        // 一整段(STRIP_SEGMENT)挖完仍无矿 → 向下换一层 + 换个水平方向继续。比旧的"只垂直换层"找矿快得多
+        //(实测:Y=16 这片铁矿稀疏,旧逻辑原地 201t 扫不到就 no_progress 失败 → goal 失败 → 大脑接管手动挖耗尽轮次)。
+        if (stripStepsLeft <= 0) {
+            if (stripDirIndex >= 0) {
+                digDownOneLayer(bot, world); // 一段挖完,顺带下沉一层换新平面
+            }
+            stripDirIndex = (stripDirIndex + 1) % STRIP_DIRS.length;
+            stripStepsLeft = STRIP_SEGMENT;
+            return;
+        }
+        stripStepsLeft--;
+        Direction dir = STRIP_DIRS[stripDirIndex];
+        digTowardStep(bot, world, bot.getBlockPos().offset(dir, 2)); // 复用掘进原语:挖脚位+头位→走进去
     }
 
     // ── 矿脉:挖净已锁定矿周围的同脉相邻矿 ──

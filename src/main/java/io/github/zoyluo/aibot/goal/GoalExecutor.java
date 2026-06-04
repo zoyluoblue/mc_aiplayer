@@ -32,6 +32,7 @@ public final class GoalExecutor {
     public static final GoalExecutor INSTANCE = new GoalExecutor();
 
     private final Map<UUID, ActivePlan> activePlans = new ConcurrentHashMap<>();
+    private final Map<UUID, Integer> lastGoalFailTick = new ConcurrentHashMap<>(); // 优化2:goal 整体失败时刻,拦大脑随后手动逐格挖矿
 
     private GoalExecutor() {
     }
@@ -152,6 +153,7 @@ public final class GoalExecutor {
         }
         if (plan.replanned || !AIBotConfig.get().goal().replanOnFailureEnabled()) {
             activePlans.remove(bot.getUuid());
+            lastGoalFailTick.put(bot.getUuid(), server.getTicks());
             BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.TASK, bot, "goal_failed", "goal", plan.goal, "reason", reason);
             report(bot, humanGoalFailure(reason));
             return;
@@ -168,6 +170,7 @@ public final class GoalExecutor {
         // 重试只会原样再失败一次(实测#9 的 replan 风暴根因)。直接判失败,交大脑/玩家换思路。
         if (plan.current != null && plan.current.equals(fresh.steps().get(0)) && isHardFailure(reason)) {
             activePlans.remove(bot.getUuid());
+            lastGoalFailTick.put(bot.getUuid(), server.getTicks());
             BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.TASK, bot, "goal_failed",
                     "goal", plan.goal, "reason", "replan_same_step:" + reason);
             report(bot, humanGoalFailure(reason));
@@ -180,6 +183,12 @@ public final class GoalExecutor {
         plan.currentTask = null;
         report(bot, "遇到问题,我重新规划了一次。");
         assignNext(bot, plan);
+    }
+
+    // 优化2:目标最近(withinTicks 内)是否整体失败过——供 ActionDispatcher 拦截大脑失败后的手动逐格挖矿。
+    public boolean recentlyFailed(AIPlayerEntity bot, int withinTicks) {
+        Integer t = lastGoalFailTick.get(bot.getUuid());
+        return t != null && bot.getServer().getTicks() - t < withinTicks;
     }
 
     private static Optional<Task> stepToTask(AIPlayerEntity bot, GoalStep step) {

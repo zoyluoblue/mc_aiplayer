@@ -646,6 +646,11 @@ public final class ToolRegistry {
         });
 
         register("get_task_status", "Get the current task status", objectSchema().build(), (bot, args) -> {
+            // 优化3:有确定性目标在跑时不喂详细状态——断掉大脑反复轮询的正反馈(实测 get_task_status×19 耗尽轮次);
+            // 目标完成/失败会主动唤醒大脑,期间无需查询。
+            if (io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.hasActivePlan(bot)) {
+                return ok("{\"state\":\"goal_running\",\"note\":\"目标执行中,完成或失败时会通知你,期间不要重复查询\"}");
+            }
             TaskStatus status = TaskManager.INSTANCE.status(bot);
             return ok("{\"name\":\"" + escape(status.name())
                     + "\",\"state\":\"" + status.state()

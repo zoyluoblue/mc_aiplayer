@@ -108,6 +108,22 @@ public final class MoveTask extends AbstractTask {
     }
 
     private void digTick(AIPlayerEntity bot) {
+        // 安全熔断(实测致死根因):挖掘式直行会朝坐标**挖穿一切**,最危险。一旦把 bot 挖进水下(溺水)
+        // 或挖进怪堆(正在挨打),立即放弃,交生存层(NavSafetyNet/DangerWatcher)或大脑处理——
+        // 绝不一路挖到淹死/被围殴致死。
+        // 病根:大脑 move_to 盲目挖向坐标 → digStep 一路挖进水域 → bot 头没入水中;NavSafetyNet 每 tick
+        // 上浮换气,但下一 tick 本任务又 digStep 把 bot 挖回水里 → "上浮↔挖回"活锁几分钟、零进展,
+        // 最终溺水/被怪打死(实测两次死亡)。在这里 submerged/挨打即熔断,从根上打破活锁、保命第一。
+        if (bot.isSubmergedInWater()) {
+            miner.cancel(bot);
+            fail("move_dig_drowning");
+            return;
+        }
+        if (bot.hurtTime > 0) {
+            miner.cancel(bot);
+            fail("move_dig_under_attack");
+            return;
+        }
         if (elapsed > DIG_MAX_ELAPSED) {
             miner.cancel(bot);
             fail("move_dig_timeout");

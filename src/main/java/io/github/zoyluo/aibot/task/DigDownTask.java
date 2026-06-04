@@ -6,7 +6,6 @@ import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.mining.ToolTier;
 import net.minecraft.block.Block;
-import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.item.Item;
 import net.minecraft.item.Items;
@@ -43,7 +42,8 @@ public final class DigDownTask extends AbstractTask {
     private final int targetCount;
     private final BlockMiner miner = new BlockMiner();
     private static final Direction[] HDIRS = {Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST};
-    private int hdirIndex; // 撞基岩后水平掘进的当前方向
+    private int hdirIndex;    // 撞基岩后水平掘进的当前方向
+    private int stairDirIndex; // 台阶斜下的当前水平方向(HDIRS 下标)
 
     private int invBaseline;
     private int collected;
@@ -153,39 +153,56 @@ public final class DigDownTask extends AbstractTask {
         // DONE / FAILED / IDLE → 决定下一格(脚下柱)。
 
         BlockPos feet = bot.getBlockPos();
-        BlockPos below = feet.down();
-        if (below.getY() <= MIN_Y) {
+        if (feet.down().getY() <= MIN_Y) {
             // 到基岩上方、向下已无空间 → 转水平掘进继续挖石料(实测 Y=-59 时第一步 below 就 <= MIN_Y,
             // 旧逻辑直接 fail collected=0 → MINE stone 失败 → goal replan 死循环)。
             digHorizontal(bot, world, feet);
             return;
         }
-        BlockState belowState = world.getBlockState(below);
 
-        // 脚下已空(刚挖空这一格)→ 主动下沉一格。
-        // 关键(实测卡死根因):bot 是 ServerPlayerEntity,服务端**不跑 travel()**(真实玩家的移动/重力由
-        // 客户端驱动,fake player 没有客户端),所以挖空脚下**不会被动下落**——dig_down 全程 y 恒定、
-        // below 永远是 air、看门狗 200t 后判 no_progress 卡死(diag 7 连拍 pos 一字不变即铁证)。
-        // 这里主动把 bot 沉进刚挖空的格子继续掘进;下沉后刚破块的掉落物正好落入拾取半径,一并修掉 collected=0。
-        if (belowState.isAir()) {
-            bot.getActionPack().descendInto(below);
+        // 台阶式斜向下挖(拟人 + 安全):绝不直挖脚下——下方可能是水/岩浆,一镐捅穿就溺水/葬身岩浆。
+        // 改挖"下一级台阶"(斜前下方:ahead 头位 + next 脚位),深层这两格通常都是石料,顺带计入 collected;
+        // 下一级或其踏面是水/岩浆就换斜下方向绕,像挖楼梯一样一级一级斜下(与 DescendToYTask 台阶逻辑一致)。
+        Direction dir = HDIRS[stairDirIndex];
+        BlockPos ahead = feet.offset(dir);   // 下一级头位 (x+d, y)
+        BlockPos next = ahead.down();         // 下一级站位 (x+d, y-1)
+        if (isLava(world, next) || isLava(world, next.down()) || isLava(world, ahead)
+                || isWater(world, next) || isWater(world, next.down())) {
+            if (rotateStair(world, feet)) {
+                return; // 换了个不挨水/岩浆的斜下方向
+            }
+            // 四个斜下方向都被水/岩浆挡 → 转水平掘进(此层还能继续凑石料),实在不行那里再判失败。
+            digHorizontal(bot, world, feet);
             return;
         }
-        // 岩浆(脚下或其正下方)致命、不可穿 → 硬停交还。
-        if (belowState.getFluidState().isIn(FluidTags.LAVA)
-                || world.getBlockState(below.down()).getFluidState().isIn(FluidTags.LAVA)) {
-            fail("dig_down_blocked_lava collected=" + collected);
+        // 清出下一级身位:next(脚位) + ahead(头位),挖第一个固体(石料,随后落袋计入 collected)。
+        BlockPos solid = firstSolid(world, next, ahead);
+        if (solid != null) {
+            miner.begin(bot, solid);
+            miner.tick(bot); // 立即发起本格挖掘,不浪费一 tick
             return;
         }
-        // 水不致命:当作可穿过,下沉穿过水柱继续找下方固体。地下水脉极常见,旧逻辑"遇水即 fail"
-        // 是挖矿失败的主要来源(实测 15 次 dig/ore_dig_blocked_fluid);溺水有 NavSafetyNet 兜底上浮。
-        if (belowState.getFluidState().isIn(FluidTags.WATER)) {
-            bot.getActionPack().descendInto(below);
-            return;
+        // 身位已通 → 斜下踏到下一级台阶。bot 无被动重力,仍需主动移一格;斜向 1 格微位移=踏下一级楼梯,
+        // 不是 roam 那种跨图大范围闪现(下沉后刚破块的掉落物正好落入拾取半径,一并修掉 collected=0)。
+        bot.getActionPack().descendInto(next);
+    }
+
+    private static boolean isWater(ServerWorld world, BlockPos pos) {
+        return world.getBlockState(pos).getFluidState().isIn(FluidTags.WATER);
+    }
+
+    // 台阶斜下:换到下一个"不挨水/岩浆"的斜下方向;四面都不行返回 false(交 digHorizontal 兜底)。
+    private boolean rotateStair(ServerWorld world, BlockPos feet) {
+        for (int i = 0; i < HDIRS.length; i++) {
+            stairDirIndex = (stairDirIndex + 1) % HDIRS.length;
+            BlockPos ahead = feet.offset(HDIRS[stairDirIndex]);
+            BlockPos next = ahead.down();
+            if (!isLava(world, next) && !isLava(world, next.down()) && !isLava(world, ahead)
+                    && !isWater(world, next) && !isWater(world, next.down())) {
+                return true;
+            }
         }
-        // 脚下是实心方块(石头/泥土/任何固体)→ 挖它,穿过去往下。
-        miner.begin(bot, below);
-        miner.tick(bot); // 立即发起本格挖掘,不浪费一 tick
+        return false;
     }
 
     // 撞基岩(向下到底)后转水平掘进:沿一个方向逐格挖石料,挖通就走进去换列继续。深层全深板岩,

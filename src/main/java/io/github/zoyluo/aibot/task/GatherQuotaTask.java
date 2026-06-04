@@ -5,6 +5,7 @@ import io.github.zoyluo.aibot.action.InventoryAction;
 import io.github.zoyluo.aibot.craft.RecipeRegistry;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
+import io.github.zoyluo.aibot.mining.OreProspector;
 import io.github.zoyluo.aibot.pathfinding.Standability;
 import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
@@ -27,7 +28,11 @@ public final class GatherQuotaTask extends AbstractTask {
     private static final int MAX_PICKUP_MISSES = 5;  // 连续采不到的容忍棵数,超了才漫游换片
     private static final int MAX_ROAMS = 8;          // 卡步逃逸:最多漫游换片次数(找树/换片共用,~224 格),再不行才 fail
     private static final int ROAM_DISTANCE = 28;     // 每次漫游的水平距离
-    private static final int SELF_STUCK_LIMIT = 160; // A:采集自卡死阈值(< StuckWatcher 200,赶在它 abort 拖垮上层目标前自愈)
+    private static final int SELF_STUCK_LIMIT = 160; // A:采集自卡死阈值(自管看门狗,见 isWaiting 说明)
+    // 治无树兜底:48 格 + 上浮都找不到资源时,用 OreProspector palette 扫描大范围(96 格)定位最近的目标方块
+    //(如原木),再寻路走过去。专治"无树高原/恶劣地形"——roam 只在同片横移跨不出高原,prospect 能直接锁定山脚/远处的树。
+    private static final int PROSPECT_RANGE = 96;
+    private static final int PROSPECT_INTERVAL = 40; // 大范围扫描限频(2s 一次),护 TPS
 
     private enum Phase {
         SURVEY,
@@ -54,6 +59,7 @@ public final class GatherQuotaTask extends AbstractTask {
     private StockpileTask stockpileTask;
     private int searchRadius = SEARCH_RADIUS;
     private int lastScanTick = -100;
+    private int lastProspectTick = -100; // 治无树兜底:上次大范围探树的 tick(限频)
     private boolean surfaceTried; // B:地下找不到树时,上浮到地表重试一次的兜底标志
     private int roamCount;        // 卡步逃逸:已漫游换片的次数
     private BlockPos roamTarget;  // 漫游换片的落脚点(走过去,不 teleport)
@@ -80,6 +86,15 @@ public final class GatherQuotaTask extends AbstractTask {
     @Override
     public double progress() {
         return Math.min(1.0D, (double) countSoFar / targetCount);
+    }
+
+    @Override
+    public boolean isWaiting() {
+        // 采集自管看门狗,不交给 StuckWatcher 那个"200t 内 pos+progress+inv 没变就 abort"的粗粒度监控——
+        // 它在无树高原会误杀正在远程找树/漫游的采集(实测 stuck:gather progress=0:bot 还在努力 roam/探树
+        // 就被 200t abort,直接拖垮整个挖钻石目标 → 大脑接管乱挖致死)。本任务自带三层兜底足够:
+        // ① self-stuck(SELF_STUCK_LIMIT 内没采到新木 → 漫游换片);② roam 最多 MAX_ROAMS 次;③ gather_timeout(6000t)。
+        return true;
     }
 
     @Override
@@ -143,7 +158,41 @@ public final class GatherQuotaTask extends AbstractTask {
         return false;
     }
 
-    // 卡步逃逸:同一片连续多棵采不到 → teleport 到 ROAM_DISTANCE 外的露天地表换片林子重试,
+    // 治无树兜底:大范围 palette 扫描(PROSPECT_RANGE)定位最近的目标方块(如原木),寻路到该列地表落脚点走过去;
+    // 到达后由 SURVEY 近处(16 格)接管精确采集。限频(PROSPECT_INTERVAL)护 TPS。
+    // 本次没结果(限频未到 / 范围内真没该资源)返回 false,交 roam 盲目换片兜底(可走到探测范围外)。
+    private boolean prospectAndApproach(AIPlayerEntity bot) {
+        int now = bot.getServer().getTicks();
+        if (now - lastProspectTick < PROSPECT_INTERVAL) {
+            return false;
+        }
+        lastProspectTick = now;
+        var world = bot.getServerWorld();
+        BlockPos found = OreProspector.nearest(world, bot.getBlockPos(), PROSPECT_RANGE,
+                state -> harvestBlocks.contains(state.getBlock()));
+        if (found == null) {
+            return false; // 96 格内真没该资源 → 交 roam 盲目换片(可走到更远的片)
+        }
+        BlockPos ground = findGroundAt(world, found.getX(), found.getZ()); // 目标所在列的地表落脚点
+        if (ground == null) {
+            return false;
+        }
+        bot.getActionPack().stopAll();
+        bot.getActionPack().startPathTo(ground);
+        roamTarget = ground;
+        searchRadius = SEARCH_RADIUS;
+        pickupMisses = 0;
+        selfStuckTick = elapsed;
+        phase = Phase.ROAM; // 复用 ROAM 走过去;到达后 roamMove 回 SURVEY,在新片近处采集
+        BotLog.action(bot, "gather_prospected",
+                "found", found.getX() + "," + found.getY() + "," + found.getZ(),
+                "to", ground.getX() + "," + ground.getY() + "," + ground.getZ(),
+                "item", Registries.ITEM.getId(targetItem).toString(),
+                "dist", (int) Math.sqrt(bot.getBlockPos().getSquaredDistance(found)));
+        return true;
+    }
+
+    // 卡步逃逸:同一片连续多棵采不到 → 走到 ROAM_DISTANCE 外的露天地表换片林子重试(走过去,不 teleport),
     // 而非原地死磕被秒。最多 MAX_ROAMS 次,再不行才 fail 交大脑/玩家。
     private boolean roamToNewArea(AIPlayerEntity bot) {
         if (++roamCount > MAX_ROAMS) {
@@ -228,7 +277,12 @@ public final class GatherQuotaTask extends AbstractTask {
                 searchRadius = SEARCH_RADIUS;
                 return;
             }
-            // 这片(已扩到 48 格)没树 → 漫游到远处换片再找,而非直接失败让大脑接管乱跑被秒(实测无树群系)。
+            // 治无树兜底:近处(48 格)+ 上浮都找不到 → 大范围 palette 扫描(96 格)锁定最近的目标方块(如原木),
+            // 寻路走过去。专治无树高原/恶劣地形——盲目 roam 只在同片横移、跨不出高原,prospect 能直接定位山脚/远处的树。
+            if (prospectAndApproach(bot)) {
+                return;
+            }
+            // 这片 + 探测范围(96 格)都没树 → 漫游盲目换片(可走到探测范围外的新片),再不行才 fail 交大脑/玩家。
             if (roamToNewArea(bot)) {
                 surfaceTried = false; // 新区域重新允许"上浮兜底"
                 return;

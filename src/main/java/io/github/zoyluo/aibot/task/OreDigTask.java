@@ -4,6 +4,7 @@ import io.github.zoyluo.aibot.action.BlockMiner;
 import io.github.zoyluo.aibot.action.HarvestCore;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
+import io.github.zoyluo.aibot.mining.OreProspector;
 import io.github.zoyluo.aibot.mining.OreScan;
 import io.github.zoyluo.aibot.mining.ToolTier;
 import net.minecraft.block.Block;
@@ -36,6 +37,8 @@ public final class OreDigTask extends AbstractTask {
     private static final int NO_PROGRESS_LIMIT = 200;   // 10s 没破任何块 → 失败
     private static final int SCAN_INTERVAL = 10;
     private static final int SCAN_RADIUS = 24;
+    private static final int PROSPECT_RANGE = 64;       // 探矿(大范围定位最近矿)半径——身边扫不到时启用
+    private static final int PROSPECT_INTERVAL = 40;    // 探矿较贵(逐区块 section 扫),2s 一次
     private static final int VERTICAL_SCAN = 10;
     private static final double REACH_SQUARED = 20.25D; // 4.5^2,与 OreSeek 一致
     private static final int MIN_Y = -60;
@@ -57,6 +60,7 @@ public final class OreDigTask extends AbstractTask {
     private int collected;
     private int lastProgressTick;
     private int lastScanTick = -SCAN_INTERVAL;
+    private int lastProspectTick = -100;
     private int pickupGrace;
     private BlockPos targetOre;
     private double lastTargetDist = Double.MAX_VALUE; // P0:锁定矿的历史最近距离²(监控是否在接近)
@@ -215,7 +219,19 @@ public final class OreDigTask extends AbstractTask {
                     "collected", collected + "/" + targetCount);
             return;
         }
-        // 附近没矿:水平 strip-mine 掘进暴露新矿面(每前进一格,下一轮 nearestOre 都会扫到隧道两侧新矿);
+        // 近处(24 格)无矿 → 大范围探矿(64 格,移植玩家 magic mod 的 HelmetOreLocator 扫描)定位最近矿脉,
+        // 锁定后由上面的 digTowardStep 定向挖隧道过去。比盲目 strip 高效——能找到几十格外的钻石,不再"附近没矿就放弃"。
+        BlockPos prospected = prospect(bot, world);
+        if (prospected != null) {
+            targetOre = prospected;
+            lastTargetDist = Double.MAX_VALUE;
+            targetApproachTick = elapsed;
+            BotLog.action(bot, "ore_dig_prospected",
+                    "pos", prospected.getX() + "," + prospected.getY() + "," + prospected.getZ(),
+                    "dist", (int) Math.sqrt(bot.getBlockPos().getSquaredDistance(prospected)));
+            return;
+        }
+        // 探矿也没有 → 水平 strip-mine 掘进暴露新矿面(每前进一格,下一轮 nearestOre 都会扫到隧道两侧新矿);
         // 一整段(STRIP_SEGMENT)挖完仍无矿 → 向下换一层 + 换个水平方向继续。比旧的"只垂直换层"找矿快得多
         //(实测:Y=16 这片铁矿稀疏,旧逻辑原地 201t 扫不到就 no_progress 失败 → goal 失败 → 大脑接管手动挖耗尽轮次)。
         if (stripStepsLeft <= 0) {
@@ -349,6 +365,16 @@ public final class OreDigTask extends AbstractTask {
     private BlockMiner.Status beginMine(AIPlayerEntity bot, BlockPos pos) {
         miner.begin(bot, pos);
         return miner.tick(bot);
+    }
+
+    // 探矿:近处扫不到矿时,在 PROSPECT_RANGE 大范围(只扫已加载区块)定位最近的目标矿;限频护 TPS。
+    private BlockPos prospect(AIPlayerEntity bot, ServerWorld world) {
+        int now = bot.getServer().getTicks();
+        if (now - lastProspectTick < PROSPECT_INTERVAL) {
+            return null;
+        }
+        lastProspectTick = now;
+        return OreProspector.nearest(world, bot.getBlockPos(), targetOres, PROSPECT_RANGE);
     }
 
     private BlockPos nearestOre(AIPlayerEntity bot, ServerWorld world) {

@@ -403,6 +403,10 @@ public final class GatherQuotaTask extends AbstractTask {
     }
 
     private static Set<Block> harvestBlocksFor(Set<Item> items) {
+        if (items.contains(Items.WHEAT_SEEDS)) {
+            // 割草取小麦种子:破坏短草/高草/蕨,概率掉 wheat_seeds(早期种田的种子来源)。
+            return Set.of(Blocks.SHORT_GRASS, Blocks.TALL_GRASS, Blocks.FERN, Blocks.LARGE_FERN);
+        }
         LinkedHashSet<Block> blocks = new LinkedHashSet<>();
         for (Item item : items) {
             Block block = harvestBlockFor(item);

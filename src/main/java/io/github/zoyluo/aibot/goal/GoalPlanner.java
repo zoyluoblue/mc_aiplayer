@@ -176,11 +176,22 @@ public final class GoalPlanner {
             if (!hasAnyHoe() && !ensureItem(Items.WOODEN_HOE, 1, depth + 1, visiting)) {
                 return false;
             }
-            // 种子不在倒推里求:FarmTask 运行期会就地找已有作物/草获取并从收割中续种;
-            // 若确实没种子,FarmTask 自身会 fail 并由 GoalExecutor 中文汇报,不在纯函数里假设世界有草。
+            ensureSeeds(g.seed(), g.produce(), remaining, depth, visiting); // 种田前先确保种子
             addStep(GoalStep.farm(g.crop(), g.seed(), g.produce(), remaining));
             counts.merge(g.produce(), remaining, Integer::sum);
             return true;
+        }
+
+        // farm 前确保种子:种子与产出不同(如小麦种子≠小麦)且不足 → 倒推获取(小麦种子走割草);
+        // 种子=产出自身(carrot/potato)则不倒推(否则 produce→farm→seed→produce 死循环),交 FarmTask 运行期就地找。
+        private void ensureSeeds(Item seed, Item produce, int count, int depth, Set<String> visiting) {
+            if (seed == null || seed == produce) {
+                return;
+            }
+            int have = counts.getOrDefault(seed, 0);
+            if (have < count) {
+                ensureItem(seed, count - have, depth + 1, visiting);
+            }
         }
 
         private boolean hasAnyHoe() {
@@ -432,6 +443,12 @@ public final class GoalPlanner {
                 counts.merge(item, missing, Integer::sum);
                 return true;
             }
+            if (item == Items.WHEAT_SEEDS) {
+                // 小麦种子 → 割草获取(GatherQuotaTask 把种子映射到短草/高草/蕨,破坏概率掉种子)。
+                addStep(GoalStep.gather(item, missing));
+                counts.merge(item, missing, Integer::sum);
+                return true;
+            }
             if (item == Items.COBBLESTONE) {
                 if (!ensurePickaxeTier(ToolTier.WOOD, depth + 1, visiting)) {
                     return false;
@@ -470,6 +487,7 @@ public final class GoalPlanner {
             // S4:作物产出 → 就地种田(开垦/播种/等熟/收割)。
             FarmAction.CropSpec crop = cropSpecForProduce(item);
             if (crop != null) {
+                ensureSeeds(crop.seed(), item, missing, depth, visiting); // 种田前先确保种子(小麦种子割草取)
                 addStep(GoalStep.farm(crop.crop(), crop.seed(), item, missing));
                 counts.merge(item, missing, Integer::sum);
                 return true;

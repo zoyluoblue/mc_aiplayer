@@ -32,7 +32,7 @@ public final class HuntTask extends AbstractTask {
     private static final int NO_PROGRESS_LIMIT = 400;  // 20s 无进展(没靠近/没掉肉)即失败
     private static final int PICKUP_GRACE = 25;        // 击杀后多等一会儿确保肉落袋
     private static final int APPROACH_STUCK_TICKS = 30; // 接近时位置 1.5s 不变即判卡路障,改直线追跨台阶
-    private static final int MAX_PREY_ROAMS = 6;       // 找不到猎物时漫游换片的最多次数(~6×32 格)
+    private static final int MAX_PREY_ROAMS = 10;      // 找不到猎物时漫游换片的最多次数(目标量大时多找几片)
     private static final int ROAM_DISTANCE = 32;       // 每次漫游的水平距离
 
     // 可食用猎物及其生肉掉落(烤熟前先拿到生肉)。
@@ -42,6 +42,7 @@ public final class HuntTask extends AbstractTask {
             Items.BEEF, Items.PORKCHOP, Items.MUTTON, Items.CHICKEN, Items.RABBIT);
 
     private final int targetMeat;
+    private final int maxElapsed; // 硬超时按目标量放大(每块肉约多给 24s),打大量肉不被固定 3 分钟掐断
     private int meatBaseline;
     private int collected;
     private int lastProgressTick;
@@ -55,6 +56,7 @@ public final class HuntTask extends AbstractTask {
 
     public HuntTask(int targetMeat) {
         this.targetMeat = Math.max(1, targetMeat);
+        this.maxElapsed = Math.max(MAX_ELAPSED, this.targetMeat * 480);
     }
 
     @Override
@@ -93,7 +95,7 @@ public final class HuntTask extends AbstractTask {
 
     @Override
     protected void onTick(AIPlayerEntity bot) {
-        if (elapsed > MAX_ELAPSED) {
+        if (elapsed > maxElapsed) {
             fail("hunt_timeout collected=" + collected);
             return;
         }
@@ -134,13 +136,14 @@ public final class HuntTask extends AbstractTask {
             CombatCore.startApproach(bot, target);
             return;
         }
-        if (collected > 0) {
-            complete(); // 已猎到一些就收
+        // 周围(64 格)没猎物 → 先漫游换片找更多,努力凑够目标(动物分散/在远处),
+        // 而非"猎到一点就收工"(实测:打 10 块肉,猎到几块后附近打光就 complete,没凑够数)。
+        if (roamForPrey(bot)) {
             return;
         }
-        // 周围(64 格)没猎物 → 漫游换片再找(动物分散/在远处),而非原地放弃
-        //(实测:no_prey_in_range 直接失败,装备齐全却搞不到肉)。
-        if (roamForPrey(bot)) {
+        // 漫游也用尽仍找不到:已猎到一些就尽力收(总比空手好),一块没有才失败。
+        if (collected > 0) {
+            complete();
             return;
         }
         fail("no_prey_found roams=" + roamCount);

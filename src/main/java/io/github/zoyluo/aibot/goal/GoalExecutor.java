@@ -159,7 +159,10 @@ public final class GoalExecutor {
     private void handleStepFailure(MinecraftServer server, AIPlayerEntity bot, ActivePlan plan, String reason) {
         // 第4层:best-effort 步骤(如 HUNT 备粮)失败不阻断整体目标——跳过它直接继续下一步。
         // 这样"挖钻石前备点肉"在周围没动物时也不会让整条挖矿目标 goal_failed(续航仍由饥饿链兜底)。
-        if (plan.current != null && (plan.current.kind() == GoalStep.Kind.HUNT
+        // 打猎(Goal.Food)整体 best-effort:任何前置(砍树/做剑)失败都降级继续(用现有工具/空手猎),绝不卡死/发呆。
+        boolean foodGoalBestEffort = plan.goal instanceof Goal.Food;
+        if (plan.current != null && (foodGoalBestEffort
+                || plan.current.kind() == GoalStep.Kind.HUNT
                 || plan.current.kind() == GoalStep.Kind.COOK_FOOD
                 || plan.current.kind() == GoalStep.Kind.STOCKPILE)) {
             BotLog.task(bot, "goal_step_skipped_besteffort", "step", plan.current.describe(), "reason", reason);

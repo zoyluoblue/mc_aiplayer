@@ -202,6 +202,22 @@ public final class GoalPlanner {
                     || counts.getOrDefault(Items.NETHERITE_SWORD, 0) > 0;
         }
 
+        // 背包是否已有现成木料够做一把木剑(2 木板 + 1 木棍;1 原木→4 木板足够)。无料则不专程砍树(避免无树发呆)。
+        private boolean hasSwordMaterial() {
+            int logs = 0;
+            for (Item l : RecipeRegistry.LOGS) {
+                logs += counts.getOrDefault(l, 0);
+            }
+            if (logs >= 1) {
+                return true;
+            }
+            int planks = 0;
+            for (Item p : RecipeRegistry.PLANKS) {
+                planks += counts.getOrDefault(p, 0);
+            }
+            return planks >= 2;
+        }
+
         private boolean ensurePickaxeTier(int tier, int depth, Set<String> visiting) {
             if (bestPickaxeTier() >= tier) {
                 return true;
@@ -333,12 +349,13 @@ public final class GoalPlanner {
             }
             int huntNeed = Math.max(0, needCooked - raw);
             if (huntNeed > 0) {
-                // 物质基础(生态链前置):空手打猎攻击力仅 1、动物挨打就逃 → 追不上打不死(实测 hunt_no_progress)。
-                // 像挖矿倒推镐一样,打猎前先确保有把剑:没任何剑 → 倒推木剑(砍树 → 木板/木棍 → 木剑)。
-                if (!hasAnySword()) {
+                // 物质基础但不死磕(实测:硬倒推木剑→无树地形为做剑反复找树"发呆"73s 后失败)。
+                // 没剑且手头已有现成木料 → 顺手做把木剑;没剑又没料(需专程砍树)→ 不强求,
+                // 用现有工具/空手直接猎(实际 bot 多有镐当武器;打猎目标整体 best-effort 兜底,见 GoalExecutor)。
+                if (!hasAnySword() && hasSwordMaterial()) {
                     ensureItem(Items.WOODEN_SWORD, 1, depth + 1, visiting);
                 }
-                addStep(GoalStep.hunt(huntNeed)); // 备齐武器后再猎
+                addStep(GoalStep.hunt(huntNeed));
             }
             addStep(GoalStep.cookFood(needCooked)); // 再烤成熟肉(背包已有生肉也一并烤)
             return true;

@@ -192,6 +192,16 @@ public final class GoalPlanner {
                     || counts.getOrDefault(Items.NETHERITE_HOE, 0) > 0;
         }
 
+        // 打猎要有武器(空手攻击力仅 1,低效甚至追不上动物)。背包/计划里有任意剑即可。
+        private boolean hasAnySword() {
+            return counts.getOrDefault(Items.WOODEN_SWORD, 0) > 0
+                    || counts.getOrDefault(Items.STONE_SWORD, 0) > 0
+                    || counts.getOrDefault(Items.IRON_SWORD, 0) > 0
+                    || counts.getOrDefault(Items.DIAMOND_SWORD, 0) > 0
+                    || counts.getOrDefault(Items.GOLDEN_SWORD, 0) > 0
+                    || counts.getOrDefault(Items.NETHERITE_SWORD, 0) > 0;
+        }
+
         private boolean ensurePickaxeTier(int tier, int depth, Set<String> visiting) {
             if (bestPickaxeTier() >= tier) {
                 return true;
@@ -323,7 +333,12 @@ public final class GoalPlanner {
             }
             int huntNeed = Math.max(0, needCooked - raw);
             if (huntNeed > 0) {
-                addStep(GoalStep.hunt(huntNeed)); // 生肉不够 → 先猎
+                // 物质基础(生态链前置):空手打猎攻击力仅 1、动物挨打就逃 → 追不上打不死(实测 hunt_no_progress)。
+                // 像挖矿倒推镐一样,打猎前先确保有把剑:没任何剑 → 倒推木剑(砍树 → 木板/木棍 → 木剑)。
+                if (!hasAnySword()) {
+                    ensureItem(Items.WOODEN_SWORD, 1, depth + 1, visiting);
+                }
+                addStep(GoalStep.hunt(huntNeed)); // 备齐武器后再猎
             }
             addStep(GoalStep.cookFood(needCooked)); // 再烤成熟肉(背包已有生肉也一并烤)
             return true;

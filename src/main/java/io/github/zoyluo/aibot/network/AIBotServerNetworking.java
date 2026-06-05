@@ -5,6 +5,7 @@ import io.github.zoyluo.aibot.brain.BotRuntimeOptions;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
+import io.github.zoyluo.aibot.goal.GoalExecutor;
 import io.github.zoyluo.aibot.memory.BotMemory;
 import io.github.zoyluo.aibot.memory.BotMemoryStore;
 import io.github.zoyluo.aibot.network.payload.BotChatS2C;
@@ -35,6 +36,7 @@ import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
@@ -333,6 +335,15 @@ public final class AIBotServerNetworking {
                         Registries.ITEM.getId(equipped.getItem()).toString(), equipped.getCount(), slotIndex));
             }
         }
+        // 任务链条:优先展示 GoalExecutor 的实际确定性计划(provision_food→[砍树/做镐/挖石/造炉/打猎/烤]…),
+        // 没有激活计划时才回退到大脑 set_goal 记的目标(memory)。这样面板链条与 bot 真正在执行的步骤一致。
+        boolean hasPlan = GoalExecutor.INSTANCE.hasActivePlan(bot);
+        String goalTitle = hasPlan ? GoalExecutor.INSTANCE.activeGoalTitle(bot) : memory.goalTitle();
+        List<String> goalSteps = hasPlan ? GoalExecutor.INSTANCE.activeGoalSteps(bot) : memory.goalSteps();
+        int goalIndex = hasPlan ? GoalExecutor.INSTANCE.activeGoalCurrentIndex(bot) : memory.goalCurrentStepIndex();
+        int goalTotal = hasPlan ? GoalExecutor.INSTANCE.activeGoalTotalSteps(bot) : memory.goalTotalSteps();
+        String goalCurrentStep = goalIndex >= 0 && goalIndex < goalSteps.size()
+                ? goalSteps.get(goalIndex) : memory.currentGoalStep().orElse("");
         return new BotSnapshotS2C(
                 bot.getGameProfile().getName(),
                 bot.getHealth(),
@@ -344,11 +355,11 @@ public final class AIBotServerNetworking {
                 brain.busy(),
                 brain.promptTokens(),
                 brain.completionTokens(),
-                memory.goalTitle(),
-                memory.currentGoalStep().orElse(""),
-                memory.goalCurrentStepIndex(),
-                memory.goalTotalSteps(),
-                memory.goalSteps(),
+                goalTitle,
+                goalCurrentStep,
+                goalIndex,
+                goalTotal,
+                goalSteps,
                 BrainCoordinator.INSTANCE.manualMode(bot),
                 BotRuntimeOptions.INSTANCE.memoryToolsEnabled(bot),
                 BotRuntimeOptions.INSTANCE.verboseReportsEnabled(bot),

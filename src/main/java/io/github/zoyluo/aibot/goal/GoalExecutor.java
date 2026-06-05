@@ -71,7 +71,8 @@ public final class GoalExecutor {
             report(bot, "目标已经满足。");
             return true;
         }
-        ActivePlan active = new ActivePlan(goal, new ArrayDeque<>(plan.steps()), plan.steps().size());
+        ActivePlan active = new ActivePlan(goal, new ArrayDeque<>(plan.steps()), plan.steps().size(),
+                plan.steps().stream().map(GoalStep::describe).toList());
         activePlans.put(bot.getUuid(), active);
         userGoal.putIfAbsent(bot.getUuid(), goal); // B:首个目标记为"用户原始目标";后续前置子目标被上面拦下,换目标由用户消息清空
         BotLog.task(bot, "goal_plan", "goal", goal, "steps", plan.describeSteps());
@@ -148,6 +149,33 @@ public final class GoalExecutor {
         }
         int idx = plan.totalSteps - plan.steps.size(); // current 已从 steps 取出,正在做第 idx 步
         return plan.current.describe() + " [" + idx + "/" + plan.totalSteps + "]";
+    }
+
+    /** 面板任务链条:目标标题(无激活计划则 "")。 */
+    public String activeGoalTitle(AIPlayerEntity bot) {
+        ActivePlan plan = activePlans.get(bot.getUuid());
+        return plan == null ? "" : String.valueOf(plan.goal);
+    }
+
+    /** 面板任务链条:完整步骤描述列表(无激活计划则空)。 */
+    public java.util.List<String> activeGoalSteps(AIPlayerEntity bot) {
+        ActivePlan plan = activePlans.get(bot.getUuid());
+        return plan == null ? java.util.List.of() : plan.stepLabels;
+    }
+
+    /** 面板任务链条:当前所处步骤的 0 基下标。 */
+    public int activeGoalCurrentIndex(AIPlayerEntity bot) {
+        ActivePlan plan = activePlans.get(bot.getUuid());
+        if (plan == null || plan.current == null) {
+            return 0;
+        }
+        return Math.max(0, plan.totalSteps - plan.steps.size() - 1);
+    }
+
+    /** 面板任务链条:总步数。 */
+    public int activeGoalTotalSteps(AIPlayerEntity bot) {
+        ActivePlan plan = activePlans.get(bot.getUuid());
+        return plan == null ? 0 : plan.totalSteps;
     }
 
     private void assignNext(AIPlayerEntity bot, ActivePlan plan) {
@@ -316,15 +344,17 @@ public final class GoalExecutor {
     private static final class ActivePlan {
         private final Goal goal;
         private final ArrayDeque<GoalStep> steps;
+        private final java.util.List<String> stepLabels; // 完整步骤描述(steps 会随执行 poll 空,这里留全量供面板任务链条展示)
         private GoalStep current;
         private Task currentTask;
         private int totalSteps;
         private boolean replanned;
 
-        private ActivePlan(Goal goal, ArrayDeque<GoalStep> steps, int totalSteps) {
+        private ActivePlan(Goal goal, ArrayDeque<GoalStep> steps, int totalSteps, java.util.List<String> stepLabels) {
             this.goal = goal;
             this.steps = steps;
             this.totalSteps = totalSteps;
+            this.stepLabels = stepLabels;
         }
     }
 }

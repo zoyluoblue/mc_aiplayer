@@ -7,7 +7,6 @@ import io.github.zoyluo.aibot.client.screen.ui.InventoryView;
 import io.github.zoyluo.aibot.client.screen.ui.PanelComponent;
 import io.github.zoyluo.aibot.client.screen.ui.Theme;
 import io.github.zoyluo.aibot.client.screen.ui.cards.GoalCard;
-import io.github.zoyluo.aibot.client.screen.ui.cards.InventoryCard;
 import io.github.zoyluo.aibot.client.screen.ui.cards.QuickActionCard;
 import io.github.zoyluo.aibot.client.screen.ui.cards.SettingsCard;
 import io.github.zoyluo.aibot.client.screen.ui.cards.StatusCard;
@@ -220,9 +219,9 @@ public final class BotPanelScreen extends Screen {
             chat = null;
             return;
         }
-        // CHAT_STATUS:状态(含血/饱食/进度/任务)+ 背包 + 目标。按可用高度自动取舍,放不下的跳过(不外漏)。
+        // CHAT_STATUS:状态(含血/饱食/进度/任务)+ 任务链条(目标步骤与当前所处节点)。
+        // 背包详情走顶部"背包"按钮(INVENTORY 模式),左栏不再放背包卡,腾给任务链条。
         leftCards.add(new StatusCard());
-        leftCards.add(new InventoryCard());
         leftCards.add(new GoalCard());
         chat = new ChatView();
     }

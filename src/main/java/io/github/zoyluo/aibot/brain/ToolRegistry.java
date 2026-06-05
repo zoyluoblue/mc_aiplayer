@@ -302,6 +302,16 @@ public final class ToolRegistry {
             return started ? ok("goal_assigned: harvest_crop") : fail("goal_plan_failed");
         });
 
+        register("provision_food", "Hunt animals and cook the meat end-to-end to stock cooked food. "
+                + "Use for requests like 去搞点吃的/去打猎/弄点肉/打点肉吃/我饿了/备点粮/搞点食物/补充食物/get some food/go hunt/make food. "
+                + "Auto-plans hunt -> cook(smelt) -> cooked meat; do NOT decompose manually. count = how many cooked food items (default 4).", objectSchema()
+                .property("count", integerSchema("how many cooked food items to stock (default 4)"))
+                .build(), (bot, args) -> {
+            boolean started = GoalExecutor.INSTANCE.submit(bot,
+                    new Goal.Food(optionalInt(args, "count", 4)));
+            return started ? ok("goal_assigned: provision_food") : fail("goal_plan_failed");
+        });
+
         register("achieve_armor", "Make and equip a full set of iron armor plus an iron sword with deterministic planning. Use for 武装起来/做一身装备/给我穿上盔甲/gear up. Auto-plans mining, smelting and crafting; do not decompose manually.", objectSchema()
                 .build(), (bot, args) -> {
             boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.Armor());

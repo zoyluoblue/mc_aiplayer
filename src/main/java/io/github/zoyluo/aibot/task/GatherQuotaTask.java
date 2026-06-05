@@ -29,6 +29,7 @@ public final class GatherQuotaTask extends AbstractTask {
     private static final int MAX_ROAMS = 8;          // 卡步逃逸:最多漫游换片次数(找树/换片共用,~224 格),再不行才 fail
     private static final int ROAM_DISTANCE = 28;     // 每次漫游的水平距离
     private static final int SELF_STUCK_LIMIT = 160; // A:采集自卡死阈值(自管看门狗,见 isWaiting 说明)
+    private static final int ROAM_MOVE_LIMIT = 100;  // 漫游走 5s 还没到落脚点(目标在高处/不可达、爬坡卡)→ 放弃回 SURVEY
     // 治无树兜底:48 格 + 上浮都找不到资源时,用 OreProspector palette 扫描大范围(96 格)定位最近的目标方块
     //(如原木),再寻路走过去。专治"无树高原/恶劣地形"——roam 只在同片横移跨不出高原,prospect 能直接锁定山脚/远处的树。
     private static final int PROSPECT_RANGE = 96;
@@ -238,7 +239,8 @@ public final class GatherQuotaTask extends AbstractTask {
     private void roamMove(AIPlayerEntity bot) {
         if (roamTarget == null
                 || bot.getBlockPos().getSquaredDistance(roamTarget) <= 9.0D
-                || bot.getActionPack().isPathExecutorIdle()) {
+                || bot.getActionPack().isPathExecutorIdle()
+                || elapsed - selfStuckTick > ROAM_MOVE_LIMIT) { // 走太久没到(漫游目标在高处/不可达)→ 放弃回 SURVEY 重找近处可达资源
             roamTarget = null;
             searchRadius = SEARCH_RADIUS;
             phase = Phase.SURVEY;

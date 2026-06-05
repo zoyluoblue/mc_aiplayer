@@ -1,193 +1,202 @@
-# AIBot
+<p align="center">
+  <img src="promo/banner.png" alt="AIBot — Autonomous Minecraft AI Player" width="100%">
+</p>
 
-AIBot 是一个基于 Fabric 的 Minecraft AI 玩家 Mod。它会在服务器中生成一个真实的 AI 假玩家实体，让 AI 通过感知、任务、动作和记忆系统在世界里执行移动、采集、挖矿、建造、战斗、生存工具链等行为。
+<h1 align="center">AIBot</h1>
 
-这个项目的核心目标不是做一个普通聊天机器人，而是让 LLM 只负责高层规划，具体 Minecraft 行为由确定性的 Task 状态机执行。
+<p align="center">
+  <b>An autonomous Minecraft AI player.</b><br>
+  Tell it once, in plain language — it figures out the rest.
+</p>
 
-## 当前能力
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-64f5a0?style=flat-square"></a>
+  <img alt="Minecraft 1.21.3" src="https://img.shields.io/badge/Minecraft-1.21.3-62B47A?style=flat-square">
+  <img alt="Fabric Loader 0.18.4" src="https://img.shields.io/badge/Fabric-Loader%200.18.4-DBB69B?style=flat-square">
+  <img alt="Java 21" src="https://img.shields.io/badge/Java-21-E76F00?style=flat-square">
+  <img alt="LLM: DeepSeek" src="https://img.shields.io/badge/LLM-DeepSeek-5A67F2?style=flat-square">
+  <img alt="PRs welcome" src="https://img.shields.io/badge/PRs-welcome-75d9ff?style=flat-square">
+</p>
 
-- 生成和移除 AI 玩家，例如 `Bob`
-- 基础移动、寻路、看向目标、跳跃、停止
-- 背包查看、快捷栏选择、工具装备、调试给予物品
-- 自动挖矿、采集、战斗、建造、农场、繁殖、睡觉
-- 生存工具链：
-  - 挖矿时自动选择更合适的工具
-  - 合成常见工具和基础物品
-  - 饥饿时自动进食
-  - 使用熔炉冶炼矿物
-- 条带挖矿、矿脉挖掘、危险检测、火把放置
-- 容器存取：存入、取出、保留工具
-- Bot 记忆：地点、目标、状态注入
-- DeepSeek / OpenAI 风格接口驱动的自然语言决策
-- 结构化日志、性能 profile、replay、TPS guard
-- 客户端控制面板：通过快捷键打开 Bob 面板，查看状态并发送指令
+<p align="center">
+  <b>English</b>&nbsp;·&nbsp;<a href="README.zh-CN.md">简体中文</a>
+</p>
 
-## 环境要求
+---
 
-- Minecraft `1.21.3`
-- Fabric Loader `0.18.4` 或更高版本
-- Fabric API `0.114.1+1.21.3`
-- Java `21`
-- Gradle Wrapper
+> **LLM plans. Tasks execute. Bob survives.**
+>
+> AIBot spawns a real server-side player that perceives the world, back-chains your goal into a complete plan, and carries it out on its own — mining, fighting, farming, surviving.
 
-## 快速开始
+## ✨ Why AIBot
 
-构建项目：
+Most "AI in games" demos either let a language model hallucinate raw actions, or hard-code a rigid script. AIBot does neither — it splits the brain in two:
 
-```bash
-./gradlew build
+- 🧠 **The LLM understands intent.** You say *"mine 3 diamonds"*; DeepSeek interprets it and picks from **56 tools**.
+- ⚙️ **A deterministic engine guarantees execution.** A backward-chaining planner expands that goal into a dependency-correct plan, **44 self-contained task state machines** run it reliably, and a **five-layer safety net** keeps the bot alive.
+
+The result is an agent that is **flexible enough to take orders in natural language, yet robust enough to actually finish the job.**
+
+## 🎬 See it in action
+
+```
+/aibot brain say Bob mine 3 diamonds
 ```
 
-启动开发服务端：
+AIBot back-chains the goal into a full plan and executes it step by step:
 
-```bash
-./gradlew runServer
+```
+chop oak → crafting table → wooden pickaxe → mine stone → stone pickaxe
+→ descend to Y16 → mine iron → smelt → iron pickaxe → gear up
+→ staircase down to Y-59 → ⛏  mine diamonds  ✓
 ```
 
-启动开发客户端：
+You never hand it a step list. If a step fails, it **re-plans**. If it's drowning or under attack, it **bails out and survives**.
 
-```bash
-./gradlew runClient
+## 🧩 Features
+
+| | |
+|---|---|
+| 🗣️ **Natural-language control** | Plain English / Chinese commands, understood by a DeepSeek LLM wired to 56 tools. |
+| 🎯 **Goal back-chaining** | One goal → a dependency-correct multi-step plan. No manual breakdown. |
+| 🧩 **LLM + deterministic hybrid** | The model reasons; the engine executes. Flexible *and* reliable. |
+| 🛡️ **Five-layer safety net** | Drowning, lava, suffocation, stuck, threats, dark-traps — handled every tick. |
+| 🧍 **Human-like behavior** | Staircase mining (never straight down), no teleporting, no bunny-hopping. |
+| ⛏️ **Full survival loop** | Mine, smelt, craft, fight, hunt, farm, breed, build, fish, trade, sleep. |
+| 🔭 **Ore & tree prospecting** | Palette-level long-range scan locates resources and paths to them. |
+| 🖥️ **Client control panel** | `Alt + 0` opens Bob's panel: health, hunger, task, tokens, inventory, chat. |
+
+## 🏗️ Architecture
+
+> **One principle: the LLM plans, deterministic tasks execute.**
+
+```mermaid
+flowchart TB
+    P["🎮 Player — natural language · /aibot · Bob panel"] --> B
+    subgraph COG["Cognition &amp; Decision"]
+      B["🧠 Brain · DeepSeek LLM<br/>56 tools"] --> G["🎯 GoalPlanner<br/>backward-chaining"]
+      G --> E["⚙️ GoalExecutor<br/>step state machine"]
+    end
+    E --> T["🔧 Task FSM ×44<br/>mine · smelt · craft · combat · farm · build …"]
+    T --> A["🛠️ Action primitives + A* pathfinding"]
+    A --> W["🌍 Minecraft world · Fabric 1.21.3"]
+    W -->|perception| B
+    S["🛡️ Safety net · every tick<br/>NavSafety → Stuck → Danger → Idle"] -. guards .-> T
 ```
 
-首次运行时，Mod 会在 Fabric 配置目录生成 `aibot.json`。
+<p align="center"><sub><b>151</b> classes · <b>23.4K</b> LOC · <b>56</b> tools · <b>44</b> task state machines · <b>5</b>-layer safety net</sub></p>
 
-## 配置 AI 模型
+## 🚀 Quick Start
 
-推荐通过环境变量提供 API Key：
+### Requirements
+
+| Component | Version |
+|---|---|
+| Minecraft | `1.21.3` |
+| Fabric Loader | `0.18.4+` |
+| Fabric API | `0.114.1+1.21.3` |
+| Yarn Mappings | `1.21.3+build.2` |
+| Java | `21` |
+
+### Build & run
 
 ```bash
-export DEEPSEEK_API_KEY="your-api-key"
+git clone https://github.com/zoyluoblue/mc_aiplayer.git
+cd mc_aiplayer
+
+./gradlew build        # build the mod
+./gradlew runServer    # dev server
+./gradlew runClient    # dev client
 ```
 
-也可以编辑生成的 `aibot.json`：
+### Configure the LLM
+
+Provide your DeepSeek API key via environment variable (recommended):
+
+```bash
+export DEEPSEEK_API_KEY="sk-your-key"
+```
+
+On first run the mod writes `aibot.json` to the Fabric config directory. You can also set the key, base URL and model there:
 
 ```json
 {
-  "deepseek": {
-    "baseUrl": "https://api.deepseek.com",
-    "model": "deepseek-chat"
-  }
+  "deepseek": { "baseUrl": "https://api.deepseek.com", "model": "deepseek-chat" }
 }
 ```
 
-配置文件还包含感知范围、脑区上下文长度、日志、生存、战斗、夜晚、挖矿等参数。
+> Any OpenAI-compatible endpoint works — just point `baseUrl` at your provider.
 
-## 常用命令
-
-生成一个 AI 玩家：
+## 🎮 Usage
 
 ```mcfunction
-/aibot spawn Bob
-```
-
-查看当前 Bot：
-
-```mcfunction
-/aibot list
-```
-
-让 Bot 执行任务：
-
-```mcfunction
-/aibot task assign Bob move 0 64 0
+/aibot spawn Bob                              # spawn an AI player
+/aibot list                                   # list active bots
+/aibot brain say Bob mine 3 diamonds          # natural-language goal
 /aibot task assign Bob mine minecraft:stone 16
-/aibot task assign Bob craft minecraft:stone_pickaxe 1
-/aibot task assign Bob smelt minecraft:raw_iron minecraft:iron_ingot 3
-/aibot task assign Bob eat
-```
-
-查看或中止任务：
-
-```mcfunction
-/aibot task status Bob
-/aibot task abort Bob
-```
-
-让 LLM 处理自然语言请求：
-
-```mcfunction
-/aibot brain say Bob 帮我准备一把铁镐
-```
-
-查看或重置脑区状态：
-
-```mcfunction
+/aibot task status Bob                         # inspect / abort a task
 /aibot brain status Bob
-/aibot brain reset Bob
 ```
 
-## 客户端控制面板
+Press **`Alt + 0`** in-game to open the **Bob control panel** — track health, hunger, task, brain state, token usage and inventory, and send natural-language messages directly.
 
-在客户端环境中，按 `Alt + 0` 可以打开 AIBot 面板。
+## 🧠 How it works
 
-面板支持：
+| Layer | Package | Role |
+|---|---|---|
+| **Brain** | `brain` | DeepSeek tool-calling loop; turns intent into goals & actions |
+| **Goal engine** | `goal` | `Goal` → `GoalPlanner` (back-chaining) → `GoalExecutor` (FSM) |
+| **Tasks** | `task` | 44 self-contained state machines, each with its own watchdog |
+| **Action / Pathfinding** | `action` · `pathfinding` | `BlockMiner`, `DigNav`, `ActionPack`; A* with stand-ability checks |
+| **Knowledge** | `craft` · `mining` | recipes, mining/smelt chains, tool tiers, ore & tree prospector |
+| **Safety net** | `task` · `coordination` | `BotTickCoordinator`: NavSafety → Stuck → Danger → Goal → Idle |
+| **Entity** | `entity` | `AIPlayerEntity` — a real server-side fake player |
 
-- 锁定目标 Bot，例如 `Bob`
-- 查看生命值、饥饿值、任务状态、脑区状态、token 使用量、背包摘要
-- 向 Bot 发送自然语言消息
-- 快速执行移动、停止、进食、挖矿、合成、冶炼等操作
-
-如果没有服务器命令权限，面板会提示权限不足；具体可执行动作仍取决于服务器权限配置。
-
-## 项目结构
+## 📦 Project structure
 
 ```text
 src/main/java/io/github/zoyluo/aibot
-|-- action/        # 低层动作：移动、挖掘、交互、背包、建造
-|-- brain/         # LLM 请求、工具注册、决策协调
-|-- command/       # /aibot 命令
-|-- coordination/  # 多 Bot 任务板和空闲协调
-|-- craft/         # 硬编码配方和合成辅助
-|-- entity/        # AI 玩家实体
-|-- log/           # 结构化日志
-|-- manager/       # Bot 生命周期管理
-|-- memory/        # Bot 记忆和目标状态
-|-- network/       # 客户端面板通信 payload
-|-- observe/       # TPS、profile、replay
-|-- pathfinding/   # 寻路和危险检测
-|-- persist/       # Bot 持久化
-`-- task/          # 确定性任务状态机
+├── action/        # low-level: move, mine, interact, inventory, build
+├── brain/         # LLM requests, tool registry, decision coordination
+├── command/       # /aibot commands
+├── coordination/  # multi-bot task board & idle coordination
+├── craft/         # recipes & crafting helpers
+├── entity/        # the AI player entity
+├── goal/          # declarative goals, planner, executor
+├── mining/        # ore scan & long-range prospector
+├── pathfinding/   # A* pathfinding & danger checks
+├── task/          # deterministic task state machines + safety net
+└── …              # log · memory · network · observe · persist · mixin
 ```
 
-客户端代码位于：
+## 🛠️ Tech stack
 
-```text
-src/client/java/io/github/zoyluo/aibot/client
-```
+**Java 21** · **Fabric** (Loader 0.18.4, API 0.114.1+1.21.3) · **Yarn** 1.21.3+build.2 · **Gradle** · **DeepSeek** (OpenAI-compatible API).
 
-## 架构原则
+## 🗺️ Roadmap
 
-AIBot 的核心原则是：
+- [ ] Zero-to-hero survival loop hardening
+- [ ] Multi-bot collaboration
+- [ ] Richer client interaction
+- [ ] Long-term memory recovery
+- [ ] Automated verification scenarios (`/aibot verify`, `/aibot deplint`)
 
-> LLM 做高层规划，Task 做确定执行。
+## 🤝 Contributing
 
-例如“帮我合成一把铁镐”会被拆成：
-
-```text
-craft(crafting_table)
-craft(wooden_pickaxe)
-mine(stone)
-craft(stone_pickaxe)
-mine(iron_ore)
-smelt(raw_iron -> iron_ingot)
-craft(iron_pickaxe)
-```
-
-每一步都是可观察、可中止、可失败、可重试的确定性任务。Task 不依赖 GUI 点击，也不会让 LLM 直接操作 Minecraft 内部细节。
-
-## 开发验证
-
-常用验证命令：
+Issues and PRs are welcome! When touching Minecraft / Fabric API code, mind version compatibility — this project pins **Yarn 1.21.3+build.2**. Verify method signatures before changing item components, eating, fuel registration, mining speed, furnace inventory, or client networking.
 
 ```bash
-./gradlew clean build
-./gradlew runServer
-./gradlew runClient
+./gradlew clean build   # please make sure this passes before opening a PR
 ```
 
-涉及 Minecraft / Fabric API 的改动需要特别注意版本兼容，当前项目以 Yarn `1.21.3+build.2` 为准。修改物品组件、进食、燃料注册、挖掘速度、熔炉库存或客户端网络代码前，应先确认当前版本的方法签名。
+## 📜 License
 
-## 当前状态
+Released under the [MIT License](LICENSE). © 2026 zoyluo.
 
-AIBot 仍处于开发阶段。当前代码已经具备 Fabric 基础骨架、服务端 Bot 生命周期、任务执行、LLM 工具集成、结构化观察、生存工具链和早期客户端控制面板。后续可以继续强化从零生存闭环、多 Bot 协作、客户端交互体验、长期记忆恢复和自动化验证场景。
+## 🙏 Acknowledgements
+
+Built on [Fabric](https://fabricmc.net/). Natural-language reasoning powered by [DeepSeek](https://www.deepseek.com/). Inspired by the Carpet-mod fake-player tradition.
+
+---
+
+<p align="center"><sub><b>LLM plans · Tasks execute · Bob survives</b></sub></p>

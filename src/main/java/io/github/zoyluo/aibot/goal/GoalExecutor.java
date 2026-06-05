@@ -134,6 +134,22 @@ public final class GoalExecutor {
         activePlans.remove(bot.getUuid());
     }
 
+    /** 诊断埋点:当前激活的顶层目标(无则 "none")。 */
+    public String describeActiveGoal(AIPlayerEntity bot) {
+        ActivePlan plan = activePlans.get(bot.getUuid());
+        return plan == null ? "none" : String.valueOf(plan.goal);
+    }
+
+    /** 诊断埋点:当前正在执行的步骤 + 进度 [第几步/总步数](无激活步则 "")。 */
+    public String describeActiveStep(AIPlayerEntity bot) {
+        ActivePlan plan = activePlans.get(bot.getUuid());
+        if (plan == null || plan.current == null) {
+            return "";
+        }
+        int idx = plan.totalSteps - plan.steps.size(); // current 已从 steps 取出,正在做第 idx 步
+        return plan.current.describe() + " [" + idx + "/" + plan.totalSteps + "]";
+    }
+
     private void assignNext(AIPlayerEntity bot, ActivePlan plan) {
         GoalStep step = plan.steps.pollFirst();
         if (step == null) {

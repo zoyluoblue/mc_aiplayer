@@ -1,15 +1,21 @@
 package io.github.zoyluo.aibot.log;
 
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
+import io.github.zoyluo.aibot.goal.GoalExecutor;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
 import io.github.zoyluo.aibot.task.TaskManager;
 import io.github.zoyluo.aibot.task.TaskStatus;
+import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.mob.HostileEntity;
+import net.minecraft.entity.passive.PassiveEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Box;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -129,25 +135,80 @@ public final class DiagnosticLogger {
 
     private void snapshot(AIPlayerEntity bot, Sample s) {
         BotLog.action(bot, "diag_snapshot",
+                // —— 状态 ——
                 "pos", s.x + "," + s.y + "," + s.z,
-                "yaw", Math.round(s.yaw),
-                "mode", s.mode,
                 "hp", fmt(s.health) + "/" + fmt(s.maxHealth),
                 "food", s.food,
                 "air", s.air,
+                "mode", s.mode,
                 "on_ground", s.onGround,
-                "fall", fmt(s.fallDistance),
                 "in_lava", s.inLava,
                 "submerged", s.submerged,
+                "fall", fmt(s.fallDistance),
+                "light", s.light,
+                // —— 目标 ——
+                "goal", GoalExecutor.INSTANCE.describeActiveGoal(bot),
+                "step", GoalExecutor.INSTANCE.describeActiveStep(bot),
+                // —— 任务 ——
                 "task", s.taskName,
                 "task_state", s.taskState,
                 "task_phase", s.taskPhase,
                 "task_progress", fmt((float) s.taskProgress),
                 "path_idle", s.pathIdle,
                 "mining_idle", s.miningIdle,
+                // —— 周围环境 ——
+                "nearby", scanNearby(bot),
+                // —— 背包 ——
                 "held", s.held,
-                "light", s.light,
                 "inv", s.inventory);
+    }
+
+    // 周围 24 格内生物(打猎/战斗诊断关键):动物数(+最近类型@距离) / 敌怪数(+最近类型@距离)。
+    // 仅在富快照(每 SNAPSHOT_INTERVAL)时扫一次,不进每 tick 的 Sample,避免每刻扫实体拖 TPS。
+    private static String scanNearby(AIPlayerEntity bot) {
+        try {
+            Box box = bot.getBoundingBox().expand(24.0D);
+            List<LivingEntity> ents = bot.getServerWorld().getEntitiesByClass(
+                    LivingEntity.class, box, e -> e.isAlive() && e != bot);
+            int animals = 0;
+            int hostiles = 0;
+            LivingEntity nearAnimal = null;
+            LivingEntity nearHostile = null;
+            double da = Double.MAX_VALUE;
+            double dh = Double.MAX_VALUE;
+            for (LivingEntity e : ents) {
+                double d = bot.distanceTo(e);
+                if (e instanceof HostileEntity) {
+                    hostiles++;
+                    if (d < dh) {
+                        dh = d;
+                        nearHostile = e;
+                    }
+                } else if (e instanceof PassiveEntity) {
+                    animals++;
+                    if (d < da) {
+                        da = d;
+                        nearAnimal = e;
+                    }
+                }
+            }
+            StringBuilder sb = new StringBuilder();
+            sb.append("animals=").append(animals);
+            if (nearAnimal != null) {
+                sb.append('(').append(typeId(nearAnimal)).append('@').append((int) da).append(')');
+            }
+            sb.append(" hostiles=").append(hostiles);
+            if (nearHostile != null) {
+                sb.append('(').append(typeId(nearHostile)).append('@').append((int) dh).append(')');
+            }
+            return sb.toString();
+        } catch (RuntimeException ignored) {
+            return "?";
+        }
+    }
+
+    private static String typeId(LivingEntity e) {
+        return Registries.ENTITY_TYPE.getId(e.getType()).getPath();
     }
 
     private Sample sampleOf(AIPlayerEntity bot) {

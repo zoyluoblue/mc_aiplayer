@@ -1,7 +1,6 @@
 package io.github.zoyluo.aibot.action;
 
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
-import io.github.zoyluo.aibot.log.BotLog;
 import net.minecraft.command.argument.EntityAnchorArgumentType;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
@@ -18,7 +17,6 @@ public final class LookAction {
         player.setHeadYaw(yaw);
         player.setBodyYaw(yaw);
         player.setPitch(clampedPitch);
-        BotLog.action(player, "look_at", "yaw", yaw, "pitch", clampedPitch);
         return ActionResult.SUCCESS;
     }
 
@@ -26,7 +24,6 @@ public final class LookAction {
         player.lookAt(EntityAnchorArgumentType.EntityAnchor.EYES, target);
         player.setHeadYaw(player.getYaw());
         player.setBodyYaw(player.getYaw());
-        BotLog.action(player, "look_at", "target", target);
         return ActionResult.SUCCESS;
     }
 

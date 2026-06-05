@@ -6,7 +6,7 @@ import io.github.zoyluo.aibot.client.screen.ui.ChatView;
 import io.github.zoyluo.aibot.client.screen.ui.InventoryView;
 import io.github.zoyluo.aibot.client.screen.ui.PanelComponent;
 import io.github.zoyluo.aibot.client.screen.ui.Theme;
-import io.github.zoyluo.aibot.client.screen.ui.cards.GoalCard;
+import io.github.zoyluo.aibot.client.screen.ui.cards.GoalView;
 import io.github.zoyluo.aibot.client.screen.ui.cards.QuickActionCard;
 import io.github.zoyluo.aibot.client.screen.ui.cards.SettingsCard;
 import io.github.zoyluo.aibot.client.screen.ui.cards.StatusCard;
@@ -27,7 +27,8 @@ public final class BotPanelScreen extends Screen {
         CHAT_STATUS,
         ACTIONS,
         SETTINGS,
-        INVENTORY
+        INVENTORY,
+        GOAL
     }
 
     private final List<PanelComponent> leftCards = new ArrayList<>();
@@ -37,6 +38,7 @@ public final class BotPanelScreen extends Screen {
     private ChatView chat;
     private TextFieldWidget input;
     private ButtonWidget sendButton;
+    private ButtonWidget goalButton;
     private ButtonWidget inventoryButton;
     private ButtonWidget settingsButton;
     private ButtonWidget closeButton;
@@ -49,7 +51,8 @@ public final class BotPanelScreen extends Screen {
     private String target = "";
 
     public BotPanelScreen(Mode mode) {
-        super(Text.translatable(mode == Mode.ACTIONS ? "screen.aibot.actions_panel"
+        super(mode == Mode.GOAL ? Text.literal("目标与执行链")
+                : Text.translatable(mode == Mode.ACTIONS ? "screen.aibot.actions_panel"
                 : mode == Mode.SETTINGS ? "screen.aibot.settings_panel"
                 : mode == Mode.INVENTORY ? "screen.aibot.inventory_panel"
                 : "screen.aibot.panel"));
@@ -79,6 +82,13 @@ public final class BotPanelScreen extends Screen {
             register(input);
             register(sendButton);
         }
+        goalButton = ButtonWidget.builder(Text.literal(mode == Mode.GOAL ? "聊天" : "目标"), button -> {
+                    if (client != null) {
+                        client.setScreen(new BotPanelScreen(mode == Mode.GOAL ? Mode.CHAT_STATUS : Mode.GOAL));
+                    }
+                })
+                .dimensions(px + pw - 178, py + 4, 40, 14)
+                .build();
         inventoryButton = ButtonWidget.builder(Text.translatable(mode == Mode.INVENTORY ? "btn.aibot.chat" : "btn.aibot.inventory"), button -> {
                     if (client != null) {
                         client.setScreen(new BotPanelScreen(mode == Mode.INVENTORY ? Mode.CHAT_STATUS : Mode.INVENTORY));
@@ -96,6 +106,7 @@ public final class BotPanelScreen extends Screen {
         closeButton = ButtonWidget.builder(Text.translatable("btn.aibot.close"), button -> close())
                 .dimensions(px + pw - 46, py + 4, 38, 14)
                 .build();
+        register(goalButton);
         register(inventoryButton);
         register(settingsButton);
         register(closeButton);
@@ -191,6 +202,10 @@ public final class BotPanelScreen extends Screen {
             // 需容下 9 列 × 18px 网格(162)+ 左右内边距;高度容装备行 + AI 4 行 + 玩家 4 行
             pw = docked ? Math.min(240, Math.max(200, (int) (width * 0.24F))) : Math.max(200, width - 20);
             ph = Math.max(220, Math.min(height - 24, 272));
+        } else if (mode == Mode.GOAL) {
+            // 目标与执行链:单栏,容下完整步骤链
+            pw = docked ? Math.min(300, Math.max(240, (int) (width * 0.26F))) : Math.max(240, width - 20);
+            ph = Math.max(180, Math.min(height - 24, 260));
         } else {
             pw = docked ? Math.min(520, Math.max(360, (int) (width * 0.48F))) : Math.max(240, width - 20);
             // 关键:ph 必须能装进屏幕(含上下边距),否则底部输入框会被挤出屏幕下沿
@@ -198,7 +213,7 @@ public final class BotPanelScreen extends Screen {
         }
         px = docked ? width - pw - 12 : (width - pw) / 2;
         py = 12;
-        leftW = mode == Mode.ACTIONS || mode == Mode.SETTINGS || mode == Mode.INVENTORY ? pw : Math.max(160, Math.round(pw * 0.42F));
+        leftW = mode == Mode.ACTIONS || mode == Mode.SETTINGS || mode == Mode.INVENTORY || mode == Mode.GOAL ? pw : Math.max(160, Math.round(pw * 0.42F));
         rightW = pw - leftW - Theme.GUTTER;
     }
 
@@ -219,10 +234,13 @@ public final class BotPanelScreen extends Screen {
             chat = null;
             return;
         }
-        // CHAT_STATUS:状态(含血/饱食/进度/任务)+ 任务链条(目标步骤与当前所处节点)。
-        // 背包详情走顶部"背包"按钮(INVENTORY 模式),左栏不再放背包卡,腾给任务链条。
+        if (mode == Mode.GOAL) {
+            leftCards.add(new GoalView());
+            chat = null;
+            return;
+        }
+        // CHAT_STATUS:只放状态卡(血/饱食/进度/任务)。目标与执行链走顶部"目标"按钮,背包走"背包"按钮。
         leftCards.add(new StatusCard());
-        leftCards.add(new GoalCard());
         chat = new ChatView();
     }
 
@@ -253,11 +271,15 @@ public final class BotPanelScreen extends Screen {
 
     private void drawTitleBar(DrawContext context) {
         String name = displayTarget();
-        String titleKey = mode == Mode.ACTIONS ? "screen.aibot.actions_title"
-                : mode == Mode.SETTINGS ? "screen.aibot.settings_title"
-                : mode == Mode.INVENTORY ? "screen.aibot.inventory_title"
-                : "screen.aibot.title";
-        context.drawTextWithShadow(textRenderer, Theme.tr(titleKey, name), px + Theme.PAD, py + 6, Theme.TEXT_STRONG);
+        if (mode == Mode.GOAL) {
+            context.drawTextWithShadow(textRenderer, Text.literal("目标与执行链 · " + name), px + Theme.PAD, py + 6, Theme.TEXT_STRONG);
+        } else {
+            String titleKey = mode == Mode.ACTIONS ? "screen.aibot.actions_title"
+                    : mode == Mode.SETTINGS ? "screen.aibot.settings_title"
+                    : mode == Mode.INVENTORY ? "screen.aibot.inventory_title"
+                    : "screen.aibot.title";
+            context.drawTextWithShadow(textRenderer, Theme.tr(titleKey, name), px + Theme.PAD, py + 6, Theme.TEXT_STRONG);
+        }
         context.drawHorizontalLine(px + Theme.PAD, px + pw - Theme.PAD - 1, py + Theme.TITLE_H, Theme.BORDER);
         if (mode == Mode.CHAT_STATUS) {
             context.drawVerticalLine(px + leftW, py + Theme.TITLE_H + 1, py + ph - Theme.PAD, Theme.BORDER);

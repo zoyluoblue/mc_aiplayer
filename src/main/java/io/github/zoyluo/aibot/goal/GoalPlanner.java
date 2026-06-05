@@ -161,6 +161,7 @@ public final class GoalPlanner {
                 case Goal.Armor ignored -> ensureArmor(true, depth, visiting);
                 case Goal.Workstation ignored -> ensureWorkstation(depth, visiting);
                 case Goal.Stockpile stockpile -> ensureStockpile(stockpile, depth, visiting);
+                case Goal.Food food -> ensureFoodTo(food.cookedCount(), depth, visiting);
             };
         }
 
@@ -299,17 +300,23 @@ public final class GoalPlanner {
             return true;
         }
 
-        // 第4层 备粮(best-effort):闭环 = 猎生肉 → 烤熟肉,达标只认熟食/面包(高饱食、安全)。
-        // 没动物/没熔炉/没燃料时 GoalExecutor 跳过相应 best-effort 步(见 handleStepFailure),不阻断主目标。
+        // 第4层 备粮(best-effort):挖矿前顺带备粮,凑够默认 FOOD_TARGET 个熟食。
         private boolean ensureFood(int depth, Set<String> visiting) {
+            return ensureFoodTo(FOOD_TARGET, depth, visiting);
+        }
+
+        // 猎→烤闭环:凑够 target 个熟食/面包(高饱食、安全)。挖矿备粮用 FOOD_TARGET;
+        // "去打猎/去搞点吃的"口语入口(Goal.Food)用指定量。
+        // 没动物/没熔炉/没燃料时 GoalExecutor 跳过相应 best-effort 步(见 handleStepFailure),不阻断主目标。
+        private boolean ensureFoodTo(int target, int depth, Set<String> visiting) {
             int cooked = 0;
             for (Item f : COOKED_FOOD_ITEMS) {
                 cooked += counts.getOrDefault(f, 0);
             }
-            if (cooked >= FOOD_TARGET) {
+            if (cooked >= target) {
                 return true;
             }
-            int needCooked = FOOD_TARGET - cooked;
+            int needCooked = target - cooked;
             int raw = 0;
             for (Item m : RAW_MEAT_ITEMS) {
                 raw += counts.getOrDefault(m, 0);

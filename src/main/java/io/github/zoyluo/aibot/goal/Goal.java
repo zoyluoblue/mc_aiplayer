@@ -5,7 +5,7 @@ import net.minecraft.item.Item;
 
 import java.util.Set;
 
-public sealed interface Goal permits Goal.HaveItem, Goal.HavePickaxeTier, Goal.MineOre, Goal.HarvestCrop, Goal.Armor, Goal.Workstation, Goal.Stockpile {
+public sealed interface Goal permits Goal.HaveItem, Goal.HavePickaxeTier, Goal.MineOre, Goal.HarvestCrop, Goal.Armor, Goal.Workstation, Goal.Stockpile, Goal.Food {
     record HaveItem(Item item, int count) implements Goal {
         public HaveItem {
             count = Math.max(1, count);
@@ -44,6 +44,14 @@ public sealed interface Goal permits Goal.HaveItem, Goal.HavePickaxeTier, Goal.M
     record Stockpile(Item item, int count) implements Goal {
         public Stockpile {
             count = Math.max(1, count);
+        }
+    }
+
+    /** 第4层 备粮:猎肉并烤成 cookedCount 个熟食(走 GoalPlanner 的猎→烤闭环)。
+     *  供"去打猎/去搞点吃的/弄点肉"等口语入口(provision_food 工具)。 */
+    record Food(int cookedCount) implements Goal {
+        public Food {
+            cookedCount = Math.max(1, cookedCount);
         }
     }
 }

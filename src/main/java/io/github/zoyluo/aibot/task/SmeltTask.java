@@ -6,6 +6,7 @@ import io.github.zoyluo.aibot.action.BuildAction;
 import io.github.zoyluo.aibot.action.ContainerAction;
 import io.github.zoyluo.aibot.action.DigNav;
 import io.github.zoyluo.aibot.action.InventoryAction;
+import io.github.zoyluo.aibot.craft.SmeltChain;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.memory.BotMemoryStore;
 import io.github.zoyluo.aibot.pathfinding.Standability;
@@ -60,8 +61,9 @@ public final class SmeltTask extends AbstractTask {
         FUEL_TICKS.put(Items.STICK, 100);
     }
 
-    private final Item input;
-    private final Item output;
+    private Item input;             // cookAll 模式下运行期可重选(逐种烤背包里的生食)
+    private Item output;
+    private final boolean cookAll;  // true=烤背包所有可烤生食,凑够 targetCount 个熟食
     private final int targetCount;
     private Phase phase = Phase.FINDING_FURNACE;
     private BlockPos furnacePos;
@@ -72,6 +74,15 @@ public final class SmeltTask extends AbstractTask {
     public SmeltTask(Item input, Item output, int targetCount) {
         this.input = input;
         this.output = output;
+        this.cookAll = false;
+        this.targetCount = Math.max(1, targetCount);
+    }
+
+    /** cookAll 模式:烤背包里所有可烤生食,凑够 targetCount 个熟食(供 COOK_FOOD 步——猎后烤肉)。 */
+    public SmeltTask(int targetCount) {
+        this.input = null;
+        this.output = null;
+        this.cookAll = true;
         this.targetCount = Math.max(1, targetCount);
     }
 
@@ -114,6 +125,9 @@ public final class SmeltTask extends AbstractTask {
             fail("smelt_timeout");
             return;
         }
+        if (cookAll && !ensureCurrentRawFood(bot)) {
+            return; // 无可烤生食(已 complete/fail)
+        }
         switch (phase) {
             case FINDING_FURNACE -> findFurnace(bot);
             case WALKING_TO_FURNACE -> walkToFurnace(bot);
@@ -122,6 +136,41 @@ public final class SmeltTask extends AbstractTask {
             case SMELTING -> waitForOutput(bot);
             case COLLECTING -> collectOutput(bot);
         }
+    }
+
+    // cookAll:确保"当前烤种"是背包里有的生食;当前种烤空且炉里也清空 → 换下一种;全烤完 → 结束。
+    // 返回 false 表示本 tick 应终止(已 complete/fail)。
+    private boolean ensureCurrentRawFood(AIPlayerEntity bot) {
+        if (input != null && InventoryAction.countItem(bot, input) > 0) {
+            return true; // 当前种背包还有,继续烤
+        }
+        if (input != null && hasPendingInFurnace(bot)) {
+            return true; // 当前种背包空,但炉里还有它的料/产物 → 先收完再换种(避免 input 槽占用冲突)
+        }
+        Item next = null;
+        for (Item raw : SmeltChain.RAW_FOODS) {
+            if (InventoryAction.countItem(bot, raw) > 0) {
+                next = raw;
+                break;
+            }
+        }
+        if (next == null) {
+            if (collected > 0) {
+                complete();
+            } else {
+                fail("no_raw_food");
+            }
+            return false;
+        }
+        input = next;
+        output = SmeltChain.smeltOf(next);
+        phase = Phase.FINDING_FURNACE; // 熔炉位通常已知,会快速回到 LOADING
+        return true;
+    }
+
+    private boolean hasPendingInFurnace(AIPlayerEntity bot) {
+        AbstractFurnaceBlockEntity f = furnace(bot);
+        return f != null && (!f.getStack(0).isEmpty() || !f.getStack(2).isEmpty());
     }
 
     private void findFurnace(AIPlayerEntity bot) {

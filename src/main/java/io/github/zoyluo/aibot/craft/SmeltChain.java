@@ -5,6 +5,7 @@ import net.minecraft.item.Items;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * S5:冶炼链单一数据源——输入物 → 冶炼产物(矿锭/熟肉/玻璃/木炭/烤土豆),以及燃料燃烧时长。
@@ -44,6 +45,16 @@ public final class SmeltChain {
         FUEL.put(Items.OAK_PLANKS, 1.5);
         FUEL.put(Items.STICK, 0.5);
     }
+
+    /** B 模块:可烤的生食(猎到/钓到/挖到的生料,需烤成熟食才高饱食、且生鸡肉等避免中毒)。 */
+    public static final Set<Item> RAW_FOODS = Set.of(
+            Items.BEEF, Items.PORKCHOP, Items.CHICKEN, Items.MUTTON, Items.RABBIT,
+            Items.COD, Items.SALMON, Items.POTATO);
+
+    /** B 模块:对应熟食(备粮达标只认这些——饱食/饱和远高于生料)。 */
+    public static final Set<Item> COOKED_FOODS = Set.of(
+            Items.COOKED_BEEF, Items.COOKED_PORKCHOP, Items.COOKED_CHICKEN, Items.COOKED_MUTTON,
+            Items.COOKED_RABBIT, Items.COOKED_COD, Items.COOKED_SALMON, Items.BAKED_POTATO);
 
     private SmeltChain() {
     }

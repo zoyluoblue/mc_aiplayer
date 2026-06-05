@@ -6,6 +6,7 @@ import net.minecraft.component.DataComponentTypes;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
 import net.minecraft.util.collection.DefaultedList;
 
 import java.util.LinkedHashMap;
@@ -119,15 +120,27 @@ public final class InventoryAction {
         return remaining;
     }
 
+    // 有害/有副作用的食物:生鸡肉(30% 中毒)、腐肉、河豚、蜘蛛眼、毒马铃薯——只在没别的可吃时才退而求其次。
+    private static final java.util.Set<Item> HARMFUL_FOODS = java.util.Set.of(
+            Items.CHICKEN, Items.ROTTEN_FLESH, Items.PUFFERFISH, Items.SPIDER_EYE, Items.POISONOUS_POTATO);
+
     public static int findFoodSlot(AIPlayerEntity player) {
         PlayerInventory inventory = player.getInventory();
+        int harmfulSlot = -1;
         for (int slot = 0; slot < inventory.main.size(); slot++) {
             ItemStack stack = inventory.main.get(slot);
-            if (!stack.isEmpty() && stack.contains(DataComponentTypes.FOOD)) {
-                return slot;
+            if (stack.isEmpty() || !stack.contains(DataComponentTypes.FOOD)) {
+                continue;
             }
+            if (HARMFUL_FOODS.contains(stack.getItem())) {
+                if (harmfulSlot < 0) {
+                    harmfulSlot = slot; // 记下作为最后兜底
+                }
+                continue;
+            }
+            return slot; // 优先安全食物(熟肉/面包/生牛猪羊)
         }
-        return -1;
+        return harmfulSlot; // 只剩有害食物时才吃(总比饿死强);都没有则 -1
     }
 
     public static Map<String, Integer> summarize(AIPlayerEntity player) {

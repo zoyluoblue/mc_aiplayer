@@ -160,6 +160,7 @@ public final class GoalExecutor {
         // 第4层:best-effort 步骤(如 HUNT 备粮)失败不阻断整体目标——跳过它直接继续下一步。
         // 这样"挖钻石前备点肉"在周围没动物时也不会让整条挖矿目标 goal_failed(续航仍由饥饿链兜底)。
         if (plan.current != null && (plan.current.kind() == GoalStep.Kind.HUNT
+                || plan.current.kind() == GoalStep.Kind.COOK_FOOD
                 || plan.current.kind() == GoalStep.Kind.STOCKPILE)) {
             BotLog.task(bot, "goal_step_skipped_besteffort", "step", plan.current.describe(), "reason", reason);
             assignNext(bot, plan);
@@ -254,6 +255,8 @@ public final class GoalExecutor {
                     true, false, step.item(), step.count()));
             // 第4层:HUNT 步 → HuntTask 猎杀动物取生肉(备粮)。
             case HUNT -> Optional.of(new HuntTask(step.count()));
+            // P0 食物闭环:COOK_FOOD 步 → SmeltTask cookAll 模式,把背包生肉逐种烤成熟肉。
+            case COOK_FOOD -> Optional.of(new SmeltTask(step.count()));
             // Phase2:PLACE_STATIONS 步 → 摆好工作台/熔炉/箱子。
             case PLACE_STATIONS -> Optional.of(new PlaceStationsTask());
             // Phase3:STOCKPILE 步 → 把背包资源存进附近箱子(存所有非工具)。

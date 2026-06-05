@@ -38,11 +38,12 @@ public final class GoalPlanner {
     private static final int TORCH_TARGET = 8;
     private static final EquipmentSlot[] ARMOR_SLOTS = {
             EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET};
-    // 第4层 备粮用:常见食物(生/熟肉 + 面包)。
-    private static final List<Item> FOOD_ITEMS = List.of(
-            Items.BEEF, Items.COOKED_BEEF, Items.PORKCHOP, Items.COOKED_PORKCHOP,
-            Items.MUTTON, Items.COOKED_MUTTON, Items.CHICKEN, Items.COOKED_CHICKEN,
-            Items.RABBIT, Items.COOKED_RABBIT, Items.BREAD);
+    // 第4层 备粮:达标只认"熟食/面包"(高饱食、安全);生肉是中间品,需烤(见 ensureFood 闭环)。
+    private static final List<Item> COOKED_FOOD_ITEMS = List.of(
+            Items.COOKED_BEEF, Items.COOKED_PORKCHOP, Items.COOKED_MUTTON, Items.COOKED_CHICKEN,
+            Items.COOKED_RABBIT, Items.COOKED_COD, Items.COOKED_SALMON, Items.BAKED_POTATO, Items.BREAD);
+    private static final List<Item> RAW_MEAT_ITEMS = List.of(
+            Items.BEEF, Items.PORKCHOP, Items.MUTTON, Items.CHICKEN, Items.RABBIT);
     private static final int FOOD_TARGET = 4;
     private static final int DESCEND_THRESHOLD = 8; // bot 高于矿层超过这么多格,先下竖井到矿层再挖
 
@@ -298,17 +299,26 @@ public final class GoalPlanner {
             return true;
         }
 
-        // 第4层 备粮(best-effort):食物不足则下一个 HUNT 步,运行期去猎肉续航;没动物时 GoalExecutor
-        // 跳过此步(见 handleStepFailure),不阻断挖矿目标。总返回 true,不影响规划成败。
+        // 第4层 备粮(best-effort):闭环 = 猎生肉 → 烤熟肉,达标只认熟食/面包(高饱食、安全)。
+        // 没动物/没熔炉/没燃料时 GoalExecutor 跳过相应 best-effort 步(见 handleStepFailure),不阻断主目标。
         private boolean ensureFood(int depth, Set<String> visiting) {
-            int food = 0;
-            for (Item f : FOOD_ITEMS) {
-                food += counts.getOrDefault(f, 0);
+            int cooked = 0;
+            for (Item f : COOKED_FOOD_ITEMS) {
+                cooked += counts.getOrDefault(f, 0);
             }
-            if (food >= FOOD_TARGET) {
+            if (cooked >= FOOD_TARGET) {
                 return true;
             }
-            addStep(GoalStep.hunt(FOOD_TARGET - food));
+            int needCooked = FOOD_TARGET - cooked;
+            int raw = 0;
+            for (Item m : RAW_MEAT_ITEMS) {
+                raw += counts.getOrDefault(m, 0);
+            }
+            int huntNeed = Math.max(0, needCooked - raw);
+            if (huntNeed > 0) {
+                addStep(GoalStep.hunt(huntNeed)); // 生肉不够 → 先猎
+            }
+            addStep(GoalStep.cookFood(needCooked)); // 再烤成熟肉(背包已有生肉也一并烤)
             return true;
         }
 

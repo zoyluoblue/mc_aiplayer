@@ -25,6 +25,7 @@ public record GoalStep(Kind kind,
         MOVE,
         FARM,
         HUNT,
+        COOK_FOOD,
         PLACE_STATIONS,
         STOCKPILE,
         DESCEND_TO_Y
@@ -70,6 +71,11 @@ public record GoalStep(Kind kind,
         return new GoalStep(Kind.HUNT, null, count, null, Set.of(), null, null, null);
     }
 
+    /** P0 食物闭环:COOK_FOOD 步——把背包里所有生食烤成 count 个熟食(best-effort,无熔炉/燃料则跳过)。 */
+    public static GoalStep cookFood(int count) {
+        return new GoalStep(Kind.COOK_FOOD, null, count, null, Set.of(), null, null, null);
+    }
+
     /** Phase2:放置工作台/熔炉/箱子三件套(方块固定,无参数)。 */
     public static GoalStep placeStations() {
         return new GoalStep(Kind.PLACE_STATIONS, null, 1, null, Set.of(), null, null, null);
@@ -113,6 +119,7 @@ public record GoalStep(Kind kind,
             case MOVE -> "MOVE " + pos.getX() + "," + pos.getY() + "," + pos.getZ();
             case FARM -> "FARM " + Registries.BLOCK.getId(block) + " x" + count;
             case HUNT -> "HUNT meat x" + count;
+            case COOK_FOOD -> "COOK_FOOD raw->cooked x" + count;
             case PLACE_STATIONS -> "PLACE_STATIONS table+furnace+chest";
             case STOCKPILE -> "STOCKPILE " + Registries.ITEM.getId(item);
             case DESCEND_TO_Y -> "DESCEND_TO_Y " + pos.getY();

@@ -29,7 +29,6 @@ import io.github.zoyluo.aibot.task.ContainerTask;
 import io.github.zoyluo.aibot.task.CraftTask;
 import io.github.zoyluo.aibot.task.EatTask;
 import io.github.zoyluo.aibot.task.FishTask;
-import io.github.zoyluo.aibot.task.ForageTask;
 import io.github.zoyluo.aibot.task.FarmTask;
 import io.github.zoyluo.aibot.task.GatherQuotaTask;
 import io.github.zoyluo.aibot.task.FollowTask;
@@ -310,6 +309,16 @@ public final class ToolRegistry {
             boolean started = GoalExecutor.INSTANCE.submit(bot,
                     new Goal.Food(optionalInt(args, "count", 4)));
             return started ? ok("goal_assigned: provision_food") : fail("goal_plan_failed");
+        });
+
+        register("forage", "Forage wild ready-to-eat food nearby (sweet berries / melon) into the inventory. "
+                + "Use for 采点野果/找点野果吃/摘浆果/采集野食/找野食/forage; best when berry bushes or melons are around. "
+                + "For meat use provision_food; for bread use harvest_crop. count = how many to gather (default 4).", objectSchema()
+                .property("count", integerSchema("how many wild food to gather (default 4)"))
+                .build(), (bot, args) -> {
+            boolean started = GoalExecutor.INSTANCE.submit(bot,
+                    new Goal.HaveItem(net.minecraft.item.Items.SWEET_BERRIES, optionalInt(args, "count", 4)));
+            return started ? ok("goal_assigned: forage") : fail("goal_plan_failed");
         });
 
         register("achieve_armor", "Make and equip a full set of iron armor plus an iron sword with deterministic planning. Use for 武装起来/做一身装备/给我穿上盔甲/gear up. Auto-plans mining, smelting and crafting; do not decompose manually.", objectSchema()
@@ -680,9 +689,7 @@ public final class ToolRegistry {
         }
         return switch (taskType) {
             case "move" -> new MoveTask(bot, new BlockPos(requiredInt(params, "x"), requiredInt(params, "y"), requiredInt(params, "z")));
-            case "forage" -> new ForageTask(
-                    requiredEntityType(params, "entity_type"),
-                    optionalInt(params, "count", 1));
+            case "forage" -> new GatherQuotaTask(net.minecraft.item.Items.SWEET_BERRIES, optionalInt(params, "count", 4));
             case "attack" -> new CombatTask(
                     requiredEntityType(params, "entity_type"),
                     optionalInt(params, "count", 1),

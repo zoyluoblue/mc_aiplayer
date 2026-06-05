@@ -394,10 +394,16 @@ public final class GatherQuotaTask extends AbstractTask {
         return harvestBlocks.contains(bot.getServerWorld().getBlockState(pos).getBlock());
     }
 
+    // 觅食野食族:浆果 / 西瓜片(都是野生即取、可直接吃);采任一凑数(哪个近采哪个)。
+    private static final Set<Item> FORAGE_FOODS = Set.of(Items.SWEET_BERRIES, Items.MELON_SLICE);
+
     private static Set<Item> acceptItemsFor(Item item) {
         // 原木:接受任意树种(配方下游 planks/stick/工具都接受任意 planks 家族)。
         if (RecipeRegistry.LOGS.contains(item)) {
             return Set.copyOf(RecipeRegistry.LOGS);
+        }
+        if (FORAGE_FOODS.contains(item)) {
+            return FORAGE_FOODS; // 觅食:接受任意野食,采到哪种都算数
         }
         return Set.of(item);
     }
@@ -406,6 +412,10 @@ public final class GatherQuotaTask extends AbstractTask {
         if (items.contains(Items.WHEAT_SEEDS)) {
             // 割草取小麦种子:破坏短草/高草/蕨,概率掉 wheat_seeds(早期种田的种子来源)。
             return Set.of(Blocks.SHORT_GRASS, Blocks.TALL_GRASS, Blocks.FERN, Blocks.LARGE_FERN);
+        }
+        if (items.contains(Items.SWEET_BERRIES) || items.contains(Items.MELON_SLICE)) {
+            // 觅食:破坏甜浆果丛(成熟掉浆果)/ 西瓜(掉西瓜片),取野生即取食物。
+            return Set.of(Blocks.SWEET_BERRY_BUSH, Blocks.MELON);
         }
         LinkedHashSet<Block> blocks = new LinkedHashSet<>();
         for (Item item : items) {

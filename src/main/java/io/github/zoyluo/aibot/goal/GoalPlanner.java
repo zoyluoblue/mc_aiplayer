@@ -449,6 +449,12 @@ public final class GoalPlanner {
                 counts.merge(item, missing, Integer::sum);
                 return true;
             }
+            if (item == Items.SWEET_BERRIES || item == Items.MELON_SLICE) {
+                // 野食 → 觅食(GatherQuotaTask 把野食映射到甜浆果丛/西瓜,采就近的)。
+                addStep(GoalStep.gather(item, missing));
+                counts.merge(item, missing, Integer::sum);
+                return true;
+            }
             if (item == Items.COBBLESTONE) {
                 if (!ensurePickaxeTier(ToolTier.WOOD, depth + 1, visiting)) {
                     return false;

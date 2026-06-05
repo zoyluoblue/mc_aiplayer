@@ -18,7 +18,7 @@ import io.github.zoyluo.aibot.task.ContainerTask;
 import io.github.zoyluo.aibot.task.CraftTask;
 import io.github.zoyluo.aibot.task.EatTask;
 import io.github.zoyluo.aibot.task.FarmTask;
-import io.github.zoyluo.aibot.task.ForageTask;
+import net.minecraft.item.Items;
 import io.github.zoyluo.aibot.task.GatherQuotaTask;
 import io.github.zoyluo.aibot.task.LightAreaTask;
 import io.github.zoyluo.aibot.task.MineTask;
@@ -59,10 +59,9 @@ public final class AIBotTaskSubcommand {
                                 .then(literal("move")
                                         .then(blockPosArgs(AIBotTaskSubcommand::assignMove)))
                                 .then(literal("forage")
-                                        .then(argument("entity_type", IdentifierArgumentType.identifier())
-                                                .executes(context -> assignForage(context, 1))
-                                                .then(argument("count", IntegerArgumentType.integer(1))
-                                                        .executes(context -> assignForage(context, IntegerArgumentType.getInteger(context, "count"))))))
+                                        .executes(context -> assignForage(context, 4))
+                                        .then(argument("count", IntegerArgumentType.integer(1))
+                                                .executes(context -> assignForage(context, IntegerArgumentType.getInteger(context, "count")))))
                                 .then(literal("attack")
                                         .then(argument("entity_type", IdentifierArgumentType.identifier())
                                                 .executes(context -> assignAttack(context, 1))
@@ -215,9 +214,7 @@ public final class AIBotTaskSubcommand {
     }
 
     private static int assignForage(CommandContext<ServerCommandSource> context, int count) {
-        return assign(context, bot -> new ForageTask(
-                Registries.ENTITY_TYPE.get(IdentifierArgumentType.getIdentifier(context, "entity_type")),
-                count));
+        return assign(context, bot -> new GatherQuotaTask(Items.SWEET_BERRIES, count));
     }
 
     private static int assignAttack(CommandContext<ServerCommandSource> context, int count) {

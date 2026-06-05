@@ -7,6 +7,7 @@ import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.item.Item;
 import net.minecraft.item.Items;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 
 import java.util.Comparator;
@@ -28,6 +29,7 @@ public final class HuntTask extends AbstractTask {
     private static final int MAX_ELAPSED = 3600;       // 3 分钟硬超时
     private static final int NO_PROGRESS_LIMIT = 400;  // 20s 无进展(没靠近/没掉肉)即失败
     private static final int PICKUP_GRACE = 25;        // 击杀后多等一会儿确保肉落袋
+    private static final int APPROACH_STUCK_TICKS = 30; // 接近时位置 1.5s 不变即判卡路障,改直线追跨台阶
 
     // 可食用猎物及其生肉掉落(烤熟前先拿到生肉)。
     private static final Set<EntityType<?>> PREY = Set.of(
@@ -42,6 +44,8 @@ public final class HuntTask extends AbstractTask {
     private int pickupGrace;
     private Phase phase = Phase.ACQUIRE;
     private LivingEntity target;
+    private BlockPos approachStuckPos; // 接近卡路障检测:上次记录的站位
+    private int approachStuckTick;     // 记录该站位的 tick
 
     public HuntTask(int targetMeat) {
         this.targetMeat = Math.max(1, targetMeat);
@@ -140,6 +144,21 @@ public final class HuntTask extends AbstractTask {
             phase = Phase.STRIKE;
             return;
         }
+        // 卡路障检测:站位连续不变即视为卡住(实测:寻路追猎物时卡在 1 格台阶前跨不上去)。
+        BlockPos at = bot.getBlockPos();
+        if (at.equals(approachStuckPos)) {
+            if (elapsed - approachStuckTick > APPROACH_STUCK_TICKS) {
+                // 改直线追实时位置:WalkToController 会跳上 1 格台阶 / 侧移绕障,比静态寻路更跟手。
+                BotLog.action(bot, "hunt_approach_stuck", "pos", at.toShortString(),
+                        "dist", (int) bot.distanceTo(target));
+                bot.getActionPack().startWalkTo(target.getPos());
+                approachStuckTick = elapsed;
+                lastProgressTick = elapsed;
+            }
+            return;
+        }
+        approachStuckPos = at;
+        approachStuckTick = elapsed;
         if (bot.getActionPack().isPathExecutorIdle() && bot.getActionPack().isWalkToIdle()) {
             CombatCore.startApproach(bot, target);
             lastProgressTick = elapsed; // 重新起步追击也算进展

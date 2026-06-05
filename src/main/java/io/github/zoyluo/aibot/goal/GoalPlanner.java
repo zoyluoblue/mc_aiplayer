@@ -348,16 +348,20 @@ public final class GoalPlanner {
                 raw += counts.getOrDefault(m, 0);
             }
             int huntNeed = Math.max(0, needCooked - raw);
+            // 烤肉需熔炉:没炉则确定性倒推一座(8 圆石 → 挖石 → 需镐 → 木板/木棍 → 原木 → 砍树),
+            // 让"砍树 + 做基本工具"作为底层能力按正确顺序自动展开;而非 best-effort 跳过后丢给大脑乱凑
+            //(实测:大脑直接 gather 圆石、没先做镐,挖不动)。整条 Food best-effort 兜底,缺料环境降级不卡死。
+            if (counts.getOrDefault(Items.FURNACE, 0) <= 0) {
+                ensureItem(Items.FURNACE, 1, depth + 1, visiting);
+            }
             if (huntNeed > 0) {
-                // 物质基础但不死磕(实测:硬倒推木剑→无树地形为做剑反复找树"发呆"73s 后失败)。
-                // 没剑且手头已有现成木料 → 顺手做把木剑;没剑又没料(需专程砍树)→ 不强求,
-                // 用现有工具/空手直接猎(实际 bot 多有镐当武器;打猎目标整体 best-effort 兜底,见 GoalExecutor)。
+                // 没剑且手头已有现成木料 → 顺手做把木剑;没料不专程砍树(避免无树发呆),空手/现有工具直接猎。
                 if (!hasAnySword() && hasSwordMaterial()) {
                     ensureItem(Items.WOODEN_SWORD, 1, depth + 1, visiting);
                 }
                 addStep(GoalStep.hunt(huntNeed));
             }
-            addStep(GoalStep.cookFood(needCooked)); // 再烤成熟肉(背包已有生肉也一并烤)
+            addStep(GoalStep.cookFood(needCooked)); // 烤成熟肉(背包已有生肉也一并烤)
             return true;
         }
 

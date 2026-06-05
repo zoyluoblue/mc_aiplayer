@@ -3,10 +3,12 @@ package io.github.zoyluo.aibot.task;
 import io.github.zoyluo.aibot.action.HarvestCore;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
+import io.github.zoyluo.aibot.pathfinding.Standability;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.item.Item;
 import net.minecraft.item.Items;
+import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 
@@ -23,13 +25,15 @@ import java.util.Set;
  * 自包含状态机(G1,不自 assign),全程主线程(G2)。数量达成或周围无猎物即结束,交编排层处理(如继续去烤)。
  */
 public final class HuntTask extends AbstractTask {
-    private enum Phase { ACQUIRE, APPROACH, STRIKE, PICKUP }
+    private enum Phase { ACQUIRE, APPROACH, STRIKE, PICKUP, ROAM }
 
-    private static final int SEARCH_RANGE = 24;
+    private static final int SEARCH_RANGE = 64;        // 找猎物的扫描范围(动物分散→扩到 64 格,再走过去)
     private static final int MAX_ELAPSED = 3600;       // 3 分钟硬超时
     private static final int NO_PROGRESS_LIMIT = 400;  // 20s 无进展(没靠近/没掉肉)即失败
     private static final int PICKUP_GRACE = 25;        // 击杀后多等一会儿确保肉落袋
     private static final int APPROACH_STUCK_TICKS = 30; // 接近时位置 1.5s 不变即判卡路障,改直线追跨台阶
+    private static final int MAX_PREY_ROAMS = 6;       // 找不到猎物时漫游换片的最多次数(~6×32 格)
+    private static final int ROAM_DISTANCE = 32;       // 每次漫游的水平距离
 
     // 可食用猎物及其生肉掉落(烤熟前先拿到生肉)。
     private static final Set<EntityType<?>> PREY = Set.of(
@@ -46,6 +50,8 @@ public final class HuntTask extends AbstractTask {
     private LivingEntity target;
     private BlockPos approachStuckPos; // 接近卡路障检测:上次记录的站位
     private int approachStuckTick;     // 记录该站位的 tick
+    private int roamCount;             // 找猎物漫游换片次数
+    private BlockPos roamTarget;       // 漫游落脚点
 
     public HuntTask(int targetMeat) {
         this.targetMeat = Math.max(1, targetMeat);
@@ -76,6 +82,7 @@ public final class HuntTask extends AbstractTask {
         collected = 0;
         lastProgressTick = 0;
         pickupGrace = 0;
+        roamCount = 0;
         phase = Phase.ACQUIRE;
     }
 
@@ -115,22 +122,84 @@ public final class HuntTask extends AbstractTask {
             case APPROACH -> approach(bot);
             case STRIKE -> strike(bot);
             case PICKUP -> pickup(bot);
+            case ROAM -> roamMove(bot);
         }
     }
 
     private void acquire(AIPlayerEntity bot) {
         target = nearestPrey(bot);
-        if (target == null) {
-            if (collected > 0) {
-                complete();
-            } else {
-                fail("no_prey_in_range");
-            }
+        if (target != null) {
+            lastProgressTick = elapsed;
+            phase = Phase.APPROACH;
+            CombatCore.startApproach(bot, target);
             return;
         }
-        lastProgressTick = elapsed;
-        phase = Phase.APPROACH;
-        CombatCore.startApproach(bot, target);
+        if (collected > 0) {
+            complete(); // 已猎到一些就收
+            return;
+        }
+        // 周围(64 格)没猎物 → 漫游换片再找(动物分散/在远处),而非原地放弃
+        //(实测:no_prey_in_range 直接失败,装备齐全却搞不到肉)。
+        if (roamForPrey(bot)) {
+            return;
+        }
+        fail("no_prey_found roams=" + roamCount);
+    }
+
+    // 找不到猎物 → 走到 ROAM_DISTANCE 外的露天地表换片再找;最多 MAX_PREY_ROAMS 次。
+    private boolean roamForPrey(AIPlayerEntity bot) {
+        if (++roamCount > MAX_PREY_ROAMS) {
+            return false;
+        }
+        ServerWorld world = bot.getServerWorld();
+        BlockPos feet = bot.getBlockPos();
+        int[][] dirs = {{1, 0}, {0, 1}, {-1, 0}, {0, -1}, {1, 1}, {-1, -1}, {1, -1}, {-1, 1}};
+        int start = Math.floorMod(roamCount, dirs.length);
+        for (int i = 0; i < dirs.length; i++) {
+            int[] d = dirs[(start + i) % dirs.length];
+            BlockPos ground = findGround(world, feet.getX() + d[0] * ROAM_DISTANCE, feet.getZ() + d[1] * ROAM_DISTANCE);
+            if (ground != null) {
+                bot.getActionPack().stopAll();
+                bot.getActionPack().startPathTo(ground);
+                roamTarget = ground;
+                phase = Phase.ROAM;
+                lastProgressTick = elapsed;
+                BotLog.action(bot, "hunt_roam",
+                        "to", ground.getX() + "," + ground.getY() + "," + ground.getZ(), "n", roamCount);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // 漫游途中持续扫猎物:发现就转入捕猎;到落脚点/走不动则回 ACQUIRE 重扫。
+    private void roamMove(AIPlayerEntity bot) {
+        LivingEntity prey = nearestPrey(bot);
+        if (prey != null) {
+            target = prey;
+            phase = Phase.APPROACH;
+            CombatCore.startApproach(bot, prey);
+            lastProgressTick = elapsed;
+            return;
+        }
+        if (roamTarget == null
+                || bot.getBlockPos().getSquaredDistance(roamTarget) <= 9.0D
+                || bot.getActionPack().isPathExecutorIdle()) {
+            roamTarget = null;
+            phase = Phase.ACQUIRE;
+        }
+    }
+
+    // 在 (x,z) 列从高往低找第一个露天可站点(地表落脚点)。
+    private static BlockPos findGround(ServerWorld world, int x, int z) {
+        int topY = Math.min(world.getBottomY() + world.getHeight() - 2, 110);
+        for (int y = topY; y > world.getBottomY() + 1; y--) {
+            BlockPos p = new BlockPos(x, y, z);
+            if (Standability.isStandable(world, p) && world.isSkyVisible(p)) {
+                return p;
+            }
+        }
+        return null;
     }
 
     private void approach(AIPlayerEntity bot) {

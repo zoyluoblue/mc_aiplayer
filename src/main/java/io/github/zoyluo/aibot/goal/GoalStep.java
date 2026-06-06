@@ -1,5 +1,6 @@
 package io.github.zoyluo.aibot.goal;
 
+import io.github.zoyluo.aibot.craft.ItemNames;
 import net.minecraft.block.Block;
 import net.minecraft.item.Item;
 import net.minecraft.registry.Registries;
@@ -106,23 +107,23 @@ public record GoalStep(Kind kind,
                 && java.util.Objects.equals(pos, other.pos);
     }
 
-    // 中文动词 + 物品/方块 id(minecraft:xxx);客户端面板会把 id 进一步本地化成中文名(见 GoalCard)。
+    // 中文动词 + 物品/方块中文名(ItemNames 对照表,服务端就翻译好,面板/日志直接中文)。
     public String describe() {
         return switch (kind) {
-            case GATHER -> "采集 " + Registries.ITEM.getId(item) + " ×" + count;
-            case MINE -> "挖 " + Registries.BLOCK.getId(block) + " ×" + count;
+            case GATHER -> "采集 " + ItemNames.cn(item) + " ×" + count;
+            case MINE -> "挖 " + ItemNames.cn(block) + " ×" + count;
             case MINE_ORE -> "采矿 " + ores.stream()
-                    .map(block -> Registries.BLOCK.getId(block).toString())
+                    .map(ItemNames::cn)
                     .sorted()
-                    .collect(Collectors.joining(",")) + " ×" + count;
-            case CRAFT -> "合成 " + Registries.ITEM.getId(item) + " ×" + count;
-            case SMELT -> "熔炼 " + Registries.ITEM.getId(input) + " → " + Registries.ITEM.getId(output) + " ×" + count;
+                    .collect(Collectors.joining("/")) + " ×" + count;
+            case CRAFT -> "合成 " + ItemNames.cn(item) + " ×" + count;
+            case SMELT -> "熔炼 " + ItemNames.cn(input) + " → " + ItemNames.cn(output) + " ×" + count;
             case MOVE -> "移动到 " + pos.getX() + "," + pos.getY() + "," + pos.getZ();
-            case FARM -> "种植 " + Registries.BLOCK.getId(block) + " ×" + count;
+            case FARM -> "种植 " + ItemNames.cn(block) + " ×" + count;
             case HUNT -> "打猎取肉 ×" + count;
             case COOK_FOOD -> "烤制食物 ×" + count;
             case PLACE_STATIONS -> "摆放工作台/熔炉/箱子";
-            case STOCKPILE -> "囤入箱子 " + Registries.ITEM.getId(item);
+            case STOCKPILE -> "囤入箱子 " + ItemNames.cn(item);
             case DESCEND_TO_Y -> "下挖到 Y=" + pos.getY();
         };
     }

@@ -148,15 +148,14 @@ public final class GoalExecutor {
     }
 
     private static String goalLabel(Goal goal) {
-        var reg = net.minecraft.registry.Registries.ITEM;
         return switch (goal) {
-            case Goal.HaveItem g -> "获取 " + reg.getId(g.item()) + " ×" + g.count();
+            case Goal.HaveItem g -> "获取 " + io.github.zoyluo.aibot.craft.ItemNames.cn(g.item()) + " ×" + g.count();
             case Goal.MineOre g -> "采矿 ×" + g.count();
-            case Goal.HarvestCrop g -> "种收 " + reg.getId(g.produce()) + " ×" + g.count();
+            case Goal.HarvestCrop g -> "种收 " + io.github.zoyluo.aibot.craft.ItemNames.cn(g.produce()) + " ×" + g.count();
             case Goal.Food g -> "备食物(熟食) ×" + g.cookedCount();
             case Goal.Armor g -> "武装(整套护甲+剑)";
             case Goal.Workstation g -> "搭建工作站";
-            case Goal.Stockpile g -> "囤货 " + reg.getId(g.item()) + " ×" + g.count();
+            case Goal.Stockpile g -> "囤货 " + io.github.zoyluo.aibot.craft.ItemNames.cn(g.item()) + " ×" + g.count();
             case Goal.HavePickaxeTier g -> "升级镐 (tier " + g.tier() + ")";
         };
     }

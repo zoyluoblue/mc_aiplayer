@@ -78,6 +78,13 @@ public final class HuntTask extends AbstractTask {
     }
 
     @Override
+    public boolean isWaiting() {
+        // 追击/捡肉期 bot 可能短暂站立或被地形挡,本任务自带 NO_PROGRESS / 漫游 / 超时三重兜底,
+        // 不交给 StuckWatcher 那个"200t 位置没变就 abort"的粗监控误杀(实测追羊卡墙被它 200t abort)。
+        return true;
+    }
+
+    @Override
     protected void onStart(AIPlayerEntity bot) {
         CombatCore.equipMelee(bot);
         meatBaseline = HarvestCore.countInventoryItems(bot, RAW_MEATS);
@@ -216,15 +223,22 @@ public final class HuntTask extends AbstractTask {
             phase = Phase.STRIKE;
             return;
         }
-        // 卡路障检测:站位连续不变即视为卡住(实测:寻路追猎物时卡在 1 格台阶前跨不上去)。
+        // 卡住检测:站位连续不变即视为追不上 / 被地形(暗洞、墙)挡住(实测:bot 在暗洞 pos 一字不动、
+        // 羊越追越远)。死磕同一只只会原地耗到被 abort —— 卡住就换地方找(roam 走开卡点),而非死追。
         BlockPos at = bot.getBlockPos();
         if (at.equals(approachStuckPos)) {
             if (elapsed - approachStuckTick > APPROACH_STUCK_TICKS) {
-                // 改直线追实时位置:WalkToController 会跳上 1 格台阶 / 侧移绕障,比静态寻路更跟手。
                 BotLog.action(bot, "hunt_approach_stuck", "pos", at.toShortString(),
                         "dist", (int) bot.distanceTo(target));
-                bot.getActionPack().startWalkTo(target.getPos());
-                approachStuckTick = elapsed;
+                target = null;
+                approachStuckPos = null;
+                if (!roamForPrey(bot)) {        // 换地方找猎物;漫游用尽才收尾
+                    if (collected > 0) {
+                        complete();
+                    } else {
+                        fail("hunt_stuck_no_escape");
+                    }
+                }
                 lastProgressTick = elapsed;
             }
             return;

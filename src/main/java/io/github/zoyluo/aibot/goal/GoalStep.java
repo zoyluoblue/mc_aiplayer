@@ -106,23 +106,24 @@ public record GoalStep(Kind kind,
                 && java.util.Objects.equals(pos, other.pos);
     }
 
+    // 中文动词 + 物品/方块 id(minecraft:xxx);客户端面板会把 id 进一步本地化成中文名(见 GoalCard)。
     public String describe() {
         return switch (kind) {
-            case GATHER -> "GATHER " + Registries.ITEM.getId(item) + " x" + count;
-            case MINE -> "MINE " + Registries.BLOCK.getId(block) + " x" + count;
-            case MINE_ORE -> "MINE_ORE " + ores.stream()
+            case GATHER -> "采集 " + Registries.ITEM.getId(item) + " ×" + count;
+            case MINE -> "挖 " + Registries.BLOCK.getId(block) + " ×" + count;
+            case MINE_ORE -> "采矿 " + ores.stream()
                     .map(block -> Registries.BLOCK.getId(block).toString())
                     .sorted()
-                    .collect(Collectors.joining(",")) + " x" + count;
-            case CRAFT -> "CRAFT " + Registries.ITEM.getId(item) + " x" + count;
-            case SMELT -> "SMELT " + Registries.ITEM.getId(input) + " -> " + Registries.ITEM.getId(output) + " x" + count;
-            case MOVE -> "MOVE " + pos.getX() + "," + pos.getY() + "," + pos.getZ();
-            case FARM -> "FARM " + Registries.BLOCK.getId(block) + " x" + count;
-            case HUNT -> "HUNT meat x" + count;
-            case COOK_FOOD -> "COOK_FOOD raw->cooked x" + count;
-            case PLACE_STATIONS -> "PLACE_STATIONS table+furnace+chest";
-            case STOCKPILE -> "STOCKPILE " + Registries.ITEM.getId(item);
-            case DESCEND_TO_Y -> "DESCEND_TO_Y " + pos.getY();
+                    .collect(Collectors.joining(",")) + " ×" + count;
+            case CRAFT -> "合成 " + Registries.ITEM.getId(item) + " ×" + count;
+            case SMELT -> "熔炼 " + Registries.ITEM.getId(input) + " → " + Registries.ITEM.getId(output) + " ×" + count;
+            case MOVE -> "移动到 " + pos.getX() + "," + pos.getY() + "," + pos.getZ();
+            case FARM -> "种植 " + Registries.BLOCK.getId(block) + " ×" + count;
+            case HUNT -> "打猎取肉 ×" + count;
+            case COOK_FOOD -> "烤制食物 ×" + count;
+            case PLACE_STATIONS -> "摆放工作台/熔炉/箱子";
+            case STOCKPILE -> "囤入箱子 " + Registries.ITEM.getId(item);
+            case DESCEND_TO_Y -> "下挖到 Y=" + pos.getY();
         };
     }
 }

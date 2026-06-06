@@ -3,6 +3,11 @@ package io.github.zoyluo.aibot.client.screen.ui.cards;
 import io.github.zoyluo.aibot.client.screen.ui.Theme;
 import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.gui.DrawContext;
+import net.minecraft.registry.Registries;
+import net.minecraft.util.Identifier;
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public final class GoalCard extends PanelCard {
     @Override
@@ -25,7 +30,7 @@ public final class GoalCard extends PanelCard {
             context.drawTextWithShadow(renderer, Theme.tr("goal.aibot.empty"), bx, by, Theme.TEXT_DIM);
             return;
         }
-        String title = snapshot.goalTitle().isBlank() ? Theme.tr("goal.aibot.untitled") : snapshot.goalTitle();
+        String title = snapshot.goalTitle().isBlank() ? Theme.tr("goal.aibot.untitled") : localize(snapshot.goalTitle());
         context.drawTextWithShadow(renderer, trim(renderer, title, bw), bx, by, Theme.TEXT_STRONG);
         int currentNumber = Math.min(snapshot.goalCurrentStepIndex() + 1, snapshot.goalTotalSteps());
         String progress = Theme.tr("goal.aibot.progress", currentNumber, snapshot.goalTotalSteps());
@@ -40,7 +45,7 @@ public final class GoalCard extends PanelCard {
             boolean current = stepIndex == snapshot.goalCurrentStepIndex();
             int color = current ? Theme.ACCENT : stepIndex < snapshot.goalCurrentStepIndex() ? Theme.OK : Theme.TEXT_DIM;
             String marker = current ? ">" : stepIndex < snapshot.goalCurrentStepIndex() ? "x" : "-";
-            context.drawTextWithShadow(renderer, trim(renderer, marker + " " + snapshot.goalSteps().get(stepIndex), bw), bx, by + 27 + index * Theme.LINE_H, color);
+            context.drawTextWithShadow(renderer, trim(renderer, marker + " " + localize(snapshot.goalSteps().get(stepIndex)), bw), bx, by + 27 + index * Theme.LINE_H, color);
         }
     }
 
@@ -58,5 +63,36 @@ public final class GoalCard extends PanelCard {
             builder.append(value.charAt(index));
         }
         return builder + suffix;
+    }
+
+    // 把字符串里的 minecraft:xxx 本地化成中文物品/方块名(客户端有语言文件,服务端没有)。
+    private static final Pattern ID_PATTERN = Pattern.compile("minecraft:[a-z0-9_./]+");
+
+    private static String localize(String text) {
+        if (text == null || text.indexOf(':') < 0) {
+            return text;
+        }
+        Matcher m = ID_PATTERN.matcher(text);
+        StringBuilder sb = new StringBuilder();
+        while (m.find()) {
+            m.appendReplacement(sb, Matcher.quoteReplacement(idToName(m.group())));
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
+
+    private static String idToName(String id) {
+        try {
+            Identifier ident = Identifier.of(id);
+            if (Registries.ITEM.containsId(ident)) {
+                return Registries.ITEM.get(ident).getName().getString();
+            }
+            if (Registries.BLOCK.containsId(ident)) {
+                return Registries.BLOCK.get(ident).getName().getString();
+            }
+        } catch (RuntimeException ignored) {
+            // 解析失败保留原 id
+        }
+        return id;
     }
 }

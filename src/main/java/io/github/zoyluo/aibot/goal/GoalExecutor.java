@@ -135,10 +135,30 @@ public final class GoalExecutor {
         activePlans.remove(bot.getUuid());
     }
 
-    /** 诊断埋点:当前激活的顶层目标(无则 "none")。 */
+    /** 诊断埋点:当前激活的顶层目标(无则 "none")。日志用,保留英文便于排查。 */
     public String describeActiveGoal(AIPlayerEntity bot) {
         ActivePlan plan = activePlans.get(bot.getUuid());
         return plan == null ? "none" : String.valueOf(plan.goal);
+    }
+
+    /** 面板任务链条:目标标题(中文)。物品 id 保留 minecraft:xxx,客户端再本地化成中文名。 */
+    public String activeGoalTitle(AIPlayerEntity bot) {
+        ActivePlan plan = activePlans.get(bot.getUuid());
+        return plan == null ? "无目标" : goalLabel(plan.goal);
+    }
+
+    private static String goalLabel(Goal goal) {
+        var reg = net.minecraft.registry.Registries.ITEM;
+        return switch (goal) {
+            case Goal.HaveItem g -> "获取 " + reg.getId(g.item()) + " ×" + g.count();
+            case Goal.MineOre g -> "采矿 ×" + g.count();
+            case Goal.HarvestCrop g -> "种收 " + reg.getId(g.produce()) + " ×" + g.count();
+            case Goal.Food g -> "备食物(熟食) ×" + g.cookedCount();
+            case Goal.Armor g -> "武装(整套护甲+剑)";
+            case Goal.Workstation g -> "搭建工作站";
+            case Goal.Stockpile g -> "囤货 " + reg.getId(g.item()) + " ×" + g.count();
+            case Goal.HavePickaxeTier g -> "升级镐 (tier " + g.tier() + ")";
+        };
     }
 
     /** 诊断埋点:当前正在执行的步骤 + 进度 [第几步/总步数](无激活步则 "")。 */
@@ -149,12 +169,6 @@ public final class GoalExecutor {
         }
         int idx = plan.totalSteps - plan.steps.size(); // current 已从 steps 取出,正在做第 idx 步
         return plan.current.describe() + " [" + idx + "/" + plan.totalSteps + "]";
-    }
-
-    /** 面板任务链条:目标标题(无激活计划则 "")。 */
-    public String activeGoalTitle(AIPlayerEntity bot) {
-        ActivePlan plan = activePlans.get(bot.getUuid());
-        return plan == null ? "" : String.valueOf(plan.goal);
     }
 
     /** 面板任务链条:完整步骤描述列表(无激活计划则空)。 */

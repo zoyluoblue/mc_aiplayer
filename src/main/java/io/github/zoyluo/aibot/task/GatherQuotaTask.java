@@ -50,6 +50,7 @@ public final class GatherQuotaTask extends AbstractTask {
     // Fix C:目标是原木时,接受/采集**任意**树种(生物群系不一定有橡木)。进度按整族原木总数计。
     private final Set<Item> acceptItems;
     private final Set<Block> harvestBlocks;
+    private final boolean probabilisticDrop; // 破坏掉落是概率/部分的(草→种子、浆果丛→浆果):掉 0 是常态,不算"采不到"
     private Phase phase = Phase.SURVEY;
     private BlockPos targetPos;
     private int countSoFar;
@@ -72,6 +73,8 @@ public final class GatherQuotaTask extends AbstractTask {
         this.targetCount = Math.max(1, targetCount);
         this.acceptItems = acceptItemsFor(targetItem);
         this.harvestBlocks = harvestBlocksFor(this.acceptItems);
+        this.probabilisticDrop = harvestBlocks.contains(Blocks.SHORT_GRASS)
+                || harvestBlocks.contains(Blocks.SWEET_BERRY_BUSH);
     }
 
     @Override
@@ -319,7 +322,7 @@ public final class GatherQuotaTask extends AbstractTask {
     private void harvest(AIPlayerEntity bot) {
         if (targetPos == null || !isHarvestBlock(bot, targetPos)) {
             bot.getActionPack().stopAll(); // 砍倒后停稳,别带移动惯性漂离掉落物(实测砍完从树位漂走→捡不到)
-            pickupTicks = 120;
+            pickupTicks = probabilisticDrop ? 30 : 120; // 概率掉落资源(种子/浆果)掉脚边、捡得快,少等
             phase = Phase.PICKUP;
             return;
         }
@@ -346,7 +349,13 @@ public final class GatherQuotaTask extends AbstractTask {
             }
             countSoFar = countAccepted(bot);
             if (countSoFar > countBeforeHarvest) {
+                pickupMisses = 0;
                 phase = countSoFar >= targetCount ? Phase.DONE : Phase.SURVEY;
+            } else if (probabilisticDrop) {
+                // 概率掉落(割草取种子/采浆果丛):这次破坏没掉是常态,不算"采不到",回 SURVEY 继续采下一个;
+                // 靠 survey 找不到方块(→roam)与 gather_timeout(6000t)兜底,避免被 pickup_miss 误判超时
+                //(实测:割草取种子 pickup_timeout、只采到 1 个就失败)。
+                phase = Phase.SURVEY;
             } else if (++pickupMisses <= MAX_PICKUP_MISSES) {
                 // 没捡到(高处掉落卡叶/够不到)→ 别 fail,回 SURVEY 换棵再砍。关键修:去掉旧的"countSoFar>0"
                 // 限制——实测树稀疏区第一棵就捡不到→countSoFar=0 直接 fail→大脑重规划同样计划→死循环 19 分钟被秒。

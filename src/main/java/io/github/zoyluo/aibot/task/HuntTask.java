@@ -216,8 +216,10 @@ public final class HuntTask extends AbstractTask {
 
     // 在 (x,z) 列从高往低找第一个露天可站点(地表落脚点)。
     private static BlockPos findGround(ServerWorld world, int x, int z) {
-        int topY = Math.min(world.getBottomY() + world.getHeight() - 2, 110);
-        for (int y = topY; y > world.getBottomY() + 1; y--) {
+        // 用高度图直接拿该列地表,跨任意海拔都成立。原来硬上限 y=110:bot 站在 y>110 的高地/丘陵时
+        // 永远找不到落脚点 → 漫游全废 → 明明附近有猎物也 hunt_stuck_no_escape(实测 y=111、有鸡 dist 13 仍失败)。
+        int surfaceY = world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING, x, z);
+        for (int y = surfaceY; y >= surfaceY - 6 && y > world.getBottomY() + 1; y--) {
             BlockPos p = new BlockPos(x, y, z);
             if (Standability.isStandable(world, p) && world.isSkyVisible(p)) {
                 return p;

@@ -7,9 +7,12 @@ import io.github.zoyluo.aibot.craft.SmeltChain;
 import io.github.zoyluo.aibot.craft.RecipeRegistry;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.mining.MiningChain;
+import io.github.zoyluo.aibot.mining.OreProspector;
 import io.github.zoyluo.aibot.mining.OreScan;
 import io.github.zoyluo.aibot.mining.ToolTier;
+import io.github.zoyluo.aibot.task.HuntTask;
 import net.minecraft.block.Block;
+import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.item.Item;
@@ -46,6 +49,7 @@ public final class GoalPlanner {
             Items.BEEF, Items.PORKCHOP, Items.MUTTON, Items.CHICKEN, Items.RABBIT);
     private static final int FOOD_TARGET = 4;
     private static final int DESCEND_THRESHOLD = 8; // bot 高于矿层超过这么多格,先下竖井到矿层再挖
+    private static final int FOOD_GRASS_SCAN = 32;  // Goal.Food 择源:扫这个半径内有无草(种植面包链的种子来源)
 
     public record GoalPlan(Goal goal, List<GoalStep> steps, List<String> unresolved) {
         public boolean success() {
@@ -62,9 +66,21 @@ public final class GoalPlanner {
     }
 
     public static GoalPlan plan(AIPlayerEntity bot, Goal goal) {
-        Planner planner = new Planner(inventoryCounts(bot), Math.max(1, AIBotConfig.get().goal().maxPlanDepth()), bot.getBlockPos().getY());
+        // Goal.Food 感知择源:规划时扫一眼周围实际有什么,据此选打猎/种植(见 ensureFoodTo),不再绑死打猎
+        //(没动物的地形硬派打猎只会抓瞎)。其余目标不受这两个标志影响。
+        boolean hasPrey = HuntTask.hasPreyNearby(bot);
+        boolean hasGrass = OreProspector.nearest(bot.getServerWorld(), bot.getBlockPos(),
+                FOOD_GRASS_SCAN, GoalPlanner::isGrassForSeeds) != null;
+        Planner planner = new Planner(inventoryCounts(bot), Math.max(1, AIBotConfig.get().goal().maxPlanDepth()),
+                bot.getBlockPos().getY(), hasPrey, hasGrass);
         planner.ensureGoal(goal, 0, new HashSet<>());
         return new GoalPlan(goal, List.copyOf(mergeGathers(planner.steps)), List.copyOf(planner.unresolved));
+    }
+
+    // 割草取种子的草类(种植面包链的起点):附近有草,才把"种植"作为无动物时的食物源。
+    private static boolean isGrassForSeeds(BlockState state) {
+        return state.isOf(Blocks.SHORT_GRASS) || state.isOf(Blocks.TALL_GRASS)
+                || state.isOf(Blocks.FERN) || state.isOf(Blocks.LARGE_FERN);
     }
 
     // 第A层 集中采集(挖钻石失败根因修复):把所有 GATHER 同类需求合并并**提到计划最前**,
@@ -139,13 +155,17 @@ public final class GoalPlanner {
         private final Map<Item, Integer> counts;
         private final int maxDepth;
         private final int botY; // 规划时 bot 的 Y,用于判断深层矿是否需先下竖井到矿层
+        private final boolean hasPreyNearby;  // 周围有可猎动物(食物择源:有→打猎)
+        private final boolean hasGrassNearby; // 周围有草(食物择源:无动物但有草→种植面包)
         private final List<GoalStep> steps = new ArrayList<>();
         private final List<String> unresolved = new ArrayList<>();
 
-        private Planner(Map<Item, Integer> counts, int maxDepth, int botY) {
+        private Planner(Map<Item, Integer> counts, int maxDepth, int botY, boolean hasPreyNearby, boolean hasGrassNearby) {
             this.counts = counts;
             this.maxDepth = maxDepth;
             this.botY = botY;
+            this.hasPreyNearby = hasPreyNearby;
+            this.hasGrassNearby = hasGrassNearby;
         }
 
         private boolean ensureGoal(Goal goal, int depth, Set<String> visiting) {
@@ -354,6 +374,12 @@ public final class GoalPlanner {
                 return true;
             }
             int needCooked = target - cooked;
+            // 感知驱动择源:没动物但有草 → 种植面包(可持续、适配无动物地形),倒推 bread←小麦←种子(割草)。
+            // 有动物 / 啥都没扫到 → 走下面的打猎烤肉(后者靠 HuntTask 内部漫游到远处找)。觅食浆果饱食低,暂不作备粮源。
+            if (!hasPreyNearby && hasGrassNearby) {
+                ensureItem(Items.BREAD, needCooked, depth + 1, visiting);
+                return true;
+            }
             int raw = 0;
             for (Item m : RAW_MEAT_ITEMS) {
                 raw += counts.getOrDefault(m, 0);

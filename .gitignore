@@ -26,3 +26,6 @@ bin/
 
 # Local reference source used during implementation.
 references/
+
+# headless production test server (installer-generated, 含 56MB server.jar)
+run-prod/

@@ -93,7 +93,8 @@ public final class AIBotVerifySubcommand {
             "descend_to_ore",
             "move_dig_through",
             "farm_wheat_from_scratch",
-            "nav_descend");
+            "nav_descend",
+            "food");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
@@ -107,8 +108,7 @@ public final class AIBotVerifySubcommand {
             "mine_iron_from_scratch",
             "achieve_iron_ingot",
             "achieve_iron_pickaxe",
-            "achieve_diamond",
-            "food");
+            "achieve_diamond");
     private static final Map<UUID, VerifyRun> RUNS = new ConcurrentHashMap<>();
 
     private AIBotVerifySubcommand() {

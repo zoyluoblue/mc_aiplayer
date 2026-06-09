@@ -10,6 +10,7 @@ import io.github.zoyluo.aibot.task.DigDownTask;
 import io.github.zoyluo.aibot.task.FarmTask;
 import io.github.zoyluo.aibot.task.GatherQuotaTask;
 import io.github.zoyluo.aibot.task.HuntTask;
+import io.github.zoyluo.aibot.task.MilkCowTask;
 import io.github.zoyluo.aibot.task.MineTask;
 import io.github.zoyluo.aibot.task.MoveTask;
 import io.github.zoyluo.aibot.task.OreDigTask;
@@ -317,6 +318,8 @@ public final class GoalExecutor {
             case HUNT -> Optional.of(new HuntTask(step.count()));
             // P0 食物闭环:COOK_FOOD 步 → SmeltTask cookAll 模式,把背包生肉逐种烤成熟肉。
             case COOK_FOOD -> Optional.of(new SmeltTask(step.count()));
+            // 蛋糕链:MILK_COW 步 → MilkCowTask 用空桶挤 count 桶牛奶。
+            case MILK_COW -> Optional.of(new MilkCowTask(step.count()));
             // Phase2:PLACE_STATIONS 步 → 摆好工作台/熔炉/箱子。
             case PLACE_STATIONS -> Optional.of(new PlaceStationsTask());
             // Phase3:STOCKPILE 步 → 把背包资源存进附近箱子(存所有非工具)。

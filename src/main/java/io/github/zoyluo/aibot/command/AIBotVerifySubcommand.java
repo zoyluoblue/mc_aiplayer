@@ -100,7 +100,8 @@ public final class AIBotVerifySubcommand {
             "food_full",
             "food_farm",
             "forage",
-            "farm_irrigate");
+            "farm_irrigate",
+            "cake");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
@@ -232,6 +233,7 @@ public final class AIBotVerifySubcommand {
             case "food_farm" -> assignAchieveFoodFarm(bot);
             case "forage" -> assignForage(bot);
             case "farm_irrigate" -> assignFarmIrrigate(bot);
+            case "cake" -> assignCake(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
     }
@@ -783,6 +785,35 @@ public final class AIBotVerifySubcommand {
                 ignored -> bot.isAlive()
                         && countWaterSources(world, waterCenter) >= 4
                         && InventoryAction.countItem(bot, Items.BUCKET) >= 2);
+    }
+
+    // 蛋糕合成链端到端测试:给 3 空桶 + 1 蛋 + 4 甘蔗 + 3 麦 + 工作台,旁边 spawn 3 头牛。
+    // Goal.HaveItem(CAKE) 应:挤奶(MilkCowTask:空桶→牛奶桶×3) + 甘蔗→糖×2 + 蛋/麦现成 → 合成蛋糕。
+    // 蛋为被动产物(鸡慢慢下),不自动生产、直接给(真实玩法需 bot 养鸡攒蛋,见 commit 说明)。
+    private static Result assignCake(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin); // 先清(含历史污染的牛),再 spawn 干净的 3 头
+        InventoryAction.giveItem(bot, new ItemStack(Items.BUCKET, 3));
+        InventoryAction.giveItem(bot, new ItemStack(Items.EGG, 1));
+        InventoryAction.giveItem(bot, new ItemStack(Items.SUGAR_CANE, 4));
+        InventoryAction.giveItem(bot, new ItemStack(Items.WHEAT, 3));
+        InventoryAction.giveItem(bot, new ItemStack(Items.CRAFTING_TABLE, 1));
+        for (int i = 0; i < 3; i++) {
+            var cow = EntityType.COW.create(world, SpawnReason.COMMAND);
+            if (cow != null) {
+                cow.refreshPositionAndAngles(origin.getX() + 1.5D, origin.getY(), origin.getZ() + (i - 1), 0.0F, 0.0F);
+                world.spawnEntity(cow);
+            }
+        }
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.CAKE, 1));
+        if (!started) {
+            return Result.fail("cake", "goal_submit_failed");
+        }
+        return Result.runningGoal("cake", 8000,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.CAKE) >= 1);
     }
 
     // 数 center 处 2×2 四格里的水源数量。

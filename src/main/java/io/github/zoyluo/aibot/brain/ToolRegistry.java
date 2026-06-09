@@ -629,7 +629,7 @@ public final class ToolRegistry {
                 ok(BotMemoryStore.INSTANCE.of(bot.getUuid()).goalStatus("")));
 
         register("assign_task", "Start a high-level deterministic task for the bot. Prefer this for movement, gathering, foraging, mining, combat, building, sleep, lighting, farming, fishing, trading, breeding, and container work. Use dedicated craft, eat, and smelt tools for those actions. For exposed surface blocks use task_type=mine. To obtain ores (iron/coal/copper/gold/diamond, *_ore, or raw_*), use the dedicated mine_ore tool which auto-locates the nearest ore and mines it directly — do NOT use strip_mine for getting ore. Supersedes any current task. Build params: blueprint plus optional anchor_x/anchor_y/anchor_z, auto_site, and flatten. x/y/z aliases are accepted; omit anchor when auto_site=true.", objectSchema()
-                .property("task_type", stringSchema("move, gather, forage, irrigate, attack, mine, strip_mine, mine_vein, build, sleep, light_area, farm, harvest, fish, trade, breed, follow, hold, guard, deposit, stockpile, or withdraw"))
+                .property("task_type", stringSchema("move, gather, forage, irrigate, milk_cow, attack, mine, strip_mine, mine_vein, build, sleep, light_area, farm, harvest, fish, trade, breed, follow, hold, guard, deposit, stockpile, or withdraw"))
                 .property("params", objectSchema().build())
                 .required("task_type")
                 .required("params")
@@ -703,6 +703,7 @@ public final class ToolRegistry {
             case "gather" -> new GatherQuotaTask(requiredItem(params, "item"), optionalInt(params, "count", 1));
             case "irrigate" -> new io.github.zoyluo.aibot.task.IrrigateTask(
                     bot.getBlockPos().offset(bot.getHorizontalFacing(), 2).down()); // 身前 2 格 floor 层挖 2×2 无限水源
+            case "milk_cow" -> new io.github.zoyluo.aibot.task.MilkCowTask(optionalInt(params, "count", 1)); // 挤 count 桶牛奶(需空桶)
             case "fish" -> new FishTask(optionalInt(params, "max_catches", 1), optionalInt(params, "max_ticks", 6000));
             case "trade" -> new TradeTask(optionalItem(params, "target_item"), optionalInt(params, "max_distance", 16));
             case "stockpile" -> new StockpileTask(optionalBoolean(params, "all_except_tools", true));

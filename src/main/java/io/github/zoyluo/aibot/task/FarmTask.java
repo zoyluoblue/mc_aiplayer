@@ -3,6 +3,7 @@ package io.github.zoyluo.aibot.task;
 import io.github.zoyluo.aibot.action.ActionResult;
 import io.github.zoyluo.aibot.action.ContainerAction;
 import io.github.zoyluo.aibot.action.FarmAction;
+import io.github.zoyluo.aibot.action.HarvestCore;
 import io.github.zoyluo.aibot.action.InventoryAction;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.memory.BotMemoryStore;
@@ -354,6 +355,11 @@ public final class FarmTask extends AbstractTask {
             return;
         }
         completedActions++;
+        // 收割产出/种子是地上的 ItemEntity(FarmAction.harvest 用 breakBlock dropStacks=true 掉落,不直接入包)。
+        // bot 在 reach 距离(≤4.5 格)收割,脚下 1 格外的掉落 vanilla 自动拾取够不到 → 必须强制拾取,
+        // 否则 countItem(produce) 永不增、收割/种田目标永不完成(farm_wheat_from_scratch 实测超时、背包 0 小麦)。
+        // forcePickup 绕过掉落物的 10-tick 拾取延迟,本 tick 即可入包(与 DigDownTask 同款修法)。
+        HarvestCore.forcePickupNearbyAnyOf(bot, java.util.Set.of(harvestItem(), seed), 5.0D, 4.0D);
         if (!harvestOnly && InventoryAction.countItem(bot, seed) > 0) {
             ActionResult plantResult = FarmAction.plant(bot, current.ground(), seed, crop);
             if (plantResult.isFailed()) {

@@ -531,6 +531,13 @@ public final class GoalPlanner {
             // S4:作物产出 → 就地种田(开垦/播种/等熟/收割)。
             FarmAction.CropSpec crop = cropSpecForProduce(item);
             if (crop != null) {
+                // 种田要锄头(FarmAction.till 无锄 → missing_hoe)。此分支是 Goal.Food→面包→小麦 的入口,
+                // 之前只 ensureSeeds、漏了倒推锄头(ensureHarvestCrop 有、这里没)→ FARM 步 till 白忙、面包链断。
+                // best-effort 补一把木锄(与 ensureHarvestCrop 一致;无木料环境锄头 unresolved 不阻断整条 Food,
+                // 仍下发 FARM 步,执行期 till 缺锄再降级,符合食物链"缺料降级不卡死"哲学)。
+                if (!hasAnyHoe()) {
+                    ensureItem(Items.WOODEN_HOE, 1, depth + 1, visiting);
+                }
                 ensureSeeds(crop.seed(), item, missing, depth, visiting); // 种田前先确保种子(小麦种子割草取)
                 addStep(GoalStep.farm(crop.crop(), crop.seed(), item, missing));
                 counts.merge(item, missing, Integer::sum);

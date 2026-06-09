@@ -55,6 +55,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
 
 import static net.minecraft.server.command.CommandManager.argument;
@@ -95,7 +96,8 @@ public final class AIBotVerifySubcommand {
             "farm_wheat_from_scratch",
             "nav_descend",
             "food",
-            "food_full");
+            "food_full",
+            "food_farm");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
@@ -224,6 +226,7 @@ public final class AIBotVerifySubcommand {
             case "nav_descend" -> assignNavDescend(bot);
             case "food" -> assignAchieveFood(bot);
             case "food_full" -> assignAchieveFoodFull(bot);
+            case "food_farm" -> assignAchieveFoodFarm(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
     }
@@ -681,6 +684,53 @@ public final class AIBotVerifySubcommand {
                 + InventoryAction.countItem(bot, Items.BAKED_POTATO);
     }
 
+    // 食物链"种田做面包"分支端到端测试:无动物 + 有草 → Goal.Food 应走 ensureFoodTo 的种植链
+    // (倒推锄头 → 割草/给种 → 开垦 → 播种 → 等熟 → 收割 → 合成面包),最终凑够 2 个面包。
+    // 与 food/food_full(打猎→烤)互补,覆盖"没动物的地形靠种地自给"这条之前从未被测过的路径。
+    // 故意不给锄头(给木板+工作台让其自己 craft),验证 GoalPlanner 在 Food→面包→小麦分支会倒推锄头(Fix B)。
+    private static Result assignAchieveFoodFarm(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        // 1) 清掉附近动物+敌对生物:种植择源要"无动物"(否则误判有猎物→打猎),且避免骷髅抢占中止种田。
+        clearNearbyMobs(world, origin);
+        // 2) bot 周围半径 4 的地板(y-1)铺可开垦泥土(FARM 步 FarmTask 以 bot 为中心、半径 4 在此 till/plant)。
+        for (int dx = -4; dx <= 4; dx++) {
+            for (int dz = -4; dz <= 4; dz++) {
+                world.setBlockState(origin.add(dx, -1, dz), Blocks.DIRT.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        // 3) 放几丛短草作"有草"信号(FOOD_GRASS_SCAN=32 内有短草即触发种植择源);放边缘泥土上,不占满农田。
+        for (int dz = -1; dz <= 1; dz++) {
+            world.setBlockState(origin.add(4, 0, dz), Blocks.SHORT_GRASS.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        // 4) 给种子+木板+工作台,但不给锄头(锄头=tool 需工作台;面包/木棍不需)。验证倒推锄头(Fix B)。
+        InventoryAction.giveItem(bot, new ItemStack(Items.WHEAT_SEEDS, 16));
+        InventoryAction.giveItem(bot, new ItemStack(Items.OAK_PLANKS, 8));
+        InventoryAction.giveItem(bot, new ItemStack(Items.CRAFTING_TABLE, 1));
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.Food(2));
+        if (!started) {
+            return Result.fail("food_farm", "goal_submit_failed");
+        }
+        // perTick 每个服务端 tick 强制催熟 bot 周围小麦——无头测不能等自然随机刻生长(要数分钟、必超时),
+        // bot 种下即熟,从而测"开垦→播种→收割→拾取(Fix A)→合成面包"整条逻辑链能否凑够 2 个面包。
+        // (催熟必须放 perTick:assertion 仅在 task 完成时才调,FarmTask 等熟时无 task 完成→放 assertion 会死锁。)
+        return Result.runningGoal("food_farm", 12000,
+                tickBot -> forceGrowCrops(world, origin, 6, Blocks.WHEAT),
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.BREAD) >= 2);
+    }
+
+    // 把 center±radius 范围内未成熟的指定作物强制催熟到 maxAge(供无头测绕开自然生长等待)。
+    private static void forceGrowCrops(ServerWorld world, BlockPos center, int radius, Block crop) {
+        for (BlockPos pos : BlockPos.iterate(center.add(-radius, -1, -radius), center.add(radius, 2, radius))) {
+            net.minecraft.block.BlockState st = world.getBlockState(pos);
+            if (st.isOf(crop) && st.getBlock() instanceof net.minecraft.block.CropBlock cb && !cb.isMature(st)) {
+                world.setBlockState(pos, cb.withAge(cb.getMaxAge()), Block.NOTIFY_LISTENERS);
+            }
+        }
+    }
+
     // Phase1:装备目标。给足铁锭+木头(聚焦"做甲穿甲",省去挖 24 铁的耗时),achieve Goal.Armor 应做出 4 甲+剑并自动穿上。
     private static Result assignAchieveArmor(AIPlayerEntity bot) {
         prepareArea(bot);
@@ -816,13 +866,19 @@ public final class AIBotVerifySubcommand {
         InventoryAction.giveItem(bot, new ItemStack(Items.WHEAT_SEEDS, 8));
         ServerWorld world = bot.getServerWorld();
         BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin); // 清骷髅/牛:隔离收割逻辑,避免 y6 黑暗骷髅抢占中止目标(实测 aborted)
         net.minecraft.block.BlockState matureWheat =
                 Blocks.WHEAT.getDefaultState().with(net.minecraft.state.property.Properties.AGE_7, 7);
-        // 在 bot 周围铺 5 块成熟小麦(farmland + 成熟作物)。
-        for (int i = 1; i <= 5; i++) {
-            BlockPos farmland = origin.offset(Direction.NORTH, i);
-            world.setBlockState(farmland, Blocks.FARMLAND.getDefaultState(), Block.NOTIFY_ALL);
-            world.setBlockState(farmland.up(), matureWheat, Block.NOTIFY_ALL);
+        // 在 bot 北侧 floor 层(y-1)铺一片 3×3 成熟小麦(farmland + 成熟作物)。
+        // 必须铺在 floor 层:原代码铺在 origin.y(bot 身体层)→ farmland 块挡在身体高度、小麦在头顶 y+1,
+        // bot 走不过去也够不到、只收到 1~2 个 → 超时(实测 done=14 deposit_skipped)。3×3 全在 radius 4 内,
+        // 远多于 target 3,容错。
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = 1; dz <= 3; dz++) {
+                BlockPos farmland = origin.add(dx, -1, -dz);
+                world.setBlockState(farmland, Blocks.FARMLAND.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(farmland.up(), matureWheat, Block.NOTIFY_ALL);
+            }
         }
         boolean started = GoalExecutor.INSTANCE.submit(bot,
                 new Goal.HarvestCrop(Blocks.WHEAT, Items.WHEAT_SEEDS, Items.WHEAT, 3));
@@ -868,6 +924,19 @@ public final class AIBotVerifySubcommand {
     private static void clearInventory(AIPlayerEntity bot) {
         bot.getInventory().clear();
         bot.getInventory().markDirty();
+    }
+
+    // 清掉 origin 周围 70 格的动物与敌对生物。两用:
+    // (1) 动物——食物择源测试要"无动物"环境(否则 Goal.Food 误判有猎物→去打猎、测不到种植链;
+    //     且 dev 世界被历史 food 场景 spawn 的牛污染、越积越多);
+    // (2) 敌对——dev 测试世界 y6 黑暗有骷髅,长时间种田/挖矿途中被攻击会触发生存反射抢占、中止目标,
+    //     使确定性回归测试 flaky(farm_wheat 实测因此 aborted)。清掉以隔离被测逻辑本身。
+    private static void clearNearbyMobs(ServerWorld world, BlockPos origin) {
+        net.minecraft.util.math.Box box = new net.minecraft.util.math.Box(origin).expand(70.0D);
+        world.getEntitiesByClass(net.minecraft.entity.passive.AnimalEntity.class, box, e -> true)
+                .forEach(net.minecraft.entity.Entity::discard);
+        world.getEntitiesByClass(net.minecraft.entity.mob.HostileEntity.class, box, e -> true)
+                .forEach(net.minecraft.entity.Entity::discard);
     }
 
     private static int countContainer(AIPlayerEntity bot, BlockPos pos, Item item) {
@@ -938,6 +1007,7 @@ public final class AIBotVerifySubcommand {
 
         private void pollActive(MinecraftServer server, AIPlayerEntity bot) {
             Result running = active.result();
+            running.perTick().accept(bot); // 每 tick 执行场景的世界副作用(如催熟作物),先于下面的状态判定
             int elapsedTicks = server.getTicks() - active.startedTick();
             TaskStatus status = TaskManager.INSTANCE.status(bot);
             if (status.state() == TaskState.COMPLETED) {
@@ -1005,21 +1075,32 @@ public final class AIBotVerifySubcommand {
                           boolean running,
                           int timeoutTicks,
                           boolean allowGoalContinuation,
-                          Predicate<TaskStatus> assertion) {
+                          Predicate<TaskStatus> assertion,
+                          Consumer<AIPlayerEntity> perTick) {
+        private static final Consumer<AIPlayerEntity> NO_TICK = bot -> {
+        };
+
         private static Result pass(String feature, String detail) {
-            return new Result(feature, true, detail, false, 0, false, ignored -> true);
+            return new Result(feature, true, detail, false, 0, false, ignored -> true, NO_TICK);
         }
 
         private static Result fail(String feature, String detail) {
-            return new Result(feature, false, detail, false, 0, false, ignored -> false);
+            return new Result(feature, false, detail, false, 0, false, ignored -> false, NO_TICK);
         }
 
         private static Result running(String feature, int timeoutTicks, Predicate<TaskStatus> assertion) {
-            return new Result(feature, false, "running", true, timeoutTicks, false, assertion);
+            return new Result(feature, false, "running", true, timeoutTicks, false, assertion, NO_TICK);
         }
 
         private static Result runningGoal(String feature, int timeoutTicks, Predicate<TaskStatus> assertion) {
-            return new Result(feature, false, "running", true, timeoutTicks, true, assertion);
+            return new Result(feature, false, "running", true, timeoutTicks, true, assertion, NO_TICK);
+        }
+
+        // 带每-tick 副作用钩子的 runningGoal:perTick 在 pollActive 每个服务端 tick 都被调用(无论有无 task 完成),
+        // 用于测试期持续操纵世界(如强制催熟作物,绕开自然随机刻生长的漫长等待)。assertion 仍是成功判定。
+        private static Result runningGoal(String feature, int timeoutTicks,
+                                          Consumer<AIPlayerEntity> perTick, Predicate<TaskStatus> assertion) {
+            return new Result(feature, false, "running", true, timeoutTicks, true, assertion, perTick);
         }
     }
 }

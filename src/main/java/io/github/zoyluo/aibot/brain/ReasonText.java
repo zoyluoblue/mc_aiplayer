@@ -1,7 +1,13 @@
 package io.github.zoyluo.aibot.brain;
 
+import io.github.zoyluo.aibot.craft.ItemNames;
+import net.minecraft.registry.Registries;
+import net.minecraft.util.Identifier;
+
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public final class ReasonText {
     private static final Map<String, String> EXACT = Map.ofEntries(
@@ -88,18 +94,43 @@ public final class ReasonText {
             case "hold" -> "待命";
             case "guard" -> "护卫";
             case "shelter" -> "应急避难";
+            case "gather" -> "采集";
+            case "hunt" -> "打猎";
+            case "dig_down" -> "向下挖";
+            case "descend_to_y" -> "下到矿层";
+            case "ore_dig" -> "挖矿";
             default -> itemText(name);
         };
     }
+
+    private static final Pattern ID_PATTERN = Pattern.compile("minecraft:[a-z0-9_./]+");
 
     public static String itemText(String text) {
         if (text == null || text.isBlank()) {
             return "未知内容";
         }
-        return text.replace("minecraft:", "")
-                .replace('_', ' ')
-                .replace(" x", " x")
-                .trim();
+        if (text.contains("minecraft:")) {
+            Matcher m = ID_PATTERN.matcher(text);
+            StringBuilder sb = new StringBuilder();
+            while (m.find()) {
+                m.appendReplacement(sb, Matcher.quoteReplacement(cnOf(m.group())));
+            }
+            m.appendTail(sb);
+            return sb.toString().trim();
+        }
+        return text.replace('_', ' ').trim();
+    }
+
+    // minecraft:xxx → 中文物品/方块名(复用 ItemNames 对照表,服务端就能翻译,不依赖客户端语言)。
+    private static String cnOf(String id) {
+        Identifier ident = Identifier.of(id);
+        if (Registries.ITEM.containsId(ident)) {
+            return ItemNames.cn(Registries.ITEM.get(ident));
+        }
+        if (Registries.BLOCK.containsId(ident)) {
+            return ItemNames.cn(Registries.BLOCK.get(ident));
+        }
+        return id.replace("minecraft:", "");
     }
 
     private static String pathReason(String reason) {

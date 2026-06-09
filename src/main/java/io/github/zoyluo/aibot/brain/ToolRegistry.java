@@ -301,9 +301,9 @@ public final class ToolRegistry {
             return started ? ok("goal_assigned: harvest_crop") : fail("goal_plan_failed");
         });
 
-        register("provision_food", "Hunt animals and cook the meat end-to-end to stock cooked food. "
-                + "Use for requests like 去搞点吃的/去打猎/弄点肉/打点肉吃/我饿了/备点粮/搞点食物/补充食物/get some food/go hunt/make food. "
-                + "Auto-plans hunt -> cook(smelt) -> cooked meat; do NOT decompose manually. count = how many cooked food items (default 4).", objectSchema()
+        register("provision_food", "Stock food end-to-end; AUTO-PICKS hunting or farming by scanning what's actually around (perception-driven). "
+                + "This is the DEFAULT for ANY general 'get food' request: 找吃的/找点吃的/找吃的去/找吃的去啊/去找吃的/找东西吃/找点东西吃/去搞点吃的/弄点吃的/弄点肉/打点肉吃/去打猎/我饿了/饿了/备点粮/搞点食物/补充食物/get some food/go find food/make food/go hunt. "
+                + "Auto-plans (hunt->cook meat OR farm->bread) based on surroundings; do NOT decompose manually. count = how many food items (default 4).", objectSchema()
                 .property("count", integerSchema("how many cooked food items to stock (default 4)"))
                 .build(), (bot, args) -> {
             boolean started = GoalExecutor.INSTANCE.submit(bot,
@@ -311,9 +311,9 @@ public final class ToolRegistry {
             return started ? ok("goal_assigned: provision_food") : fail("goal_plan_failed");
         });
 
-        register("forage", "Forage wild ready-to-eat food nearby (sweet berries / melon) into the inventory. "
-                + "Use for 采点野果/找点野果吃/摘浆果/采集野食/找野食/forage; best when berry bushes or melons are around. "
-                + "For meat use provision_food; for bread use harvest_crop. count = how many to gather (default 4).", objectSchema()
+        register("forage", "Forage SPECIFIC wild berries/melon nearby. ONLY when the user EXPLICITLY asks for berries/wild fruit, NOT for general food. "
+                + "Use for 采点野果/采点浆果/摘浆果/采甜浆果/摘西瓜/想吃浆果; needs berry bushes or melons around. "
+                + "For ANY general 找吃的/搞点吃的 request use provision_food instead (it auto-picks hunt or farm). count = how many (default 4).", objectSchema()
                 .property("count", integerSchema("how many wild food to gather (default 4)"))
                 .build(), (bot, args) -> {
             boolean started = GoalExecutor.INSTANCE.submit(bot,

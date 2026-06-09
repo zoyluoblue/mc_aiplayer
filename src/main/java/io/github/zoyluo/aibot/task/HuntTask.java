@@ -1,8 +1,10 @@
 package io.github.zoyluo.aibot.task;
 
+import io.github.zoyluo.aibot.action.BlockMiner;
 import io.github.zoyluo.aibot.action.HarvestCore;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
+import io.github.zoyluo.aibot.mining.ToolTier;
 import io.github.zoyluo.aibot.pathfinding.Standability;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
@@ -53,6 +55,8 @@ public final class HuntTask extends AbstractTask {
     private int approachStuckTick;     // 记录该站位的 tick
     private int roamCount;             // 找猎物漫游换片次数
     private BlockPos roamTarget;       // 漫游落脚点
+    private final BlockMiner obstacleMiner = new BlockMiner(); // 接近时挖掉眼前挡路的方块(树叶/草/泥)
+    private boolean clearingObstacle;  // 正在挖挡路方块
 
     public HuntTask(int targetMeat) {
         this.targetMeat = Math.max(1, targetMeat);
@@ -92,11 +96,13 @@ public final class HuntTask extends AbstractTask {
         lastProgressTick = 0;
         pickupGrace = 0;
         roamCount = 0;
+        clearingObstacle = false;
         phase = Phase.ACQUIRE;
     }
 
     @Override
     protected void onAbort(AIPlayerEntity bot) {
+        obstacleMiner.cancel(bot);
         bot.getActionPack().stopAll();
     }
 
@@ -223,11 +229,34 @@ public final class HuntTask extends AbstractTask {
             phase = Phase.STRIKE;
             return;
         }
-        // 卡住检测:站位连续不变即视为追不上 / 被地形(暗洞、墙)挡住(实测:bot 在暗洞 pos 一字不动、
-        // 羊越追越远)。死磕同一只只会原地耗到被 abort —— 卡住就换地方找(roam 走开卡点),而非死追。
+        // 正在挖眼前挡路的方块(树叶/草等),挖通就继续追。
+        if (clearingObstacle) {
+            BlockMiner.Status s = obstacleMiner.tick(bot);
+            if (s == BlockMiner.Status.MINING) {
+                return;
+            }
+            clearingObstacle = false;
+            approachStuckPos = null;
+            lastProgressTick = elapsed;
+            CombatCore.startApproach(bot, target);   // 清完通路重新寻路追
+            return;
+        }
+        // 卡住检测:站位连续不变即视为被方块挡住 / 追不上。
         BlockPos at = bot.getBlockPos();
         if (at.equals(approachStuckPos)) {
             if (elapsed - approachStuckTick > APPROACH_STUCK_TICKS) {
+                // 先看眼前有没有可挖的挡路方块(树叶/草/泥)——有就挖开继续追(实测:树下打猎被树叶挡得一动不动);
+                BlockPos obstacle = obstacleToward(bot);
+                if (obstacle != null) {
+                    BotLog.action(bot, "hunt_dig_obstacle", "at", obstacle.toShortString());
+                    obstacleMiner.begin(bot, obstacle);
+                    obstacleMiner.tick(bot);
+                    clearingObstacle = true;
+                    approachStuckTick = elapsed;
+                    lastProgressTick = elapsed;
+                    return;
+                }
+                // 没有可挖障碍(石墙 / 困在坑里)→ 换地方找,别死磕。
                 BotLog.action(bot, "hunt_approach_stuck", "pos", at.toShortString(),
                         "dist", (int) bot.distanceTo(target));
                 target = null;
@@ -251,6 +280,22 @@ public final class HuntTask extends AbstractTask {
         }
     }
 
+    // 朝猎物方向(approach 已 lookAt,bot 朝向即猎物方向)前方挡路的、可挖的方块:脚位或头位的固体
+    //(排除流体——那是 NavSafetyNet 的事)。树叶/草/泥/雪等任意工具可挖→返回;石头无镐挖不动→返回 null 改漫游。
+    private BlockPos obstacleToward(AIPlayerEntity bot) {
+        net.minecraft.util.math.Direction dir = bot.getHorizontalFacing();
+        ServerWorld world = bot.getServerWorld();
+        BlockPos ahead = bot.getBlockPos().offset(dir);
+        for (BlockPos p : new BlockPos[]{ahead, ahead.up()}) {
+            net.minecraft.block.BlockState st = world.getBlockState(p);
+            if (!st.isAir() && st.getFluidState().isEmpty()
+                    && ToolTier.canHarvestWithInventory(bot, st)) {
+                return p.toImmutable();
+            }
+        }
+        return null;
+    }
+
     private void strike(AIPlayerEntity bot) {
         if (target == null || !target.isAlive()) {
             beginPickup(bot);
@@ -262,6 +307,7 @@ public final class HuntTask extends AbstractTask {
             CombatCore.startApproach(bot, target);
             return;
         }
+        CombatCore.equipMelee(bot); // 砍之前确保手持最佳武器(实测打猎 held=dirt,拿土砍肉伤害仅 1、极慢);equipFromSlot 幂等不抖
         CombatCore.strikeIfReady(bot, target);
         lastProgressTick = elapsed; // 近身攻击中算进展(避免对峙时看门狗误杀)
     }

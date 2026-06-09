@@ -36,6 +36,7 @@ public final class DigDownTask extends AbstractTask {
     private static final int NO_PROGRESS_LIMIT = 200;   // 10s 无进展(没破任何块)即失败
     private static final int PICKUP_GRACE_TICKS = 30;   // 采够后多等一会儿确保掉落物落袋
     private static final int MIN_Y = -60;               // 别挖穿到基岩以下
+    private static final int RETURN_LIMIT = 600;        // 采够后爬回井口的回程超时(30s),回不去也别卡死
 
     private final Block targetBlock;
     private final Set<Item> targetDrops;
@@ -49,6 +50,9 @@ public final class DigDownTask extends AbstractTask {
     private int collected;
     private int lastProgressTick;
     private int pickupGrace;
+    private BlockPos startPos;       // 开挖前的井口位置(地表);采够后爬回这里再完成,免得困在井底出不来
+    private boolean returning;       // 已采够、正在爬回井口
+    private int returnStartTick;
 
     public DigDownTask(Block targetBlock, int targetCount) {
         this.targetBlock = targetBlock;
@@ -95,6 +99,9 @@ public final class DigDownTask extends AbstractTask {
         collected = 0;
         lastProgressTick = 0;
         pickupGrace = 0;
+        startPos = bot.getBlockPos();   // 记井口,采够后回这里
+        returning = false;
+        returnStartTick = 0;
     }
 
     @Override
@@ -107,6 +114,10 @@ public final class DigDownTask extends AbstractTask {
     protected void onTick(AIPlayerEntity bot) {
         if (elapsed > MAX_ELAPSED) {
             fail("dig_down_timeout collected=" + collected);
+            return;
+        }
+        if (returning) {                // 已采够,正在爬回井口
+            returnToSurface(bot);
             return;
         }
         ServerWorld world = bot.getServerWorld();
@@ -130,7 +141,11 @@ public final class DigDownTask extends AbstractTask {
             HarvestCore.sweepPickupAnyOf(bot, targetDrops, 16);
             if (pickupGrace++ >= PICKUP_GRACE_TICKS
                     || HarvestCore.countInventoryItems(bot, targetDrops) - invBaseline >= targetCount) {
-                complete();
+                // 采够 → 进入回程,爬回井口再完成(否则困在井底,下一个任务如打猎追地表猎物会出不来→活锁)。
+                returning = true;
+                returnStartTick = elapsed;
+                BotLog.action(bot, "dig_down_return_start", "from", bot.getBlockPos().toShortString(),
+                        "to", startPos.toShortString());
             }
             return;
         }
@@ -185,6 +200,24 @@ public final class DigDownTask extends AbstractTask {
         // 身位已通 → 斜下踏到下一级台阶。bot 无被动重力,仍需主动移一格;斜向 1 格微位移=踏下一级楼梯,
         // 不是 roam 那种跨图大范围闪现(下沉后刚破块的掉落物正好落入拾取半径,一并修掉 collected=0)。
         bot.getActionPack().descendInto(next);
+    }
+
+    // 采够后沿阶梯爬回井口(startPos);回到起始高度 / 到位 / 回程超时即完成(石料已到手,绝不卡死)。
+    private void returnToSurface(AIPlayerEntity bot) {
+        miner.cancel(bot);
+        BlockPos at = bot.getBlockPos();
+        if (at.getY() >= startPos.getY()
+                || at.isWithinDistance(startPos, 2.0D)
+                || elapsed - returnStartTick > RETURN_LIMIT) {
+            bot.getActionPack().stopAll();
+            BotLog.action(bot, "dig_down_return_done", "pos", at.toShortString(),
+                    "surfaced", String.valueOf(at.getY() >= startPos.getY()));
+            complete();
+            return;
+        }
+        if (bot.getActionPack().isPathExecutorIdle()) {
+            bot.getActionPack().startPathTo(startPos);   // 沿阶梯寻路爬回井口
+        }
     }
 
     private static boolean isWater(ServerWorld world, BlockPos pos) {

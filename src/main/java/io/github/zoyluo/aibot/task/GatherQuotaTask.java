@@ -228,8 +228,9 @@ public final class GatherQuotaTask extends AbstractTask {
 
     // 在 (x,z) 列从高往低找第一个露天可站点(地表)。
     private BlockPos findGroundAt(net.minecraft.server.world.ServerWorld world, int x, int z) {
-        int topY = Math.min(world.getBottomY() + world.getHeight() - 2, 110);
-        for (int y = topY; y > world.getBottomY() + 1; y--) {
+        // 高度图取该列地表,跨任意海拔成立(原硬上限 y=110 会让 bot 站在 y>110 高地时漫游/落脚全失败,与 HuntTask 同源 bug)。
+        int surfaceY = world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING, x, z);
+        for (int y = surfaceY; y >= surfaceY - 6 && y > world.getBottomY() + 1; y--) {
             BlockPos p = new BlockPos(x, y, z);
             if (Standability.isStandable(world, p) && world.isSkyVisible(p)) {
                 return p;

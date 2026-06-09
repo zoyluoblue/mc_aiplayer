@@ -15,14 +15,16 @@ rm -f "$FIFO"; mkfifo "$FIFO"
 
 # 清上一局残留 bot(否则 verify 的 selectBot 可能选到旧 bot),保留 world 省重生成
 rm -f run/world/aibot/bots.json 2>/dev/null
-# 防 gradle 增量编译 stale(实测改了 verify 场景但 class 没真重编 → verify unknown feature);先全量编译
-echo "[foodtest] compiling (clean) ..."
-./gradlew --no-daemon clean classes >/dev/null 2>&1 || { echo "[foodtest] COMPILE FAILED"; exit 1; }
+# 防 gradle 增量编译/build-cache stale(实测改了源码但 class 没真重编 → 跑旧逻辑):
+# --stop 杀残留 daemon(避免 daemon VFS 缓存旧文件状态);--rerun-tasks 忽略 up-to-date;--no-build-cache 不从缓存恢复旧 class。
+echo "[foodtest] compiling (clean, no-cache, rerun) ..."
+./gradlew --stop >/dev/null 2>&1
+./gradlew --no-daemon --rerun-tasks --no-build-cache clean classes >/dev/null 2>&1 || { echo "[foodtest] COMPILE FAILED"; exit 1; }
 
 # 保持 FIFO 写端常开,server console 不会读到 EOF
 sleep 100000 > "$FIFO" & HOLDER=$!
 # 无头服务端;--no-daemon 让 stdin 直通到 console。不设 DEEPSEEK key → 大脑不调 LLM,verify 纯确定性
-./gradlew --no-daemon --console=plain runServer < "$FIFO" >> "$LOG" 2>&1 & SRV=$!
+./gradlew --no-daemon --console=plain --no-build-cache runServer < "$FIFO" >> "$LOG" 2>&1 & SRV=$!
 echo "[foodtest] server pid=$SRV feature=$FEATURE"
 
 READY=0

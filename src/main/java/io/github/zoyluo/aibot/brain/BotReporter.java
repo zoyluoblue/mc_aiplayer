@@ -122,6 +122,9 @@ public final class BotReporter {
             case "light_area" -> "照明这片区域";
             case "build" -> "建造" + objectAfter(description, "Building ");
             case "forage" -> "收集" + objectAfter(description, "Foraging ");
+            case "gather" -> "采集" + objectAfter(description, "Gathering ");
+            case "hunt" -> "打猎找肉";
+            case "dig_down" -> "向下挖石头";
             default -> ReasonText.taskName(status.name());
         };
     }

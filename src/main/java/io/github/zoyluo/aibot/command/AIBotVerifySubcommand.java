@@ -107,7 +107,8 @@ public final class AIBotVerifySubcommand {
             "mine_iron_from_scratch",
             "achieve_iron_ingot",
             "achieve_iron_pickaxe",
-            "achieve_diamond");
+            "achieve_diamond",
+            "food");
     private static final Map<UUID, VerifyRun> RUNS = new ConcurrentHashMap<>();
 
     private AIBotVerifySubcommand() {
@@ -220,6 +221,7 @@ public final class AIBotVerifySubcommand {
             case "move_dig_through" -> assignMoveDigThrough(bot);
             case "farm_wheat_from_scratch" -> assignFarmWheatFromScratch(bot);
             case "nav_descend" -> assignNavDescend(bot);
+            case "food" -> assignAchieveFood(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
     }
@@ -608,6 +610,46 @@ public final class AIBotVerifySubcommand {
         }
         return Result.runningGoal("achieve_iron_pickaxe", 16000,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.IRON_PICKAXE) >= 1);
+    }
+
+    /**
+     * REGRESSION(食物链):空手 → Goal.Food 端到端。布置树(工具+燃料)+ 脚下石(熔炉)+ 5 头牛(猎物),
+     * 感知择源应选打猎 → 砍树做工具 → 挖石做炉 → 打猎 → 烤肉,凑够 4 份熟食。验证感知择源/打猎/烤肉全链。
+     */
+    private static Result assignAchieveFood(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        for (int dy = 0; dy < 12; dy++) {
+            world.setBlockState(origin.offset(Direction.WEST, 3).up(dy), Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        for (int dy = 2; dy <= 9; dy++) {
+            world.setBlockState(origin.down(dy), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        for (int i = 0; i < 5; i++) {
+            var cow = EntityType.COW.create(world, SpawnReason.COMMAND);
+            if (cow != null) {
+                cow.refreshPositionAndAngles(origin.getX() + 2.5D, origin.getY(), origin.getZ() + (i - 2), 0.0F, 0.0F);
+                world.spawnEntity(cow);
+            }
+        }
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.Food(4));
+        if (!started) {
+            return Result.fail("food", "goal_submit_failed");
+        }
+        return Result.runningGoal("food", 16000,
+                ignored -> bot.isAlive() && cookedFoodCount(bot) >= 4);
+    }
+
+    private static int cookedFoodCount(AIPlayerEntity bot) {
+        return InventoryAction.countItem(bot, Items.COOKED_BEEF)
+                + InventoryAction.countItem(bot, Items.COOKED_PORKCHOP)
+                + InventoryAction.countItem(bot, Items.COOKED_MUTTON)
+                + InventoryAction.countItem(bot, Items.COOKED_CHICKEN)
+                + InventoryAction.countItem(bot, Items.COOKED_RABBIT)
+                + InventoryAction.countItem(bot, Items.BREAD)
+                + InventoryAction.countItem(bot, Items.BAKED_POTATO);
     }
 
     // Phase1:装备目标。给足铁锭+木头(聚焦"做甲穿甲",省去挖 24 铁的耗时),achieve Goal.Armor 应做出 4 甲+剑并自动穿上。

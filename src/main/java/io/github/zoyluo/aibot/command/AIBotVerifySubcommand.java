@@ -97,7 +97,8 @@ public final class AIBotVerifySubcommand {
             "nav_descend",
             "food",
             "food_full",
-            "food_farm");
+            "food_farm",
+            "forage");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
@@ -227,6 +228,7 @@ public final class AIBotVerifySubcommand {
             case "food" -> assignAchieveFood(bot);
             case "food_full" -> assignAchieveFoodFull(bot);
             case "food_farm" -> assignAchieveFoodFarm(bot);
+            case "forage" -> assignForage(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
     }
@@ -729,6 +731,32 @@ public final class AIBotVerifySubcommand {
                 world.setBlockState(pos, cb.withAge(cb.getMaxAge()), Block.NOTIFY_LISTENERS);
             }
         }
+    }
+
+    // 觅食(野果)端到端测试:周围铺成熟甜浆果丛 → Goal.HaveItem(SWEET_BERRIES) 应走 gather 采到野果。
+    // 覆盖"靠野果补充食物"这条途径(forage 工具实际就映射到 Goal.HaveItem(SWEET_BERRIES))。
+    private static Result assignForage(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin);
+        // 北侧铺一片成熟(age3)甜浆果丛,下垫泥土防"无支撑"被方块更新打掉。浆果概率掉落,铺 15 丛远多于 target 4。
+        net.minecraft.block.BlockState ripeBush = Blocks.SWEET_BERRY_BUSH.getDefaultState()
+                .with(net.minecraft.state.property.Properties.AGE_3, 3);
+        for (int dx = -2; dx <= 2; dx++) {
+            for (int dz = 1; dz <= 3; dz++) {
+                BlockPos ground = origin.add(dx, -1, -dz);
+                world.setBlockState(ground, Blocks.DIRT.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(ground.up(), ripeBush, Block.NOTIFY_ALL);
+            }
+        }
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.SWEET_BERRIES, 4));
+        if (!started) {
+            return Result.fail("forage", "goal_submit_failed");
+        }
+        return Result.runningGoal("forage", 4000,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.SWEET_BERRIES) >= 4);
     }
 
     // Phase1:装备目标。给足铁锭+木头(聚焦"做甲穿甲",省去挖 24 铁的耗时),achieve Goal.Armor 应做出 4 甲+剑并自动穿上。

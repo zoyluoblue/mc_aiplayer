@@ -21,6 +21,7 @@ import io.github.zoyluo.aibot.task.OreDigTask;
 import io.github.zoyluo.aibot.task.ContainerTask;
 import io.github.zoyluo.aibot.task.CraftTask;
 import io.github.zoyluo.aibot.task.FarmTask;
+import io.github.zoyluo.aibot.task.IrrigateTask;
 import io.github.zoyluo.aibot.task.MineTask;
 import io.github.zoyluo.aibot.task.MoveTask;
 import io.github.zoyluo.aibot.task.SleepTask;
@@ -98,7 +99,8 @@ public final class AIBotVerifySubcommand {
             "food",
             "food_full",
             "food_farm",
-            "forage");
+            "forage",
+            "farm_irrigate");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
@@ -229,6 +231,7 @@ public final class AIBotVerifySubcommand {
             case "food_full" -> assignAchieveFoodFull(bot);
             case "food_farm" -> assignAchieveFoodFarm(bot);
             case "forage" -> assignForage(bot);
+            case "farm_irrigate" -> assignFarmIrrigate(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
     }
@@ -757,6 +760,41 @@ public final class AIBotVerifySubcommand {
         }
         return Result.runningGoal("forage", 4000,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.SWEET_BERRIES) >= 4);
+    }
+
+    // 无限水源/灌溉端到端测试:给 2 桶水 + 实心泥土地面 → IrrigateTask 挖 2×2 坑、对角放 2 桶水。
+    // 断言:2×2 四格在 SETTLE 后全部变成水源(只放了 2 桶,另 2 格靠水流自动成源)——证明形成了
+    // 可无限舀取/可灌溉的 2×2 无限水源。同时背包应变出 2 个空桶。
+    private static Result assignFarmIrrigate(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin);
+        // floor 层(y-1)铺一片实心泥土,作挖坑的地面 + 2×2 坑四周的挡水墙。
+        for (int dx = -3; dx <= 3; dx++) {
+            for (int dz = -3; dz <= 3; dz++) {
+                world.setBlockState(origin.add(dx, -1, dz), Blocks.DIRT.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        InventoryAction.giveItem(bot, new ItemStack(Items.WATER_BUCKET, 2));
+        BlockPos waterCenter = origin.add(2, -1, 0); // 在 floor 层挖 2×2 水池(bot 旁边)
+        return assignTask(bot, "farm_irrigate", new IrrigateTask(waterCenter), 2400,
+                ignored -> bot.isAlive()
+                        && countWaterSources(world, waterCenter) >= 4
+                        && InventoryAction.countItem(bot, Items.BUCKET) >= 2);
+    }
+
+    // 数 center 处 2×2 四格里的水源数量。
+    private static int countWaterSources(ServerWorld world, BlockPos center) {
+        BlockPos[] cells = {center, center.east(), center.south(), center.east().south()};
+        int n = 0;
+        for (BlockPos p : cells) {
+            if (io.github.zoyluo.aibot.action.FarmAction.isWaterSource(world, p)) {
+                n++;
+            }
+        }
+        return n;
     }
 
     // Phase1:装备目标。给足铁锭+木头(聚焦"做甲穿甲",省去挖 24 铁的耗时),achieve Goal.Armor 应做出 4 甲+剑并自动穿上。

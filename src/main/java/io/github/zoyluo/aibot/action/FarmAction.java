@@ -62,6 +62,42 @@ public final class FarmAction {
         return ActionResult.SUCCESS;
     }
 
+    // 灌溉:用水桶在 pos 放一个水源(简化:直接 setBlockState WATER 源 + 背包 WATER_BUCKET→BUCKET)。
+    public static ActionResult placeWater(AIPlayerEntity bot, BlockPos pos) {
+        ServerWorld world = bot.getServerWorld();
+        BlockState at = world.getBlockState(pos);
+        if (!at.isAir() && !at.isOf(Blocks.WATER) && world.getFluidState(pos).isEmpty()) {
+            return ActionResult.failed("not_empty"); // 目标被实心方块占,放不了水
+        }
+        if (!InventoryAction.removeItems(bot, Items.WATER_BUCKET, 1)) {
+            return ActionResult.failed("missing_water_bucket");
+        }
+        world.setBlockState(pos, Blocks.WATER.getDefaultState(), Block.NOTIFY_ALL);
+        InventoryAction.giveItem(bot, new ItemStack(Items.BUCKET, 1));
+        BotLog.action(bot, "place_water", "pos", pos);
+        return ActionResult.SUCCESS;
+    }
+
+    // 灌溉:从 pos 的水源舀水进空桶(无限水源的"可再生"凭此验证:舀走一格,邻格的源会回填)。
+    public static ActionResult fillBucket(AIPlayerEntity bot, BlockPos pos) {
+        ServerWorld world = bot.getServerWorld();
+        if (!isWaterSource(world, pos)) {
+            return ActionResult.failed("not_water_source");
+        }
+        if (!InventoryAction.removeItems(bot, Items.BUCKET, 1)) {
+            return ActionResult.failed("missing_bucket");
+        }
+        world.setBlockState(pos, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        InventoryAction.giveItem(bot, new ItemStack(Items.WATER_BUCKET, 1));
+        BotLog.action(bot, "fill_bucket", "pos", pos);
+        return ActionResult.SUCCESS;
+    }
+
+    public static boolean isWaterSource(ServerWorld world, BlockPos pos) {
+        net.minecraft.fluid.FluidState fluid = world.getFluidState(pos);
+        return fluid.isIn(net.minecraft.registry.tag.FluidTags.WATER) && fluid.isStill();
+    }
+
     public static CropSpec cropSpec(String cropName) {
         return switch (cropName) {
             case "wheat", "minecraft:wheat" -> new CropSpec(Items.WHEAT_SEEDS, Blocks.WHEAT, "wheat");

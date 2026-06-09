@@ -37,6 +37,7 @@ public final class DigDownTask extends AbstractTask {
     private static final int PICKUP_GRACE_TICKS = 30;   // 采够后多等一会儿确保掉落物落袋
     private static final int MIN_Y = -60;               // 别挖穿到基岩以下
     private static final int RETURN_LIMIT = 600;        // 采够后爬回井口的回程超时(30s),回不去也别卡死
+    private static final int MAX_DESCENT = 24;          // 下挖深度上限(格):超了还没采够多半是掉落物没捡到,扫拾再判,绝不无限挖到深处被怪围杀
 
     private final Block targetBlock;
     private final Set<Item> targetDrops;
@@ -121,6 +122,23 @@ public final class DigDownTask extends AbstractTask {
             return;
         }
         ServerWorld world = bot.getServerWorld();
+        // 下挖深度兜底:超过 MAX_DESCENT 还没采够,多半是掉落物没及时捡(collected 不增)→ 大范围扫拾一次再判;
+        // 仍不够则转水平掘进(同层找石),绝不继续无限往深里挖(实测无限下挖到 y6 被蜘蛛围杀)。
+        if (startPos != null && startPos.getY() - bot.getBlockPos().getY() >= MAX_DESCENT) {
+            miner.cancel(bot);
+            HarvestCore.sweepPickupAnyOf(bot, targetDrops, 12.0D, 64);
+            int got = Math.max(0, HarvestCore.countInventoryItems(bot, targetDrops) - invBaseline);
+            if (got >= targetCount) {
+                collected = got;
+                returning = true;
+                returnStartTick = elapsed;
+                BotLog.action(bot, "dig_down_return_start", "from", bot.getBlockPos().toShortString(),
+                        "to", startPos.toShortString());
+            } else {
+                digHorizontal(bot, world, bot.getBlockPos()); // 不再下挖,同层横向找石
+            }
+            return;
+        }
 
         // 工具闸:挖不动目标(无合格镐)直接失败,交 GoalExecutor 倒推补镐。
         if (!ToolTier.canHarvestWithInventory(bot, targetBlock.getDefaultState())) {
@@ -129,7 +147,8 @@ public final class DigDownTask extends AbstractTask {
         }
 
         // 收集计数:绝对增量(固定基线),刚破的块的掉落物随后落袋会被算进来。
-        HarvestCore.forcePickupNearbyAnyOf(bot, targetDrops, 2.5D, 2.5D);
+        // 垂直半径放大:下挖时刚破的 cobblestone 落在上层台阶,2.5 格够不到 → collected 永不增 → 无限下挖到深处被怪围杀。
+        HarvestCore.forcePickupNearbyAnyOf(bot, targetDrops, 4.0D, 12.0D);
         int total = Math.max(0, HarvestCore.countInventoryItems(bot, targetDrops) - invBaseline);
         if (total > collected) {
             collected = total;

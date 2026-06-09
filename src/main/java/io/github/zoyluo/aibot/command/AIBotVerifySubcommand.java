@@ -94,7 +94,8 @@ public final class AIBotVerifySubcommand {
             "move_dig_through",
             "farm_wheat_from_scratch",
             "nav_descend",
-            "food");
+            "food",
+            "food_full");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
@@ -222,6 +223,7 @@ public final class AIBotVerifySubcommand {
             case "farm_wheat_from_scratch" -> assignFarmWheatFromScratch(bot);
             case "nav_descend" -> assignNavDescend(bot);
             case "food" -> assignAchieveFood(bot);
+            case "food_full" -> assignAchieveFoodFull(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
     }
@@ -639,6 +641,33 @@ public final class AIBotVerifySubcommand {
             return Result.fail("food", "goal_submit_failed");
         }
         return Result.runningGoal("food", 8000,
+                ignored -> bot.isAlive() && cookedFoodCount(bot) >= 4);
+    }
+
+    // 完整食物链(给现成石料/燃料/剑):做炉(craft furnace) → 打猎 → 烤。比 food(给现成炉)多覆盖一层"craft 熔炉"。
+    // 不含挖石:dev 测试世界 bot 出生在 y6 黑暗地下(spawn snap 0,6,0),挖石阶梯会卡基岩 + 被蜘蛛围杀,
+    // 那是地下挖矿的几何/导航问题、不是食物链逻辑,单独立项修(见 progress 笔记)。给 8 cobblestone → 直接 craft furnace。
+    private static Result assignAchieveFoodFull(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 8));
+        InventoryAction.giveItem(bot, new ItemStack(Items.CRAFTING_TABLE, 1));
+        InventoryAction.giveItem(bot, new ItemStack(Items.COAL, 8));
+        InventoryAction.giveItem(bot, new ItemStack(Items.WOODEN_SWORD, 1));
+        for (int i = 0; i < 6; i++) {
+            var cow = EntityType.COW.create(world, SpawnReason.COMMAND);
+            if (cow != null) {
+                cow.refreshPositionAndAngles(origin.getX() + 2.0D, origin.getY(), origin.getZ() + (i - 3), 0.0F, 0.0F);
+                world.spawnEntity(cow);
+            }
+        }
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.Food(4));
+        if (!started) {
+            return Result.fail("food_full", "goal_submit_failed");
+        }
+        return Result.runningGoal("food_full", 16000,
                 ignored -> bot.isAlive() && cookedFoodCount(bot) >= 4);
     }
 

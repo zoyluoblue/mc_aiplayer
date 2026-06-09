@@ -454,7 +454,9 @@ public final class GoalPlanner {
             for (RecipeRegistry.Ingredient ingredient : recipe.ingredients()) {
                 int need = ingredient.count() * crafts;
                 Item candidate = chooseIngredient(ingredient);
-                if (candidate == null || !ensureItem(candidate, counts.getOrDefault(candidate, 0) + need, depth + 1, visiting)) {
+                // 只补缺口:ensureItem 内部按 desired-available 计算,传 need 即可。
+                // (原写 counts+need = 已有量也再凑一份 → 背包已有材料还重复采/挖,实测有 8 石料做炉仍去挖石。)
+                if (candidate == null || !ensureItem(candidate, need, depth + 1, visiting)) {
                     unresolved.add("missing:" + ingredient.anyOf() + " x" + need + " for " + id(item));
                     rollbackSteps(stepsBefore);
                     return false;

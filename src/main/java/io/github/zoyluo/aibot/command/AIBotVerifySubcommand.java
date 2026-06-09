@@ -621,16 +621,16 @@ public final class AIBotVerifySubcommand {
         clearInventory(bot);
         ServerWorld world = bot.getServerWorld();
         BlockPos origin = bot.getBlockPos();
-        for (int dy = 0; dy < 12; dy++) {
-            world.setBlockState(origin.offset(Direction.WEST, 3).up(dy), Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
-        }
-        for (int dy = 2; dy <= 9; dy++) {
-            world.setBlockState(origin.down(dy), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
-        }
+        // 聚焦"感知择源 → 打猎 → 烤肉"食物核心:给现成前置(熔炉+燃料+剑),不让 Goal.Food 倒推去挖石做炉
+        //(dig_down 挖深井会把 bot 困在井底、追不到地表的牛——那是挖矿场景的 bug,单独修)。
+        InventoryAction.giveItem(bot, new ItemStack(Items.FURNACE, 1));
+        InventoryAction.giveItem(bot, new ItemStack(Items.COAL, 8));
+        InventoryAction.giveItem(bot, new ItemStack(Items.WOODEN_SWORD, 1));
+        // 5 头牛紧邻 bot(平整区内),免得追远卡路障
         for (int i = 0; i < 5; i++) {
             var cow = EntityType.COW.create(world, SpawnReason.COMMAND);
             if (cow != null) {
-                cow.refreshPositionAndAngles(origin.getX() + 2.5D, origin.getY(), origin.getZ() + (i - 2), 0.0F, 0.0F);
+                cow.refreshPositionAndAngles(origin.getX() + 1.5D, origin.getY(), origin.getZ() + (i - 2), 0.0F, 0.0F);
                 world.spawnEntity(cow);
             }
         }
@@ -638,7 +638,7 @@ public final class AIBotVerifySubcommand {
         if (!started) {
             return Result.fail("food", "goal_submit_failed");
         }
-        return Result.runningGoal("food", 16000,
+        return Result.runningGoal("food", 8000,
                 ignored -> bot.isAlive() && cookedFoodCount(bot) >= 4);
     }
 

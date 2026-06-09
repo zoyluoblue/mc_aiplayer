@@ -24,6 +24,7 @@ import io.github.zoyluo.aibot.task.FarmTask;
 import io.github.zoyluo.aibot.task.IrrigateTask;
 import io.github.zoyluo.aibot.task.MineTask;
 import io.github.zoyluo.aibot.task.MoveTask;
+import io.github.zoyluo.aibot.task.RaidCropsTask;
 import io.github.zoyluo.aibot.task.SleepTask;
 import io.github.zoyluo.aibot.task.StripMineTask;
 import io.github.zoyluo.aibot.task.Task;
@@ -101,7 +102,8 @@ public final class AIBotVerifySubcommand {
             "food_farm",
             "forage",
             "farm_irrigate",
-            "cake");
+            "cake",
+            "village_harvest");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
@@ -116,6 +118,20 @@ public final class AIBotVerifySubcommand {
             "achieve_iron_ingot",
             "achieve_iron_pickaxe",
             "achieve_diamond");
+
+    // 食物回归套件:一条命令 /aibot verify food_suite 跑完所有食物/种田相关场景。
+    // 覆盖五条食物途径:打猎+烤(food/food_full)、种田做面包(food_farm)、觅食(forage)、
+    // 无限水源灌溉(farm_irrigate)、合成蛋糕(cake)、村庄收菜(village_harvest),外加种田基元(farm/farm_wheat)。
+    private static final List<String> FOOD_SUITE = List.of(
+            "food",
+            "food_full",
+            "farm",
+            "farm_wheat_from_scratch",
+            "food_farm",
+            "forage",
+            "farm_irrigate",
+            "cake",
+            "village_harvest");
     private static final Map<UUID, VerifyRun> RUNS = new ConcurrentHashMap<>();
 
     private AIBotVerifySubcommand() {
@@ -131,6 +147,7 @@ public final class AIBotVerifySubcommand {
                             ALL_FEATURES.forEach(builder::suggest);
                             builder.suggest("all");
                             builder.suggest("mining");
+                            builder.suggest("food_suite");
                             return builder.buildFuture();
                         })
                         .executes(context -> {
@@ -187,6 +204,8 @@ public final class AIBotVerifySubcommand {
                 features.addAll(ALL_FEATURES);
             } else if ("mining".equals(feature)) {
                 features.addAll(MINING_SUITE); // 挖矿回归套件别名
+            } else if ("food_suite".equals(feature)) {
+                features.addAll(FOOD_SUITE); // 食物回归套件别名
             } else if (ALL_FEATURES.contains(feature)) {
                 features.add(feature);
             }
@@ -234,6 +253,7 @@ public final class AIBotVerifySubcommand {
             case "forage" -> assignForage(bot);
             case "farm_irrigate" -> assignFarmIrrigate(bot);
             case "cake" -> assignCake(bot);
+            case "village_harvest" -> assignVillageHarvest(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
     }
@@ -814,6 +834,43 @@ public final class AIBotVerifySubcommand {
         }
         return Result.runningGoal("cake", 8000,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.CAKE) >= 1);
+    }
+
+    // 村庄收菜端到端测试:开一条可行走走廊,尽头摆一片成熟作物田(模拟村庄农田,距 bot ~12 格)。
+    // RaidCropsTask 应:大范围扫到作物田 → 走过去 → 收割 → 捡起,凑够 4 个产出。覆盖"找现成作物田收菜"
+    //(与 FarmTask 自种自收互补)。走廊是必须的:dev 世界 y6 地下全是石头,不开路 bot 无法走到远处的田。
+    private static Result assignVillageHarvest(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin);
+        // 走廊:floor 铺土、上方清 3 高,从 bot 一直通到田。
+        for (int x = 0; x <= 16; x++) {
+            for (int z = -3; z <= 3; z++) {
+                world.setBlockState(origin.add(x, -1, z), Blocks.DIRT.getDefaultState(), Block.NOTIFY_ALL);
+                for (int y = 0; y <= 2; y++) {
+                    world.setBlockState(origin.add(x, y, z), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                }
+            }
+        }
+        // 成熟作物田(小麦/胡萝卜/马铃薯混种,都是 CropBlock):x 10..14 × z -1..1 = 15 株,远多于 target 4。
+        net.minecraft.block.BlockState[] crops = {
+                Blocks.WHEAT.getDefaultState().with(net.minecraft.state.property.Properties.AGE_7, 7),
+                Blocks.CARROTS.getDefaultState().with(net.minecraft.state.property.Properties.AGE_7, 7),
+                Blocks.POTATOES.getDefaultState().with(net.minecraft.state.property.Properties.AGE_7, 7)};
+        int i = 0;
+        for (int x = 10; x <= 14; x++) {
+            for (int z = -1; z <= 1; z++) {
+                world.setBlockState(origin.add(x, -1, z), Blocks.FARMLAND.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(origin.add(x, 0, z), crops[i++ % crops.length], Block.NOTIFY_ALL);
+            }
+        }
+        return assignTask(bot, "village_harvest", new RaidCropsTask(4), 4000,
+                ignored -> bot.isAlive()
+                        && InventoryAction.countItem(bot, Items.WHEAT)
+                        + InventoryAction.countItem(bot, Items.CARROT)
+                        + InventoryAction.countItem(bot, Items.POTATO) >= 4);
     }
 
     // 数 center 处 2×2 四格里的水源数量。

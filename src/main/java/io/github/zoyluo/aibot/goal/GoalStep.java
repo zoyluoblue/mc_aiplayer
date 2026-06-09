@@ -27,6 +27,7 @@ public record GoalStep(Kind kind,
         FARM,
         HUNT,
         COOK_FOOD,
+        MILK_COW,
         PLACE_STATIONS,
         STOCKPILE,
         DESCEND_TO_Y
@@ -77,6 +78,11 @@ public record GoalStep(Kind kind,
         return new GoalStep(Kind.COOK_FOOD, null, count, null, Set.of(), null, null, null);
     }
 
+    /** 蛋糕链:MILK_COW 步——用空桶挤 count 桶牛奶(需背包有空桶 + 周围有牛;缺则 best-effort 失败)。 */
+    public static GoalStep milkCow(int count) {
+        return new GoalStep(Kind.MILK_COW, null, count, null, Set.of(), null, null, null);
+    }
+
     /** Phase2:放置工作台/熔炉/箱子三件套(方块固定,无参数)。 */
     public static GoalStep placeStations() {
         return new GoalStep(Kind.PLACE_STATIONS, null, 1, null, Set.of(), null, null, null);
@@ -122,6 +128,7 @@ public record GoalStep(Kind kind,
             case FARM -> "种植 " + ItemNames.cn(block) + " ×" + count;
             case HUNT -> "打猎取肉 ×" + count;
             case COOK_FOOD -> "烤制食物 ×" + count;
+            case MILK_COW -> "挤牛奶 ×" + count;
             case PLACE_STATIONS -> "摆放工作台/熔炉/箱子";
             case STOCKPILE -> "囤入箱子 " + ItemNames.cn(item);
             case DESCEND_TO_Y -> "下挖到 Y=" + pos.getY();

@@ -69,6 +69,14 @@ public final class RecipeRegistry {
                 new Ingredient(STICKS, 1)), false));
         put(new Recipe(Items.BOWL, 4, List.of(new Ingredient(PLANKS, 3)), false));
         put(new Recipe(Items.BREAD, 1, List.of(new Ingredient(List.of(Items.WHEAT), 3)), false));
+        // 蛋糕链:糖←甘蔗;桶←3铁;蛋糕=3奶桶+2糖+1蛋+3麦(蛋为被动产物,需背包已有,见 GoalPlanner)。
+        put(new Recipe(Items.SUGAR, 1, List.of(new Ingredient(List.of(Items.SUGAR_CANE), 1)), false));
+        put(new Recipe(Items.BUCKET, 1, List.of(new Ingredient(List.of(Items.IRON_INGOT), 3)), true));
+        put(new Recipe(Items.CAKE, 1, List.of(
+                new Ingredient(List.of(Items.MILK_BUCKET), 3),
+                new Ingredient(List.of(Items.SUGAR), 2),
+                new Ingredient(List.of(Items.EGG), 1),
+                new Ingredient(List.of(Items.WHEAT), 3)), true));
 
         put(new Recipe(Items.FURNACE, 1, List.of(new Ingredient(STONE_LIKE, 8)), true));
         put(new Recipe(Items.CHEST, 1, List.of(new Ingredient(PLANKS, 8)), true));

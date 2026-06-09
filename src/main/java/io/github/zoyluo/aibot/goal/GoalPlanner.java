@@ -493,6 +493,21 @@ public final class GoalPlanner {
                 counts.merge(item, missing, Integer::sum);
                 return true;
             }
+            if (item == Items.SUGAR_CANE) {
+                // 甘蔗 → 割甘蔗(GatherQuotaTask 破坏 sugar_cane 块掉甘蔗;蛋糕链里糖的来源)。
+                addStep(GoalStep.gather(item, missing));
+                counts.merge(item, missing, Integer::sum);
+                return true;
+            }
+            if (item == Items.MILK_BUCKET) {
+                // 牛奶桶 → 先确保等量空桶(空桶可由 3 铁倒推/背包已有),再下挤奶步(周围要有牛,执行期 best-effort)。
+                if (!ensureItem(Items.BUCKET, missing, depth + 1, visiting)) {
+                    return false;
+                }
+                addStep(GoalStep.milkCow(missing));
+                counts.merge(Items.MILK_BUCKET, missing, Integer::sum);
+                return true;
+            }
             if (item == Items.COBBLESTONE) {
                 if (!ensurePickaxeTier(ToolTier.WOOD, depth + 1, visiting)) {
                     return false;

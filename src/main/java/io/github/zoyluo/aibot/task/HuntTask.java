@@ -119,6 +119,7 @@ public final class HuntTask extends AbstractTask {
         if (total > collected) {
             collected = total;
             lastProgressTick = elapsed;
+            roamCount = 0; // 打到肉=这一带有货,重置漫游预算(否则打大量肉时 MAX_PREY_ROAMS 累计早早耗尽、没凑够就收工)
             BotLog.action(bot, "hunt_collected", "total", collected + "/" + targetMeat);
         }
         if (collected >= targetMeat) {
@@ -141,12 +142,21 @@ public final class HuntTask extends AbstractTask {
         }
     }
 
+    // 进入接近阶段:重置卡住基线/清障状态(否则沿用上一个目标的基线,新目标第一 tick 就被误判卡住),再起步寻路。
+    private void beginApproach(AIPlayerEntity bot) {
+        phase = Phase.APPROACH;
+        approachStuckPos = null;
+        approachStuckTick = elapsed;
+        clearingObstacle = false;
+        obstacleMiner.cancel(bot);
+        lastProgressTick = elapsed;
+        CombatCore.startApproach(bot, target);
+    }
+
     private void acquire(AIPlayerEntity bot) {
         target = nearestPrey(bot);
         if (target != null) {
-            lastProgressTick = elapsed;
-            phase = Phase.APPROACH;
-            CombatCore.startApproach(bot, target);
+            beginApproach(bot);
             return;
         }
         // 周围(64 格)没猎物 → 先漫游换片找更多,努力凑够目标(动物分散/在远处),
@@ -193,9 +203,7 @@ public final class HuntTask extends AbstractTask {
         LivingEntity prey = nearestPrey(bot);
         if (prey != null) {
             target = prey;
-            phase = Phase.APPROACH;
-            CombatCore.startApproach(bot, prey);
-            lastProgressTick = elapsed;
+            beginApproach(bot);
             return;
         }
         if (roamTarget == null
@@ -302,18 +310,22 @@ public final class HuntTask extends AbstractTask {
             return;
         }
         CombatCore.lookAt(bot, target);
-        if (bot.distanceTo(target) > CombatCore.ATTACK_RANGE + 0.75F) {
-            phase = Phase.APPROACH;
-            CombatCore.startApproach(bot, target);
+        if (bot.distanceTo(target) > CombatCore.ATTACK_RANGE) {
+            // 严格按攻击距离(3.0)判定:超出就回去再靠近。原来留 0.75 缓冲会卡在"打不到的 3.0~3.75 区间"反复挥空,
+            // 加上下面每 tick 刷 lastProgressTick → 对着打不到的目标无限对砍到 maxElapsed。beginApproach 重置卡住基线。
+            beginApproach(bot);
             return;
         }
         CombatCore.equipMelee(bot); // 砍之前确保手持最佳武器(实测打猎 held=dirt,拿土砍肉伤害仅 1、极慢);equipFromSlot 幂等不抖
         CombatCore.strikeIfReady(bot, target);
-        lastProgressTick = elapsed; // 近身攻击中算进展(避免对峙时看门狗误杀)
+        // 不再每 tick 刷 lastProgressTick:命中→掉肉会在 onTick 顶部刷新进度;真打不动(够不到/无敌)则靠
+        // NO_PROGRESS_LIMIT 兜底干净失败,而非"挥空也算进展"把任务拖到 maxElapsed。
     }
 
     private void beginPickup(AIPlayerEntity bot) {
         target = null;
+        clearingObstacle = false;
+        obstacleMiner.cancel(bot);
         bot.getActionPack().stopMovement();
         pickupGrace = 0;
         lastProgressTick = elapsed;

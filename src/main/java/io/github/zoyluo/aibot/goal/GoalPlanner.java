@@ -365,6 +365,16 @@ public final class GoalPlanner {
             if (counts.getOrDefault(Items.FURNACE, 0) <= 0) {
                 ensureItem(Items.FURNACE, 1, depth + 1, visiting);
             }
+            // 烤 needCooked 个熟食需燃料——之前漏了这步,烤大量肉时 SmeltTask out_of_fuel、整条食物链白忙。
+            // 与矿石熔炼 smeltItem 一致:已有煤/炭各≈烤 8 个;不够用原木补(1 原木≈烤 1.5 个),优先已有树种、
+            // best-effort 砍树(无树则 unresolved,执行期 COOK_FOOD 缺燃料再降级,不卡死)。
+            int coalLike = counts.getOrDefault(Items.COAL, 0) + counts.getOrDefault(Items.CHARCOAL, 0);
+            int fuelDeficit = needCooked - coalLike * 8;
+            if (fuelDeficit > 0) {
+                Item fuelLog = preferredFuelLog();
+                int logsForFuel = Math.max(1, (int) Math.ceil(fuelDeficit / 1.5));
+                ensureItem(fuelLog, counts.getOrDefault(fuelLog, 0) + logsForFuel, depth + 1, visiting);
+            }
             if (huntNeed > 0) {
                 // 没剑且手头已有现成木料 → 顺手做把木剑;没料不专程砍树(避免无树发呆),空手/现有工具直接猎。
                 if (!hasAnySword() && hasSwordMaterial()) {

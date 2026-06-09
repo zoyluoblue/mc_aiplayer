@@ -1065,6 +1065,11 @@ public final class AIBotVerifySubcommand {
 
     private static void prepareArea(AIPlayerEntity bot) {
         ServerWorld world = bot.getServerWorld();
+        // 套件里多场景顺序跑,bot 位置会从上个场景带过来(打猎走远等)→ 假设"干净出生点"的场景会错位
+        //(food_suite 实测:farm_wheat 时 bot 漂到 9,-2,预置成熟麦没 survey 到、被当空地种 → FAIL)。
+        // 开头先复位到固定原点 (0,6,0),保证每个场景从一致干净的位置开跑,套件确定性。
+        bot.getActionPack().stopAll();
+        bot.teleport(world, 0.5D, 6.0D, 0.5D, java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
         BlockPos origin = bot.getBlockPos();
         for (BlockPos pos : BlockPos.iterate(origin.add(-4, 0, -4), origin.add(4, 3, 4))) {
             world.setBlockState(pos, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);

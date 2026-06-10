@@ -108,7 +108,13 @@ public final class AIBotVerifySubcommand {
             "forage",
             "farm_irrigate",
             "cake",
-            "village_harvest");
+            "village_harvest",
+            "real_wood",
+            "real_food",
+            "real_wheat",
+            "real_iron",
+            "real_diamond",
+            "real_obsidian");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
@@ -152,6 +158,16 @@ public final class AIBotVerifySubcommand {
             "iron_extreme",
             "diamond_extreme",
             "food_extreme");
+
+    // 贴近实操套件:自然世界、空背包、零给予,从零完成目标。/aibot verify real_suite
+    // 失败 = 自动化与实操的真实差距,逐个修复;real_obsidian 预期 FAIL(浇水造黑曜石能力未实现)。
+    private static final List<String> REAL_SUITE = List.of(
+            "real_wood",
+            "real_food",
+            "real_wheat",
+            "real_iron",
+            "real_diamond",
+            "real_obsidian");
     private static final Map<UUID, VerifyRun> RUNS = new ConcurrentHashMap<>();
 
     private AIBotVerifySubcommand() {
@@ -168,6 +184,7 @@ public final class AIBotVerifySubcommand {
                             builder.suggest("all");
                             builder.suggest("mining");
                             builder.suggest("food_suite");
+                            builder.suggest("real_suite");
                             return builder.buildFuture();
                         })
                         .executes(context -> {
@@ -230,6 +247,8 @@ public final class AIBotVerifySubcommand {
                 features.addAll(MATERIAL_SUITE); // 矿物材料回归套件别名
             } else if ("extreme_suite".equals(feature)) {
                 features.addAll(EXTREME_SUITE); // 极端环境回归套件别名
+            } else if ("real_suite".equals(feature)) {
+                features.addAll(REAL_SUITE); // 贴近实操套件别名
             } else if (ALL_FEATURES.contains(feature)) {
                 features.add(feature);
             }
@@ -283,6 +302,12 @@ public final class AIBotVerifySubcommand {
             case "farm_irrigate" -> assignFarmIrrigate(bot);
             case "cake" -> assignCake(bot);
             case "village_harvest" -> assignVillageHarvest(bot);
+            case "real_wood" -> assignRealWood(bot);
+            case "real_food" -> assignRealFood(bot);
+            case "real_wheat" -> assignRealWheat(bot);
+            case "real_iron" -> assignRealIron(bot);
+            case "real_diamond" -> assignRealDiamond(bot);
+            case "real_obsidian" -> assignRealObsidian(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
     }
@@ -467,6 +492,7 @@ public final class AIBotVerifySubcommand {
         clearInventory(bot);
         ServerWorld world = bot.getServerWorld();
         BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin); // 从零链 bot 无装备,y6 怪海会围杀(实测 aborted=被僵尸打死)
         // GOALFIX-GF3:从零到铁链路(木镐→挖石→石镐→挖铁)约需 3 原木 + 3 圆石,给足余量(6/6)避免边界失败。
         for (int dy = 0; dy < 6; dy++) {
             world.setBlockState(origin.offset(Direction.WEST, 2).up(dy), Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
@@ -579,9 +605,11 @@ public final class AIBotVerifySubcommand {
                 }
             }
         }
-        // 坑里一棵小树(2 段原木,叶子省略)。
-        world.setBlockState(origin.offset(Direction.EAST), Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
-        world.setBlockState(origin.offset(Direction.EAST).up(), Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
+        clearNearbyMobs(world, origin); // y6 怪海会把无装备的 bot 打死(重生背包清空→任务必败)
+        // 坑里一棵小树(4 段原木——从零链需 工作台4+木镐3+棍2=9 板,2 段原木只出 8 板差 1,实测 need:oak_planks x1)。
+        for (int dy = 0; dy < 4; dy++) {
+            world.setBlockState(origin.offset(Direction.EAST).up(dy), Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
+        }
         // 脚下石层 + 深处铁矿。
         for (int dy = 1; dy <= 8; dy++) {
             world.setBlockState(origin.down(dy), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
@@ -606,12 +634,16 @@ public final class AIBotVerifySubcommand {
         InventoryAction.giveItem(bot, new ItemStack(Items.IRON_SWORD, 1));
         ServerWorld world = bot.getServerWorld();
         BlockPos origin = bot.getBlockPos();
-        for (int dy = 1; dy <= 6; dy++) {
-            world.setBlockState(origin.down(dy), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
-        }
+        // 清掉 y6 环境怪海(会把 bot 围杀,重生背包清空→工具闸报缺镐),只留下面受控 spawn 的 1 只——
+        // 本场景测的是"带 1 怪挖矿"的战斗抢占/恢复,不是怪海生存。穿甲提高确定性。
+        clearNearbyMobs(world, origin);
+        giveDeepMineKit(bot);
+        io.github.zoyluo.aibot.action.EquipAction.equipBestArmor(bot);
+        fillStoneCube(world, origin, 4, 8);
         world.setBlockState(origin.down(3), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
         ZombieEntity zombie = EntityType.ZOMBIE.create(world, SpawnReason.COMMAND);
         if (zombie != null) {
+            zombie.setPersistent();
             zombie.refreshPositionAndAngles(bot.getX() + 2.0D, bot.getY(), bot.getZ() + 2.0D, 0.0F, 0.0F);
             world.spawnEntity(zombie);
         }
@@ -774,12 +806,12 @@ public final class AIBotVerifySubcommand {
         clearInventory(bot);
         ServerWorld world = bot.getServerWorld();
         BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin); // 全链早期无装备,清 y6 怪海
         for (int dy = 0; dy < 12; dy++) {
             world.setBlockState(origin.offset(Direction.WEST, 2).up(dy), Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
         }
-        for (int dy = 1; dy <= 10; dy++) {
-            world.setBlockState(origin.down(dy), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
-        }
+        // 实心石区替代 1 列石柱:挖石/挖铁任务是斜挖阶梯,1 列柱第一步就走出柱外掉进残留坑(no_resource 元凶)。
+        fillStoneCube(world, origin, 4, 10);
         // 3 个铁矿(铁镐需 3 铁锭)。
         world.setBlockState(origin.down(4), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
         world.setBlockState(origin.down(5), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
@@ -1019,6 +1051,101 @@ public final class AIBotVerifySubcommand {
                         && InventoryAction.countItem(bot, Items.WHEAT)
                         + InventoryAction.countItem(bot, Items.CARROT)
                         + InventoryAction.countItem(bot, Items.POTATO) >= 4);
+    }
+
+    // ==================== 贴近实操层(realistic) ====================
+    // 与人造理想场景相反:自然生成世界(固定 seed)、空背包、不清怪、不给装备、不铺方块、不传送——
+    // 测"真实条件下从零完成目标"。这层的失败清单 = 自动化与实操的差距清单,逐个修。
+    // 注意:断言只代表"拿到结果",不代表过程不蠢(绕路/卡顿观感仍需实操确认)。
+
+    private static BlockPos prepareRealistic(AIPlayerEntity bot) {
+        ServerWorld world = bot.getServerWorld();
+        bot.getActionPack().stopAll();
+        clearInventory(bot); // 实操开局=空背包;其余一概不动(不清怪/不铺/不给)
+        // real_wheat 会调 randomTickSpeed,这里统一复位,避免场景间泄漏
+        world.getGameRules().get(net.minecraft.world.GameRules.RANDOM_TICK_SPEED).set(3, world.getServer());
+        BlockPos at = bot.getBlockPos();
+        // 出生点在洞/地下时提到自然地表(实操玩家在地表活动);已在地表则原地开干
+        if (!world.isSkyVisible(at)) {
+            int topY = world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING, at.getX(), at.getZ());
+            bot.teleport(world, at.getX() + 0.5D, topY, at.getZ() + 0.5D,
+                    java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+            bot.getActionPack().stopAll();
+        }
+        return bot.getBlockPos();
+    }
+
+    // 实操:砍 8 根原木(自然找树;接受任意树种)。
+    private static Result assignRealWood(AIPlayerEntity bot) {
+        prepareRealistic(bot);
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.OAK_LOG, 8));
+        if (!started) {
+            return Result.fail("real_wood", "goal_submit_failed");
+        }
+        java.util.Set<Item> logs = java.util.Set.copyOf(io.github.zoyluo.aibot.craft.RecipeRegistry.LOGS);
+        return Result.runningGoal("real_wood", 8000,
+                ignored -> bot.isAlive()
+                        && io.github.zoyluo.aibot.action.HarvestCore.countInventoryItems(bot, logs) >= 8);
+    }
+
+    // 实操:从零搞 4 个熟食(自己感知周围择源:打猎/种植;自己做炉凑燃料)。
+    private static Result assignRealFood(AIPlayerEntity bot) {
+        prepareRealistic(bot);
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.Food(4));
+        if (!started) {
+            return Result.fail("real_food", "goal_submit_failed");
+        }
+        return Result.runningGoal("real_food", 16000,
+                ignored -> bot.isAlive() && cookedFoodCount(bot) >= 4);
+    }
+
+    // 实操:从零种麦做 2 个面包(割草取种→锄→开垦→种→等熟→收→合成)。
+    // 唯一的让步:randomTickSpeed 3→40(加速生长 ~13x)。生长路径真实走过,只是时间加速——
+    // 不加速的话自然熟要 20+ 分钟,套件没法跑;这与 perTick 魔法催熟(food_farm)不同档。
+    private static Result assignRealWheat(AIPlayerEntity bot) {
+        prepareRealistic(bot);
+        ServerWorld world = bot.getServerWorld();
+        world.getGameRules().get(net.minecraft.world.GameRules.RANDOM_TICK_SPEED).set(40, world.getServer());
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.BREAD, 2));
+        if (!started) {
+            return Result.fail("real_wheat", "goal_submit_failed");
+        }
+        return Result.runningGoal("real_wheat", 16000,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.BREAD) >= 2);
+    }
+
+    // 实操:从零一块铁锭(砍树→木镐→挖石→石镐→找铁矿→挖→做炉→熔炼)。自然地形大考。
+    private static Result assignRealIron(AIPlayerEntity bot) {
+        prepareRealistic(bot);
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.IRON_INGOT, 1));
+        if (!started) {
+            return Result.fail("real_iron", "goal_submit_failed");
+        }
+        return Result.runningGoal("real_iron", 24000,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.IRON_INGOT) >= 1);
+    }
+
+    // 实操:从零一颗钻石(完整工具链 + 真实下挖到 -59 找矿,会遇洞穴/岩浆/黑暗)。
+    private static Result assignRealDiamond(AIPlayerEntity bot) {
+        prepareRealistic(bot);
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.DIAMOND, 1));
+        if (!started) {
+            return Result.fail("real_diamond", "goal_submit_failed");
+        }
+        return Result.runningGoal("real_diamond", 24000,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.DIAMOND) >= 1);
+    }
+
+    // 实操:从零一块黑曜石。自然世界黑曜石须"找岩浆湖+浇水"——bot 目前没有这个能力,
+    // 本场景预期 FAIL,留作能力缺失的存证与修复目标(修好后转绿)。
+    private static Result assignRealObsidian(AIPlayerEntity bot) {
+        prepareRealistic(bot);
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.OBSIDIAN, 1));
+        if (!started) {
+            return Result.fail("real_obsidian", "goal_submit_failed");
+        }
+        return Result.runningGoal("real_obsidian", 12000,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.OBSIDIAN) >= 1);
     }
 
     // 数 center 处 2×2 四格里的水源数量。

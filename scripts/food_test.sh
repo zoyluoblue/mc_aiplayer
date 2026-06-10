@@ -15,6 +15,15 @@ rm -f "$FIFO"; mkfifo "$FIFO"
 
 # 清上一局残留 bot(否则 verify 的 selectBot 可能选到旧 bot),保留 world 省重生成
 rm -f run/world/aibot/bots.json 2>/dev/null
+# LLM 隔离:shell 里的 DEEPSEEK_API_KEY 会被 runServer 继承 → 大脑在 verify 失败注入时偷偷调 API
+# (烧钱 + 给"确定性"测试掺入大脑干预,实测之前测试期间有 api_response)。默认 unset;
+# 要测 LLM 全链(中文指令→意图→工具→执行)时 WITH_LLM=1 跑。
+if [ "${WITH_LLM:-0}" != "1" ]; then
+  unset DEEPSEEK_API_KEY
+  echo "[foodtest] LLM isolated (set WITH_LLM=1 to enable brain)"
+else
+  echo "[foodtest] WITH_LLM=1: brain enabled, API will be billed"
+fi
 # 防 gradle 增量编译/build-cache stale(实测改了源码但 class 没真重编 → 跑旧逻辑):
 # --stop 杀残留 daemon(避免 daemon VFS 缓存旧文件状态);--rerun-tasks 忽略 up-to-date;--no-build-cache 不从缓存恢复旧 class。
 echo "[foodtest] compiling (clean, no-cache, rerun) ..."

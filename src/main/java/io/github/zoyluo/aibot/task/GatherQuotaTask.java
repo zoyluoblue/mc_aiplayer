@@ -190,6 +190,9 @@ public final class GatherQuotaTask extends AbstractTask {
                 state -> harvestBlocks.contains(state.getBlock()),
                 pos -> !prospectBlacklist.contains(pos));
         if (found == null) {
+            // 观测:静默 false 无法区分"96 格内真没该资源"和"扫描/黑名单 bug"(实测 21t 速死无从取证)。
+            BotLog.action(bot, "gather_prospect_empty",
+                    "item", targetItem, "range", PROSPECT_RANGE, "blacklisted", prospectBlacklist.size());
             prospectBlacklist.clear(); // 没有未拉黑的目标了 → 清单重置,交 roam 盲目换片兜底
             return false;
         }
@@ -248,10 +251,15 @@ public final class GatherQuotaTask extends AbstractTask {
         BlockPos feet = bot.getBlockPos();
         int[][] dirs = {{1, 0}, {0, 1}, {-1, 0}, {0, -1}, {1, 1}, {-1, -1}, {1, -1}, {-1, 1}};
         int start = Math.floorMod(roamCount, dirs.length);
-        for (int i = 0; i < dirs.length; i++) {
-            int[] d = dirs[(start + i) % dirs.length];
-            BlockPos ground = findGroundAt(world, feet.getX() + d[0] * ROAM_DISTANCE, feet.getZ() + d[1] * ROAM_DISTANCE);
-            if (ground != null) {
+        // 距离自适应:满距不行就减半再试(山顶/悬崖/水域环绕时 28 格外 8 方向可能全部寻路被拒,
+        // 实测 21t 内 8 连拒直接 no_resource 速死——近处总有能走的点,先挪过去下轮再扩)。
+        for (int dist = ROAM_DISTANCE; dist >= ROAM_DISTANCE / 4; dist /= 2) {
+            for (int i = 0; i < dirs.length; i++) {
+                int[] d = dirs[(start + i) % dirs.length];
+                BlockPos ground = findGroundAt(world, feet.getX() + d[0] * dist, feet.getZ() + d[1] * dist);
+                if (ground == null) {
+                    continue;
+                }
                 // 拟人:走过去换片,不再 teleport 闪现(实测砍树时瞬移很出戏)。
                 bot.getActionPack().stopAll();
                 if (bot.getActionPack().startPathTo(ground).isFailed()) {
@@ -263,7 +271,8 @@ public final class GatherQuotaTask extends AbstractTask {
                 selfStuckTick = elapsed;
                 phase = Phase.ROAM;
                 BotLog.action(bot, "gather_roam",
-                        "to", ground.getX() + "," + ground.getY() + "," + ground.getZ(), "n", roamCount);
+                        "to", ground.getX() + "," + ground.getY() + "," + ground.getZ(),
+                        "n", roamCount, "dist", dist);
                 return true;
             }
         }

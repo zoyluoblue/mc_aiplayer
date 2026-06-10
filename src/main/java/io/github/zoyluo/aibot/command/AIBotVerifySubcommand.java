@@ -114,7 +114,11 @@ public final class AIBotVerifySubcommand {
             "real_wheat",
             "real_iron",
             "real_diamond",
-            "real_obsidian");
+            "real_obsidian",
+            "real_nav_far",
+            "nav_pillar_out",
+            "nav_buried_escape",
+            "nav_unreachable");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
@@ -168,6 +172,16 @@ public final class AIBotVerifySubcommand {
             "real_iron",
             "real_diamond",
             "real_obsidian");
+
+    // 寻路容错专项套件:/aibot verify nav_suite。四条各钉一种实操高频故障形态:
+    // 自然地形长距离绕行(real_nav_far)、被困搭柱翻墙(nav_pillar_out)、活埋窒息脱困(nav_buried_escape)、
+    // 不可达目标快速认输(nav_unreachable)。前三条测"会自救",最后一条测"会认输"——
+    // 空转不报错比干净失败更伤:实操里 bot 看着在干活,实际原地打转浪费整局。
+    private static final List<String> NAV_SUITE = List.of(
+            "real_nav_far",
+            "nav_pillar_out",
+            "nav_buried_escape",
+            "nav_unreachable");
     private static final Map<UUID, VerifyRun> RUNS = new ConcurrentHashMap<>();
 
     private AIBotVerifySubcommand() {
@@ -185,6 +199,7 @@ public final class AIBotVerifySubcommand {
                             builder.suggest("mining");
                             builder.suggest("food_suite");
                             builder.suggest("real_suite");
+                            builder.suggest("nav_suite");
                             return builder.buildFuture();
                         })
                         .executes(context -> {
@@ -249,6 +264,8 @@ public final class AIBotVerifySubcommand {
                 features.addAll(EXTREME_SUITE); // 极端环境回归套件别名
             } else if ("real_suite".equals(feature)) {
                 features.addAll(REAL_SUITE); // 贴近实操套件别名
+            } else if ("nav_suite".equals(feature)) {
+                features.addAll(NAV_SUITE); // 寻路容错专项套件别名
             } else if (ALL_FEATURES.contains(feature)) {
                 features.add(feature);
             }
@@ -308,6 +325,10 @@ public final class AIBotVerifySubcommand {
             case "real_iron" -> assignRealIron(bot);
             case "real_diamond" -> assignRealDiamond(bot);
             case "real_obsidian" -> assignRealObsidian(bot);
+            case "real_nav_far" -> assignRealNavFar(bot);
+            case "nav_pillar_out" -> assignNavPillarOut(bot);
+            case "nav_buried_escape" -> assignNavBuriedEscape(bot);
+            case "nav_unreachable" -> assignNavUnreachable(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
     }
@@ -1075,9 +1096,17 @@ public final class AIBotVerifySubcommand {
         return bot.getBlockPos();
     }
 
+    // 读 bot 的累计死亡统计(ServerStatHandler 跨重生持续累加,不随重生清零)。real_* 零死亡断言的基线用:
+    // 实操里死亡重生 = 掉装备/丢位置/进度报废的重大事故,哪怕重生后把目标补齐也不能算过——
+    // 只看 isAlive() 抓不到"死过又活了"的情况,必须对比死亡计数。
+    private static int deathCount(AIPlayerEntity bot) {
+        return bot.getStatHandler().getStat(net.minecraft.stat.Stats.CUSTOM.getOrCreateStat(net.minecraft.stat.Stats.DEATHS));
+    }
+
     // 实操:砍 8 根原木(自然找树;接受任意树种)。
     private static Result assignRealWood(AIPlayerEntity bot) {
         prepareRealistic(bot);
+        final int deathBase = deathCount(bot); // 零死亡红线:场景内死过一次即 FAIL(见 deathCount 注释)
         boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.OAK_LOG, 8));
         if (!started) {
             return Result.fail("real_wood", "goal_submit_failed");
@@ -1085,18 +1114,21 @@ public final class AIBotVerifySubcommand {
         java.util.Set<Item> logs = java.util.Set.copyOf(io.github.zoyluo.aibot.craft.RecipeRegistry.LOGS);
         return Result.runningGoal("real_wood", 8000,
                 ignored -> bot.isAlive()
-                        && io.github.zoyluo.aibot.action.HarvestCore.countInventoryItems(bot, logs) >= 8);
+                        && io.github.zoyluo.aibot.action.HarvestCore.countInventoryItems(bot, logs) >= 8
+                        && deathCount(bot) == deathBase);
     }
 
     // 实操:从零搞 4 个熟食(自己感知周围择源:打猎/种植;自己做炉凑燃料)。
     private static Result assignRealFood(AIPlayerEntity bot) {
         prepareRealistic(bot);
+        final int deathBase = deathCount(bot); // 零死亡红线:死亡重生也判 FAIL(实操死一次=大事故)
         boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.Food(4));
         if (!started) {
             return Result.fail("real_food", "goal_submit_failed");
         }
         return Result.runningGoal("real_food", 16000,
-                ignored -> bot.isAlive() && cookedFoodCount(bot) >= 4);
+                ignored -> bot.isAlive() && cookedFoodCount(bot) >= 4
+                        && deathCount(bot) == deathBase);
     }
 
     // 实操:从零种麦做 2 个面包(割草取种→锄→开垦→种→等熟→收→合成)。
@@ -1106,46 +1138,69 @@ public final class AIBotVerifySubcommand {
         prepareRealistic(bot);
         ServerWorld world = bot.getServerWorld();
         world.getGameRules().get(net.minecraft.world.GameRules.RANDOM_TICK_SPEED).set(40, world.getServer());
+        final int deathBase = deathCount(bot); // 零死亡红线:死亡重生也判 FAIL(实操死一次=大事故)
         boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.BREAD, 2));
         if (!started) {
             return Result.fail("real_wheat", "goal_submit_failed");
         }
         return Result.runningGoal("real_wheat", 16000,
-                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.BREAD) >= 2);
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.BREAD) >= 2
+                        && deathCount(bot) == deathBase);
     }
 
     // 实操:从零一块铁锭(砍树→木镐→挖石→石镐→找铁矿→挖→做炉→熔炼)。自然地形大考。
     private static Result assignRealIron(AIPlayerEntity bot) {
         prepareRealistic(bot);
+        final int deathBase = deathCount(bot); // 零死亡红线:死亡重生也判 FAIL(实操死一次=大事故)
         boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.IRON_INGOT, 1));
         if (!started) {
             return Result.fail("real_iron", "goal_submit_failed");
         }
         return Result.runningGoal("real_iron", 24000,
-                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.IRON_INGOT) >= 1);
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.IRON_INGOT) >= 1
+                        && deathCount(bot) == deathBase);
     }
 
     // 实操:从零一颗钻石(完整工具链 + 真实下挖到 -59 找矿,会遇洞穴/岩浆/黑暗)。
     private static Result assignRealDiamond(AIPlayerEntity bot) {
         prepareRealistic(bot);
+        final int deathBase = deathCount(bot); // 零死亡红线:死亡重生也判 FAIL(实操死一次=大事故)
         boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.DIAMOND, 1));
         if (!started) {
             return Result.fail("real_diamond", "goal_submit_failed");
         }
         return Result.runningGoal("real_diamond", 24000,
-                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.DIAMOND) >= 1);
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.DIAMOND) >= 1
+                        && deathCount(bot) == deathBase);
     }
 
     // 实操:从零一块黑曜石。自然世界黑曜石须"找岩浆湖+浇水"——bot 目前没有这个能力,
     // 本场景预期 FAIL,留作能力缺失的存证与修复目标(修好后转绿)。
     private static Result assignRealObsidian(AIPlayerEntity bot) {
         prepareRealistic(bot);
+        final int deathBase = deathCount(bot); // 零死亡红线:死亡重生也判 FAIL(实操死一次=大事故)
         boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.OBSIDIAN, 1));
         if (!started) {
             return Result.fail("real_obsidian", "goal_submit_failed");
         }
         return Result.runningGoal("real_obsidian", 12000,
-                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.OBSIDIAN) >= 1);
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.OBSIDIAN) >= 1
+                        && deathCount(bot) == deathBase);
+    }
+
+    // 实操:自然地形长距离导航——目标=东边 120 格的自然地表点(中途可能有湖/崖/密林,考验绕行与容错)。
+    // 不验证路径漂不漂亮,只验证"能到":距目标 ≤3 格即过。这是所有 real_*"走过去干活"的共同前置能力,
+    // 单拎出来测,导航挂了能直接定位是"走路"问题而不是采集/合成问题。
+    private static Result assignRealNavFar(AIPlayerEntity bot) {
+        BlockPos start = prepareRealistic(bot);
+        ServerWorld world = bot.getServerWorld();
+        int gx = start.getX() + 120;
+        int gz = start.getZ();
+        // 用 MOTION_BLOCKING 堆叠图取自然地表落脚 y(含树叶/水面),与"玩家肉眼选个地表点"一致
+        int gy = world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING, gx, gz);
+        BlockPos goal = new BlockPos(gx, gy, gz);
+        return assignTask(bot, "real_nav_far", new MoveTask(bot, goal), 6000,
+                ignored -> bot.isAlive() && bot.getBlockPos().getSquaredDistance(goal) <= 9.0D);
     }
 
     // 数 center 处 2×2 四格里的水源数量。
@@ -1336,6 +1391,83 @@ public final class AIBotVerifySubcommand {
                 ignored -> bot.getBlockPos().getSquaredDistance(goal) <= 4.0D);
     }
 
+    /**
+     * 寻路容错①:被困逃生。4 高环形石墙把 bot 围死(水平绕路不存在),手里只有 32 泥土——
+     * MoveTask 要么搭柱翻墙、要么徒手挖穿墙,哪条活路都行,断言最终站到墙外目标点。
+     * 这是实操"掉坑/被地形圈死"的最小复现:寻路必须把"垫方块/拆方块"当合法走法,纯平面 A* 会判死路空转。
+     */
+    private static Result assignNavPillarOut(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin); // 无装备 bot 被圈在墙内,y6 怪海进来就是死局;清掉隔离被测的逃生逻辑
+        // 先把活动空间清大:墙顶(y+3)之上还要 2 格头部空间才翻得过去,墙外到目标也要有落脚地——
+        // dev 世界 y6 四周是原生石头,不清的话测的就不是"会不会自救"而是"被地形捉弄"。
+        for (BlockPos pos : BlockPos.iterate(origin.add(-6, 0, -6), origin.add(10, 6, 6))) {
+            world.setBlockState(pos, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        for (BlockPos pos : BlockPos.iterate(origin.add(-6, -1, -6), origin.add(10, -1, 6))) {
+            world.setBlockState(pos, Blocks.COBBLESTONE.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        // 5×5 环形石墙(高 4)围死 bot:内圈 3×3 留空气,|dx|==2 或 |dz|==2 的一圈砌 STONE。
+        for (int dy = 0; dy <= 3; dy++) {
+            for (int dx = -2; dx <= 2; dx++) {
+                for (int dz = -2; dz <= 2; dz++) {
+                    if (Math.abs(dx) == 2 || Math.abs(dz) == 2) {
+                        world.setBlockState(origin.add(dx, dy, dz), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                    }
+                }
+            }
+        }
+        InventoryAction.giveItem(bot, new ItemStack(Items.DIRT, 32)); // 搭柱材料管够;不给镐——徒手挖墙也算一条活路
+        BlockPos goal = origin.offset(Direction.EAST, 8);
+        return assignTask(bot, "nav_pillar_out", new MoveTask(bot, goal), 2400,
+                ignored -> bot.isAlive() && bot.getBlockPos().getSquaredDistance(goal) <= 9.0D);
+    }
+
+    /**
+     * 寻路容错②:活埋脱困。把 bot 脚位+头位直接灌成 STONE(模拟塌方/被挤进墙体),bot 正在窒息掉血。
+     * 提交一个普通 MoveTask,NavSafetyNet 的窒息脱困应抢先把身位方块拆掉、人挖出来再走。
+     * 断言完成时 bot 活着且脚位+头位都无碰撞体——必须真挖出来,不能只看任务状态糊弄
+     * (任务可能在身体仍卡在方块里磨血时就被判完成)。
+     */
+    private static Result assignNavBuriedEscape(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin); // 脱困后 bot 残血,y6 怪海一箭就翻车;清掉保证测的是脱困本身
+        world.setBlockState(origin, Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(origin.up(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        return assignTask(bot, "nav_buried_escape", new MoveTask(bot, origin.north(5)), 1200,
+                ignored -> bot.isAlive() && bodyFree(bot));
+    }
+
+    // bot 脚位+头位是否都无碰撞体(=没卡在方块里)。活埋脱困的核检条件:挖出来才算真脱困。
+    private static boolean bodyFree(AIPlayerEntity bot) {
+        ServerWorld world = bot.getServerWorld();
+        BlockPos feet = bot.getBlockPos();
+        BlockPos head = feet.up();
+        return world.getBlockState(feet).getCollisionShape(world, feet).isEmpty()
+                && world.getBlockState(head).getCollisionShape(world, head).isEmpty();
+    }
+
+    /**
+     * 寻路容错③(反向场景):不可达目标要"快速认输"。目标在头顶 80 格高空、背包全空(连搭柱的方块都没有),
+     * 物理上不可能到达——期望 MoveTask 在 2400t 内**干净 FAILED**(算 PASS);COMPLETED 或超时仍 RUNNING 都判 FAIL。
+     * 空转是实操里最隐蔽的故障形态:bot 看着在干活,实际原地打转浪费整局,比干脆报错难发现得多。
+     */
+    private static Result assignNavUnreachable(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        clearNearbyMobs(bot.getServerWorld(), bot.getBlockPos()); // 防怪把 bot 打死造成"假干净失败"(死亡中止≠主动认输)
+        BlockPos goal = bot.getBlockPos().up(80);
+        // 不走 assignTask(它只会包出常规 running 语义):直接 assign + 反向 Result,语义是"应当失败"。
+        TaskManager.INSTANCE.assign(bot, new MoveTask(bot, goal));
+        return Result.runningExpectCleanFail("nav_unreachable", 2400);
+    }
+
     private static Result assignTask(AIPlayerEntity bot, String feature, Task task, int timeoutTicks, Predicate<TaskStatus> assertion) {
         TaskManager.INSTANCE.assign(bot, task);
         return Result.running(feature, timeoutTicks, assertion);
@@ -1515,6 +1647,12 @@ public final class AIBotVerifySubcommand {
             int elapsedTicks = server.getTicks() - active.startedTick();
             TaskStatus status = TaskManager.INSTANCE.status(bot);
             if (status.state() == TaskState.COMPLETED) {
+                if (running.expectFail()) {
+                    // 反向场景:任务"完成"了反而是错——说明场景前提没立住(目标其实可达),记 FAIL 提示人工复查布景。
+                    record(Result.fail(running.feature(), "should_have_failed: completed in " + elapsedTicks + " ticks"));
+                    active = null;
+                    return;
+                }
                 if (running.assertion().test(status)) {
                     record(Result.pass(running.feature(), "completed in " + elapsedTicks + " ticks"));
                 } else if (running.allowGoalContinuation() && GoalExecutor.INSTANCE.hasActivePlan(bot)) {
@@ -1526,6 +1664,13 @@ public final class AIBotVerifySubcommand {
                 return;
             }
             if (status.state() == TaskState.FAILED) {
+                if (running.expectFail()) {
+                    // 反向场景的 PASS:超时前干净报了失败(而非空转到永远)。detail 带失败原因+耗时,便于核对失败得"对不对"。
+                    record(Result.pass(running.feature(), "clean fail in " + elapsedTicks + " ticks: "
+                            + (status.failureReason().isBlank() ? "task_failed" : status.failureReason())));
+                    active = null;
+                    return;
+                }
                 if (running.allowGoalContinuation() && GoalExecutor.INSTANCE.hasActivePlan(bot)) {
                     return;
                 }
@@ -1535,7 +1680,9 @@ public final class AIBotVerifySubcommand {
             }
             if (elapsedTicks >= running.timeoutTicks()) {
                 TaskManager.INSTANCE.abort(bot);
-                record(Result.fail(running.feature(), "verify_timeout status=" + status.name() + " " + status.description()));
+                // expectFail 场景超时 = 任务既没完成也没认输、一直空转——这正是反向场景要钉死的故障形态,换专属前缀好认。
+                record(Result.fail(running.feature(), (running.expectFail() ? "no_clean_fail_before_timeout" : "verify_timeout")
+                        + " status=" + status.name() + " " + status.description()));
                 active = null;
             }
         }
@@ -1579,32 +1726,41 @@ public final class AIBotVerifySubcommand {
                           boolean running,
                           int timeoutTicks,
                           boolean allowGoalContinuation,
+                          boolean expectFail,
                           Predicate<TaskStatus> assertion,
                           Consumer<AIPlayerEntity> perTick) {
         private static final Consumer<AIPlayerEntity> NO_TICK = bot -> {
         };
 
         private static Result pass(String feature, String detail) {
-            return new Result(feature, true, detail, false, 0, false, ignored -> true, NO_TICK);
+            return new Result(feature, true, detail, false, 0, false, false, ignored -> true, NO_TICK);
         }
 
         private static Result fail(String feature, String detail) {
-            return new Result(feature, false, detail, false, 0, false, ignored -> false, NO_TICK);
+            return new Result(feature, false, detail, false, 0, false, false, ignored -> false, NO_TICK);
         }
 
         private static Result running(String feature, int timeoutTicks, Predicate<TaskStatus> assertion) {
-            return new Result(feature, false, "running", true, timeoutTicks, false, assertion, NO_TICK);
+            return new Result(feature, false, "running", true, timeoutTicks, false, false, assertion, NO_TICK);
         }
 
         private static Result runningGoal(String feature, int timeoutTicks, Predicate<TaskStatus> assertion) {
-            return new Result(feature, false, "running", true, timeoutTicks, true, assertion, NO_TICK);
+            return new Result(feature, false, "running", true, timeoutTicks, true, false, assertion, NO_TICK);
         }
 
         // 带每-tick 副作用钩子的 runningGoal:perTick 在 pollActive 每个服务端 tick 都被调用(无论有无 task 完成),
         // 用于测试期持续操纵世界(如强制催熟作物,绕开自然随机刻生长的漫长等待)。assertion 仍是成功判定。
         private static Result runningGoal(String feature, int timeoutTicks,
                                           Consumer<AIPlayerEntity> perTick, Predicate<TaskStatus> assertion) {
-            return new Result(feature, false, "running", true, timeoutTicks, true, assertion, perTick);
+            return new Result(feature, false, "running", true, timeoutTicks, true, false, assertion, perTick);
+        }
+
+        // 反向场景工厂:期望任务在 timeoutTicks 内**干净 FAILED**——这才算 PASS(detail 带失败原因+耗时);
+        // COMPLETED 或超时仍 RUNNING 都记 FAIL。用来钉死"不可达目标必须快速认输"的容错契约,
+        // 防止寻路退化成无限重试空转(实操里空转比报错伤得多:看着在干活,实际整局假死)。
+        // assertion 在 expectFail 语义下不参与判定,占位恒 false 防误用。
+        private static Result runningExpectCleanFail(String feature, int timeoutTicks) {
+            return new Result(feature, false, "running", true, timeoutTicks, false, true, ignored -> false, NO_TICK);
         }
     }
 }

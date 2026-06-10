@@ -182,10 +182,15 @@ public final class HuntTask extends AbstractTask {
         BlockPos feet = bot.getBlockPos();
         int[][] dirs = {{1, 0}, {0, 1}, {-1, 0}, {0, -1}, {1, 1}, {-1, -1}, {1, -1}, {-1, 1}};
         int start = Math.floorMod(roamCount, dirs.length);
-        for (int i = 0; i < dirs.length; i++) {
-            int[] d = dirs[(start + i) % dirs.length];
-            BlockPos ground = findGround(world, feet.getX() + d[0] * ROAM_DISTANCE, feet.getZ() + d[1] * ROAM_DISTANCE);
-            if (ground != null) {
+        // 距离自适应:满距 8 方向全寻路被拒(山顶/悬崖/水域环绕)就减半再试——近处总有能走的点,
+        // 先挪过去下轮再扩(与 GatherQuotaTask.roamToNewArea 同款,治"8 连拒直接放弃"速死)。
+        for (int dist = ROAM_DISTANCE; dist >= ROAM_DISTANCE / 4; dist /= 2) {
+            for (int i = 0; i < dirs.length; i++) {
+                int[] d = dirs[(start + i) % dirs.length];
+                BlockPos ground = findGround(world, feet.getX() + d[0] * dist, feet.getZ() + d[1] * dist);
+                if (ground == null) {
+                    continue;
+                }
                 bot.getActionPack().stopAll();
                 // 寻路被拒(目标不可达/未加载)→ 试下一个方向。原来不看结果就进 ROAM,
                 // 下一 tick isPathExecutorIdle 即真 → 瞬退回 ACQUIRE → 再 roam……
@@ -198,7 +203,8 @@ public final class HuntTask extends AbstractTask {
                 phase = Phase.ROAM;
                 lastProgressTick = elapsed;
                 BotLog.action(bot, "hunt_roam",
-                        "to", ground.getX() + "," + ground.getY() + "," + ground.getZ(), "n", roamCount);
+                        "to", ground.getX() + "," + ground.getY() + "," + ground.getZ(),
+                        "n", roamCount, "dist", dist);
                 return true;
             }
         }

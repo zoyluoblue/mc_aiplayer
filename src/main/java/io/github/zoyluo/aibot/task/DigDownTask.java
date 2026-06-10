@@ -172,6 +172,21 @@ public final class DigDownTask extends AbstractTask {
         // 无进展看门狗:NO_PROGRESS_LIMIT 内没破任何块 → 干净失败,不空转。
         if (elapsed - lastProgressTick > NO_PROGRESS_LIMIT) {
             miner.cancel(bot);
+            // 取证 dump:山地/自然地形 no_progress(实测 424t 零破块)光靠失败原因无法定位——
+            // 把脚位、阶梯方向、下一级三格(头/脚/踏面)的方块、能否破障打出来,供日志诊断几何卡点。
+            BlockPos feetNow = bot.getBlockPos();
+            Direction dirNow = HDIRS[stairDirIndex];
+            BlockPos aheadNow = feetNow.offset(dirNow);
+            BlockPos nextNow = aheadNow.down();
+            ServerWorld worldNow = bot.getServerWorld();
+            BotLog.action(bot, "dig_down_stall_dump",
+                    "feet", feetNow.toShortString(),
+                    "dir", dirNow.asString(),
+                    "ahead", worldNow.getBlockState(aheadNow).getBlock().toString(),
+                    "next", worldNow.getBlockState(nextNow).getBlock().toString(),
+                    "below_next", worldNow.getBlockState(nextNow.down()).getBlock().toString(),
+                    "under_feet", worldNow.getBlockState(feetNow.down()).getBlock().toString(),
+                    "can_harvest", ToolTier.canHarvestWithInventory(bot, targetBlock.getDefaultState()));
             fail("dig_down_no_progress collected=" + collected);
             return;
         }

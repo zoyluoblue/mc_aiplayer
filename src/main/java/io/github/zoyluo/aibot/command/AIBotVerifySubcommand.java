@@ -1637,8 +1637,15 @@ public final class AIBotVerifySubcommand {
         bot.teleport(world, anchor.getX() + 0.5D, anchor.getY(), anchor.getZ() + 0.5D,
                 java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
         BlockPos origin = bot.getBlockPos();
-        for (BlockPos pos : BlockPos.iterate(origin.add(-4, 0, -4), origin.add(4, 3, 4))) {
-            world.setBlockState(pos, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        // 实验室化:轮转地块的天然地形(湖/坡/洞/沙)让确定性回归变抽卡——同一场景红绿每轮洗牌
+        //(实测挖石族在湖边泡死、矿场景 need_planks/no_progress 轮换)。场景区整体替换为人造平台:
+        // floor 之下 16 格实心石(挖矿/下挖全程吃人造石,不穿进天然含水层),上方 8 格清空。
+        // 理想化场景跑"实验室",真实地形考验由 real_suite(SEED 多地形)负责——分层职责明确。
+        for (BlockPos pos : BlockPos.iterate(origin.add(-16, -16, -16), origin.add(16, -1, 16))) {
+            world.setBlockState(pos, Blocks.STONE.getDefaultState(), Block.NOTIFY_LISTENERS);
+        }
+        for (BlockPos pos : BlockPos.iterate(origin.add(-16, 0, -16), origin.add(16, 8, 16))) {
+            world.setBlockState(pos, Blocks.AIR.getDefaultState(), Block.NOTIFY_LISTENERS);
         }
         for (BlockPos pos : BlockPos.iterate(origin.add(-4, -1, -4), origin.add(4, -1, 4))) {
             world.setBlockState(pos, Blocks.COBBLESTONE.getDefaultState(), Block.NOTIFY_ALL);

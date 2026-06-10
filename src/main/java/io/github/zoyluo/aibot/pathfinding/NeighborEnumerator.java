@@ -61,7 +61,7 @@ public final class NeighborEnumerator {
                 continue;
             }
 
-            if (allowDig && isMineable(world, target) && hasHeadroom(world, target)) {
+            if (allowDig && digEnterable(world, target)) {
                 result.add(new NeighborCandidate(target, MoveType.DIG_THROUGH, 0));
             }
         }
@@ -150,6 +150,21 @@ public final class NeighborEnumerator {
             }
         }
         return null;
+    }
+
+    // DIG 可进入:脚位与头位各自"可挖 或 已通行"(但不全空——全空是 WALK/JUMP 的领域),
+    // 且脚下有支撑(挖完站得住)。修"脚空头实"死角:终点=矿正下方时站位空气、头顶是矿,
+    // 原 isMineable 要求脚位非空气 → 四种邻居全拒,goal 节点永不入队,A* 万格泛洪 TIMEOUT(geo_wall 实测)。
+    private static boolean digEnterable(ServerWorld world, BlockPos target) {
+        BlockPos head = target.up();
+        boolean footOpen = collisionEmpty(world, target);
+        boolean headOpen = collisionEmpty(world, head);
+        if (footOpen && headOpen) {
+            return false;
+        }
+        boolean footOk = footOpen || isMineable(world, target);
+        boolean headOk = headOpen || isMineable(world, head);
+        return footOk && headOk && !collisionEmpty(world, target.down());
     }
 
     private static boolean hasHeadroom(ServerWorld world, BlockPos target) {

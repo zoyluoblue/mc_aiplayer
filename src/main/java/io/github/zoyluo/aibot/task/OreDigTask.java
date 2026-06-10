@@ -39,10 +39,9 @@ public final class OreDigTask extends AbstractTask {
     private static final int PROSPECT_RANGE = 64;       // 探矿(大范围定位最近矿)半径——身边扫不到时启用
     private static final int PROSPECT_INTERVAL = 40;    // 探矿较贵(逐区块 section 扫),2s 一次
     private static final int VERTICAL_SCAN = 10;
-    // 5.5^2:原 4.5 与 approach 停步点之间有 0.5-1 格死区(stall dump 实测 dist=5.1 时
-    // miner=idle 不开挖、approach 又认为已到位不再走,干瞪眼到 no_progress)。放宽到 5.5
-    //(服务端挖掘验证容差内),覆盖死区;真够不到仍由 BlockMiner FAILED→ignored 兜底。
-    private static final double REACH_SQUARED = 30.25D;
+    // 4.5^2:与 BlockMiner 内部验证一致(5.5 时边缘开挖被 miner 拒→FAILED→矿被误拉黑,geo_wall 实测
+    // 锁定 2s 即弃)。历史 5.1 死区的前提已不存在——接近目标现在是矿正下方格,寻路会真走到贴脸位。
+    private static final double REACH_SQUARED = 20.25D;
     private static final int MIN_Y = -60;
     private static final int VEIN_CAP = 64;
     private static final int PICKUP_GRACE_TICKS = 30;
@@ -70,6 +69,7 @@ public final class OreDigTask extends AbstractTask {
     private int targetApproachTick;
     private int stripDirIndex = -1;   // 优化1:矿层水平找矿当前掘进方向(STRIP_DIRS 下标),-1=未开始
     private int stripStepsLeft;       // 优化1:当前隧道段剩余格数
+    private int lastMinedTick = -100; // 挖掉矿本体的时刻:掉落实体在下 tick 才出现,挖完原地驻留捡取
 
     public OreDigTask(Set<Block> targetOres, int targetCount) {
         this.targetOres = targetOres == null || targetOres.isEmpty()
@@ -188,7 +188,11 @@ public final class OreDigTask extends AbstractTask {
         // 2) 当前有锁定矿:可达就挖它(挖到后入脉队列),不可达就朝它挖一格隧道。
         if (targetOre != null) {
             if (!OreScan.isOre(world.getBlockState(targetOre), targetOres)) {
-                // 矿没了(已被挖/被改)→ 把它周围同脉矿排队,然后回扫描
+                // 矿没了——多数是寻路执行器接近时把"头位=矿"顺手挖掉了(approach 目标=矿正下方的设计),
+                // 掉落已在地上:开驻留窗大半径捡(geo_wall 实测 mine_complete 由执行器打、不走 DONE 分支,
+                // 不在这接驻留就 0 捡取白挖)。同脉排队照旧。
+                lastMinedTick = elapsed;
+                HarvestCore.forcePickupNearbyAnyOf(bot, targetDrops, 7.0D, 4.0D);
                 queueVeinAround(bot, world, targetOre);
                 targetOre = null;
                 return;
@@ -217,6 +221,11 @@ public final class OreDigTask extends AbstractTask {
                         ? miner.tick(bot)
                         : beginMine(bot, targetOre);
                 if (st == BlockMiner.Status.DONE) {
+                    // 掉落捡取半径跟上 reach:寻路接近停在 reach 边缘(5.5)挖,掉落落在矿位、
+                    // 超出每 tick 3 格被动捡取(旧贴脸直挖 1-2 格才没暴露);挖掉即定向大半径捡一把,
+                    // 否则 collected 不涨、bot 被下一个目标拉走白挖(geo_wall 实测 mine_complete 后 0/1)。
+                    lastMinedTick = elapsed;
+                    HarvestCore.forcePickupNearbyAnyOf(bot, targetDrops, 7.0D, 4.0D);
                     queueVeinAround(bot, world, targetOre);
                     targetOre = null;
                     lastProgressTick = elapsed;
@@ -232,8 +241,22 @@ public final class OreDigTask extends AbstractTask {
             // (PathExecutor.DIG_THROUGH)天然"挖完走进去"。寻路被拒(节流/无解)时这个 tick 空转,
             // 接近监控(APPROACH_LIMIT)兜底换矿。
             if (bot.getActionPack().isPathExecutorIdle()) {
-                bot.getActionPack().startDigPathTo(targetOre);
+                // 接近目标=矿的下方格:DIG 邻居只有水平四向,矿高一格时同层泛洪永远够不到终点
+                //(geo_wall 实测 explored=8699 全图泛洪 TIMEOUT)。站位选矿正下,头位恰=矿格——
+                // 执行器挖头位时顺手把矿挖掉,掉落物落脚边直接入袋,反而少走一步。
+                var approach = bot.getActionPack().startDigPathTo(targetOre.down());
+                if (approach.isFailed() && !"pathfinding_throttled".equals(approach.reason())) { // 观测:首败必打(节流不打)
+                    BotLog.action(bot, "ore_dig_approach_rejected", "why", approach.reason(),
+                            "target", targetOre.toShortString());
+                }
             }
+            return;
+        }
+
+        // 挖完驻留:掉落实体在破块的下一 tick 才落地,立刻奔赴新目标会永远错过(geo_wall 实测
+        // mine_complete 后 0 捡取、collected 不涨白挖)。原地等 15t 持续大半径捡,捡到计数自然推进。
+        if (elapsed - lastMinedTick < 15) {
+            HarvestCore.forcePickupNearbyAnyOf(bot, targetDrops, 7.0D, 4.0D);
             return;
         }
 

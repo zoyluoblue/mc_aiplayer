@@ -15,6 +15,14 @@ rm -f "$FIFO"; mkfifo "$FIFO"
 
 # 清上一局残留 bot(否则 verify 的 selectBot 可能选到旧 bot),保留 world 省重生成
 rm -f run/world/aibot/bots.json 2>/dev/null
+# 贴近实操(real_*)用例:重置世界再跑——固定 seed 重新生成,保证每轮从同一自然状态开始。
+# 不重置的话前几轮把出生区的树/草/动物耗光(实测 96 格内无草、21t 速死),失败不可复现、互相污染。
+case "$FEATURE" in
+  real*)
+    echo "[foodtest] realistic case: resetting world (fixed seed regen)"
+    rm -rf run/world
+    ;;
+esac
 # LLM 隔离:shell 里的 DEEPSEEK_API_KEY 会被 runServer 继承 → 大脑在 verify 失败注入时偷偷调 API
 # (烧钱 + 给"确定性"测试掺入大脑干预,实测之前测试期间有 api_response)。默认 unset;
 # 要测 LLM 全链(中文指令→意图→工具→执行)时 WITH_LLM=1 跑。
@@ -67,4 +75,7 @@ rm -f "$FIFO"
 echo "================= TEST RESULT ($FEATURE) ================="
 echo "${RESULT:-NO_RESULT}"
 echo "=========================================================="
-echo "[foodtest] full server log: $LOG ; bot diag log: run/logs/latest.log"
+# 每轮日志存档(防下一轮覆盖诊断证据)
+ARCHIVE="/tmp/mc_test_${FEATURE}_$(date +%H%M%S).log"
+cp "$LOG" "$ARCHIVE" 2>/dev/null
+echo "[foodtest] full server log: $LOG (archived: $ARCHIVE)"

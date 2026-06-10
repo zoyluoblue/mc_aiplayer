@@ -148,8 +148,19 @@ public final class OreDigTask extends AbstractTask {
             return;
         }
 
-        // 无进展看门狗:NO_PROGRESS_LIMIT 内没破任何块 → 干净失败。
+        // 无进展看门狗:NO_PROGRESS_LIMIT 内没破任何块 → 干净失败。fail 前 dump 内部状态,
+        // 供无头测试诊断"找到矿却无进展"到底卡在哪个环节(锁定丢失/接近失败/挖不动)。
         if (elapsed - lastProgressTick > NO_PROGRESS_LIMIT) {
+            BotLog.action(bot, "ore_dig_stall_dump",
+                    "target", targetOre == null ? "none"
+                            : targetOre.getX() + "," + targetOre.getY() + "," + targetOre.getZ(),
+                    "dist", targetOre == null ? "-"
+                            : String.format("%.1f", Math.sqrt(bot.getEyePos().squaredDistanceTo(targetOre.toCenterPos()))),
+                    "miner", miner.target() == null ? "idle"
+                            : miner.target().getX() + "," + miner.target().getY() + "," + miner.target().getZ(),
+                    "ignored", ignored.size(),
+                    "vein_queue", veinQueue.size(),
+                    "strip_left", stripStepsLeft);
             miner.cancel(bot);
             fail("ore_dig_no_progress collected=" + collected);
             return;

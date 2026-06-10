@@ -37,6 +37,15 @@ public final class OreProspector {
      * palette 级 section.hasAny(match) 快速跳过不含目标的 section,故大半径也不卡。
      */
     public static BlockPos nearest(ServerWorld world, BlockPos origin, int range, Predicate<BlockState> match) {
+        return nearest(world, origin, range, match, null);
+    }
+
+    /**
+     * 带坐标过滤版:posFilter 拒绝的坐标跳过(如调用方拉黑"走不到的目标"防止反复 prospect 同一个死循环)。
+     * posFilter 为 null 时不过滤。
+     */
+    public static BlockPos nearest(ServerWorld world, BlockPos origin, int range,
+                                   Predicate<BlockState> match, Predicate<BlockPos> posFilter) {
         int minX = origin.getX() - range;
         int maxX = origin.getX() + range;
         int minY = Math.max(world.getBottomY(), origin.getY() - range);
@@ -88,10 +97,15 @@ public final class OreProspector {
                                     continue;
                                 }
                                 double d = origin.getSquaredDistance(x, y, z);
-                                if (d < bestDist) {
-                                    bestDist = d;
-                                    best = new BlockPos(x, y, z);
+                                if (d >= bestDist) {
+                                    continue;
                                 }
+                                BlockPos pos = new BlockPos(x, y, z);
+                                if (posFilter != null && !posFilter.test(pos)) {
+                                    continue; // 被调用方拉黑(如反复走不到的目标)
+                                }
+                                bestDist = d;
+                                best = pos;
                             }
                         }
                     }

@@ -55,12 +55,12 @@ public final class OreDigTask extends AbstractTask {
     private final Set<Item> targetDrops;
     private final int targetCount;
     private final BlockMiner miner = new BlockMiner();
-    private final Set<BlockPos> ignored = new HashSet<>();
+    // 排除项收编进 EpisodeMemory(工作记忆,goal 级生命周期+TTL 复活):原实例 Set 在 replan 后丢失、
+    // 又需一次性"特赦"补救;TTL 短排除(30s)语义更细腻——过期自然复活,无需特赦。
     private final Deque<BlockPos> veinQueue = new ArrayDeque<>();
 
     private int invBaseline;
     private int collected;
-    private boolean amnestyUsed; // 拉黑特赦只给一次(见 no_progress 看门狗)
     private int lastProgressTick;
     private int lastScanTick = -SCAN_INTERVAL;
     private int lastProspectTick = -100;
@@ -103,6 +103,15 @@ public final class OreDigTask extends AbstractTask {
         // 挖掘/下挖期 bot 基本站着挖,视为 waiting 让 StuckWatcher 不误判(它正是 #10 反复 abort 的元凶);
         // 由本任务自己的 NO_PROGRESS_LIMIT 看门狗负责卡死保护。
         return true;
+    }
+
+    // EpisodeMemory 薄包装:排除"够不到/挖空"的矿(TTL 30s 自动复活),goal 级生命周期跨 replan 存活。
+    private void excludeOre(AIPlayerEntity bot, BlockPos pos) {
+        EpisodeMemory.INSTANCE.exclude(bot.getUuid(), pos, bot.getServer().getTicks(), EpisodeMemory.TTL_SHORT);
+    }
+
+    private boolean oreExcluded(AIPlayerEntity bot, BlockPos pos) {
+        return EpisodeMemory.INSTANCE.isExcluded(bot.getUuid(), pos, bot.getServer().getTicks());
     }
 
     @Override
@@ -155,16 +164,7 @@ public final class OreDigTask extends AbstractTask {
         // 无进展看门狗:NO_PROGRESS_LIMIT 内没破任何块 → 干净失败。fail 前 dump 内部状态,
         // 供无头测试诊断"找到矿却无进展"到底卡在哪个环节(锁定丢失/接近失败/挖不动)。
         if (elapsed - lastProgressTick > NO_PROGRESS_LIMIT) {
-            // 拉黑特赦:矿被 approach 失败逐个 ignored,全拉黑后 target=none 只能 strip 干耗到死
-            //(实测 stall dump: ignored=4 target=none)。fail 前清一次黑名单重试——位置/路径已变,
-            // 之前"够不到"的矿现在可能够到了;特赦只给一次(再卡死才真 fail)。
-            if (!ignored.isEmpty() && !amnestyUsed) {
-                amnestyUsed = true;
-                ignored.clear();
-                lastProgressTick = elapsed;
-                BotLog.action(bot, "ore_dig_amnesty", "retry", "after_ignored_clear");
-                return;
-            }
+            // (原"一次性特赦"已被 EpisodeMemory 的 TTL 短排除取代:30s 自动复活,比大赦更细腻。)
             BotLog.action(bot, "ore_dig_stall_dump",
                     "target", targetOre == null ? "none"
                             : targetOre.getX() + "," + targetOre.getY() + "," + targetOre.getZ(),
@@ -172,7 +172,7 @@ public final class OreDigTask extends AbstractTask {
                             : String.format("%.1f", Math.sqrt(bot.getEyePos().squaredDistanceTo(targetOre.toCenterPos()))),
                     "miner", miner.target() == null ? "idle"
                             : miner.target().getX() + "," + miner.target().getY() + "," + miner.target().getZ(),
-                    "ignored", ignored.size(),
+                    "ignored", EpisodeMemory.INSTANCE.excludedCount(bot.getUuid()),
                     "vein_queue", veinQueue.size(),
                     "strip_left", stripStepsLeft);
             miner.cancel(bot);
@@ -189,7 +189,7 @@ public final class OreDigTask extends AbstractTask {
         if (targetOre != null) {
             if (!OreScan.isOre(world.getBlockState(targetOre), targetOres)) {
                 // 矿没了(已被挖/被改)→ 把它周围同脉矿排队,然后回扫描
-                queueVeinAround(world, targetOre);
+                queueVeinAround(bot, world, targetOre);
                 targetOre = null;
                 return;
             }
@@ -200,7 +200,7 @@ public final class OreDigTask extends AbstractTask {
                 lastTargetDist = dist2;
                 targetApproachTick = elapsed;
             } else if (elapsed - targetApproachTick > APPROACH_LIMIT) {
-                ignored.add(targetOre);
+                excludeOre(bot, targetOre);
                 BotLog.action(bot, "ore_dig_unreachable_skip",
                         "pos", targetOre.getX() + "," + targetOre.getY() + "," + targetOre.getZ());
                 targetOre = null;
@@ -217,11 +217,11 @@ public final class OreDigTask extends AbstractTask {
                         ? miner.tick(bot)
                         : beginMine(bot, targetOre);
                 if (st == BlockMiner.Status.DONE) {
-                    queueVeinAround(world, targetOre);
+                    queueVeinAround(bot, world, targetOre);
                     targetOre = null;
                     lastProgressTick = elapsed;
                 } else if (st == BlockMiner.Status.FAILED) {
-                    ignored.add(targetOre);
+                    excludeOre(bot, targetOre);
                     targetOre = null;
                 }
                 return;
@@ -295,7 +295,7 @@ public final class OreDigTask extends AbstractTask {
                 ? miner.tick(bot)
                 : beginMine(bot, v);
         if (st == BlockMiner.Status.DONE) {
-            queueVeinAround(world, v);
+            queueVeinAround(bot, world, v);
             veinQueue.pollFirst();
             lastProgressTick = elapsed;
         } else if (st == BlockMiner.Status.FAILED) {
@@ -304,9 +304,9 @@ public final class OreDigTask extends AbstractTask {
         return true;
     }
 
-    private void queueVeinAround(ServerWorld world, BlockPos around) {
+    private void queueVeinAround(AIPlayerEntity bot, ServerWorld world, BlockPos around) {
         for (BlockPos p : OreScan.veinFrom(world, around, targetOres, VEIN_CAP)) {
-            if (!ignored.contains(p)) {
+            if (!oreExcluded(bot, p)) {
                 veinQueue.addLast(p.toImmutable());
             }
         }
@@ -317,7 +317,7 @@ public final class OreDigTask extends AbstractTask {
         BlockPos feet = bot.getBlockPos();
         BlockPos step = stepToward(feet, goal);
         if (step == null) {
-            ignored.add(goal);
+            excludeOre(bot, goal);
             if (goal.equals(targetOre)) {
                 targetOre = null;
             }
@@ -325,7 +325,7 @@ public final class OreDigTask extends AbstractTask {
         }
         // 安全:目标格相邻有岩浆 → 放弃此矿。
         if (OreScan.adjacentHazard(world, step)) {
-            ignored.add(goal);
+            excludeOre(bot, goal);
             if (goal.equals(targetOre)) {
                 targetOre = null;
             }
@@ -351,7 +351,7 @@ public final class OreDigTask extends AbstractTask {
         if (st == BlockMiner.Status.DONE) {
             lastProgressTick = elapsed;
         } else if (st == BlockMiner.Status.FAILED) {
-            ignored.add(goal);
+            excludeOre(bot, goal);
             if (goal.equals(targetOre)) {
                 targetOre = null;
             }
@@ -436,7 +436,7 @@ public final class OreDigTask extends AbstractTask {
         BlockPos best = null;
         double bestDist = Double.MAX_VALUE;
         for (BlockPos pos : BlockPos.iterate(min, max)) {
-            if (ignored.contains(pos) || !OreScan.isOre(world.getBlockState(pos), targetOres)) {
+            if (oreExcluded(bot, pos) || !OreScan.isOre(world.getBlockState(pos), targetOres)) {
                 continue;
             }
             double dist = origin.getSquaredDistance(pos);

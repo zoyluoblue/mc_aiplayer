@@ -101,6 +101,9 @@ public final class GoalExecutor {
         ActivePlan active = new ActivePlan(goal, new ArrayDeque<>(plan.steps()), plan.steps().size(),
                 plan.steps().stream().map(GoalStep::describe).toList());
         activePlans.put(bot.getUuid(), active);
+        // 工作记忆 episode 边界:新目标=新 episode,上一件事的排除项/轨迹作废。
+        // (replan 不走这里——handleStepFailure 原地改 plan.steps,工作记忆跨 replan 存活,这正是设计。)
+        io.github.zoyluo.aibot.task.EpisodeMemory.INSTANCE.reset(bot.getUuid());
         userGoal.putIfAbsent(bot.getUuid(), goal); // B:首个目标记为"用户原始目标";后续前置子目标被上面拦下,换目标由用户消息清空
         BotLog.task(bot, "goal_plan", "goal", goal, "steps", plan.describeSteps());
         report(bot, "我会按 " + plan.steps().size() + " 步完成目标。");
@@ -165,6 +168,7 @@ public final class GoalExecutor {
         //(实测 verify forage 的 HaveItem(浆果) 被上一场景 Food 残留拦截 goal_submit_failed)。
         userGoal.remove(bot.getUuid());
         goalQueue.remove(bot.getUuid()); // 队列一并清:复位=全部待办作废
+        io.github.zoyluo.aibot.task.EpisodeMemory.INSTANCE.reset(bot.getUuid()); // 工作记忆同清
     }
 
     /** 诊断埋点:当前激活的顶层目标(无则 "none")。日志用,保留英文便于排查。 */

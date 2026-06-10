@@ -137,6 +137,7 @@ public final class HuntTask extends AbstractTask {
 
     @Override
     protected void onTick(AIPlayerEntity bot) {
+        EpisodeMemory.INSTANCE.recordTrail(bot.getUuid(), bot.getBlockPos()); // 工作记忆:轨迹(roam 避重用)
         if (elapsed > maxElapsed) {
             fail("hunt_timeout collected=" + collected);
             return;
@@ -213,10 +214,13 @@ public final class HuntTask extends AbstractTask {
         // 距离自适应:满距 8 方向全寻路被拒(山顶/悬崖/水域环绕)就减半再试——近处总有能走的点,
         // 先挪过去下轮再扩(与 GatherQuotaTask.roamToNewArea 同款,治"8 连拒直接放弃"速死)。
         for (int dist = ROAM_DISTANCE; dist >= ROAM_DISTANCE / 4; dist /= 2) {
+            // 轨迹避重(与 GatherQuotaTask 同款):满距档优先去没搜过的新区,减距档不挑剔兜底。
+            boolean avoidTrail = dist == ROAM_DISTANCE;
             for (int i = 0; i < dirs.length; i++) {
                 int[] d = dirs[(start + i) % dirs.length];
                 BlockPos ground = findGround(world, feet.getX() + d[0] * dist, feet.getZ() + d[1] * dist);
-                if (ground == null) {
+                if (ground == null
+                        || (avoidTrail && EpisodeMemory.INSTANCE.nearTrail(bot.getUuid(), ground, 10.0D))) {
                     continue;
                 }
                 bot.getActionPack().stopAll();

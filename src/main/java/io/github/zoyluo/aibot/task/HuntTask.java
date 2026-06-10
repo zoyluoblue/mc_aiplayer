@@ -396,11 +396,26 @@ public final class HuntTask extends AbstractTask {
         }
     }
 
+    // 数据驱动猎物判定(模组兼容):白名单(vanilla 五畜,优先)之外,任何非驯服的 AnimalEntity 都可作猎物
+    //(暮色森林的鹿/野猪等模组动物无需改代码即可猎)。排除已驯服宠物(别把玩家的狼猎了)。
+    private static boolean isHuntable(LivingEntity entity) {
+        if (PREY.contains(entity.getType())) {
+            return true;
+        }
+        if (!(entity instanceof net.minecraft.entity.passive.AnimalEntity)) {
+            return false;
+        }
+        if (entity instanceof net.minecraft.entity.passive.TameableEntity tameable && tameable.isTamed()) {
+            return false;
+        }
+        return true;
+    }
+
     private LivingEntity nearestPrey(AIPlayerEntity bot) {
         Box box = bot.getBoundingBox().expand(SEARCH_RANGE);
         return bot.getServerWorld()
                 .getEntitiesByClass(LivingEntity.class, box,
-                        entity -> entity.isAlive() && entity != bot && PREY.contains(entity.getType()))
+                        entity -> entity.isAlive() && entity != bot && isHuntable(entity))
                 .stream()
                 .min(Comparator.comparingDouble(bot::distanceTo))
                 .orElse(null);
@@ -410,7 +425,7 @@ public final class HuntTask extends AbstractTask {
     public static boolean hasPreyNearby(AIPlayerEntity bot) {
         return !bot.getServerWorld()
                 .getEntitiesByClass(LivingEntity.class, bot.getBoundingBox().expand(SEARCH_RANGE),
-                        entity -> entity.isAlive() && entity != bot && PREY.contains(entity.getType()))
+                        entity -> entity.isAlive() && entity != bot && isHuntable(entity))
                 .isEmpty();
     }
 }

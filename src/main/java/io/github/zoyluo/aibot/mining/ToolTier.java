@@ -34,6 +34,18 @@ public final class ToolTier {
     }
 
     public static int requiredPickaxeTier(Block block) {
+        // 数据驱动优先(模组兼容):vanilla 的工具分级 tag 是权威来源,模组矿物按惯例给自己打这些 tag
+        //(暮色森林等模组的新矿无需改代码即正确分级)。tag 未命中再走下面的手写表兜底(保持历史行为)。
+        var state = block.getDefaultState();
+        if (state.isIn(net.minecraft.registry.tag.BlockTags.NEEDS_DIAMOND_TOOL)) {
+            return DIAMOND;
+        }
+        if (state.isIn(net.minecraft.registry.tag.BlockTags.NEEDS_IRON_TOOL)) {
+            return IRON;
+        }
+        if (state.isIn(net.minecraft.registry.tag.BlockTags.NEEDS_STONE_TOOL)) {
+            return STONE;
+        }
         // 黑曜石/哭泣的黑曜石/远古残骸:需钻石镐(否则破坏无掉落)。
         if (block == Blocks.OBSIDIAN || block == Blocks.CRYING_OBSIDIAN || block == Blocks.ANCIENT_DEBRIS) {
             return DIAMOND;

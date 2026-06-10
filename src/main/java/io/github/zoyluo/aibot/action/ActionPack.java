@@ -106,7 +106,7 @@ public final class ActionPack {
         }
         boolean canPillar = PathExecutor.hasPlaceableBlock(player);
         PathfindingResult result = new AStarPathfinder(player.getServerWorld(), player.getBlockPos(), goal,
-                DIG_APPROACH_MAX_NODES, PATHFIND_MAX_MILLIS, canPillar, true).findPath();
+                DIG_APPROACH_MAX_NODES, PATHFIND_MAX_MILLIS, canPillar, true, 10.0D).findPath();
         if (!result.success()) {
             lastPathGoal = immutableGoal;
             activePathGoal = null;

@@ -35,6 +35,9 @@ public final class AStarPathfinder {
     private final NeighborEnumerator enumerator;
     private final boolean canPillar;
     private final boolean allowDig;
+    // 加权 A*(ε-admissible):挖掘接近场景启发式(欧氏×1)远低于真实挖掘成本(×8),搜索退化成
+    // 全向泛洪 50ms 必 TIMEOUT(geo 矩阵实测)。ε=3 牺牲最优性换收敛速度——挖矿不需要最短路。
+    private final double heuristicWeight;
     private final int maxNodes;
     private final long maxMillis;
     private static volatile long cacheVersion;
@@ -58,11 +61,17 @@ public final class AStarPathfinder {
 
     // NAV-OPT:allowDig 区分"纯步行"与"允许挖穿"两种搜索模式,支撑两阶段寻路(纯步行优先、挖穿兜底)。
     public AStarPathfinder(ServerWorld world, BlockPos start, BlockPos goal, int maxNodes, long maxMillis, boolean canPillar, boolean allowDig) {
+        this(world, start, goal, maxNodes, maxMillis, canPillar, allowDig, 1.0D);
+    }
+
+    // 带权构造(统一接近原语用 ε=3):见 heuristicWeight 注释。
+    public AStarPathfinder(ServerWorld world, BlockPos start, BlockPos goal, int maxNodes, long maxMillis, boolean canPillar, boolean allowDig, double heuristicWeight) {
         this.world = world;
         this.start = start.toImmutable();
         this.goal = goal.toImmutable();
         this.canPillar = canPillar;
         this.allowDig = allowDig;
+        this.heuristicWeight = heuristicWeight;
         this.enumerator = new NeighborEnumerator(canPillar, allowDig);
         this.maxNodes = maxNodes;
         this.maxMillis = maxMillis;
@@ -89,7 +98,7 @@ public final class AStarPathfinder {
         if (effectiveGoal == null) {
             return done(PathfindingResult.failure(FailureReason.GOAL_NOT_STANDABLE, 0, elapsed(startTime)));
         }
-        CacheKey cacheKey = new CacheKey(world.getRegistryKey().getValue().toString(), effectiveStart, effectiveGoal, maxNodes, maxMillis, canPillar, allowDig, cacheVersion);
+        CacheKey cacheKey = new CacheKey(world.getRegistryKey().getValue().toString(), effectiveStart, effectiveGoal, (int) (maxNodes + heuristicWeight * 1000), maxMillis, canPillar, allowDig, cacheVersion);
         PathfindingResult cached = cached(cacheKey, startTime);
         if (cached != null) {
             return cached;
@@ -101,7 +110,7 @@ public final class AStarPathfinder {
         Map<BlockPos, Double> gScore = new HashMap<>();
         Set<BlockPos> closed = new HashSet<>();
 
-        Node startNode = new Node(effectiveStart, 0.0D, CostModel.heuristic(effectiveStart, effectiveGoal), MoveType.WALK, null);
+        Node startNode = new Node(effectiveStart, 0.0D, CostModel.heuristic(effectiveStart, effectiveGoal) * heuristicWeight, MoveType.WALK, null);
         open.add(startNode);
         gScore.put(effectiveStart, 0.0D);
 
@@ -111,6 +120,7 @@ public final class AStarPathfinder {
                 return done(cache(cacheKey, PathfindingResult.failure(FailureReason.SEARCH_LIMIT, explored, elapsed(startTime)), startTime));
             }
             if (elapsed(startTime) > maxMillis) {
+                BotLog.comm(null, "findpath_timeout_diag", "explored", explored, "ms", elapsed(startTime), "open", open.size(), "dig", allowDig);
                 return done(cache(cacheKey, PathfindingResult.failure(FailureReason.TIMEOUT, explored, elapsed(startTime)), startTime));
             }
 
@@ -136,7 +146,7 @@ public final class AStarPathfinder {
                 open.add(new Node(
                         neighbor.pos(),
                         tentativeG,
-                        CostModel.heuristic(neighbor.pos(), effectiveGoal),
+                        CostModel.heuristic(neighbor.pos(), effectiveGoal) * heuristicWeight,
                         neighbor.moveType(),
                         current));
             }

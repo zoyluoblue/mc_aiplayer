@@ -61,6 +61,14 @@ public final class AcquisitionHints {
         if (isForageItem(item)) {
             return "forage";
         }
+        // 推导兜底(知识层数据驱动):手写表 unknown 的物品,有任何可用配方(含运行时索引/模组)→ craft;
+        // 有熔炼链 → smelt。让"手写表没见过"的物品也能进规划倒推,而不是直接 unresolved。
+        if (RecipeRegistry.find(item).isPresent()) {
+            return "craft";
+        }
+        if (SmeltChain.rawFor(item) != null) {
+            return "smelt";
+        }
         return "unknown";
     }
 

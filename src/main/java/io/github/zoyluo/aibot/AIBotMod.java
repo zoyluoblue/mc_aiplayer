@@ -49,6 +49,10 @@ public class AIBotMod implements ModInitializer {
 
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
             BotLog.lifecycle("server_started", "motd", server.getServerMotd());
+            // 知识层数据驱动:扫 RecipeManager 建运行时配方索引(含模组配方,手写表的兜底层);
+            // 知识库挂 server(落盘路径)。
+            io.github.zoyluo.aibot.craft.RuntimeRecipeIndex.rebuild(server);
+            io.github.zoyluo.aibot.memory.KnowledgeBase.INSTANCE.attachServer(server);
             int restored = BotPersistence.INSTANCE.loadAndRespawn(server);
             if (restored > 0) {
                 BotLog.lifecycle("bot_persist_restored", "count", restored);

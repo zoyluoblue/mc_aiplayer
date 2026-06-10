@@ -49,8 +49,14 @@ public final class RecipeRegistry {
     private RecipeRegistry() {
     }
 
+    // 两级查找:手写表优先(vanilla 关键链路钉死,确定性零回归);未命中查运行时索引
+    //(RecipeManager 全量,模组/长尾物品兜底——暮色森林等模组配方自动可倒推)。
     public static Optional<Recipe> find(Item output) {
-        return Optional.ofNullable(BY_OUTPUT.get(output));
+        Recipe handwritten = BY_OUTPUT.get(output);
+        if (handwritten != null) {
+            return Optional.of(handwritten);
+        }
+        return RuntimeRecipeIndex.find(output);
     }
 
     // S1:供依赖链审计(/aibot deplint)遍历全部已知配方。

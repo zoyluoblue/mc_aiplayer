@@ -57,6 +57,7 @@ public final class OreDigTask extends AbstractTask {
 
     private int invBaseline;
     private int collected;
+    private boolean amnestyUsed; // 拉黑特赦只给一次(见 no_progress 看门狗)
     private int lastProgressTick;
     private int lastScanTick = -SCAN_INTERVAL;
     private int lastProspectTick = -100;
@@ -151,6 +152,16 @@ public final class OreDigTask extends AbstractTask {
         // 无进展看门狗:NO_PROGRESS_LIMIT 内没破任何块 → 干净失败。fail 前 dump 内部状态,
         // 供无头测试诊断"找到矿却无进展"到底卡在哪个环节(锁定丢失/接近失败/挖不动)。
         if (elapsed - lastProgressTick > NO_PROGRESS_LIMIT) {
+            // 拉黑特赦:矿被 approach 失败逐个 ignored,全拉黑后 target=none 只能 strip 干耗到死
+            //(实测 stall dump: ignored=4 target=none)。fail 前清一次黑名单重试——位置/路径已变,
+            // 之前"够不到"的矿现在可能够到了;特赦只给一次(再卡死才真 fail)。
+            if (!ignored.isEmpty() && !amnestyUsed) {
+                amnestyUsed = true;
+                ignored.clear();
+                lastProgressTick = elapsed;
+                BotLog.action(bot, "ore_dig_amnesty", "retry", "after_ignored_clear");
+                return;
+            }
             BotLog.action(bot, "ore_dig_stall_dump",
                     "target", targetOre == null ? "none"
                             : targetOre.getX() + "," + targetOre.getY() + "," + targetOre.getZ(),

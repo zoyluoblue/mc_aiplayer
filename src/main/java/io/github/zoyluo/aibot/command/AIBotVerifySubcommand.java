@@ -1117,6 +1117,17 @@ public final class AIBotVerifySubcommand {
         return bot.getBlockPos();
     }
 
+    // 场景锚点列下方 12 格内无水(挖石阶梯斜下挖,湖上/含水层地块会把 bot 挖进水里泡死——
+    // 实测 dig_down stall dump 四面全 water)。
+    private static boolean dryColumn(ServerWorld world, BlockPos top) {
+        for (int dy = 0; dy <= 12; dy++) {
+            if (!world.getFluidState(top.down(dy)).isEmpty()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     // 出生点在洞/地下时提到自然地表(实操玩家在地表活动);已在地表则原地不动。
     // 围墙/活埋类场景必须先地表化:在 y6 黑暗地下摆围墙会触发 DangerWatcher"困死陷阱"保命传送
     // (dark_trap_escape),把被测的真实逃生(搭柱/挖墙)直接顶掉(实测 nav_pillar_out aborted)。
@@ -1612,7 +1623,8 @@ public final class AIBotVerifySubcommand {
                     int ty = world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, baseX + dx, dz);
                     BlockPos cand = new BlockPos(baseX + dx, ty, dz);
                     if (io.github.zoyluo.aibot.pathfinding.Standability.isStandable(world, cand)
-                            && world.isSkyVisible(cand)) {
+                            && world.isSkyVisible(cand)
+                            && dryColumn(world, cand)) { // 下方无水:挖矿场景的阶梯会下挖,湖上地块必泡死
                         anchor = cand;
                         break outer;
                     }

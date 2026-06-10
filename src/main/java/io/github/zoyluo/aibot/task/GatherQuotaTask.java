@@ -288,10 +288,9 @@ public final class GatherQuotaTask extends AbstractTask {
     // 在 (x,z) 列从高往低找第一个可站点(地表/林地)。
     private BlockPos findGroundAt(net.minecraft.server.world.ServerWorld world, int x, int z) {
         // 高度图取该列地表,跨任意海拔成立(原硬上限 y=110 会让 bot 站在 y>110 高地时漫游/落脚全失败,与 HuntTask 同源 bug)。
-        // 树冠穿透(与 HuntTask.findGround 同款修复):森林里 MOTION_BLOCKING 顶面在树冠,原"只下扫 6 格+
-        // 必须见天"在云杉林全 null → roam 24 点全拒、prospect 落脚失败 → no_resource 21t 速死。
-        // 改:下穿 24 格、接受第一个可站点(林地不见天也能走)。
-        int surfaceY = world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING, x, z);
+        // 树冠穿透(与 HuntTask.findGround 同款修复):原 MOTION_BLOCKING 顶面在森林落在树冠(高大云杉
+        // 20+ 格,固定下穿赌不赢)。正解:MOTION_BLOCKING_NO_LEAVES 原生跳树叶,顶面=地形/树干,再下穿落地。
+        int surfaceY = world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, x, z);
         for (int y = surfaceY; y >= surfaceY - 24 && y > world.getBottomY() + 1; y--) {
             BlockPos p = new BlockPos(x, y, z);
             if (Standability.isStandable(world, p)) {

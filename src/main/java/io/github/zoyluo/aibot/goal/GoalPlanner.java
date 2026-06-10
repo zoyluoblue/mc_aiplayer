@@ -71,8 +71,12 @@ public final class GoalPlanner {
         boolean hasPrey = HuntTask.hasPreyNearby(bot);
         boolean hasGrass = OreProspector.nearest(bot.getServerWorld(), bot.getBlockPos(),
                 FOOD_GRASS_SCAN, GoalPlanner::isGrassForSeeds) != null;
+        // 荒芜兜底源:针叶林等生物群系动物稀少(实测 hunt 漫游 10 次 1092t 仍 0 猎物)但常有甜浆果丛——
+        // 无动物可猎时浆果是"能立刻吃上"的最后手段。
+        boolean hasBerries = OreProspector.nearest(bot.getServerWorld(), bot.getBlockPos(),
+                FOOD_GRASS_SCAN, state -> state.isOf(Blocks.SWEET_BERRY_BUSH)) != null;
         Planner planner = new Planner(inventoryCounts(bot), Math.max(1, AIBotConfig.get().goal().maxPlanDepth()),
-                bot.getBlockPos().getY(), hasPrey, hasGrass);
+                bot.getBlockPos().getY(), hasPrey, hasGrass, hasBerries);
         planner.ensureGoal(goal, 0, new HashSet<>());
         return new GoalPlan(goal, List.copyOf(mergeGathers(planner.steps)), List.copyOf(planner.unresolved));
     }
@@ -157,15 +161,18 @@ public final class GoalPlanner {
         private final int botY; // 规划时 bot 的 Y,用于判断深层矿是否需先下竖井到矿层
         private final boolean hasPreyNearby;  // 周围有可猎动物(食物择源:有→打猎)
         private final boolean hasGrassNearby; // 周围有草(食物择源:无动物但有草→种植面包)
+        private final boolean hasBerriesNearby; // 周围有甜浆果丛(食物择源:无动物无现成粮→采浆果兜底)
         private final List<GoalStep> steps = new ArrayList<>();
         private final List<String> unresolved = new ArrayList<>();
 
-        private Planner(Map<Item, Integer> counts, int maxDepth, int botY, boolean hasPreyNearby, boolean hasGrassNearby) {
+        private Planner(Map<Item, Integer> counts, int maxDepth, int botY,
+                        boolean hasPreyNearby, boolean hasGrassNearby, boolean hasBerriesNearby) {
             this.counts = counts;
             this.maxDepth = maxDepth;
             this.botY = botY;
             this.hasPreyNearby = hasPreyNearby;
             this.hasGrassNearby = hasGrassNearby;
+            this.hasBerriesNearby = hasBerriesNearby;
         }
 
         private boolean ensureGoal(Goal goal, int depth, Set<String> visiting) {
@@ -370,6 +377,7 @@ public final class GoalPlanner {
             for (Item f : COOKED_FOOD_ITEMS) {
                 cooked += counts.getOrDefault(f, 0);
             }
+            cooked += counts.getOrDefault(Items.SWEET_BERRIES, 0) / 2; // 浆果按 2:1 折算(饱食低,2 颗≈1 份)
             if (cooked >= target) {
                 return true;
             }
@@ -382,6 +390,13 @@ public final class GoalPlanner {
                     || counts.getOrDefault(Items.WHEAT_SEEDS, 0) >= needCooked * 3;
             if (!hasPreyNearby && hasGrassNearby && breadFastPath) {
                 ensureItem(Items.BREAD, needCooked, depth + 1, visiting);
+                return true;
+            }
+            // 荒芜兜底:无动物可猎、面包快路径也没有,但附近有甜浆果丛(针叶林常见)→ 采浆果直接吃。
+            // 饱食低(2 点/颗)按 2:1 折算;不需要熔炉/燃料,是"能立刻吃上"的最后手段
+            //(实测针叶林世界 hunt 漫游 10 次 1092t 仍 0 猎物,整条打猎+烤链白忙)。
+            if (!hasPreyNearby && hasBerriesNearby) {
+                ensureItem(Items.SWEET_BERRIES, needCooked * 2, depth + 1, visiting);
                 return true;
             }
             int raw = 0;

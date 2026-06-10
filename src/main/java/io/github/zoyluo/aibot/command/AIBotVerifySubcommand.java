@@ -926,7 +926,10 @@ public final class AIBotVerifySubcommand {
                 + InventoryAction.countItem(bot, Items.COOKED_CHICKEN)
                 + InventoryAction.countItem(bot, Items.COOKED_RABBIT)
                 + InventoryAction.countItem(bot, Items.BREAD)
-                + InventoryAction.countItem(bot, Items.BAKED_POTATO);
+                + InventoryAction.countItem(bot, Items.BAKED_POTATO)
+                // 浆果按 2:1 折算(与 GoalPlanner.ensureFoodTo 的荒芜兜底源一致):
+                // 针叶林等无动物世界 Food 目标走"采浆果直接吃",断言口径必须同步,否则达成也判 FAIL。
+                + InventoryAction.countItem(bot, Items.SWEET_BERRIES) / 2;
     }
 
     // 食物链"种田做面包"分支端到端测试:无动物 + 有草 → Goal.Food 应走 ensureFoodTo 的种植链
@@ -1102,15 +1105,23 @@ public final class AIBotVerifySubcommand {
         clearInventory(bot); // 实操开局=空背包;其余一概不动(不清怪/不铺/不给)
         // real_wheat 会调 randomTickSpeed,这里统一复位,避免场景间泄漏
         world.getGameRules().get(net.minecraft.world.GameRules.RANDOM_TICK_SPEED).set(3, world.getServer());
-        BlockPos at = bot.getBlockPos();
-        // 出生点在洞/地下时提到自然地表(实操玩家在地表活动);已在地表则原地开干
-        if (!world.isSkyVisible(at)) {
-            int topY = world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING, at.getX(), at.getZ());
-            bot.teleport(world, at.getX() + 0.5D, topY, at.getZ() + 0.5D,
-                    java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
-            bot.getActionPack().stopAll();
-        }
+        surfaceTeleport(bot);
         return bot.getBlockPos();
+    }
+
+    // 出生点在洞/地下时提到自然地表(实操玩家在地表活动);已在地表则原地不动。
+    // 围墙/活埋类场景必须先地表化:在 y6 黑暗地下摆围墙会触发 DangerWatcher"困死陷阱"保命传送
+    // (dark_trap_escape),把被测的真实逃生(搭柱/挖墙)直接顶掉(实测 nav_pillar_out aborted)。
+    private static void surfaceTeleport(AIPlayerEntity bot) {
+        ServerWorld world = bot.getServerWorld();
+        BlockPos at = bot.getBlockPos();
+        if (world.isSkyVisible(at)) {
+            return;
+        }
+        int topY = world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING, at.getX(), at.getZ());
+        bot.teleport(world, at.getX() + 0.5D, topY, at.getZ() + 0.5D,
+                java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+        bot.getActionPack().stopAll();
     }
 
     // 读 bot 的累计死亡统计(ServerStatHandler 跨重生持续累加,不随重生清零)。real_* 零死亡断言的基线用:
@@ -1485,6 +1496,7 @@ public final class AIBotVerifySubcommand {
      * 这是实操"掉坑/被地形圈死"的最小复现:寻路必须把"垫方块/拆方块"当合法走法,纯平面 A* 会判死路空转。
      */
     private static Result assignNavPillarOut(AIPlayerEntity bot) {
+        surfaceTeleport(bot); // 必须地表化:y6 黑暗地下摆围墙会触发 dark_trap_escape 保命传送顶掉被测逃生(实测 aborted)
         prepareArea(bot);
         clearInventory(bot);
         ServerWorld world = bot.getServerWorld();
@@ -1521,6 +1533,7 @@ public final class AIBotVerifySubcommand {
      * (任务可能在身体仍卡在方块里磨血时就被判完成)。
      */
     private static Result assignNavBuriedEscape(AIPlayerEntity bot) {
+        surfaceTeleport(bot); // 地表化,防 y6 黑暗触发 dark_trap_escape 保命传送干扰被测脱困
         prepareArea(bot);
         clearInventory(bot);
         ServerWorld world = bot.getServerWorld();
@@ -1547,6 +1560,7 @@ public final class AIBotVerifySubcommand {
      * 空转是实操里最隐蔽的故障形态:bot 看着在干活,实际原地打转浪费整局,比干脆报错难发现得多。
      */
     private static Result assignNavUnreachable(AIPlayerEntity bot) {
+        surfaceTeleport(bot); // 地表化,防黑暗反射干扰"干净认输"判定
         prepareArea(bot);
         clearInventory(bot);
         clearNearbyMobs(bot.getServerWorld(), bot.getBlockPos()); // 防怪把 bot 打死造成"假干净失败"(死亡中止≠主动认输)

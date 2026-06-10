@@ -307,6 +307,12 @@ public final class DangerWatcher {
         if (active.isPresent()) {
             return false;
         }
+        // 目标计划进行中(步骤间隙 active 会短暂为空)不要插照明:它是 foreign task,会让 GoalExecutor
+        // 放弃整个目标(实测:金锭挖到 raw_gold、熔炼前的空隙被照明抢走 → goal_abandoned、没熔炼 → 无金锭)。
+        // 深矿照明由 GoalPlanner 的挖矿前置(火把步)负责,不靠这个 idle 反射。
+        if (io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.hasActivePlan(bot)) {
+            return false;
+        }
         var world = bot.getServerWorld();
         BlockPos feet = bot.getBlockPos();
         if (world.isSkyVisible(feet)

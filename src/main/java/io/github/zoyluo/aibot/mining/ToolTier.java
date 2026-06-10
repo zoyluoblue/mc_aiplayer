@@ -34,6 +34,10 @@ public final class ToolTier {
     }
 
     public static int requiredPickaxeTier(Block block) {
+        // 黑曜石/哭泣的黑曜石/远古残骸:需钻石镐(否则破坏无掉落)。
+        if (block == Blocks.OBSIDIAN || block == Blocks.CRYING_OBSIDIAN || block == Blocks.ANCIENT_DEBRIS) {
+            return DIAMOND;
+        }
         if (block == Blocks.GOLD_ORE || block == Blocks.DEEPSLATE_GOLD_ORE
                 || block == Blocks.REDSTONE_ORE || block == Blocks.DEEPSLATE_REDSTONE_ORE
                 || block == Blocks.DIAMOND_ORE || block == Blocks.DEEPSLATE_DIAMOND_ORE

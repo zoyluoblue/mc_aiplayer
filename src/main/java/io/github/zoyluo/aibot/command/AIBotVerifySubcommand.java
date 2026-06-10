@@ -88,6 +88,8 @@ public final class AIBotVerifySubcommand {
             "mine_iron_pocket",
             "mine_with_mob",
             "achieve_iron_ingot",
+            "achieve_gold_ingot",
+            "achieve_obsidian",
             "achieve_iron_pickaxe",
             "achieve_diamond",
             "achieve_armor",
@@ -116,6 +118,8 @@ public final class AIBotVerifySubcommand {
             "mine_with_mob",
             "mine_iron_from_scratch",
             "achieve_iron_ingot",
+            "achieve_gold_ingot",
+            "achieve_obsidian",
             "achieve_iron_pickaxe",
             "achieve_diamond");
 
@@ -132,6 +136,13 @@ public final class AIBotVerifySubcommand {
             "farm_irrigate",
             "cake",
             "village_harvest");
+
+    // 矿物材料回归套件:一条命令 /aibot verify material_suite 跑完四种目标矿:铁锭/金锭/钻石/黑曜石。
+    private static final List<String> MATERIAL_SUITE = List.of(
+            "achieve_iron_ingot",
+            "achieve_gold_ingot",
+            "achieve_diamond",
+            "achieve_obsidian");
     private static final Map<UUID, VerifyRun> RUNS = new ConcurrentHashMap<>();
 
     private AIBotVerifySubcommand() {
@@ -206,6 +217,8 @@ public final class AIBotVerifySubcommand {
                 features.addAll(MINING_SUITE); // 挖矿回归套件别名
             } else if ("food_suite".equals(feature)) {
                 features.addAll(FOOD_SUITE); // 食物回归套件别名
+            } else if ("material_suite".equals(feature)) {
+                features.addAll(MATERIAL_SUITE); // 矿物材料回归套件别名
             } else if (ALL_FEATURES.contains(feature)) {
                 features.add(feature);
             }
@@ -238,6 +251,8 @@ public final class AIBotVerifySubcommand {
             case "mine_iron_pocket" -> assignMineIronPocket(bot);
             case "mine_with_mob" -> assignMineWithMob(bot);
             case "achieve_iron_ingot" -> assignAchieveIronIngot(bot);
+            case "achieve_gold_ingot" -> assignAchieveGoldIngot(bot);
+            case "achieve_obsidian" -> assignAchieveObsidian(bot);
             case "achieve_iron_pickaxe" -> assignAchieveIronPickaxe(bot);
             case "achieve_diamond" -> assignAchieveDiamond(bot);
             case "achieve_armor" -> assignAchieveArmor(bot);
@@ -598,24 +613,70 @@ public final class AIBotVerifySubcommand {
      * REGRESSION(P2):achieve_goal 铁锭——空手→倒推→砍树→木镐→挖石→石镐→挖铁→熔炼→铁锭。
      * 全料齐备(树/石/铁矿)+ 一座熔炉 + 充足燃料就在身边,断言最终背包出现 iron_ingot。测熔炼链。
      */
+    // 铁锭:实心石区里埋铁矿,给石镐+熔炉+煤 → 挖铁矿→熔炼→铁锭(聚焦矿+熔,工具/炉链由其它场景测)。
     private static Result assignAchieveIronIngot(AIPlayerEntity bot) {
         prepareArea(bot);
         clearInventory(bot);
         ServerWorld world = bot.getServerWorld();
         BlockPos origin = bot.getBlockPos();
-        for (int dy = 0; dy < 8; dy++) {
-            world.setBlockState(origin.offset(Direction.WEST, 2).up(dy), Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
-        }
-        for (int dy = 1; dy <= 8; dy++) {
-            world.setBlockState(origin.down(dy), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
-        }
-        world.setBlockState(origin.down(4), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        clearNearbyMobs(world, origin);
+        fillStoneCube(world, origin, 4, 10);
+        InventoryAction.giveItem(bot, new ItemStack(Items.STONE_PICKAXE, 1));
+        InventoryAction.giveItem(bot, new ItemStack(Items.FURNACE, 1));
+        InventoryAction.giveItem(bot, new ItemStack(Items.COAL, 4));
+        world.setBlockState(origin.down(3), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
         boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.IRON_INGOT, 1));
         if (!started) {
             return Result.fail("achieve_iron_ingot", "goal_submit_failed");
         }
-        return Result.runningGoal("achieve_iron_ingot", 12000,
+        return Result.runningGoal("achieve_iron_ingot", 8000,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.IRON_INGOT) >= 1);
+    }
+
+    // 金锭(深层矿,需铁镐):传送到金矿层(-16)、脚下埋金矿,给铁镐+熔炉+深矿安全装+供给 → 挖金矿→熔炼→金锭。
+    private static Result assignAchieveGoldIngot(AIPlayerEntity bot) {
+        clearInventory(bot);
+        BlockPos origin = prepareDeepArea(bot, -16);
+        ServerWorld world = bot.getServerWorld();
+        InventoryAction.giveItem(bot, new ItemStack(Items.IRON_PICKAXE, 1));
+        InventoryAction.giveItem(bot, new ItemStack(Items.FURNACE, 1));
+        giveDeepMineKit(bot);
+        giveDeepMineSupplies(bot);
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                world.setBlockState(origin.add(dx, -3, dz), Blocks.GOLD_ORE.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.GOLD_INGOT, 1));
+        if (!started) {
+            return Result.fail("achieve_gold_ingot", "goal_submit_failed");
+        }
+        return Result.runningGoal("achieve_gold_ingot", 8000,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.GOLD_INGOT) >= 1);
+    }
+
+    // 黑曜石:实心石区里埋一层黑曜石,给钻石镐 → DigDownTask 下挖撞到黑曜石层、挖 1 块(黑曜石挖得慢)。
+    private static Result assignAchieveObsidian(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin);
+        fillStoneCube(world, origin, 4, 10);
+        InventoryAction.giveItem(bot, new ItemStack(Items.DIAMOND_PICKAXE, 1));
+        // 在 down(2..3) 铺一层 5×5 黑曜石,保证下挖阶梯无论朝哪都会撞到(只需挖到 1 块即达标)。
+        for (int dx = -2; dx <= 2; dx++) {
+            for (int dz = -2; dz <= 2; dz++) {
+                world.setBlockState(origin.add(dx, -2, dz), Blocks.OBSIDIAN.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(origin.add(dx, -3, dz), Blocks.OBSIDIAN.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.OBSIDIAN, 1));
+        if (!started) {
+            return Result.fail("achieve_obsidian", "goal_submit_failed");
+        }
+        return Result.runningGoal("achieve_obsidian", 8000,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.OBSIDIAN) >= 1);
     }
 
     /**
@@ -991,21 +1052,24 @@ public final class AIBotVerifySubcommand {
      * REGRESSION(P2):achieve_goal 钻石——给铁镐(隔离工具链),脚下石层埋钻石矿,断言挖到 diamond。
      * 测"金/红石/钻石/绿宝石需铁镐"这条新映射 + OreDig 挖高级矿。
      */
+    // 钻石(深层矿,需铁镐):传送到钻石矿层(-59)、脚下埋钻石矿,给铁镐+深矿安全装+供给 → 挖钻石矿得钻石。
     private static Result assignAchieveDiamond(AIPlayerEntity bot) {
-        prepareArea(bot);
         clearInventory(bot);
-        InventoryAction.giveItem(bot, new ItemStack(Items.IRON_PICKAXE, 1));
+        BlockPos origin = prepareDeepArea(bot, -59);
         ServerWorld world = bot.getServerWorld();
-        BlockPos origin = bot.getBlockPos();
-        for (int dy = 1; dy <= 6; dy++) {
-            world.setBlockState(origin.down(dy), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        InventoryAction.giveItem(bot, new ItemStack(Items.IRON_PICKAXE, 1));
+        giveDeepMineKit(bot);
+        giveDeepMineSupplies(bot);
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                world.setBlockState(origin.add(dx, -2, dz), Blocks.DIAMOND_ORE.getDefaultState(), Block.NOTIFY_ALL);
+            }
         }
-        world.setBlockState(origin.down(3), Blocks.DIAMOND_ORE.getDefaultState(), Block.NOTIFY_ALL);
         boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.DIAMOND, 1));
         if (!started) {
             return Result.fail("achieve_diamond", "goal_submit_failed");
         }
-        return Result.runningGoal("achieve_diamond", 4800,
+        return Result.runningGoal("achieve_diamond", 8000,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.DIAMOND) >= 1);
     }
 
@@ -1096,6 +1160,59 @@ public final class AIBotVerifySubcommand {
                 .forEach(net.minecraft.entity.Entity::discard);
         world.getEntitiesByClass(net.minecraft.entity.mob.HostileEntity.class, box, e -> true)
                 .forEach(net.minecraft.entity.Entity::discard);
+    }
+
+    // 在 origin 下方填一个实心石头立方(横向 ±hr,竖向 down 1..depth)。给挖矿任务确定性的实心环境:
+    // 覆盖套件里上个场景挖出的坑/残留方块,也避免"挖矿任务斜挖出 1 列石柱掉进未铺地形"。矿石随后嵌进来。
+    private static void fillStoneCube(ServerWorld world, BlockPos origin, int hr, int depth) {
+        for (int dx = -hr; dx <= hr; dx++) {
+            for (int dz = -hr; dz <= hr; dz++) {
+                for (int dy = 1; dy <= depth; dy++) {
+                    world.setBlockState(origin.add(dx, -dy, dz), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                }
+            }
+        }
+    }
+
+    // 给 bot 一套深矿安全装(头胸甲+铁剑+盾),满足 ensureMineOre 对 tier≥IRON 矿(金/钻石)的护甲前置,
+    // 让材料测试聚焦"挖矿→熔炼→锭"本身,不被"先凑甲"链拖入(凑甲由 achieve_armor 单独测)。
+    private static void giveDeepMineKit(AIPlayerEntity bot) {
+        InventoryAction.giveItem(bot, new ItemStack(Items.IRON_HELMET, 1));
+        InventoryAction.giveItem(bot, new ItemStack(Items.IRON_CHESTPLATE, 1));
+        InventoryAction.giveItem(bot, new ItemStack(Items.IRON_SWORD, 1));
+        InventoryAction.giveItem(bot, new ItemStack(Items.SHIELD, 1));
+    }
+
+    // 深矿测试前置:金/钻石规划器必下发"下挖到 Y=深层矿层"步(金 -16/钻 -59)。与其让 bot 从 y6 真挖 60+ 格
+    // (慢+地形/岩浆不可控),不如直接把 bot 传送到矿层、在那儿清出+围好实心石立方:descend 步因 bot 已达深度而空过,
+    // 测试聚焦"在矿层找矿→挖→(熔炼)"。再给齐口粮/火把/护甲跳过深矿的食物/照明前置。返回深层原点。
+    private static BlockPos prepareDeepArea(AIPlayerEntity bot, int depthY) {
+        ServerWorld world = bot.getServerWorld();
+        bot.getActionPack().stopAll();
+        bot.teleport(world, 0.5D, depthY, 0.5D, java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin);
+        for (BlockPos pos : BlockPos.iterate(origin.add(-4, 0, -4), origin.add(4, 3, 4))) {
+            world.setBlockState(pos, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        fillStoneCube(world, origin, 6, 8); // 下方(含 floor y-1)实心石
+        for (int dy = 0; dy <= 4; dy++) {   // 四周竖墙挡深层岩浆/虚空/未知地形
+            for (int d = -6; d <= 6; d++) {
+                world.setBlockState(origin.add(d, dy, -6), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(origin.add(d, dy, 6), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(origin.add(-6, dy, d), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(origin.add(6, dy, d), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        return origin;
+    }
+
+    // 深矿测试的口粮/照明/工作台前置(跳过深矿规划里的打猎/烤/火把/挖煤链,聚焦挖矿本身)。
+    private static void giveDeepMineSupplies(AIPlayerEntity bot) {
+        InventoryAction.giveItem(bot, new ItemStack(Items.COOKED_BEEF, 8));
+        InventoryAction.giveItem(bot, new ItemStack(Items.TORCH, 16));
+        InventoryAction.giveItem(bot, new ItemStack(Items.COAL, 8));
+        InventoryAction.giveItem(bot, new ItemStack(Items.CRAFTING_TABLE, 1));
     }
 
     private static int countContainer(AIPlayerEntity bot, BlockPos pos, Item item) {

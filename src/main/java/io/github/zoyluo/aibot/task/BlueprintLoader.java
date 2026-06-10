@@ -23,6 +23,15 @@ public final class BlueprintLoader {
     }
 
     public static BlueprintSchema load(String name) throws IOException {
+        // P3 参数化蓝图:名字编码 "custom:宽x深x高:材质"(如 custom:7x5x4:stone)直接生成,不读文件。
+        // 走名字通道的好处:Goal.Build/GoalStep.tag/规划器/执行器零改动,队列与备料链天然适用。
+        if (name != null && name.startsWith("custom:")) {
+            BlueprintSchema custom = BlueprintSchema.parametricHouse(name);
+            if (custom == null) {
+                throw new IOException("blueprint_bad_custom_spec: " + name + " (expect custom:WxDxH:material)");
+            }
+            return expand(custom);
+        }
         if ("hut_5x5".equals(name) || "small_hut".equals(name)) {
             ensureDefaultBlueprintsWritten();
         }

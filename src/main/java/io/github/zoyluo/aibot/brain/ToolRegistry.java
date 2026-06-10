@@ -333,10 +333,25 @@ public final class ToolRegistry {
             return started ? ok("goal_assigned: achieve_workstation") : fail("goal_plan_failed");
         });
 
-        register("build_house", "Build a house/shelter from a blueprint. Use for 盖房子/建个家/造房子/盖个小屋/build a house. blueprint optional: small_hut (default) or hut_5x5. The goal system auto-gathers ALL missing materials (wood, stone, glass) then builds — call once then STOP.", objectSchema()
-                .property("blueprint", stringSchema("blueprint name: small_hut (default) or hut_5x5"))
+        register("build_house", "Build a house/shelter. Use for 盖房子/建个家/造房子/盖个小屋/build a house. The goal system auto-gathers ALL missing materials (wood/stone/glass) then builds — call once then STOP. Either pass blueprint (small_hut default, hut_5x5), OR pass width/depth/height/material for a custom house (e.g. 盖个7格宽的石头房 -> width=7, material=stone_like). material: planks (wood, default) / stone_like / glass.", objectSchema()
+                .property("blueprint", stringSchema("preset blueprint name: small_hut (default) or hut_5x5; ignored when width/depth/height given"))
+                .property("width", integerSchema("custom house outer width in blocks (3..16)", 3, 16))
+                .property("depth", integerSchema("custom house outer depth in blocks (3..16)", 3, 16))
+                .property("height", integerSchema("custom house wall height in blocks (2..8)", 2, 8))
+                .property("material", stringSchema("wall material palette: planks (default) / stone_like / glass"))
                 .build(), (bot, args) -> {
-            String bp = optionalString(args, "blueprint", "small_hut");
+            // P3 参数化:给了任意尺寸参数就走 custom:WxDxH:material 规格(缺省边长 5/5/3),否则用预设蓝图。
+            boolean custom = args != null && (args.has("width") || args.has("depth") || args.has("height") || args.has("material"));
+            String bp;
+            if (custom) {
+                int w = optionalInt(args, "width", 5);
+                int d = optionalInt(args, "depth", 5);
+                int h = optionalInt(args, "height", 3);
+                String material = optionalString(args, "material", "planks");
+                bp = "custom:" + w + "x" + d + "x" + h + ":" + material;
+            } else {
+                bp = optionalString(args, "blueprint", "small_hut");
+            }
             boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.Build(bp));
             return started ? ok("goal_assigned: build " + bp) : fail("goal_plan_failed");
         });

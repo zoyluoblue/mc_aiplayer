@@ -69,10 +69,19 @@ public final class BlockMiner {
         }
         ServerWorld world = bot.getServerWorld();
         // 目标已破(空气/被替换为非目标由调用方判定;这里只认"已不可挖"=空气)。
-        if (world.getBlockState(target).isAir()) {
+        BlockState targetState = world.getBlockState(target);
+        if (targetState.isAir()) {
             bot.getActionPack().stopMining();
             target = null;
             return Status.DONE;
+        }
+        // 流体不可"破坏"(挖击进度永不完成):调用方用 !isAir 判固体把水当成了可挖目标,
+        // 每块干耗满 200t 超时再被拉黑(实测 miner_slow_dump block=water、13 连黑)。立即失败换块。
+        if (!targetState.getFluidState().isEmpty()) {
+            bot.getActionPack().stopMining();
+            failureReason = "target_is_fluid";
+            target = null;
+            return Status.FAILED;
         }
         sinceTick++;
         if (sinceTick > MINE_TIMEOUT_TICKS) {

@@ -39,7 +39,10 @@ public final class OreDigTask extends AbstractTask {
     private static final int PROSPECT_RANGE = 64;       // 探矿(大范围定位最近矿)半径——身边扫不到时启用
     private static final int PROSPECT_INTERVAL = 40;    // 探矿较贵(逐区块 section 扫),2s 一次
     private static final int VERTICAL_SCAN = 10;
-    private static final double REACH_SQUARED = 20.25D; // 4.5^2,与 OreSeek 一致
+    // 5.5^2:原 4.5 与 approach 停步点之间有 0.5-1 格死区(stall dump 实测 dist=5.1 时
+    // miner=idle 不开挖、approach 又认为已到位不再走,干瞪眼到 no_progress)。放宽到 5.5
+    //(服务端挖掘验证容差内),覆盖死区;真够不到仍由 BlockMiner FAILED→ignored 兜底。
+    private static final double REACH_SQUARED = 30.25D;
     private static final int MIN_Y = -60;
     private static final int VEIN_CAP = 64;
     private static final int PICKUP_GRACE_TICKS = 30;

@@ -134,6 +134,10 @@ public final class GoalExecutor {
 
     public void clear(AIPlayerEntity bot) {
         activePlans.remove(bot.getUuid());
+        // user goal 记录一并清:clear=外部要求彻底复位(verify 场景切换/管理操作)。只清 plan 不清它,
+        // 残留的旧 Food 目标会把后续"恰好是其前置"的新目标 downgrade_blocked 拒掉
+        //(实测 verify forage 的 HaveItem(浆果) 被上一场景 Food 残留拦截 goal_submit_failed)。
+        userGoal.remove(bot.getUuid());
     }
 
     /** 诊断埋点:当前激活的顶层目标(无则 "none")。日志用,保留英文便于排查。 */

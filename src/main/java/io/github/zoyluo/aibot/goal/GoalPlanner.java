@@ -516,6 +516,15 @@ public final class GoalPlanner {
                 counts.merge(Items.COBBLESTONE, missing, Integer::sum);
                 return true;
             }
+            if (item == Items.OBSIDIAN) {
+                // 黑曜石:需钻石镐(ToolTier 已映射 DIAMOND);倒推钻石镐链 + 直接挖该块(非矿石,不走 oreBlockFor)。
+                if (!ensurePickaxeTier(ToolTier.DIAMOND, depth + 1, visiting)) {
+                    return false;
+                }
+                addStep(GoalStep.mine(Blocks.OBSIDIAN, missing));
+                counts.merge(Items.OBSIDIAN, missing, Integer::sum);
+                return true;
+            }
             // P2:矿物掉落物 → 对应矿石(统一映射表)。挖该矿所需镐档由 ToolTier 决定,
             // ensureMineOre 内部会先 ensurePickaxeTier 自动补齐镐链(如钻石需铁镐 → 先倒推铁镐)。
             Block oreOf = oreBlockFor(item);
@@ -571,15 +580,22 @@ public final class GoalPlanner {
             if (!ensureItem(recipe.input(), missing, depth + 1, visiting)) {
                 return false;
             }
-            // GOALFIX-GF2:1 个原木在熔炉可烧 1.5 个物品,燃料按 ceil(missing/1.5) 估算,避免高估 ~33%。
-            // GOALFIX-GF3:燃料优先用背包已有的任意原木种类(与 chooseIngredient 一致),无则默认橡木。
+            // 燃料:优先用背包已有的煤/木炭(1 个烧 8 个),只在不足时才砍原木补缺口(1 原木烧 1.5 个)。
+            // (原来无脑砍原木、背包有煤也不用 → 给了煤仍去砍树、无树则 no_resource;实测铁/金锭挂在此。)
+            int coalLike = counts.getOrDefault(Items.COAL, 0) + counts.getOrDefault(Items.CHARCOAL, 0);
+            int fuelDeficit = missing - coalLike * 8;
             Item fuel = preferredFuelLog();
-            int fuelLogs = Math.max(1, (int) Math.ceil(missing / 1.5));
-            if (!ensureItem(fuel, fuelLogs, depth + 1, visiting)) {
-                return false;
+            int fuelLogs = 0;
+            if (fuelDeficit > 0) {
+                fuelLogs = Math.max(1, (int) Math.ceil(fuelDeficit / 1.5));
+                if (!ensureItem(fuel, fuelLogs, depth + 1, visiting)) {
+                    return false;
+                }
             }
             consumeItem(recipe.input(), missing);
-            consumeItem(fuel, fuelLogs);
+            if (fuelLogs > 0) {
+                consumeItem(fuel, fuelLogs);
+            }
             counts.merge(recipe.output(), missing, Integer::sum);
             addStep(GoalStep.smelt(recipe.input(), recipe.output(), missing));
             return true;

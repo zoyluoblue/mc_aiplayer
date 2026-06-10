@@ -226,8 +226,14 @@ public final class OreDigTask extends AbstractTask {
                 }
                 return;
             }
-            // 不可达 → 朝矿挖一格隧道(BlockMiner 驱动,绝不寻路)。
-            digTowardStep(bot, world, targetOre);
+            // 不在 reach → 统一接近原语:挖掘感知寻路直达矿邻位(A* DIG 大预算,终点豁免允许
+            // "挖开即站"的实心格)。任务私有的"朝矿挖一格隧道"几何特判(digTowardStep)就此退役——
+            // 它在山体侧面矿上"挖了洞人不进洞"(实测 dist 卡 5.5 三连败),而寻路执行器
+            // (PathExecutor.DIG_THROUGH)天然"挖完走进去"。寻路被拒(节流/无解)时这个 tick 空转,
+            // 接近监控(APPROACH_LIMIT)兜底换矿。
+            if (bot.getActionPack().isPathExecutorIdle()) {
+                bot.getActionPack().startDigPathTo(targetOre);
+            }
             return;
         }
 
@@ -419,6 +425,7 @@ public final class OreDigTask extends AbstractTask {
     }
 
     private BlockMiner.Status beginMine(AIPlayerEntity bot, BlockPos pos) {
+        bot.getActionPack().stopMovement(); // 互斥:开挖矿本体即停掉接近寻路(执行器的 DIG_THROUGH 与 BlockMiner 不抢手)
         miner.begin(bot, pos);
         return miner.tick(bot);
     }

@@ -148,6 +148,13 @@ public final class AStarPathfinder {
         if (Standability.isStandable(world, requested)) {
             return requested;
         }
+        // 挖掘模式的终点豁免(统一接近原语的钥匙):目标不可站但本身可挖(典型=被石头包裹的矿邻位)
+        // 时不 snap——DIG_THROUGH 邻居本就允许"将被挖开的实心格"做路径节点,执行器会把它挖出来。
+        // 原"终点必须有现成可站点"的硬检查正是当年 OreSeek 在包裹矿上连续卡死、被迫发明任务私有
+        // "控制式直挖"的根源(8 格内无站位 → snap null → 整次寻路被拒)。
+        if (allowDig && !startPoint && isDiggableColumn(requested)) {
+            return requested;
+        }
         Optional<BlockPos> snapped = Standability.findNearestStandable(world, requested, 8, 128, 32);
         if (snapped.isEmpty()) {
             return null;
@@ -157,6 +164,22 @@ public final class AStarPathfinder {
                 "from", LogFields.pos(requested),
                 "to", LogFields.pos(snapped.get()));
         return snapped.get();
+    }
+
+    // 终点格"挖开即可站":脚位与头位都是(可挖实心 或 已通行),且无流体——挖穿后成为合法站位。
+    private boolean isDiggableColumn(BlockPos pos) {
+        return diggableOrPassable(pos) && diggableOrPassable(pos.up());
+    }
+
+    private boolean diggableOrPassable(BlockPos pos) {
+        var state = world.getBlockState(pos);
+        if (!state.getFluidState().isEmpty()) {
+            return false; // 流体格挖不出立足点(水/岩浆涌入)
+        }
+        if (state.getCollisionShape(world, pos).isEmpty()) {
+            return true;  // 已通行
+        }
+        return state.getHardness(world, pos) >= 0; // 可挖(基岩 -1 排除)
     }
 
     private static PathfindingResult cached(CacheKey key, long startTime) {

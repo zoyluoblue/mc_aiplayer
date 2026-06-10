@@ -21,6 +21,9 @@ public final class ActionPack {
     // NAV-OPT 两阶段寻路预算:纯步行只搜空气格(空间小,给足额度);挖穿限额更小,压住被困/地下时的 3D 体积爆搜。
     private static final int WALK_MAX_NODES = 10_000;
     private static final int DIG_MAX_NODES = 4_000;
+    // 接近原语专用大预算:接近被包裹的矿必然要挖,直接 DIG 且预算放大(挖掘邻居分支因子小,
+    // 24k 节点覆盖 ~40 格穿山直达;普通 startPathTo 的小预算 DIG 仅作走路兜底,语义不变)。
+    private static final int DIG_APPROACH_MAX_NODES = 24_000;
     private static final long PATHFIND_MAX_MILLIS = 50L;
 
     private final AIPlayerEntity player;
@@ -85,6 +88,38 @@ public final class ActionPack {
         this.walkTo = new WalkToController(target);
         this.mining = null;
         this.pathExecutor = null;
+        return ActionResult.IN_PROGRESS;
+    }
+
+    // 统一接近原语入口:挖掘感知寻路(大预算 DIG 直达,目标可为"挖开即站"的实心格——见
+    // AStarPathfinder.resolveEndpoint 的挖掘终点豁免)。接近被包裹的矿/穿山直达用这个;
+    // 普通走路仍用 startPathTo(先 WALK 后小预算 DIG)。
+    public ActionResult startDigPathTo(BlockPos goal) {
+        int now = player.getServer().getTicks();
+        BlockPos immutableGoal = goal.toImmutable();
+        if (lastPathGoal != null && lastPathGoal.equals(immutableGoal) && now < nextPathfindTick) {
+            return ActionResult.failed("pathfinding_throttled");
+        }
+        if (!snapPlayerToNearestStandable("path_start_invalid")) {
+            nextPathfindTick = now + PATHFIND_FAILURE_COOLDOWN_TICKS;
+            return ActionResult.failed("pathfinding_failed: NO_START");
+        }
+        boolean canPillar = PathExecutor.hasPlaceableBlock(player);
+        PathfindingResult result = new AStarPathfinder(player.getServerWorld(), player.getBlockPos(), goal,
+                DIG_APPROACH_MAX_NODES, PATHFIND_MAX_MILLIS, canPillar, true).findPath();
+        if (!result.success()) {
+            lastPathGoal = immutableGoal;
+            activePathGoal = null;
+            nextPathfindTick = now + PATHFIND_FAILURE_COOLDOWN_TICKS;
+            return ActionResult.failed("pathfinding_failed: " + result.reason());
+        }
+        lastPathGoal = immutableGoal;
+        nextPathfindTick = now + PATHFIND_SUCCESS_COOLDOWN_TICKS;
+        BlockPos resolvedGoal = result.resolvedGoal() == null ? immutableGoal : result.resolvedGoal();
+        activePathGoal = resolvedGoal;
+        this.pathExecutor = new PathExecutor(result.path(), resolvedGoal);
+        this.walkTo = null;
+        this.mining = null;
         return ActionResult.IN_PROGRESS;
     }
 

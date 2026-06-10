@@ -125,7 +125,13 @@ public final class AIBotVerifySubcommand {
             "goal_build_custom",
             "msg_keep_goal",
             "knowledge_smoke",
-            "craft_runtime");
+            "craft_runtime",
+            "geo_vertical",
+            "geo_slope",
+            "geo_overhang",
+            "geo_wall",
+            "geo_pocket",
+            "geo_deep");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
@@ -169,6 +175,10 @@ public final class AIBotVerifySubcommand {
             "iron_extreme",
             "diamond_extreme",
             "food_extreme");
+
+    // 地形矩阵套件(②):同一挖矿任务 × 六种几何,统一接近原语的考场。/aibot verify geo_suite
+    private static final List<String> GEO_SUITE = List.of(
+            "geo_vertical", "geo_slope", "geo_overhang", "geo_wall", "geo_pocket", "geo_deep");
 
     // 贴近实操套件:自然世界、空背包、零给予,从零完成目标。/aibot verify real_suite
     // 失败 = 自动化与实操的真实差距,逐个修复;real_obsidian 预期 FAIL(浇水造黑曜石能力未实现)。
@@ -294,6 +304,8 @@ public final class AIBotVerifySubcommand {
                 features.addAll(EXTREME_SUITE); // 极端环境回归套件别名
             } else if ("real_suite".equals(feature)) {
                 features.addAll(REAL_SUITE); // 贴近实操套件别名
+            } else if ("geo_suite".equals(feature)) {
+                features.addAll(GEO_SUITE); // 地形矩阵套件别名
             } else if ("nav_suite".equals(feature)) {
                 features.addAll(NAV_SUITE); // 寻路容错专项套件别名
             } else if ("llm_suite".equals(feature)) {
@@ -378,6 +390,12 @@ public final class AIBotVerifySubcommand {
             case "msg_keep_goal" -> assignMsgKeepGoal(bot);
             case "knowledge_smoke" -> assignKnowledgeSmoke(bot);
             case "craft_runtime" -> assignCraftRuntime(bot);
+            case "geo_vertical" -> assignMineGeo(bot, "vertical");
+            case "geo_slope" -> assignMineGeo(bot, "slope");
+            case "geo_overhang" -> assignMineGeo(bot, "overhang");
+            case "geo_wall" -> assignMineGeo(bot, "wall");
+            case "geo_pocket" -> assignMineGeo(bot, "pocket");
+            case "geo_deep" -> assignMineGeo(bot, "deep");
             default -> Result.fail(feature, "unknown_feature");
         };
     }
@@ -1441,6 +1459,81 @@ public final class AIBotVerifySubcommand {
      * (圆石≥6 且零死亡)收尾——保留语义不只是没清,还得真的继续干完。无 DEEPSEEK key 时 handleMessage
      * 异步才报 key 缺失,同步路径照走,不影响本验证。
      */
+    // ==================== 地形矩阵(②):同一挖矿任务 × 多种几何 ====================
+    // 让"地形组合爆炸"发生在无头测试里而不是玩家存档里——实操撞到的"山体侧面矿挖洞不进洞"
+    // 本该是矩阵第二行(slope)。全部断言:统一接近原语(挖掘感知寻路)能走/挖到矿并采到 1 个 raw_iron。
+    private static Result assignMineGeo(AIPlayerEntity bot, String geo) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin);
+        InventoryAction.giveItem(bot, new ItemStack(Items.STONE_PICKAXE, 1));
+        switch (geo) {
+            // 垂直埋矿:脚下 3 格(旧实验室基线)
+            case "vertical" -> world.setBlockState(origin.down(3), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+            // 山体侧面:8 格外堆一座 6 高石坡,矿嵌在坡面里(实操三连败的复刻)
+            case "slope" -> {
+                for (int dx = 0; dx <= 6; dx++) {
+                    for (int dz = -3; dz <= 3; dz++) {
+                        for (int dy = 0; dy <= dx; dy++) {
+                            world.setBlockState(origin.add(8 + dx, dy, dz), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                        }
+                    }
+                }
+                world.setBlockState(origin.add(11, 3, 0), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+            }
+            // 悬空头顶:矿在头顶 5 格的石板底面(要搭柱/挖不到就垫脚——考验垂直接近)
+            case "overhang" -> {
+                for (int dx = -2; dx <= 2; dx++) {
+                    for (int dz = -2; dz <= 2; dz++) {
+                        world.setBlockState(origin.add(dx, 5, dz), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                    }
+                }
+                world.setBlockState(origin.add(0, 5, 0), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+                InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 16)); // 垫脚材料
+            }
+            // 隔墙:bot 与矿之间 3 厚石墙(必须穿墙)
+            case "wall" -> {
+                for (int dx = 3; dx <= 5; dx++) {
+                    for (int dz = -2; dz <= 2; dz++) {
+                        for (int dy = 0; dy <= 3; dy++) {
+                            world.setBlockState(origin.add(dx, dy, dz), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                        }
+                    }
+                }
+                world.setBlockState(origin.add(7, 1, 0), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+            }
+            // 全包裹口袋:矿在 6 格外完全嵌进实心石立方中心(终点豁免的直接考题)
+            case "pocket" -> {
+                for (int dx = 4; dx <= 9; dx++) {
+                    for (int dz = -3; dz <= 3; dz++) {
+                        for (int dy = -1; dy <= 4; dy++) {
+                            world.setBlockState(origin.add(dx, dy, dz), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                        }
+                    }
+                }
+                world.setBlockState(origin.add(7, 1, 0), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+            }
+            // 深层斜下:矿在斜下方 6 格(深板岩铁矿,考验斜向下挖)
+            case "deep" -> {
+                world.setBlockState(origin.add(4, -6, 4), Blocks.DEEPSLATE_IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+            }
+            default -> {
+                return Result.fail("geo_" + geo, "unknown_geometry");
+            }
+        }
+        final int deathBase = deathCount(bot);
+        boolean started = GoalExecutor.INSTANCE.submit(bot,
+                new Goal.MineOre(java.util.Set.of(Blocks.IRON_ORE), 1));
+        if (!started) {
+            return Result.fail("geo_" + geo, "goal_submit_failed");
+        }
+        return Result.runningGoal("geo_" + geo, 3600,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.RAW_IRON) >= 1
+                        && deathCount(bot) == deathBase);
+    }
+
     // 运行时配方索引端到端:OAK_TRAPDOOR 不在手写表(grep 确认),只能靠 RuntimeRecipeIndex 从
     // RecipeManager 学来的配方(6 板)倒推合成——模组物品走同一路径,这里用 vanilla 表外物品代证。
     private static Result assignCraftRuntime(AIPlayerEntity bot) {

@@ -414,7 +414,9 @@ public final class GoalPlanner {
             // 与矿石熔炼 smeltItem 一致:已有煤/炭各≈烤 8 个;不够用原木补(1 原木≈烤 1.5 个),优先已有树种、
             // best-effort 砍树(无树则 unresolved,执行期 COOK_FOOD 缺燃料再降级,不卡死)。
             int coalLike = counts.getOrDefault(Items.COAL, 0) + counts.getOrDefault(Items.CHARCOAL, 0);
-            int fuelDeficit = needCooked - coalLike * 8;
+            // 燃料按 2 倍需求备:COOK_FOOD 是 cookAll 模式(背包所有生肉一起烤,猎获常超 needCooked),
+            // 且烤途中断火重启有损耗——按精确需求备实测 out_of_fuel(地狱 seed R9)。宁多备一根木。
+            int fuelDeficit = needCooked * 2 - coalLike * 8;
             if (fuelDeficit > 0) {
                 Item fuelLog = preferredFuelLog();
                 int logsForFuel = Math.max(1, (int) Math.ceil(fuelDeficit / 1.5));

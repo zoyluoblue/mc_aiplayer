@@ -333,6 +333,14 @@ public final class ToolRegistry {
             return started ? ok("goal_assigned: achieve_workstation") : fail("goal_plan_failed");
         });
 
+        register("build_house", "Build a house/shelter from a blueprint. Use for 盖房子/建个家/造房子/盖个小屋/build a house. blueprint optional: small_hut (default) or hut_5x5. The goal system auto-gathers ALL missing materials (wood, stone, glass) then builds — call once then STOP.", objectSchema()
+                .property("blueprint", stringSchema("blueprint name: small_hut (default) or hut_5x5"))
+                .build(), (bot, args) -> {
+            String bp = optionalString(args, "blueprint", "small_hut");
+            boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.Build(bp));
+            return started ? ok("goal_assigned: build " + bp) : fail("goal_plan_failed");
+        });
+
         register("stockpile", "Obtain N of an item then store everything into a nearby chest. Use for 囤货/囤点/存起来/stockpile N cobblestone. Auto-plans obtaining and depositing; do not decompose manually.", objectSchema()
                 .property("item", stringSchema("item id to stockpile, e.g. minecraft:cobblestone"))
                 .property("count", integerSchema("how many to obtain"))

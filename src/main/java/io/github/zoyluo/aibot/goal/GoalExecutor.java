@@ -4,6 +4,8 @@ import io.github.zoyluo.aibot.AIBotConfig;
 import io.github.zoyluo.aibot.brain.BotReporter;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
+import io.github.zoyluo.aibot.task.BlueprintLoader;
+import io.github.zoyluo.aibot.task.BuildTask;
 import io.github.zoyluo.aibot.task.CraftTask;
 import io.github.zoyluo.aibot.task.DescendToYTask;
 import io.github.zoyluo.aibot.task.DigDownTask;
@@ -25,6 +27,7 @@ import net.minecraft.block.Block;
 import net.minecraft.item.Item;
 import net.minecraft.server.MinecraftServer;
 
+import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.HashSet;
 import java.util.Map;
@@ -186,6 +189,7 @@ public final class GoalExecutor {
             case Goal.Workstation g -> "搭建工作站";
             case Goal.Stockpile g -> "囤货 " + io.github.zoyluo.aibot.craft.ItemNames.cn(g.item()) + " ×" + g.count();
             case Goal.HavePickaxeTier g -> "升级镐 (tier " + g.tier() + ")";
+            case Goal.Build g -> "盖房子(" + g.blueprint() + ")";
         };
     }
 
@@ -381,6 +385,15 @@ public final class GoalExecutor {
             case STOCKPILE -> Optional.of(new StockpileTask(true));
             // 挖深层矿:DESCEND_TO_Y 步 → 连续挖竖井下到矿层。
             case DESCEND_TO_Y -> Optional.of(new DescendToYTask(step.pos().getY()));
+            // 盖房:BUILD 步 → BuildTask(自动选址+不整地,与 verify build 场景同参),材料已由规划期备齐;
+            // 蓝图读取失败(被删/坏档)→ empty,assignNext 按"步骤无法执行"收尾。
+            case BUILD -> {
+                try {
+                    yield Optional.of(new BuildTask(BlueprintLoader.load(step.tag()), null, true, false));
+                } catch (IOException e) {
+                    yield Optional.empty();
+                }
+            }
         };
     }
 

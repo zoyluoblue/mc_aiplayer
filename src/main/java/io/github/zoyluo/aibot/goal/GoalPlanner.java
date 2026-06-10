@@ -6,10 +6,14 @@ import io.github.zoyluo.aibot.craft.AcquisitionHints;
 import io.github.zoyluo.aibot.craft.SmeltChain;
 import io.github.zoyluo.aibot.craft.RecipeRegistry;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
+import io.github.zoyluo.aibot.log.BotLog;
+import io.github.zoyluo.aibot.log.LogCategory;
 import io.github.zoyluo.aibot.mining.MiningChain;
 import io.github.zoyluo.aibot.mining.OreProspector;
 import io.github.zoyluo.aibot.mining.OreScan;
 import io.github.zoyluo.aibot.mining.ToolTier;
+import io.github.zoyluo.aibot.task.BlueprintLoader;
+import io.github.zoyluo.aibot.task.BlueprintSchema;
 import io.github.zoyluo.aibot.task.HuntTask;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
@@ -19,7 +23,9 @@ import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.registry.Registries;
+import net.minecraft.util.Identifier;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -198,6 +204,7 @@ public final class GoalPlanner {
                 case Goal.Workstation ignored -> ensureWorkstation(depth, visiting);
                 case Goal.Stockpile stockpile -> ensureStockpile(stockpile, depth, visiting);
                 case Goal.Food food -> ensureFoodTo(food.cookedCount(), depth, visiting);
+                case Goal.Build build -> ensureBuild(build, depth, visiting);
             };
         }
 
@@ -373,6 +380,108 @@ public final class GoalPlanner {
             }
             addStep(GoalStep.stockpile(g.item()));
             return true;
+        }
+
+        // 盖房全链:"盖房子"一句话 = 备料(自动砍树/挖石/熔玻璃,复用 ensureItem 倒推) + 建造一条链。
+        // 材料统计口径:BlueprintLoader.load 已把 ops 全部展开成逐格 placements——
+        // hollow_box=外壳格数、layer/box/fill=区间内全格数,且同坐标去重(显式 placement 覆盖 op 格,
+        // 如 small_hut 门洞的两格 air 覆盖墙体),所以逐 placement 计数与 BuildTask 实际放置完全一致。
+        private boolean ensureBuild(Goal.Build g, int depth, Set<String> visiting) {
+            BlueprintSchema schema;
+            try {
+                schema = BlueprintLoader.load(g.blueprint());
+            } catch (IOException e) {
+                unresolved.add("blueprint_missing:" + g.blueprint());
+                return false;
+            }
+            // 防御:万一拿到未展开 schema(load 已保证展开,这里仅保险)按同一几何再展开一次。
+            if (schema.ops() != null && !schema.ops().isEmpty()) {
+                try {
+                    schema = BlueprintLoader.expand(schema);
+                } catch (IOException e) {
+                    unresolved.add("blueprint_bad_ops:" + g.blueprint());
+                    return false;
+                }
+            }
+            Map<Item, Integer> materials = new LinkedHashMap<>();
+            for (BlueprintSchema.BlockPlacement placement : schema.placements()) {
+                Item material = buildMaterialFor(placement);
+                if (material != null) {
+                    materials.merge(material, 1, Integer::sum);
+                }
+            }
+            // 备料 best-effort:单种材料倒推失败(unresolved 已记)不挡其它材料,建造执行期缺哪块再 fail 哪块;
+            // 但所有材料都倒推失败则整体判失败(根本没法开工)。
+            // 注意传 depth 而非 depth+1:蓝图材料是 Build 的"顶层交付物"——BuildTask 只会从背包拿成品,
+            // 不像 CraftTask 那样运行期自动把原木展开成木板。craftItem 的 Fix C 会把 depth>0 的中间体
+            // 木板 CRAFT 步抑制掉(交给下游 CraftTask 展开),对 BUILD 这是错的;Build 仅以 depth=0 进入
+            // (ensureGoal 顶层),传 depth 让木板按顶层产物保留 CRAFT 步,否则只囤原木、开工即缺料。
+            boolean anyResolved = materials.isEmpty();
+            for (Map.Entry<Item, Integer> entry : materials.entrySet()) {
+                if (ensureItem(entry.getKey(), entry.getValue(), depth, visiting)) {
+                    anyResolved = true;
+                }
+            }
+            if (!anyResolved) {
+                return false;
+            }
+            addStep(GoalStep.build(g.blueprint()));
+            return true;
+        }
+
+        // 蓝图格 → 规划期备料物品:air 跳过;palette 占位按该家族默认材质备料(规划备默认料,
+        // 执行期 BuildTask/MaterialPalette 接受家族任意成员);其余按 blockId → 方块 → 对应物品
+        // (blockId 写死的placement,BuildTask 也按该方块精确放置,故按字面备料);
+        // 无对应物品(asItem()==AIR,如技术性方块/未知 id)跳过并告警一条。
+        private Item buildMaterialFor(BlueprintSchema.BlockPlacement placement) {
+            if ("minecraft:air".equals(placement.blockId())) {
+                return null;
+            }
+            if (placement.palette() != null && !placement.palette().isBlank()) {
+                Item byPalette = paletteDefaultItem(placement.palette());
+                if (byPalette != null) {
+                    return byPalette;
+                }
+            }
+            Identifier blockKey = placement.blockId() == null ? null : Identifier.tryParse(placement.blockId());
+            Block block = blockKey == null ? null : Registries.BLOCK.getOptionalValue(blockKey).orElse(null);
+            Item item = block == null ? Items.AIR : block.asItem();
+            if (item == Items.AIR) {
+                BotLog.warn(LogCategory.TASK, null, "blueprint_material_skipped",
+                        "block", String.valueOf(placement.blockId()));
+                return null;
+            }
+            return item;
+        }
+
+        // palette → 默认备料物品(与 BlueprintLoader.fallbackBlock 同口径);planks 走树种自适应。
+        private Item paletteDefaultItem(String palette) {
+            return switch (palette) {
+                case "planks" -> preferredPlanks();
+                case "logs" -> Items.OAK_LOG;
+                case "stone_like" -> Items.COBBLESTONE;
+                case "dirt_like" -> Items.DIRT;
+                case "glass" -> Items.GLASS;
+                default -> null;
+            };
+        }
+
+        // 盖房备木板选树种(借鉴 preferredFuelLog):优先背包已有的木板种,其次已有原木对应的木板种
+        // (RecipeRegistry.LOGS/PLANKS 同序对齐),都没有才默认橡木板。意义:GATHER 原木运行期接受任意
+        // 树种,而木板配方树种专属(oak_planks←oak_log)——在桦木林采回桦木后 CRAFT oak_planks 会失败,
+        // 失败触发的重规划读到背包里的桦木,自动改备桦木板;palette 建造接受任意木板,链路自愈。
+        private Item preferredPlanks() {
+            for (Item planks : RecipeRegistry.PLANKS) {
+                if (counts.getOrDefault(planks, 0) > 0) {
+                    return planks;
+                }
+            }
+            for (int i = 0; i < RecipeRegistry.LOGS.size(); i++) {
+                if (counts.getOrDefault(RecipeRegistry.LOGS.get(i), 0) > 0) {
+                    return RecipeRegistry.PLANKS.get(i);
+                }
+            }
+            return Items.OAK_PLANKS;
         }
 
         // 第4层 备粮(best-effort):挖矿前顺带备粮,凑够默认 FOOD_TARGET 个熟食。

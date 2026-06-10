@@ -5,7 +5,7 @@ import net.minecraft.item.Item;
 
 import java.util.Set;
 
-public sealed interface Goal permits Goal.HaveItem, Goal.HavePickaxeTier, Goal.MineOre, Goal.HarvestCrop, Goal.Armor, Goal.Workstation, Goal.Stockpile, Goal.Food {
+public sealed interface Goal permits Goal.HaveItem, Goal.HavePickaxeTier, Goal.MineOre, Goal.HarvestCrop, Goal.Armor, Goal.Workstation, Goal.Stockpile, Goal.Food, Goal.Build {
     record HaveItem(Item item, int count) implements Goal {
         public HaveItem {
             count = Math.max(1, count);
@@ -53,5 +53,9 @@ public sealed interface Goal permits Goal.HaveItem, Goal.HavePickaxeTier, Goal.M
         public Food {
             cookedCount = Math.max(1, cookedCount);
         }
+    }
+
+    /** 盖房目标:按蓝图建造("盖房子"一句话全链:自动备料→建造),蓝图名如 small_hut/hut_5x5。 */
+    record Build(String blueprint) implements Goal {
     }
 }

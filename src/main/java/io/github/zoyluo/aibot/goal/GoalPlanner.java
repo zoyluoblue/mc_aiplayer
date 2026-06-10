@@ -75,8 +75,14 @@ public final class GoalPlanner {
         // 无动物可猎时浆果是"能立刻吃上"的最后手段。
         boolean hasBerries = OreProspector.nearest(bot.getServerWorld(), bot.getBlockPos(),
                 FOOD_GRASS_SCAN, state -> state.isOf(Blocks.SWEET_BERRY_BUSH)) != null;
+        // 附近矿感知:规划时扫一眼目标矿是否已在身边(48 格)。在 → 不下潜矿层直接挖
+        //(站在铁矿旁还先挖 70 格竖井到 Y16 是蠢的;且竖井穿天然地形洞/水/沙砾极易 descend_blocked,
+        // 实测场景地表化后 descend 类失败爆发,旧 y6 出生点 botY<mineY 恰好从不触发才一直没暴露)。
+        java.util.function.Predicate<Set<Block>> oreNearby = ores ->
+                OreProspector.nearest(bot.getServerWorld(), bot.getBlockPos(), 48,
+                        state -> ores.contains(state.getBlock())) != null;
         Planner planner = new Planner(inventoryCounts(bot), Math.max(1, AIBotConfig.get().goal().maxPlanDepth()),
-                bot.getBlockPos().getY(), hasPrey, hasGrass, hasBerries);
+                bot.getBlockPos().getY(), hasPrey, hasGrass, hasBerries, oreNearby);
         planner.ensureGoal(goal, 0, new HashSet<>());
         return new GoalPlan(goal, List.copyOf(mergeGathers(planner.steps)), List.copyOf(planner.unresolved));
     }
@@ -162,17 +168,20 @@ public final class GoalPlanner {
         private final boolean hasPreyNearby;  // 周围有可猎动物(食物择源:有→打猎)
         private final boolean hasGrassNearby; // 周围有草(食物择源:无动物但有草→种植面包)
         private final boolean hasBerriesNearby; // 周围有甜浆果丛(食物择源:无动物无现成粮→采浆果兜底)
+        private final java.util.function.Predicate<Set<Block>> oreNearby; // 目标矿是否已在身边(48格)→跳过下潜
         private final List<GoalStep> steps = new ArrayList<>();
         private final List<String> unresolved = new ArrayList<>();
 
         private Planner(Map<Item, Integer> counts, int maxDepth, int botY,
-                        boolean hasPreyNearby, boolean hasGrassNearby, boolean hasBerriesNearby) {
+                        boolean hasPreyNearby, boolean hasGrassNearby, boolean hasBerriesNearby,
+                        java.util.function.Predicate<Set<Block>> oreNearby) {
             this.counts = counts;
             this.maxDepth = maxDepth;
             this.botY = botY;
             this.hasPreyNearby = hasPreyNearby;
             this.hasGrassNearby = hasGrassNearby;
             this.hasBerriesNearby = hasBerriesNearby;
+            this.oreNearby = oreNearby;
         }
 
         private boolean ensureGoal(Goal goal, int depth, Set<String> visiting) {
@@ -300,7 +309,9 @@ public final class GoalPlanner {
             // 挖深层矿重构 P1:bot 远高于矿层 → 先下竖井到矿层,再挖。否则在错误高度(实测 Y=48)
             // 反复"锁定斜下方够不到的矿→水平掘隧道→dist 卡死→no_progress",卡死 11 分钟。
             int mineY = bestMiningY(expanded);
-            if (botY - mineY > DESCEND_THRESHOLD) {
+            // 附近已有目标矿 → 不下潜直接挖(站在矿旁先挖竖井到矿层是蠢的,且竖井穿天然地形
+            // 极易 blocked;实操"带 bot 到矿边让它挖"也走这条捷径)。
+            if (botY - mineY > DESCEND_THRESHOLD && !oreNearby.test(expanded)) {
                 addStep(GoalStep.descendToY(mineY));
             }
             addStep(GoalStep.mineOre(expanded, remaining));

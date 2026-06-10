@@ -5,6 +5,7 @@ import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import io.github.zoyluo.aibot.AIBotConfig;
 import io.github.zoyluo.aibot.action.HarvestCore;
 import io.github.zoyluo.aibot.action.InventoryAction;
+import io.github.zoyluo.aibot.brain.BrainCoordinator;
 import io.github.zoyluo.aibot.coordination.TaskBoard;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.goal.Goal;
@@ -182,6 +183,15 @@ public final class AIBotVerifySubcommand {
             "nav_pillar_out",
             "nav_buried_escape",
             "nav_unreachable");
+
+    // R2 LLM 全链层套件:中文口语指令走真实 DeepSeek 大脑(意图解析→选工具→参数化→执行),
+    // 与玩家聊天 @bot 完全同一代码路径(BrainCoordinator.handleMessage)。烧真 API 钱:
+    // 故意不进 ALL_FEATURES(verify all 不应偷偷计费),必须显式 /aibot verify llm_suite(或单点名),
+    // 且 WITH_LLM=1 跑(test 脚本默认 unset DEEPSEEK_API_KEY 隔离大脑)。
+    private static final List<String> LLM_SUITE = List.of(
+            "llm_move",
+            "llm_food",
+            "llm_iron");
     private static final Map<UUID, VerifyRun> RUNS = new ConcurrentHashMap<>();
 
     private AIBotVerifySubcommand() {
@@ -200,6 +210,7 @@ public final class AIBotVerifySubcommand {
                             builder.suggest("food_suite");
                             builder.suggest("real_suite");
                             builder.suggest("nav_suite");
+                            builder.suggest("llm_suite");
                             return builder.buildFuture();
                         })
                         .executes(context -> {
@@ -266,7 +277,10 @@ public final class AIBotVerifySubcommand {
                 features.addAll(REAL_SUITE); // 贴近实操套件别名
             } else if ("nav_suite".equals(feature)) {
                 features.addAll(NAV_SUITE); // 寻路容错专项套件别名
-            } else if (ALL_FEATURES.contains(feature)) {
+            } else if ("llm_suite".equals(feature)) {
+                features.addAll(LLM_SUITE); // R2 LLM 全链层套件别名(真实 DeepSeek,计费,需 WITH_LLM=1)
+            } else if (ALL_FEATURES.contains(feature) || LLM_SUITE.contains(feature)) {
+                // llm_* 故意不进 ALL_FEATURES(verify all 不烧 API 钱),但允许单点名跑(单跑最省钱)。
                 features.add(feature);
             }
         }
@@ -325,6 +339,9 @@ public final class AIBotVerifySubcommand {
             case "real_iron" -> assignRealIron(bot);
             case "real_diamond" -> assignRealDiamond(bot);
             case "real_obsidian" -> assignRealObsidian(bot);
+            case "llm_move" -> assignLlmMove(bot);
+            case "llm_food" -> assignLlmFood(bot);
+            case "llm_iron" -> assignLlmIron(bot);
             case "real_nav_far" -> assignRealNavFar(bot);
             case "nav_pillar_out" -> assignNavPillarOut(bot);
             case "nav_buried_escape" -> assignNavBuriedEscape(bot);
@@ -1203,6 +1220,77 @@ public final class AIBotVerifySubcommand {
                 ignored -> bot.isAlive() && bot.getBlockPos().getSquaredDistance(goal) <= 9.0D);
     }
 
+    // ==================== R2 LLM 全链层(llm_*) ====================
+    // 这层测"中文口语指令 → DeepSeek 意图解析 → 工具选择 → 参数化 → 执行"的完整实操链路:
+    // 入口与玩家在聊天里 @bot 说话完全相同(BrainCoordinator.handleMessage,server 线程进、
+    // 异步调 DeepSeek、响应回 server 线程执行工具)。必须 WITH_LLM=1 跑——test 脚本默认
+    // unset DEEPSEEK_API_KEY 隔离大脑,防确定性套件偷偷计费;这也是 llm_* 不进 ALL_FEATURES 的原因。
+    // 判定一律用 patient 模式(见 pollActive):大脑是会话式驱动,会连续派发多个任务、失败换法重试、
+    // 任务间空闲思考——单任务 COMPLETED/FAILED 都不是场景终局,只认"世界状态断言达成"或超时。
+    // 开局与 real_* 同一标准:prepareRealistic 自然世界零给予 + deathBase 零死亡红线。
+
+    /**
+     * llm_* 公共开局:复位大脑会话/目标计划/遗留任务 → prepareRealistic(自然世界零给予)→
+     * 中文指令经 handleMessage 递给大脑(与玩家聊天 @bot 同一入口)。
+     * 复位原因:上一个 llm 场景断言达成时大脑往往仍在续航思考(busy),busy 下 handleMessage
+     * 拒收新消息返回 false,不复位会套件串台误判;resetToIdle 顺带清掉遗留失败记录,
+     * 防新会话开局就被注入上一场景的"上一个任务失败"。
+     * 前置查 key:key 缺失时 handleMessage 照样返回 true(异步请求才报 deepseek_api_key_missing),
+     * 不查就得干等满 timeout 才 FAIL。返回 null=指令已提交;非 null=应立即记录的 FAIL。
+     */
+    private static Result startLlmScenario(AIPlayerEntity bot, String feature, String instruction) {
+        BrainCoordinator.INSTANCE.reset(bot);
+        GoalExecutor.INSTANCE.clear(bot);
+        TaskManager.INSTANCE.resetToIdle(bot);
+        prepareRealistic(bot);
+        if (AIBotConfig.get().deepseek().apiKey().isBlank()
+                || !BrainCoordinator.INSTANCE.handleMessage(bot, "Tester", instruction)) {
+            return Result.fail(feature, "brain_rejected_or_not_configured (run WITH_LLM=1)");
+        }
+        return null;
+    }
+
+    // 实操(LLM):口语化移动指令 → 大脑应解析出"去 (120, z=0) 附近"的意图并选移动类工具(move_to 等)。
+    // 断言只看世界结果:bot 与 (120, 0) 的水平距离 ≤ 8 格(忽略 y,落脚高度由自然地形决定)且零死亡。
+    private static Result assignLlmMove(AIPlayerEntity bot) {
+        Result rejected = startLlmScenario(bot, "llm_move", "走到坐标 x=120 z=0 附近去");
+        if (rejected != null) {
+            return rejected;
+        }
+        final int deathBase = deathCount(bot); // 零死亡红线:死亡重生也判 FAIL(照抄 real_* 标准)
+        return Result.runningPatient("llm_move", 6000,
+                ignored -> {
+                    double dx = bot.getX() - 120.0D;
+                    double dz = bot.getZ();
+                    return bot.isAlive() && dx * dx + dz * dz <= 64.0D && deathCount(bot) == deathBase;
+                });
+    }
+
+    // 实操(LLM):口语化食物指令 → 大脑应解析"至少 4 个熟食"的意图与数量参数,自主择源
+    // (打猎+烤/种田做面包/觅食),与 real_food 同一世界标准但驱动方是真实大脑而非直接 submit Goal。
+    private static Result assignLlmFood(AIPlayerEntity bot) {
+        Result rejected = startLlmScenario(bot, "llm_food", "去搞点吃的回来,至少弄到 4 个熟食");
+        if (rejected != null) {
+            return rejected;
+        }
+        final int deathBase = deathCount(bot); // 零死亡红线:死亡重生也判 FAIL(照抄 real_* 标准)
+        return Result.runningPatient("llm_food", 16000,
+                ignored -> bot.isAlive() && cookedFoodCount(bot) >= 4 && deathCount(bot) == deathBase);
+    }
+
+    // 实操(LLM):口语化矿物指令 → 大脑应把"挖一块铁锭"映射到 achieve_goal/mine_ore 全链
+    // (砍树→木镐→挖石→石镐→找铁→挖→做炉→熔炼),与 real_iron 同一世界标准。
+    private static Result assignLlmIron(AIPlayerEntity bot) {
+        Result rejected = startLlmScenario(bot, "llm_iron", "帮我挖一块铁锭回来");
+        if (rejected != null) {
+            return rejected;
+        }
+        final int deathBase = deathCount(bot); // 零死亡红线:死亡重生也判 FAIL(照抄 real_* 标准)
+        return Result.runningPatient("llm_iron", 24000,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.IRON_INGOT) >= 1
+                        && deathCount(bot) == deathBase);
+    }
+
     // 数 center 处 2×2 四格里的水源数量。
     private static int countWaterSources(ServerWorld world, BlockPos center) {
         BlockPos[] cells = {center, center.east(), center.south(), center.east().south()};
@@ -1646,6 +1734,23 @@ public final class AIBotVerifySubcommand {
             running.perTick().accept(bot); // 每 tick 执行场景的世界副作用(如催熟作物),先于下面的状态判定
             int elapsedTicks = server.getTicks() - active.startedTick();
             TaskStatus status = TaskManager.INSTANCE.status(bot);
+            // patient(LLM 会话式)判定:大脑驱动下 bot 会连续派发多个任务、失败换法重试、任务间空闲思考,
+            // 单任务 COMPLETED(断言尚未满足)/FAILED(大脑还会救)都不是场景终局——下面的常规终局判定
+            // 对 LLM 流程全是误判,必须在它们之前整段接管。只做两件事:每 tick 测世界状态断言
+            // (不管任务状态,含 idle/RUNNING),达成即 PASS;超时则 abort 任务并 FAIL(detail 带最后任务状态)。
+            if (running.patient()) {
+                if (running.assertion().test(status)) {
+                    record(Result.pass(running.feature(), "completed in " + elapsedTicks + " ticks"));
+                    active = null;
+                    return;
+                }
+                if (elapsedTicks >= running.timeoutTicks()) {
+                    TaskManager.INSTANCE.abort(bot);
+                    record(Result.fail(running.feature(), "verify_timeout status=" + status.name() + " " + status.description()));
+                    active = null;
+                }
+                return;
+            }
             if (status.state() == TaskState.COMPLETED) {
                 if (running.expectFail()) {
                     // 反向场景:任务"完成"了反而是错——说明场景前提没立住(目标其实可达),记 FAIL 提示人工复查布景。
@@ -1727,32 +1832,33 @@ public final class AIBotVerifySubcommand {
                           int timeoutTicks,
                           boolean allowGoalContinuation,
                           boolean expectFail,
+                          boolean patient,
                           Predicate<TaskStatus> assertion,
                           Consumer<AIPlayerEntity> perTick) {
         private static final Consumer<AIPlayerEntity> NO_TICK = bot -> {
         };
 
         private static Result pass(String feature, String detail) {
-            return new Result(feature, true, detail, false, 0, false, false, ignored -> true, NO_TICK);
+            return new Result(feature, true, detail, false, 0, false, false, false, ignored -> true, NO_TICK);
         }
 
         private static Result fail(String feature, String detail) {
-            return new Result(feature, false, detail, false, 0, false, false, ignored -> false, NO_TICK);
+            return new Result(feature, false, detail, false, 0, false, false, false, ignored -> false, NO_TICK);
         }
 
         private static Result running(String feature, int timeoutTicks, Predicate<TaskStatus> assertion) {
-            return new Result(feature, false, "running", true, timeoutTicks, false, false, assertion, NO_TICK);
+            return new Result(feature, false, "running", true, timeoutTicks, false, false, false, assertion, NO_TICK);
         }
 
         private static Result runningGoal(String feature, int timeoutTicks, Predicate<TaskStatus> assertion) {
-            return new Result(feature, false, "running", true, timeoutTicks, true, false, assertion, NO_TICK);
+            return new Result(feature, false, "running", true, timeoutTicks, true, false, false, assertion, NO_TICK);
         }
 
         // 带每-tick 副作用钩子的 runningGoal:perTick 在 pollActive 每个服务端 tick 都被调用(无论有无 task 完成),
         // 用于测试期持续操纵世界(如强制催熟作物,绕开自然随机刻生长的漫长等待)。assertion 仍是成功判定。
         private static Result runningGoal(String feature, int timeoutTicks,
                                           Consumer<AIPlayerEntity> perTick, Predicate<TaskStatus> assertion) {
-            return new Result(feature, false, "running", true, timeoutTicks, true, false, assertion, perTick);
+            return new Result(feature, false, "running", true, timeoutTicks, true, false, false, assertion, perTick);
         }
 
         // 反向场景工厂:期望任务在 timeoutTicks 内**干净 FAILED**——这才算 PASS(detail 带失败原因+耗时);
@@ -1760,7 +1866,14 @@ public final class AIBotVerifySubcommand {
         // 防止寻路退化成无限重试空转(实操里空转比报错伤得多:看着在干活,实际整局假死)。
         // assertion 在 expectFail 语义下不参与判定,占位恒 false 防误用。
         private static Result runningExpectCleanFail(String feature, int timeoutTicks) {
-            return new Result(feature, false, "running", true, timeoutTicks, false, true, ignored -> false, NO_TICK);
+            return new Result(feature, false, "running", true, timeoutTicks, false, true, false, ignored -> false, NO_TICK);
+        }
+
+        // patient(耐心)工厂:R2 LLM 全链层专用。大脑会话式驱动下单任务 COMPLETED/FAILED 都不是终局
+        // (会连续派发任务/失败重试/空闲思考),pollActive 对 patient 跳过全部终局判定,
+        // 只认"世界状态断言达成"(PASS,completed in X ticks)或超时(abort+FAIL,detail 带最后任务状态)。
+        private static Result runningPatient(String feature, int timeoutTicks, Predicate<TaskStatus> assertion) {
+            return new Result(feature, false, "running", true, timeoutTicks, false, false, true, assertion, NO_TICK);
         }
     }
 }

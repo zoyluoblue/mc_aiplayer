@@ -242,10 +242,14 @@ public final class HuntTask extends AbstractTask {
     private static BlockPos findGround(ServerWorld world, int x, int z) {
         // 用高度图直接拿该列地表,跨任意海拔都成立。原来硬上限 y=110:bot 站在 y>110 的高地/丘陵时
         // 永远找不到落脚点 → 漫游全废 → 明明附近有猎物也 hunt_stuck_no_escape(实测 y=111、有鸡 dist 13 仍失败)。
+        // 树冠穿透:MOTION_BLOCKING 顶面在森林落在树冠上,原来只向下扫 6 格且硬性要求 isSkyVisible——
+        // 云杉/高大树冠 10+ 格,林下地面又不见天 → 森林里采样点全部 null → 漫游 24 点全拒、
+        // hunt 1t 速死 no_prey(实测云杉林出生)。改:向下穿透 24 格,接受第一个可站点(林地不见天也能走);
+        // standable 已保证脚下实体支撑+身位两格可通过,不会落进窄洞。
         int surfaceY = world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING, x, z);
-        for (int y = surfaceY; y >= surfaceY - 6 && y > world.getBottomY() + 1; y--) {
+        for (int y = surfaceY; y >= surfaceY - 24 && y > world.getBottomY() + 1; y--) {
             BlockPos p = new BlockPos(x, y, z);
-            if (Standability.isStandable(world, p) && world.isSkyVisible(p)) {
+            if (Standability.isStandable(world, p)) {
                 return p;
             }
         }

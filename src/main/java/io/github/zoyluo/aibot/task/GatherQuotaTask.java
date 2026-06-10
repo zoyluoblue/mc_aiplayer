@@ -200,12 +200,18 @@ public final class GatherQuotaTask extends AbstractTask {
         // 与目标差几十格高度,走过去也够不到(实测 found=y66 to=y86 死循环)。A* 自己解决下坡路线。
         BlockPos ground = standNearTarget(world, found);
         if (ground == null) {
+            // 观测:静默拉黑无法取证(实测速死定位绕了三轮)——找到了资源却没法站过去,值得记一笔。
+            BotLog.action(bot, "gather_prospect_unreachable",
+                    "found", found.toShortString(), "why", "no_stand");
             prospectBlacklist.add(found.toImmutable()); // 周边没有任何可站点 → 拉黑换下一个
             return false;
         }
         bot.getActionPack().stopAll();
         // 寻路被拒 → 拉黑该目标换下一个;不能不看结果就进 ROAM(瞬退会把好目标误判为走不到)。
-        if (bot.getActionPack().startPathTo(ground).isFailed()) {
+        var pathResult = bot.getActionPack().startPathTo(ground);
+        if (pathResult.isFailed()) {
+            BotLog.action(bot, "gather_prospect_unreachable",
+                    "found", found.toShortString(), "why", pathResult.reason());
             prospectBlacklist.add(found.toImmutable());
             return false;
         }
@@ -279,13 +285,16 @@ public final class GatherQuotaTask extends AbstractTask {
         return false;
     }
 
-    // 在 (x,z) 列从高往低找第一个露天可站点(地表)。
+    // 在 (x,z) 列从高往低找第一个可站点(地表/林地)。
     private BlockPos findGroundAt(net.minecraft.server.world.ServerWorld world, int x, int z) {
         // 高度图取该列地表,跨任意海拔成立(原硬上限 y=110 会让 bot 站在 y>110 高地时漫游/落脚全失败,与 HuntTask 同源 bug)。
+        // 树冠穿透(与 HuntTask.findGround 同款修复):森林里 MOTION_BLOCKING 顶面在树冠,原"只下扫 6 格+
+        // 必须见天"在云杉林全 null → roam 24 点全拒、prospect 落脚失败 → no_resource 21t 速死。
+        // 改:下穿 24 格、接受第一个可站点(林地不见天也能走)。
         int surfaceY = world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING, x, z);
-        for (int y = surfaceY; y >= surfaceY - 6 && y > world.getBottomY() + 1; y--) {
+        for (int y = surfaceY; y >= surfaceY - 24 && y > world.getBottomY() + 1; y--) {
             BlockPos p = new BlockPos(x, y, z);
-            if (Standability.isStandable(world, p) && world.isSkyVisible(p)) {
+            if (Standability.isStandable(world, p)) {
                 return p;
             }
         }

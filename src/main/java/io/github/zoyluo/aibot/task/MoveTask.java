@@ -114,7 +114,9 @@ public final class MoveTask extends AbstractTask {
         // 病根:大脑 move_to 盲目挖向坐标 → digStep 一路挖进水域 → bot 头没入水中;NavSafetyNet 每 tick
         // 上浮换气,但下一 tick 本任务又 digStep 把 bot 挖回水里 → "上浮↔挖回"活锁几分钟、零进展,
         // 最终溺水/被怪打死(实测两次死亡)。在这里 submerged/挨打即熔断,从根上打破活锁、保命第一。
-        if (bot.isSubmergedInWater()) {
+        // 熔断提前:脚一沾水就停(原来等头没入 submerged 才停——那时已半淹,安全网要拖很久才能救上岸;
+        // 实测 real_nav_far 挖到湖边 73t 即灌水)。touchingWater 时水还没过头,立即停手交安全网上岸。
+        if (bot.isTouchingWater()) {
             miner.cancel(bot);
             fail("move_dig_drowning");
             return;

@@ -193,8 +193,13 @@ public final class OreDigTask extends AbstractTask {
                 lastTargetDist = Double.MAX_VALUE;
                 return;
             }
-            if (withinReach(bot, targetOre)) {
-                BlockMiner.Status st = miner.target() != null && miner.target().equals(targetOre)
+            // 挖掘锁定:已对这块矿开挖就继续挖完,不管当前是否仍在 reach 内——bot 站在阶梯上微移会让
+            // dist 在 reach 边缘(4.5)来回抖,原逻辑 reach 内开挖→出 reach 切去挖隧道格→回 reach 重新开挖,
+            // 挖掘进度每次清零永远挖不完(实测 mine_start 5 坐标轮换 1s 一换、石镐 2.5s 的矿 300t 零产出)。
+            // bot 真走远时 BlockMiner 自身的失败判定会兜底(FAILED→ignored)。
+            boolean miningTarget = miner.target() != null && miner.target().equals(targetOre);
+            if (miningTarget || withinReach(bot, targetOre)) {
+                BlockMiner.Status st = miningTarget
                         ? miner.tick(bot)
                         : beginMine(bot, targetOre);
                 if (st == BlockMiner.Status.DONE) {

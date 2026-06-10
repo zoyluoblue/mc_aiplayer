@@ -128,6 +128,10 @@ public final class NavSafetyNet {
      * 向上 SUFFOCATION_CLIMB_UP 格内无解(深埋封顶)才回退到全向最近可站点,至少脱离当前窒息格。
      */
     private boolean escapeSuffocation(AIPlayerEntity bot, ServerWorld world, BlockPos feet) {
+        // 缓存必脏:走到"被埋"这一步说明方块刚变过(塌方/活埋场景 setBlockState),Standability 缓存
+        // 还是变更前的世界——拿旧值判"向上无可站点"会走 fallback 全向 snap,把 bot 拽进远处洞里
+        //(实测平原活埋:向上 2 格明明可站,却被 snap 到 y20 黑洞再触发保命传送,场景 aborted)。
+        Standability.clearCache();
         int top = world.getBottomY() + world.getHeight();
         for (int dy = 1; dy <= SUFFOCATION_CLIMB_UP && feet.getY() + dy < top - 1; dy++) {
             BlockPos candidate = feet.up(dy);

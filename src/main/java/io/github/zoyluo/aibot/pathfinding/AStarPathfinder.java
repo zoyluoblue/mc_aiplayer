@@ -98,6 +98,7 @@ public final class AStarPathfinder {
         if (effectiveGoal == null) {
             return done(PathfindingResult.failure(FailureReason.GOAL_NOT_STANDABLE, 0, elapsed(startTime)));
         }
+        enumerator.setPathGoal(effectiveGoal);
         CacheKey cacheKey = new CacheKey(world.getRegistryKey().getValue().toString(), effectiveStart, effectiveGoal, (int) (maxNodes + heuristicWeight * 1000), maxMillis, canPillar, allowDig, cacheVersion);
         PathfindingResult cached = cached(cacheKey, startTime);
         if (cached != null) {

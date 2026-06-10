@@ -222,6 +222,29 @@ public final class OreDigTask extends AbstractTask {
             // bot 真走远时 BlockMiner 自身的失败判定会兜底(FAILED→ignored)。
             boolean miningTarget = miner.target() != null && miner.target().equals(targetOre);
             if (miningTarget || withinReach(bot, targetOre)) {
+                // P0 封岩浆再挖(真实玩家标准操作):矿邻面贴岩浆,挖掉矿的瞬间岩浆涌入——烧 bot+烧掉落。
+                // 独立封堵阶段:岩浆格可能比矿远一格,刚进 reach 时够不着 → 继续贴近(向矿正下走),
+                // 够着了用低值方块替换岩浆源(一 tick 一格);没块可封才安全弃挖(命比矿值钱)。
+                if (!miningTarget) {
+                    BlockPos lava = adjacentLavaOf(world, targetOre);
+                    if (lava != null) {
+                        if (io.github.zoyluo.aibot.action.MaterialPalette.pickAnyBlockSlot(bot).isEmpty()) {
+                            BotLog.action(bot, "ore_dig_lava_unsealable", "ore", targetOre.toShortString());
+                            excludeOre(bot, targetOre);
+                            targetOre = null;
+                            return;
+                        }
+                        if (bot.getEyePos().squaredDistanceTo(lava.toCenterPos()) <= REACH_SQUARED) {
+                            if (!io.github.zoyluo.aibot.action.BuildAction.placeBlockAt(bot, lava).isFailed()) {
+                                BotLog.action(bot, "ore_dig_lava_seal", "sealed", lava.toShortString());
+                                lastProgressTick = elapsed; // 封堵也是进展
+                            }
+                        } else if (bot.getActionPack().isPathExecutorIdle()) {
+                            bot.getActionPack().startDigPathTo(targetOre.down()); // 贴近到封得着
+                        }
+                        return;
+                    }
+                }
                 BlockMiner.Status st = miningTarget
                         ? miner.tick(bot)
                         : beginMine(bot, targetOre);
@@ -249,7 +272,9 @@ public final class OreDigTask extends AbstractTask {
                 // 接近目标=矿的下方格:DIG 邻居只有水平四向,矿高一格时同层泛洪永远够不到终点
                 //(geo_wall 实测 explored=8699 全图泛洪 TIMEOUT)。站位选矿正下,头位恰=矿格——
                 // 执行器挖头位时顺手把矿挖掉,掉落物落脚边直接入袋,反而少走一步。
-                var approach = bot.getActionPack().startDigPathTo(targetOre.down());
+                // 例外:矿贴岩浆时不能让执行器顺手挖(挖头位=挖矿即涌浆)——接近目标改反岩浆侧水平邻位,
+                // 站安全面、岩浆格在 reach 内,封堵阶段封完才开挖。
+                var approach = bot.getActionPack().startDigPathTo(approachGoalFor(world, targetOre));
                 if (approach.isFailed() && !"pathfinding_throttled".equals(approach.reason())) { // 观测:首败必打(节流不打)
                     BotLog.action(bot, "ore_dig_approach_rejected", "why", approach.reason(),
                             "target", targetOre.toShortString());
@@ -450,6 +475,30 @@ public final class OreDigTask extends AbstractTask {
 
     private static boolean isWater(ServerWorld world, BlockPos pos) {
         return world.getBlockState(pos).getFluidState().isIn(FluidTags.WATER);
+    }
+
+    // 接近落点:常规=矿正下(执行器顺手挖,少走一步);贴岩浆=反岩浆侧水平邻位(安全封堵位)。
+    private static BlockPos approachGoalFor(ServerWorld world, BlockPos ore) {
+        BlockPos lava = adjacentLavaOf(world, ore);
+        if (lava == null) {
+            return ore.down();
+        }
+        int dx = Integer.compare(ore.getX(), lava.getX());
+        int dz = Integer.compare(ore.getZ(), lava.getZ());
+        Direction away = dx != 0 ? (dx > 0 ? Direction.EAST : Direction.WEST)
+                : dz != 0 ? (dz > 0 ? Direction.SOUTH : Direction.NORTH)
+                : Direction.NORTH; // 岩浆在正上/正下 → 任选水平面
+        return ore.offset(away);
+    }
+
+    private static BlockPos adjacentLavaOf(ServerWorld world, BlockPos pos) {
+        for (Direction d : Direction.values()) {
+            BlockPos side = pos.offset(d);
+            if (world.getFluidState(side).isIn(FluidTags.LAVA)) {
+                return side;
+            }
+        }
+        return null;
     }
 
     private BlockMiner.Status beginMine(AIPlayerEntity bot, BlockPos pos) {

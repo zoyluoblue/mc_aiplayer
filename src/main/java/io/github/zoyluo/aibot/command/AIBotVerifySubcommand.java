@@ -1538,6 +1538,7 @@ public final class AIBotVerifySubcommand {
                 }
                 world.setBlockState(origin.add(7, 1, 0), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
                 world.setBlockState(origin.add(8, 1, 0), Blocks.LAVA.getDefaultState(), Block.NOTIFY_ALL); // 矿东面贴岩浆
+                InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 8)); // 封堵材料(真实玩家身上总有圆石)
             }
             // P0 验证·沙砾顶:穿墙必经段头顶悬 3 格沙砾柱(z=0 直线),预检该绕 z±1 安全列穿——
             // 直线穿=塌方砸头窒息(零死亡断言抓)。

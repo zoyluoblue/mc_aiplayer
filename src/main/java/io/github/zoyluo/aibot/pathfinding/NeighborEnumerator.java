@@ -21,6 +21,7 @@ public final class NeighborEnumerator {
 
     private final boolean canPillar;
     private final boolean allowDig;
+    private BlockPos pathGoal; // 终点格:岩浆预检豁免用(终点贴岩浆由任务层封堵处理,不该让唯一入口无解)
 
     public NeighborEnumerator() {
         this(false, true);
@@ -38,6 +39,10 @@ public final class NeighborEnumerator {
     public NeighborEnumerator(boolean canPillar, boolean allowDig) {
         this.canPillar = canPillar;
         this.allowDig = allowDig;
+    }
+
+    public void setPathGoal(BlockPos goal) {
+        this.pathGoal = goal;
     }
 
     public List<NeighborCandidate> getNeighbors(BlockPos current, ServerWorld world) {
@@ -170,7 +175,7 @@ public final class NeighborEnumerator {
     // DIG 可进入:脚位与头位各自"可挖 或 已通行"(但不全空——全空是 WALK/JUMP 的领域),
     // 且脚下有支撑(挖完站得住)。修"脚空头实"死角:终点=矿正下方时站位空气、头顶是矿,
     // 原 isMineable 要求脚位非空气 → 四种邻居全拒,goal 节点永不入队,A* 万格泛洪 TIMEOUT(geo_wall 实测)。
-    private static boolean digEnterable(ServerWorld world, BlockPos target) {
+    private boolean digEnterable(ServerWorld world, BlockPos target) {
         BlockPos head = target.up();
         boolean footOpen = collisionEmpty(world, target);
         boolean headOpen = collisionEmpty(world, head);
@@ -184,8 +189,9 @@ public final class NeighborEnumerator {
         }
         // P0 安全预检(深层挖矿头号死因):挖开这两格后侧面/上方岩浆会涌入——-59 钻石层就是岩浆层,
         // 实操挖钻石最常见死法。脚/头任一格暴露面贴岩浆 → 这条路不挖,A* 自然绕行。
-        if (adjacentLava(world, target) || adjacentLava(world, head)) {
-            return false;
+        boolean isGoal = pathGoal != null && (target.equals(pathGoal) || head.equals(pathGoal));
+        if (!isGoal && (adjacentLava(world, target) || adjacentLava(world, head))) {
+            return false; // 终点格豁免:贴岩浆的矿仍可达,挖前由任务层先封岩浆(ore_dig_lava_seal)
         }
         // P0 沙砾坍塌预检:头位上方是悬沙/砾(FallingBlock)→ 挖开即连环下落,砸头窒息+填回通道。
         if (world.getBlockState(head.up()).getBlock() instanceof net.minecraft.block.FallingBlock) {

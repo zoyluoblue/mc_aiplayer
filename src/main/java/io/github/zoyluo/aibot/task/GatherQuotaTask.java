@@ -66,7 +66,23 @@ public final class GatherQuotaTask extends AbstractTask {
     // SURVEY 近处就接管了,不会再 prospect)→ 拉黑,换下一个;防"反复扫到同一个够不到的目标"死循环
     //(实测:草在 y66 山谷,bot 在 y86 崖顶,落脚点被 heightmap 顶到崖顶,395t 内反复扫同一丛草直到超时)。
     private BlockPos lastProspectFound;
-    private final java.util.Set<BlockPos> prospectBlacklist = new java.util.HashSet<>();
+    // 跨任务实例的 prospect 黑名单:goal replan 会重建任务,实例字段黑名单清零 → 同一个不可达目标
+    // 被新实例反复选中死循环(实测 GOAL_UNREACHABLE 同点两连失败)。static + 过期 TTL——
+    // "去不了"对短期内的任何任务实例都成立;过期后允许重试(地形/可达性可能已变)。
+    private static final java.util.Map<BlockPos, Integer> PROSPECT_BLACKLIST = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final int PROSPECT_BLACKLIST_TTL = 1200;
+
+    private static boolean prospectBlacklisted(BlockPos pos, int now) {
+        Integer until = PROSPECT_BLACKLIST.get(pos);
+        if (until == null) {
+            return false;
+        }
+        if (until < now) {
+            PROSPECT_BLACKLIST.remove(pos);
+            return false;
+        }
+        return true;
+    }
     private boolean surfaceTried; // B:地下找不到树时,上浮到地表重试一次的兜底标志
     private int roamCount;        // 卡步逃逸:已漫游换片的次数
     private BlockPos roamTarget;  // 漫游换片的落脚点(走过去,不 teleport)
@@ -179,22 +195,21 @@ public final class GatherQuotaTask extends AbstractTask {
         // 又走到 prospect = 上一个 prospect 目标没采成(采成的话 SURVEY 近处早接管了)→ 拉黑换下一个,
         // 杜绝"反复扫到同一个够不到的目标"死循环。黑名单防膨胀:超 32 个清空重来(资源可能后来变得可达)。
         if (lastProspectFound != null) {
-            prospectBlacklist.add(lastProspectFound);
-            if (prospectBlacklist.size() > 32) {
-                prospectBlacklist.clear();
+            PROSPECT_BLACKLIST.put(lastProspectFound, now + PROSPECT_BLACKLIST_TTL);
+            if (PROSPECT_BLACKLIST.size() > 64) {
+                PROSPECT_BLACKLIST.clear();
             }
             lastProspectFound = null;
         }
         var world = bot.getServerWorld();
         BlockPos found = OreProspector.nearest(world, bot.getBlockPos(), PROSPECT_RANGE,
                 state -> harvestBlocks.contains(state.getBlock()),
-                pos -> !prospectBlacklist.contains(pos));
+                pos -> !prospectBlacklisted(pos, now));
         if (found == null) {
             // 观测:静默 false 无法区分"96 格内真没该资源"和"扫描/黑名单 bug"(实测 21t 速死无从取证)。
             BotLog.action(bot, "gather_prospect_empty",
-                    "item", targetItem, "range", PROSPECT_RANGE, "blacklisted", prospectBlacklist.size());
-            prospectBlacklist.clear(); // 没有未拉黑的目标了 → 清单重置,交 roam 盲目换片兜底
-            return false;
+                    "item", targetItem, "range", PROSPECT_RANGE, "blacklisted", PROSPECT_BLACKLIST.size());
+            return false; // 黑名单不清(都是带 TTL 的"真去不了"),交 roam 盲目换片兜底
         }
         // 落脚点以目标实际位置为锚:目标可能在山谷/低地——旧法用该列 heightmap 会把落脚点顶到崖顶,
         // 与目标差几十格高度,走过去也够不到(实测 found=y66 to=y86 死循环)。A* 自己解决下坡路线。
@@ -203,7 +218,7 @@ public final class GatherQuotaTask extends AbstractTask {
             // 观测:静默拉黑无法取证(实测速死定位绕了三轮)——找到了资源却没法站过去,值得记一笔。
             BotLog.action(bot, "gather_prospect_unreachable",
                     "found", found.toShortString(), "why", "no_stand");
-            prospectBlacklist.add(found.toImmutable()); // 周边没有任何可站点 → 拉黑换下一个
+            PROSPECT_BLACKLIST.put(found.toImmutable(), now + PROSPECT_BLACKLIST_TTL); // 周边无可站点 → 拉黑换下一个
             return false;
         }
         bot.getActionPack().stopAll();
@@ -212,7 +227,7 @@ public final class GatherQuotaTask extends AbstractTask {
         if (pathResult.isFailed()) {
             BotLog.action(bot, "gather_prospect_unreachable",
                     "found", found.toShortString(), "why", pathResult.reason());
-            prospectBlacklist.add(found.toImmutable());
+            PROSPECT_BLACKLIST.put(found.toImmutable(), now + PROSPECT_BLACKLIST_TTL);
             return false;
         }
         lastProspectFound = found.toImmutable();

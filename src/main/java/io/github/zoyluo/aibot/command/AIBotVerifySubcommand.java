@@ -1579,9 +1579,12 @@ public final class AIBotVerifySubcommand {
         ServerWorld world = bot.getServerWorld();
         // 套件里多场景顺序跑,bot 位置会从上个场景带过来(打猎走远等)→ 假设"干净出生点"的场景会错位
         //(food_suite 实测:farm_wheat 时 bot 漂到 9,-2,预置成熟麦没 survey 到、被当空地种 → FAIL)。
-        // 开头先复位到固定原点 (0,6,0),保证每个场景从一致干净的位置开跑,套件确定性。
+        // 开头复位到固定原点保证确定性;y 取世界原点的自然地表——原来硬编码 y=6(旧测试世界出生点),
+        // 换自然世界后 y6 是黑暗地下,把所有场景传进地下:黑暗触发 DangerWatcher 困死保命传送
+        // (dark_trap_escape)中止被测任务(实测 nav_pillar_out 连续两轮 aborted 的真根因)。
         bot.getActionPack().stopAll();
-        bot.teleport(world, 0.5D, 6.0D, 0.5D, java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+        int surfaceY = world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, 0, 0);
+        bot.teleport(world, 0.5D, surfaceY, 0.5D, java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
         BlockPos origin = bot.getBlockPos();
         for (BlockPos pos : BlockPos.iterate(origin.add(-4, 0, -4), origin.add(4, 3, 4))) {
             world.setBlockState(pos, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);

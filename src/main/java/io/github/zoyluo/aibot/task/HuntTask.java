@@ -99,6 +99,30 @@ public final class HuntTask extends AbstractTask {
         roamCount = 0;
         clearingObstacle = false;
         phase = Phase.ACQUIRE;
+        surfaceIfUnderground(bot);
+    }
+
+    // 地下开猎先回地表:猎物与漫游落点都在地表,bot 在矿坑/洞里时 24 个 roam 采样点 A* 全不可达
+    // → roamForPrey 首调即 false → 1t 速死 no_prey(实测挖完石做炉后接打猎步必死)。
+    // 与 GatherQuotaTask.trySurface 同款 teleport 上浮兜底(贴近实操的折中:实操玩家会沿来路爬出,
+    // 这里一次性上浮代替,避免给打猎再造一条"爬出矿洞"依赖链)。
+    private static void surfaceIfUnderground(AIPlayerEntity bot) {
+        ServerWorld world = bot.getServerWorld();
+        BlockPos feet = bot.getBlockPos();
+        if (world.isSkyVisible(feet)) {
+            return;
+        }
+        int top = world.getBottomY() + world.getHeight();
+        for (int dy = 1; feet.getY() + dy < top - 1 && dy <= 80; dy++) {
+            BlockPos candidate = feet.up(dy);
+            if (Standability.isStandable(world, candidate) && world.isSkyVisible(candidate)) {
+                bot.getActionPack().stopAll();
+                bot.teleport(world, candidate.getX() + 0.5D, candidate.getY(), candidate.getZ() + 0.5D,
+                        java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+                BotLog.action(bot, "hunt_surfaced", "to", candidate.toShortString());
+                return;
+            }
+        }
     }
 
     @Override

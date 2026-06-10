@@ -119,7 +119,11 @@ public final class AIBotVerifySubcommand {
             "real_nav_far",
             "nav_pillar_out",
             "nav_buried_escape",
-            "nav_unreachable");
+            "nav_unreachable",
+            "goal_queue",
+            "goal_build_auto",
+            "goal_build_custom",
+            "msg_keep_goal");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
@@ -192,6 +196,16 @@ public final class AIBotVerifySubcommand {
             "llm_move",
             "llm_food",
             "llm_iron");
+
+    // 对话式助手层套件:/aibot verify assistant_suite。验证助手层四块新地基(此前只编译过、零运行验证):
+    // P0 目标队列(连续吩咐自动排队接续)、P1 Goal.Build 自动备料(只给原木自己算料合成)、
+    // P3 参数化蓝图(custom:WxDxH:material)、P2 玩家消息不清进行中目标(打断保留语义)。
+    // 全部确定性实验室场景,不走 LLM、不烧 API(大脑驱动的全链由 llm_suite 单独覆盖)。
+    private static final List<String> ASSISTANT_SUITE = List.of(
+            "goal_queue",
+            "goal_build_auto",
+            "goal_build_custom",
+            "msg_keep_goal");
     private static final Map<UUID, VerifyRun> RUNS = new ConcurrentHashMap<>();
     // 场景空间隔离计数:每场景在 x 方向轮转到新地块,防套件内场景互染(prepareArea 注释详述)。
     private static int scenarioSlot = 0;
@@ -213,6 +227,7 @@ public final class AIBotVerifySubcommand {
                             builder.suggest("real_suite");
                             builder.suggest("nav_suite");
                             builder.suggest("llm_suite");
+                            builder.suggest("assistant_suite");
                             return builder.buildFuture();
                         })
                         .executes(context -> {
@@ -281,6 +296,8 @@ public final class AIBotVerifySubcommand {
                 features.addAll(NAV_SUITE); // 寻路容错专项套件别名
             } else if ("llm_suite".equals(feature)) {
                 features.addAll(LLM_SUITE); // R2 LLM 全链层套件别名(真实 DeepSeek,计费,需 WITH_LLM=1)
+            } else if ("assistant_suite".equals(feature)) {
+                features.addAll(ASSISTANT_SUITE); // 对话式助手层套件别名(P0 队列/P1 自动备料/P3 参数化/P2 打断保留)
             } else if (ALL_FEATURES.contains(feature) || LLM_SUITE.contains(feature)) {
                 // llm_* 故意不进 ALL_FEATURES(verify all 不烧 API 钱),但允许单点名跑(单跑最省钱)。
                 features.add(feature);
@@ -353,6 +370,10 @@ public final class AIBotVerifySubcommand {
             case "nav_pillar_out" -> assignNavPillarOut(bot);
             case "nav_buried_escape" -> assignNavBuriedEscape(bot);
             case "nav_unreachable" -> assignNavUnreachable(bot);
+            case "goal_queue" -> assignGoalQueue(bot);
+            case "goal_build_auto" -> assignGoalBuildAuto(bot);
+            case "goal_build_custom" -> assignGoalBuildCustom(bot);
+            case "msg_keep_goal" -> assignMsgKeepGoal(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
     }
@@ -1321,6 +1342,135 @@ public final class AIBotVerifySubcommand {
         return Result.runningPatient("llm_iron", 24000,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.IRON_INGOT) >= 1
                         && deathCount(bot) == deathBase);
+    }
+
+    // ==================== 对话式助手层(assistant_suite) ====================
+    // 验证助手层四块新地基(此前只编译过、零运行验证):P0 目标队列 / P1 Goal.Build 自动备料 /
+    // P3 参数化蓝图 / P2 玩家消息保留进行中目标。全部确定性实验室场景(prepareArea 人造平台),
+    // 不走 LLM、不烧 API——测的是助手层的执行根基,大脑驱动的全链由 llm_suite 单独覆盖。
+
+    /**
+     * P0 目标队列端到端:连续 submit 两个目标——第一个(木棍×4)立即开工;第二个(工作台×1)在
+     * 活跃目标存在时应走 GoalExecutor.goalQueue **入队**且返回 true(返回 false=队列回归,立即 FAIL);
+     * 第一个完成后 advanceQueue 自动出队衔接执行第二个。4 原木够两条链:棍链耗 1 木(→4 板,2 板成 4 棍),
+     * 台链再耗 1 木(剩 2 板补 4 板→工作台)。断言两个目标的产物**同时到手**(木棍≥4 且工作台≥1)
+     * 且零死亡——只有第二个目标真被接续执行了,断言才可能成立。
+     */
+    private static Result assignGoalQueue(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        InventoryAction.giveItem(bot, new ItemStack(Items.OAK_LOG, 4));
+        final int deathBase = deathCount(bot); // 零死亡红线(照抄 real_* 标准)
+        if (!GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.STICK, 4))) {
+            return Result.fail("goal_queue", "goal_submit_failed");
+        }
+        if (!GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.CRAFTING_TABLE, 1))) {
+            return Result.fail("goal_queue", "second_submit_rejected"); // P0 回归:第二目标应入队返回 true
+        }
+        return Result.runningGoal("goal_queue", 4800,
+                ignored -> bot.isAlive()
+                        && InventoryAction.countItem(bot, Items.STICK) >= 4
+                        && InventoryAction.countItem(bot, Items.CRAFTING_TABLE) >= 1
+                        && deathCount(bot) == deathBase);
+    }
+
+    /**
+     * P1 Goal.Build 自动备料端到端:只给 32 原木、零木板——ensureBuild 必须自己按蓝图逐格统计出
+     * 需 114 块木板(small_hut 实测口径,见 assignBuild 注释),倒推出"原木→木板"CRAFT 步并全部合成,
+     * 再由 BUILD 步把房盖起来(纯建造已由 build 场景覆盖,本场景钉的是备料链)。
+     * 断言:origin ±14、y∈[origin.y, origin.y+8] 的木板家族方块 ≥80(全房 112 块,留余量)且零死亡。
+     * above 口径理由见 countNearbyBlocksAbove(木板虽不与石地板同族,两个建房场景统一口径更稳)。
+     */
+    private static Result assignGoalBuildAuto(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        InventoryAction.giveItem(bot, new ItemStack(Items.OAK_LOG, 32)); // 只给原木:114 板必须自己算出来并合成
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        final int deathBase = deathCount(bot);
+        java.util.Set<Block> plankBlocks = new java.util.HashSet<>();
+        for (Item planks : io.github.zoyluo.aibot.craft.RecipeRegistry.PLANKS) {
+            Block block = Block.getBlockFromItem(planks);
+            if (block != Blocks.AIR) {
+                plankBlocks.add(block);
+            }
+        }
+        if (!GoalExecutor.INSTANCE.submit(bot, new Goal.Build("small_hut"))) {
+            return Result.fail("goal_build_auto", "goal_submit_failed");
+        }
+        return Result.runningGoal("goal_build_auto", 9600,
+                ignored -> bot.isAlive()
+                        && countNearbyBlocksAbove(world, origin, 14, plankBlocks) >= 80
+                        && deathCount(bot) == deathBase);
+    }
+
+    /**
+     * P3 参数化蓝图端到端:Goal.Build("custom:5x4x3:stone_like") 不读蓝图文件,由
+     * BlueprintSchema.parametricHouse 按规格生成(外径 5×4、墙净高 3:地板20+墙42-门2+顶20=80 格,
+     * palette=stone_like)。给足 128 圆石(备料链判"已满足"零采集,聚焦参数化几何+palette 建造)。
+     * 断言:±14、y∈[origin.y, origin.y+8] 的 stone_like 建材(圆石/石头/石砖)≥40(半房即过,容忍
+     * 个别格缺失)且零死亡。必须 above 口径:实验室平台地板(y-1 圆石、其下 16 层实心石)与建材同族,
+     * 数进去会把"没盖房"误判成 PASS——房子地板层恰落在 origin.y(SiteFinder 锚在可站立脚位),零损失。
+     */
+    private static Result assignGoalBuildCustom(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 128));
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        final int deathBase = deathCount(bot);
+        java.util.Set<Block> stoneLike = java.util.Set.of(Blocks.COBBLESTONE, Blocks.STONE, Blocks.STONE_BRICKS);
+        if (!GoalExecutor.INSTANCE.submit(bot, new Goal.Build("custom:5x4x3:stone_like"))) {
+            return Result.fail("goal_build_custom", "goal_submit_failed");
+        }
+        return Result.runningGoal("goal_build_custom", 7200,
+                ignored -> bot.isAlive()
+                        && countNearbyBlocksAbove(world, origin, 14, stoneLike) >= 40
+                        && deathCount(bot) == deathBase);
+    }
+
+    /**
+     * P2 打断保留目标(机制层,不走 LLM 决策):提交挖圆石目标(平台下全是人造石,DigDownTask 要挖
+     * 几百 tick),趁执行中用 BrainCoordinator.handleMessage 模拟玩家闲聊——与玩家聊天 @bot 完全同一入口。
+     * P2 语义:有活跃 plan 时新消息**不清目标**只解 busy(旧行为"新消息=重定向,清目标"会把正在挖的
+     * 目标直接杀掉)。消息后立即断言 hasActivePlan 仍为 true(false=P2 回归);再以"目标照常完成"
+     * (圆石≥6 且零死亡)收尾——保留语义不只是没清,还得真的继续干完。无 DEEPSEEK key 时 handleMessage
+     * 异步才报 key 缺失,同步路径照走,不影响本验证。
+     */
+    private static Result assignMsgKeepGoal(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        InventoryAction.giveItem(bot, new ItemStack(Items.STONE_PICKAXE, 1));
+        final int deathBase = deathCount(bot);
+        if (!GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.COBBLESTONE, 6))) {
+            return Result.fail("msg_keep_goal", "goal_submit_failed");
+        }
+        BrainCoordinator.INSTANCE.handleMessage(bot, "Tester", "你在干嘛呢");
+        if (!GoalExecutor.INSTANCE.hasActivePlan(bot)) {
+            return Result.fail("msg_keep_goal", "goal_cleared_by_message"); // P2 回归:玩家消息把进行中目标清了
+        }
+        return Result.runningGoal("msg_keep_goal", 2400,
+                ignored -> bot.isAlive()
+                        && InventoryAction.countItem(bot, Items.COBBLESTONE) >= 6
+                        && deathCount(bot) == deathBase);
+    }
+
+    // 数 center 水平 ±r、竖直 [center.y, center.y+8] 范围内属于 targets 任一方块的格数(建房断言用)。
+    // 故意只数 center.y 及以上(above 口径):prepareArea 实验室平台的地板/地基(y-1 圆石、其下 16 层
+    // 实心石)与 stone_like 建材同族,数进去会把"没盖房"误判成达标;房子地板层恰好落在锚点脚位 y
+    // (=origin.y,SiteFinder 选址取可站立格),above 口径对建筑本体零损失。
+    private static int countNearbyBlocksAbove(ServerWorld world, BlockPos center, int r, java.util.Set<Block> targets) {
+        int count = 0;
+        for (int dx = -r; dx <= r; dx++) {
+            for (int dy = 0; dy <= 8; dy++) {
+                for (int dz = -r; dz <= r; dz++) {
+                    if (targets.contains(world.getBlockState(center.add(dx, dy, dz)).getBlock())) {
+                        count++;
+                    }
+                }
+            }
+        }
+        return count;
     }
 
     // 数 center 处 2×2 四格里的水源数量。

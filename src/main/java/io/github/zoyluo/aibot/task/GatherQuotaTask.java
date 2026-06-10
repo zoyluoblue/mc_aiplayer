@@ -62,6 +62,11 @@ public final class GatherQuotaTask extends AbstractTask {
     private int searchRadius = SEARCH_RADIUS;
     private int lastScanTick = -100;
     private int lastProspectTick = -100; // 治无树兜底:上次大范围探树的 tick(限频)
+    // 高差容错:上一个 prospect 目标 + 走不到的目标黑名单。再次进入 prospect = 上一个目标没采成(若采成了
+    // SURVEY 近处就接管了,不会再 prospect)→ 拉黑,换下一个;防"反复扫到同一个够不到的目标"死循环
+    //(实测:草在 y66 山谷,bot 在 y86 崖顶,落脚点被 heightmap 顶到崖顶,395t 内反复扫同一丛草直到超时)。
+    private BlockPos lastProspectFound;
+    private final java.util.Set<BlockPos> prospectBlacklist = new java.util.HashSet<>();
     private boolean surfaceTried; // B:地下找不到树时,上浮到地表重试一次的兜底标志
     private int roamCount;        // 卡步逃逸:已漫游换片的次数
     private BlockPos roamTarget;  // 漫游换片的落脚点(走过去,不 teleport)
@@ -171,18 +176,37 @@ public final class GatherQuotaTask extends AbstractTask {
             return false;
         }
         lastProspectTick = now;
+        // 又走到 prospect = 上一个 prospect 目标没采成(采成的话 SURVEY 近处早接管了)→ 拉黑换下一个,
+        // 杜绝"反复扫到同一个够不到的目标"死循环。黑名单防膨胀:超 32 个清空重来(资源可能后来变得可达)。
+        if (lastProspectFound != null) {
+            prospectBlacklist.add(lastProspectFound);
+            if (prospectBlacklist.size() > 32) {
+                prospectBlacklist.clear();
+            }
+            lastProspectFound = null;
+        }
         var world = bot.getServerWorld();
         BlockPos found = OreProspector.nearest(world, bot.getBlockPos(), PROSPECT_RANGE,
-                state -> harvestBlocks.contains(state.getBlock()));
+                state -> harvestBlocks.contains(state.getBlock()),
+                pos -> !prospectBlacklist.contains(pos));
         if (found == null) {
-            return false; // 96 格内真没该资源 → 交 roam 盲目换片(可走到更远的片)
+            prospectBlacklist.clear(); // 没有未拉黑的目标了 → 清单重置,交 roam 盲目换片兜底
+            return false;
         }
-        BlockPos ground = findGroundAt(world, found.getX(), found.getZ()); // 目标所在列的地表落脚点
+        // 落脚点以目标实际位置为锚:目标可能在山谷/低地——旧法用该列 heightmap 会把落脚点顶到崖顶,
+        // 与目标差几十格高度,走过去也够不到(实测 found=y66 to=y86 死循环)。A* 自己解决下坡路线。
+        BlockPos ground = standNearTarget(world, found);
         if (ground == null) {
+            prospectBlacklist.add(found.toImmutable()); // 周边没有任何可站点 → 拉黑换下一个
             return false;
         }
         bot.getActionPack().stopAll();
-        bot.getActionPack().startPathTo(ground);
+        // 寻路被拒 → 拉黑该目标换下一个;不能不看结果就进 ROAM(瞬退会把好目标误判为走不到)。
+        if (bot.getActionPack().startPathTo(ground).isFailed()) {
+            prospectBlacklist.add(found.toImmutable());
+            return false;
+        }
+        lastProspectFound = found.toImmutable();
         roamTarget = ground;
         searchRadius = SEARCH_RADIUS;
         pickupMisses = 0;
@@ -194,6 +218,24 @@ public final class GatherQuotaTask extends AbstractTask {
                 "item", Registries.ITEM.getId(targetItem).toString(),
                 "dist", (int) Math.sqrt(bot.getBlockPos().getSquaredDistance(found)));
         return true;
+    }
+
+    // 以目标为锚找落脚点:优先目标自身格(短草/树苗等非碰撞方块可直接站进),再四邻 ±1 层;
+    // 都站不了(目标埋在实心里/悬空)退回该列地表(树干列:站树根旁)。
+    private BlockPos standNearTarget(net.minecraft.server.world.ServerWorld world, BlockPos found) {
+        if (Standability.isStandable(world, found)) {
+            return found;
+        }
+        for (var dir : net.minecraft.util.math.Direction.Type.HORIZONTAL) {
+            BlockPos side = found.offset(dir);
+            for (int dy : new int[]{0, -1, 1}) {
+                BlockPos p = side.up(dy);
+                if (Standability.isStandable(world, p)) {
+                    return p;
+                }
+            }
+        }
+        return findGroundAt(world, found.getX(), found.getZ());
     }
 
     // 卡步逃逸:同一片连续多棵采不到 → 走到 ROAM_DISTANCE 外的露天地表换片林子重试(走过去,不 teleport),
@@ -212,7 +254,9 @@ public final class GatherQuotaTask extends AbstractTask {
             if (ground != null) {
                 // 拟人:走过去换片,不再 teleport 闪现(实测砍树时瞬移很出戏)。
                 bot.getActionPack().stopAll();
-                bot.getActionPack().startPathTo(ground);
+                if (bot.getActionPack().startPathTo(ground).isFailed()) {
+                    continue; // 寻路被拒 → 换个方向(不看结果就进 ROAM 会瞬退、白烧漫游次数)
+                }
                 roamTarget = ground;
                 searchRadius = SEARCH_RADIUS;
                 pickupMisses = 0;
@@ -241,9 +285,20 @@ public final class GatherQuotaTask extends AbstractTask {
 
     // 漫游中:走向新片落脚点;到达(3 格内)或走不动(寻路空闲)→ 回 SURVEY 在新片找树(途中 SURVEY 也会扫到沿路的树)。
     private void roamMove(AIPlayerEntity bot) {
+        // 沾水即弃当前漫游路线(这条路把我们带进了水),让 NavSafetyNet 拖上岸后回 SURVEY 重选——
+        // 别顶着岸壁反复半淹(与 HuntTask.roamMove 同款保护)。
+        if (bot.isTouchingWater()) {
+            roamTarget = null;
+            searchRadius = SEARCH_RADIUS;
+            phase = Phase.SURVEY;
+            return;
+        }
+        // 起步宽限 20t:startPathTo 后 A* 异步计算需几个 tick,期间 executor 仍 idle——立即判"走不动"
+        // 会瞬退回 SURVEY,prospect 拉黑机制连带把"还没出发"的好目标当"走不到"误杀(实测割草连环误杀至 no_resource)。
+        boolean pathGaveUp = elapsed - selfStuckTick > 20 && bot.getActionPack().isPathExecutorIdle();
         if (roamTarget == null
                 || bot.getBlockPos().getSquaredDistance(roamTarget) <= 9.0D
-                || bot.getActionPack().isPathExecutorIdle()
+                || pathGaveUp
                 || elapsed - selfStuckTick > ROAM_MOVE_LIMIT) { // 走太久没到(漫游目标在高处/不可达)→ 放弃回 SURVEY 重找近处可达资源
             roamTarget = null;
             searchRadius = SEARCH_RADIUS;

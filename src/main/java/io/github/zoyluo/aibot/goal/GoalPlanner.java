@@ -374,9 +374,13 @@ public final class GoalPlanner {
                 return true;
             }
             int needCooked = target - cooked;
-            // 感知驱动择源:没动物但有草 → 种植面包(可持续、适配无动物地形),倒推 bread←小麦←种子(割草)。
-            // 有动物 / 啥都没扫到 → 走下面的打猎烤肉(后者靠 HuntTask 内部漫游到远处找)。觅食浆果饱食低,暂不作备粮源。
-            if (!hasPreyNearby && hasGrassNearby) {
+            // 感知驱动择源:没动物但有草 → 种植面包,但**仅当已有快路径材料**(足量小麦只差合成 / 足量种子只差种收)。
+            // 从零割草+等自然生长要 15-20 分钟,对"尽快吃上饭"的 Food 目标必超时(real_food 自然世界实测:
+            // 割草采集失败 + 即便采到也等不熟,连环 FAIL)。没快路径就走打猎:HuntTask 自带 roam 远征,
+            // 64 格只是规划感知半径、不是打猎能力上限,附近没动物会主动走远找。觅食浆果饱食低,暂不作备粮源。
+            boolean breadFastPath = counts.getOrDefault(Items.WHEAT, 0) >= needCooked * 3
+                    || counts.getOrDefault(Items.WHEAT_SEEDS, 0) >= needCooked * 3;
+            if (!hasPreyNearby && hasGrassNearby && breadFastPath) {
                 ensureItem(Items.BREAD, needCooked, depth + 1, visiting);
                 return true;
             }

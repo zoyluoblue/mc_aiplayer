@@ -55,6 +55,7 @@ public final class HuntTask extends AbstractTask {
     private int approachStuckTick;     // 记录该站位的 tick
     private int roamCount;             // 找猎物漫游换片次数
     private BlockPos roamTarget;       // 漫游落脚点
+    private int roamStartTick;         // 本次漫游起步 tick(给寻路起步宽限,防"未出发即判到达"瞬退)
     private final BlockMiner obstacleMiner = new BlockMiner(); // 接近时挖掉眼前挡路的方块(树叶/草/泥)
     private boolean clearingObstacle;  // 正在挖挡路方块
 
@@ -186,8 +187,14 @@ public final class HuntTask extends AbstractTask {
             BlockPos ground = findGround(world, feet.getX() + d[0] * ROAM_DISTANCE, feet.getZ() + d[1] * ROAM_DISTANCE);
             if (ground != null) {
                 bot.getActionPack().stopAll();
-                bot.getActionPack().startPathTo(ground);
+                // 寻路被拒(目标不可达/未加载)→ 试下一个方向。原来不看结果就进 ROAM,
+                // 下一 tick isPathExecutorIdle 即真 → 瞬退回 ACQUIRE → 再 roam……
+                // 同一秒连发 3 次 roam、瞬间烧光漫游预算,bot 原地没动(实测 hunt 在贫瘠地形 642t 空转失败)。
+                if (bot.getActionPack().startPathTo(ground).isFailed()) {
+                    continue;
+                }
                 roamTarget = ground;
+                roamStartTick = elapsed;
                 phase = Phase.ROAM;
                 lastProgressTick = elapsed;
                 BotLog.action(bot, "hunt_roam",
@@ -206,9 +213,20 @@ public final class HuntTask extends AbstractTask {
             beginApproach(bot);
             return;
         }
-        if (roamTarget == null
-                || bot.getBlockPos().getSquaredDistance(roamTarget) <= 9.0D
-                || bot.getActionPack().isPathExecutorIdle()) {
+        // 沾水即弃当前漫游路线:这条路把我们带进了水(寻路不入水,入水多半是沿岸滑落/直线 walk),
+        // 让 NavSafetyNet 拖上岸,回 ACQUIRE 重选方向——别顶着岸壁把自己淹死(实测 drowned)。
+        if (bot.isTouchingWater()) {
+            roamTarget = null;
+            phase = Phase.ACQUIRE;
+            return;
+        }
+        boolean arrived = roamTarget == null
+                || bot.getBlockPos().getSquaredDistance(roamTarget) <= 9.0D;
+        // 起步宽限 20t:startPathTo 后 A* 异步计算需几个 tick,期间 executor 仍 idle,
+        // 立即判"走不动"会瞬退(roam 形同虚设)。宽限后 idle 才是真到不了;200t 上限防走太久。
+        boolean gaveUp = (elapsed - roamStartTick > 20 && bot.getActionPack().isPathExecutorIdle())
+                || elapsed - roamStartTick > 200;
+        if (arrived || gaveUp) {
             roamTarget = null;
             phase = Phase.ACQUIRE;
         }

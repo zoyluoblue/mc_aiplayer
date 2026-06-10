@@ -36,6 +36,11 @@ public final class NavSafetyNet {
     private static final int RESCUE_RADIUS_V = 16;
     private static final int SUFFOCATION_CLIMB_UP = 24;   // 窒息脱困优先垂直向上钻出的最大格数(地表方向)
     private final Map<UUID, Integer> nextLogTick = new ConcurrentHashMap<>();
+    // SAFE-DROWN2:水危机接管标志。旧逻辑只在 submerged&&air<阈值 的 tick 接管(jump 一口气),
+    // bot 露头 air 回升就放手 → 任务的移动输入又把它怼回水里 → 反复半淹、hp 被溺水伤害磨光
+    //(实测 hunt roam 路过湖:30s 内 navsafe 触发 12 次仍 drowned)。改:一旦触发即置危机态,
+    // 持续接管(jump+朝最近可呼吸岸点游)直到脚踩实地才释放——自救的目标是"上岸",不是"换口气"。
+    private final Map<UUID, BlockPos> waterRescueShore = new ConcurrentHashMap<>();
 
     private NavSafetyNet() {
     }
@@ -60,19 +65,44 @@ public final class NavSafetyNet {
             return true;
         }
 
-        // 2) 溺水:在水下且空气将尽 → 上浮换气(水中持续 jump 会上升)
-        if (bot.isSubmergedInWater() && bot.getAir() < AIR_SURFACE_THRESHOLD) {
+        // 2) 溺水/水危机:触发后持续接管到上岸(见 waterRescueShore 注释)。
+        boolean inCrisis = waterRescueShore.containsKey(bot.getUuid());
+        if (!inCrisis && bot.isSubmergedInWater() && bot.getAir() < AIR_SURFACE_THRESHOLD) {
+            inCrisis = true; // 新触发
+        }
+        if (inCrisis) {
+            // 释放条件:脚踩实地且不在水里 → 危机解除,交还控制。
+            if (!bot.isTouchingWater() && bot.isOnGround()) {
+                waterRescueShore.remove(bot.getUuid());
+                return false;
+            }
             // SAFE-DROWN:空气危急且头顶无空气可上浮(被石头封顶的水兜)→ 紧急传送到最近可呼吸落点。
-            // 根因:findNearestStandable 把水当可通过,会返回水下落点;这里要求落点脚位+头位是空气(真能呼吸)。
             if (bot.getAir() <= EMERGENCY_AIR && !breathableAbove(world, feet)) {
                 if (emergencyTeleportToAir(bot, world, feet)) {
+                    waterRescueShore.remove(bot.getUuid());
                     throttledLog(server, bot, "navsafe_drown_teleport", feet);
                     return true;
                 }
             }
+            // 岸点:缓存的还有效就用,否则重找(最近"可站+脚头都是空气"的落点)。
+            BlockPos shore = waterRescueShore.get(bot.getUuid());
+            if (shore == null || !Standability.isStandable(world, shore)) {
+                shore = findNearestBreathableStandable(world, feet).orElse(null);
+            }
+            if (shore != null) {
+                waterRescueShore.put(bot.getUuid(), shore.toImmutable());
+                double yaw = Math.toDegrees(Math.atan2(
+                        -(shore.getX() + 0.5D - bot.getX()), shore.getZ() + 0.5D - bot.getZ()));
+                bot.setYaw((float) yaw);
+                bot.setHeadYaw((float) yaw);
+                bot.setBodyYaw((float) yaw);
+                bot.getActionPack().setForward(1.0F); // 朝岸游
+            } else {
+                waterRescueShore.put(bot.getUuid(), feet.toImmutable()); // 无岸点(开阔深水):占位保持危机态,先上浮
+                bot.getActionPack().setForward(0.0F);
+            }
             bot.getActionPack().setSprinting(false);
-            bot.getActionPack().setForward(0.0F);
-            bot.getActionPack().setJumping(true);
+            bot.getActionPack().setJumping(true); // 水中持续 jump = 上浮/游泳
             throttledLog(server, bot, "navsafe_surface_for_air", feet);
             return true;
         }

@@ -37,6 +37,10 @@ public final class GoalExecutor {
     public static final GoalExecutor INSTANCE = new GoalExecutor();
 
     private final Map<UUID, ActivePlan> activePlans = new ConcurrentHashMap<>();
+    // P0 目标队列(对话式助手根基):复合指令"先搞吃的再挖铁"需要连续目标。原单 plan 模型下
+    // 第二个目标会被拒/覆盖(prompt 甚至要求"一次一个,调完 STOP")。现在:活跃目标存在时新目标入队,
+    // 当前目标完成/失败后自动出队衔接(像真人:手头干完接着办下一件,办不成说一声跳过)。
+    private final Map<UUID, java.util.Deque<Goal>> goalQueue = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> lastGoalFailTick = new ConcurrentHashMap<>(); // 优化2:goal 整体失败时刻,拦大脑随后手动逐格挖矿
     private final Map<UUID, Goal> userGoal = new ConcurrentHashMap<>(); // B:用户原始高层目标,防大脑把它降级成其前置子目标(挖钻石→做铁镐)
 
@@ -49,6 +53,25 @@ public final class GoalExecutor {
         ActivePlan existing = activePlans.get(bot.getUuid());
         if (existing != null && existing.goal.equals(goal)) {
             BotLog.task(bot, "goal_submit_ignored", "goal", goal, "reason", "duplicate_active_plan");
+            return true;
+        }
+        // P0 队列:已有进行中的目标 → 新目标入队(去重),手头干完自动接续。复合指令/连续吩咐的根基。
+        // 注意放在"前置降级拦截"之后判定才安全?不——降级拦截在下面,先让它检查:子目标仍要拦。
+        java.util.Deque<Goal> queued = goalQueue.computeIfAbsent(bot.getUuid(), k -> new java.util.concurrent.ConcurrentLinkedDeque<>());
+        if (existing != null) {
+            Goal ugQ = userGoal.get(bot.getUuid());
+            if (ugQ != null && !ugQ.equals(goal) && isPrerequisiteOf(bot, goal, ugQ)) {
+                BotLog.task(bot, "goal_downgrade_blocked", "sub", goal, "user", ugQ);
+                report(bot, "这是当前目标的前置步骤,系统会自动完成,无需单独做。");
+                return false;
+            }
+            if (queued.stream().anyMatch(goal::equals)) {
+                BotLog.task(bot, "goal_submit_ignored", "goal", goal, "reason", "duplicate_queued");
+                return true;
+            }
+            queued.addLast(goal);
+            BotLog.task(bot, "goal_queued", "goal", goal, "behind", String.valueOf(existing.goal), "queue_size", queued.size());
+            report(bot, "记下了,等手头这件干完就去办:" + goalLabel(goal));
             return true;
         }
         // B:保护用户原始目标——大脑不能把它降级成其前置子目标。实测:挖钻石失败后大脑 achieve_goal 做铁镐、
@@ -138,6 +161,7 @@ public final class GoalExecutor {
         // 残留的旧 Food 目标会把后续"恰好是其前置"的新目标 downgrade_blocked 拒掉
         //(实测 verify forage 的 HaveItem(浆果) 被上一场景 Food 残留拦截 goal_submit_failed)。
         userGoal.remove(bot.getUuid());
+        goalQueue.remove(bot.getUuid()); // 队列一并清:复位=全部待办作废
     }
 
     /** 诊断埋点:当前激活的顶层目标(无则 "none")。日志用,保留英文便于排查。 */
@@ -196,12 +220,30 @@ public final class GoalExecutor {
         return plan == null ? 0 : plan.totalSteps;
     }
 
+    // P0 队列衔接:当前目标了结(完成/失败)后,自动开始队列里的下一个;规划失败的逐个跳过并说明。
+    private void advanceQueue(AIPlayerEntity bot) {
+        java.util.Deque<Goal> queued = goalQueue.get(bot.getUuid());
+        if (queued == null) {
+            return;
+        }
+        Goal next;
+        while ((next = queued.pollFirst()) != null) {
+            report(bot, "接着办下一件:" + goalLabel(next));
+            if (submit(bot, next)) {
+                return;
+            }
+            // submit 失败(规划不成/被拦)已在内部 report 过原因,继续试队列里再下一个
+        }
+    }
+
     private void assignNext(AIPlayerEntity bot, ActivePlan plan) {
         GoalStep step = plan.steps.pollFirst();
         if (step == null) {
             activePlans.remove(bot.getUuid());
             BotLog.task(bot, "goal_completed", "goal", plan.goal);
             report(bot, "目标完成。");
+            userGoal.remove(bot.getUuid()); // 本目标已了结,让队列里下一个接管"用户原始目标"位
+            advanceQueue(bot);
             return;
         }
         Optional<Task> task = stepToTask(bot, step);
@@ -241,6 +283,8 @@ public final class GoalExecutor {
             lastGoalFailTick.put(bot.getUuid(), server.getTicks());
             BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.TASK, bot, "goal_failed", "goal", plan.goal, "reason", reason);
             report(bot, humanGoalFailure(reason));
+            userGoal.remove(bot.getUuid());
+            advanceQueue(bot); // 像真人:这件办不成说一声,接着办队列里的下一件
             return;
         }
         plan.replanned = true;
@@ -259,6 +303,8 @@ public final class GoalExecutor {
             BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.TASK, bot, "goal_failed",
                     "goal", plan.goal, "reason", "replan_same_step:" + reason);
             report(bot, humanGoalFailure(reason));
+            userGoal.remove(bot.getUuid());
+            advanceQueue(bot);
             return;
         }
         plan.steps.clear();

@@ -56,6 +56,12 @@ public final class RecipeRegistry {
         if (handwritten != null) {
             return Optional.of(handwritten);
         }
+        // 有熔炼链的物品(铁锭/金锭/玻璃…)不走运行时配方兜底:索引会学到"铁块拆 9 锭"这类逆向
+        // 配方(材料种类最少被选中)压过熔炼正道,倒推成 锭→块→锭 死循环(llm_iron 实测
+        // cycle:iron_block plan_failed)。smelt 正道由 acquireBaseItem 的 SmeltChain 分支处理。
+        if (SmeltChain.rawFor(output) != null) {
+            return Optional.empty();
+        }
         return RuntimeRecipeIndex.find(output);
     }
 

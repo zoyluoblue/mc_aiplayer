@@ -218,8 +218,13 @@ public final class GoalExecutor {
         // 第4层:best-effort 步骤(如 HUNT 备粮)失败不阻断整体目标——跳过它直接继续下一步。
         // 这样"挖钻石前备点肉"在周围没动物时也不会让整条挖矿目标 goal_failed(续航仍由饥饿链兜底)。
         // 打猎(Goal.Food)整体 best-effort:任何前置(砍树/做剑)失败都降级继续(用现有工具/空手猎),绝不卡死/发呆。
+        // 例外:Food 目标的 COOK_FOOD 是终局产出步——失败(no_raw_food)=整个目标必败,skip 等于无声放弃。
+        // 放行到下面的 replan:重新感知择源(打猎扑空后动物多半已不在,replan 会落到浆果/面包等兜底源;
+        // 实测打猎 1t 扑空 → 烤无肉 → 静默结束,从未给过兜底源机会)。
+        boolean cookFinalOfFood = plan.goal instanceof Goal.Food
+                && plan.current != null && plan.current.kind() == GoalStep.Kind.COOK_FOOD;
         boolean foodGoalBestEffort = plan.goal instanceof Goal.Food;
-        if (plan.current != null && (foodGoalBestEffort
+        if (!cookFinalOfFood && plan.current != null && (foodGoalBestEffort
                 || plan.current.kind() == GoalStep.Kind.HUNT
                 || plan.current.kind() == GoalStep.Kind.COOK_FOOD
                 || plan.current.kind() == GoalStep.Kind.STOCKPILE)) {

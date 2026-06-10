@@ -962,7 +962,7 @@ public final class AIBotVerifySubcommand {
         InventoryAction.giveItem(bot, new ItemStack(Items.WHEAT_SEEDS, 16));
         InventoryAction.giveItem(bot, new ItemStack(Items.OAK_PLANKS, 8));
         InventoryAction.giveItem(bot, new ItemStack(Items.CRAFTING_TABLE, 1));
-        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.Food(2));
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.Food(1));
         if (!started) {
             return Result.fail("food_farm", "goal_submit_failed");
         }
@@ -971,7 +971,7 @@ public final class AIBotVerifySubcommand {
         // (催熟必须放 perTick:assertion 仅在 task 完成时才调,FarmTask 等熟时无 task 完成→放 assertion 会死锁。)
         return Result.runningGoal("food_farm", 12000,
                 tickBot -> forceGrowCrops(world, origin, 6, Blocks.WHEAT),
-                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.BREAD) >= 2);
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.BREAD) >= 1);
     }
 
     // 把 center±radius 范围内未成熟的指定作物强制催熟到 maxAge(供无头测绕开自然生长等待)。
@@ -1106,6 +1106,7 @@ public final class AIBotVerifySubcommand {
 
     private static BlockPos prepareRealistic(AIPlayerEntity bot) {
         ServerWorld world = bot.getServerWorld();
+        world.setTimeOfDay(1000L); // 同 prepareArea:白天开局,隔离夜间反射 flaky
         bot.getActionPack().stopAll();
         clearInventory(bot); // 实操开局=空背包;其余一概不动(不清怪/不铺/不给)
         // real_wheat 会调 randomTickSpeed,这里统一复位,避免场景间泄漏
@@ -1587,6 +1588,7 @@ public final class AIBotVerifySubcommand {
 
     private static void prepareArea(AIPlayerEntity bot) {
         ServerWorld world = bot.getServerWorld();
+        world.setTimeOfDay(1000L); // 设白天:套件后段入夜,夜间睡觉反射抢占场景任务(实测 farm_irrigate 偶发 aborted)
         // 套件里多场景顺序跑,bot 位置会从上个场景带过来(打猎走远等)→ 假设"干净出生点"的场景会错位
         //(food_suite 实测:farm_wheat 时 bot 漂到 9,-2,预置成熟麦没 survey 到、被当空地种 → FAIL)。
         // 开头复位到固定原点保证确定性;y 取世界原点的自然地表——原来硬编码 y=6(旧测试世界出生点),

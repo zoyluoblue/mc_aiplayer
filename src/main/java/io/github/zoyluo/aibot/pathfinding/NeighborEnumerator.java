@@ -153,7 +153,11 @@ public final class NeighborEnumerator {
     }
 
     private static boolean hasHeadroom(ServerWorld world, BlockPos target) {
-        return collisionEmpty(world, target.up()) && collisionEmpty(world, target.up(2));
+        // 挖掘语义的头位:已空 或 可挖(执行器 tickDigThrough 会把脚位+头位都挖开)。
+        // 原"头上两格必须已空"把穿实心山体判成无路——每一步头位都是石头,DIG 邻居一个都生成不出,
+        // 这正是 geo_slope/wall/pocket 全卡 no_progress 的根因(挖掘寻路只能贴地刨坑、不能穿山)。
+        BlockPos head = target.up();
+        return collisionEmpty(world, head) || isMineable(world, head);
     }
 
     private static boolean isMineable(ServerWorld world, BlockPos pos) {
@@ -163,6 +167,10 @@ public final class NeighborEnumerator {
         }
         if (!state.getFluidState().isEmpty() || Standability.isDangerous(state)) {
             return false;
+        }
+        // 矿石本身可挖(终点豁免的配套:目标矿格要能进路径;OreScan 含模组 _ore 后缀)。
+        if (io.github.zoyluo.aibot.mining.OreScan.isOreBlock(state.getBlock())) {
+            return true;
         }
         return state.isIn(BlockTags.STONE_ORE_REPLACEABLES)
                 || state.isIn(BlockTags.DEEPSLATE_ORE_REPLACEABLES)

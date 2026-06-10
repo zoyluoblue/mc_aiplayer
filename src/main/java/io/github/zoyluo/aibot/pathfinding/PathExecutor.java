@@ -137,6 +137,16 @@ public final class PathExecutor {
             if (mine.isInProgress()) {
                 return ActionResult.IN_PROGRESS;
             }
+            // 穿山双格挖:脚位挖完后头位仍有碰撞(实心山体内部每步如此)→ 再挖头位,人才进得去。
+            // 配合 NeighborEnumerator.hasHeadroom 的"头位可挖即可"放宽,挖掘寻路从贴地刨坑升级为穿山打洞。
+            BlockPos headPos = next.pos().up();
+            if (!pack.player().getServerWorld().getBlockState(headPos)
+                    .getCollisionShape(pack.player().getServerWorld(), headPos).isEmpty()) {
+                Direction headFace = faceFromPlayer(pack, headPos);
+                LookAction.lookAtBlock(pack.player(), headPos, headFace);
+                subMiner = new MiningController(headPos, headFace);
+                return ActionResult.IN_PROGRESS;
+            }
             subMiner = null;
             digWalking = true;
             subWalker = new WalkToController(Vec3d.ofCenter(next.pos()));

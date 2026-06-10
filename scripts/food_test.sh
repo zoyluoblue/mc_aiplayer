@@ -17,9 +17,15 @@ rm -f "$FIFO"; mkfifo "$FIFO"
 rm -f run/world/aibot/bots.json 2>/dev/null
 # 贴近实操(real_*)用例:重置世界再跑——固定 seed 重新生成,保证每轮从同一自然状态开始。
 # 不重置的话前几轮把出生区的树/草/动物耗光(实测 96 格内无草、21t 速死),失败不可复现、互相污染。
+# SEED=xxx 可换种子(多地形轮换:默认 20260610=云杉山顶悬崖+湖的地狱关,换平原种子验证常规世界)。
 case "$FEATURE" in
   real*)
-    echo "[foodtest] realistic case: resetting world (fixed seed regen)"
+    if [ -n "${SEED:-}" ]; then
+      sed -i '' "s/^level-seed=.*/level-seed=${SEED}/" run/server.properties
+      echo "[foodtest] realistic case: resetting world (seed=${SEED})"
+    else
+      echo "[foodtest] realistic case: resetting world (fixed seed regen)"
+    fi
     rm -rf run/world
     ;;
 esac

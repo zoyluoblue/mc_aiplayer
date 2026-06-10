@@ -100,9 +100,43 @@ public final class DigDownTask extends AbstractTask {
         collected = 0;
         lastProgressTick = 0;
         pickupGrace = 0;
+        // 干列自检:bot 漫游到湖边/含水层上才开挖的话,阶梯必挖进水里泡死(实测 stall dump 四面全 water,
+        // 场景锚点避水管不到任务自己选的开挖点)。脚下 12 格内有水 → 8 方向×4/8 格找干列挪过去再开挖。
+        ServerWorld world = bot.getServerWorld();
+        if (!dryColumn(world, bot.getBlockPos())) {
+            BlockPos feet = bot.getBlockPos();
+            int[][] dirs = {{1, 0}, {0, 1}, {-1, 0}, {0, -1}, {1, 1}, {-1, -1}, {1, -1}, {-1, 1}};
+            outer:
+            for (int dist : new int[]{4, 8, 14}) {
+                for (int[] d : dirs) {
+                    int x = feet.getX() + d[0] * dist;
+                    int z = feet.getZ() + d[1] * dist;
+                    int ty = world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, x, z);
+                    BlockPos cand = new BlockPos(x, ty, z);
+                    if (io.github.zoyluo.aibot.pathfinding.Standability.isStandable(world, cand)
+                            && dryColumn(world, cand)) {
+                        bot.getActionPack().stopAll();
+                        bot.teleport(world, x + 0.5D, ty, z + 0.5D,
+                                java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+                        BotLog.action(bot, "dig_down_dry_relocate", "to", cand.toShortString());
+                        break outer;
+                    }
+                }
+            }
+        }
         startPos = bot.getBlockPos();   // 记井口,采够后回这里
         returning = false;
         returnStartTick = 0;
+    }
+
+    // 该列从 top 向下 12 格内无流体(干燥可下挖)。
+    private static boolean dryColumn(ServerWorld world, BlockPos top) {
+        for (int dy = 0; dy <= 12; dy++) {
+            if (!world.getFluidState(top.down(dy)).isEmpty()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     @Override

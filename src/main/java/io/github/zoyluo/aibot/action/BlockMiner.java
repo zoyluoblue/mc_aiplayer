@@ -81,6 +81,17 @@ public final class BlockMiner {
             target = null;
             return Status.FAILED;
         }
+        // 观测:挖了 5 秒还没破(石镐挖矿 ~2.5s 就该破)=挖击无效在循环。把关键状态打出来定位
+        //(实测 ore_dig dist=3.9 锁定正挖却每块 200t 超时被拉黑 13 个,根因藏在这层之下)。
+        if (sinceTick == 100) {
+            double dist = Math.sqrt(bot.getEyePos().squaredDistanceTo(target.toCenterPos()));
+            io.github.zoyluo.aibot.log.BotLog.action(bot, "miner_slow_dump",
+                    "target", target.toShortString(),
+                    "dist", String.format(java.util.Locale.ROOT, "%.1f", dist),
+                    "mining_idle", bot.getActionPack().isMiningIdle(),
+                    "started", started,
+                    "block", world.getBlockState(target).getBlock().toString());
+        }
         // 只在挖掘空闲(尚未对本块发起 / 上一块已结束)时发起一次;之后交给 MiningController 累加进度。
         // 绝不每 tick 重发 startMining —— 那会把 progress 清零,永远破不了块。
         if (bot.getActionPack().isMiningIdle()) {

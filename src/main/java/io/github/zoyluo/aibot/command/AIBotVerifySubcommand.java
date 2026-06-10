@@ -123,7 +123,8 @@ public final class AIBotVerifySubcommand {
             "goal_queue",
             "goal_build_auto",
             "goal_build_custom",
-            "msg_keep_goal");
+            "msg_keep_goal",
+            "knowledge_smoke");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
@@ -374,6 +375,7 @@ public final class AIBotVerifySubcommand {
             case "goal_build_auto" -> assignGoalBuildAuto(bot);
             case "goal_build_custom" -> assignGoalBuildCustom(bot);
             case "msg_keep_goal" -> assignMsgKeepGoal(bot);
+            case "knowledge_smoke" -> assignKnowledgeSmoke(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
     }
@@ -1437,6 +1439,34 @@ public final class AIBotVerifySubcommand {
      * (圆石≥6 且零死亡)收尾——保留语义不只是没清,还得真的继续干完。无 DEEPSEEK key 时 handleMessage
      * 异步才报 key 缺失,同步路径照走,不影响本验证。
      */
+    // 记忆/知识子系统 API 冒烟(同步,一次判定):情景流入死亡×2 同点 → 蒸馏出危险区(单次不立牌);
+    // 资源发现×2 同点 → 去重只记一条;落盘文件存在。纯 API 行为,不跑任务。
+    private static Result assignKnowledgeSmoke(AIPlayerEntity bot) {
+        io.github.zoyluo.aibot.memory.KnowledgeBase kb = io.github.zoyluo.aibot.memory.KnowledgeBase.INSTANCE;
+        io.github.zoyluo.aibot.memory.EpisodeLog log = io.github.zoyluo.aibot.memory.EpisodeLog.INSTANCE;
+        BlockPos spot = bot.getBlockPos().add(1000, 0, 1000); // 远离实际活动区,不污染后续场景
+        int dangersBefore = kb.dangerCount(bot.getUuid());
+        log.record(bot, io.github.zoyluo.aibot.memory.EpisodeLog.Type.DEATH, spot, "smoke_test");
+        if (kb.dangerCount(bot.getUuid()) != dangersBefore) {
+            return Result.fail("knowledge_smoke", "single_death_created_zone(应两次才立牌)");
+        }
+        log.record(bot, io.github.zoyluo.aibot.memory.EpisodeLog.Type.DEATH, spot.add(3, 0, 3), "smoke_test");
+        if (!kb.isDanger(bot.getUuid(), spot)) {
+            return Result.fail("knowledge_smoke", "two_deaths_no_zone(聚类蒸馏未生效)");
+        }
+        int resBefore = kb.resourceCount(bot.getUuid());
+        log.record(bot, io.github.zoyluo.aibot.memory.EpisodeLog.Type.RESOURCE_FOUND, spot.add(50, 0, 0), "minecraft:iron_ore");
+        log.record(bot, io.github.zoyluo.aibot.memory.EpisodeLog.Type.RESOURCE_FOUND, spot.add(52, 0, 2), "minecraft:iron_ore");
+        if (kb.resourceCount(bot.getUuid()) != resBefore + 1) {
+            return Result.fail("knowledge_smoke", "resource_dedup_failed(8 格内同矿应去重)");
+        }
+        if (kb.nearestResource(bot.getUuid(), "minecraft:iron_ore", spot.add(40, 0, 0), 96).isEmpty()) {
+            return Result.fail("knowledge_smoke", "nearest_resource_miss");
+        }
+        return Result.pass("knowledge_smoke", "distill+dedup+query ok, dangers=" + kb.dangerCount(bot.getUuid())
+                + " resources=" + kb.resourceCount(bot.getUuid()));
+    }
+
     private static Result assignMsgKeepGoal(AIPlayerEntity bot) {
         prepareArea(bot);
         clearInventory(bot);

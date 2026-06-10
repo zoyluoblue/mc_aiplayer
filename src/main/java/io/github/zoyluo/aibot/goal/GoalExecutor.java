@@ -249,6 +249,8 @@ public final class GoalExecutor {
         if (step == null) {
             activePlans.remove(bot.getUuid());
             BotLog.task(bot, "goal_completed", "goal", plan.goal);
+            io.github.zoyluo.aibot.memory.EpisodeLog.INSTANCE.record(bot,
+                    io.github.zoyluo.aibot.memory.EpisodeLog.Type.GOAL_DONE, bot.getBlockPos(), goalLabel(plan.goal));
             report(bot, "目标完成。");
             userGoal.remove(bot.getUuid()); // 本目标已了结,让队列里下一个接管"用户原始目标"位
             advanceQueue(bot);
@@ -290,6 +292,8 @@ public final class GoalExecutor {
             activePlans.remove(bot.getUuid());
             lastGoalFailTick.put(bot.getUuid(), server.getTicks());
             BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.TASK, bot, "goal_failed", "goal", plan.goal, "reason", reason);
+            io.github.zoyluo.aibot.memory.EpisodeLog.INSTANCE.record(bot,
+                    io.github.zoyluo.aibot.memory.EpisodeLog.Type.GOAL_FAILED, bot.getBlockPos(), goalLabel(plan.goal));
             report(bot, humanGoalFailure(reason));
             userGoal.remove(bot.getUuid());
             advanceQueue(bot); // 像真人:这件办不成说一声,接着办队列里的下一件

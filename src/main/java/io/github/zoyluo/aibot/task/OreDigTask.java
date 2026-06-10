@@ -242,6 +242,10 @@ public final class OreDigTask extends AbstractTask {
             targetOre = found;
             lastTargetDist = Double.MAX_VALUE;  // P0:新锁定矿,重置接近监控
             targetApproachTick = elapsed;
+            // 情景记忆:资源发现入流 → 蒸馏成资源点(8 格去重),下次"附近有没有铁"先问知识库不瞎挖。
+            io.github.zoyluo.aibot.memory.EpisodeLog.INSTANCE.record(bot,
+                    io.github.zoyluo.aibot.memory.EpisodeLog.Type.RESOURCE_FOUND, found,
+                    net.minecraft.registry.Registries.BLOCK.getId(world.getBlockState(found).getBlock()).toString());
             BotLog.action(bot, "ore_dig_found",
                     "pos", found.getX() + "," + found.getY() + "," + found.getZ(),
                     "dist", (int) Math.sqrt(bot.getBlockPos().getSquaredDistance(found)),

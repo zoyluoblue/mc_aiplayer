@@ -84,9 +84,22 @@ public final class GoalPlanner {
         // 附近矿感知:规划时扫一眼目标矿是否已在身边(48 格)。在 → 不下潜矿层直接挖
         //(站在铁矿旁还先挖 70 格竖井到 Y16 是蠢的;且竖井穿天然地形洞/水/沙砾极易 descend_blocked,
         // 实测场景地表化后 descend 类失败爆发,旧 y6 出生点 botY<mineY 恰好从不触发才一直没暴露)。
-        java.util.function.Predicate<Set<Block>> oreNearby = ores ->
-                OreProspector.nearest(bot.getServerWorld(), bot.getBlockPos(), 48,
-                        state -> ores.contains(state.getBlock())) != null;
+        java.util.function.Predicate<Set<Block>> oreNearby = ores -> {
+            if (OreProspector.nearest(bot.getServerWorld(), bot.getBlockPos(), 48,
+                    state -> ores.contains(state.getBlock())) != null) {
+                return true;
+            }
+            // 知识库第二意见(语义记忆消费口):实扫 48 格没有,但以前在 96 格内见过该矿 → 同样跳过下潜,
+            // OreDigTask 的 prospect(64)+水平掘进能摸到——"记得哪里有"比"现在看得见"覆盖更广。
+            for (Block ore : ores) {
+                String id = Registries.BLOCK.getId(ore).toString();
+                if (io.github.zoyluo.aibot.memory.KnowledgeBase.INSTANCE
+                        .nearestResource(bot.getUuid(), id, bot.getBlockPos(), 96).isPresent()) {
+                    return true;
+                }
+            }
+            return false;
+        };
         Planner planner = new Planner(inventoryCounts(bot), Math.max(1, AIBotConfig.get().goal().maxPlanDepth()),
                 bot.getBlockPos().getY(), hasPrey, hasGrass, hasBerries, oreNearby);
         planner.ensureGoal(goal, 0, new HashSet<>());

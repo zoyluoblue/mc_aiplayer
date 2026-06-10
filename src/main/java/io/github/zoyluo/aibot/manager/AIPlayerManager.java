@@ -57,6 +57,10 @@ public final class AIPlayerManager {
      */
     public boolean respawnDeadBot(AIPlayerEntity bot) {
         ServerWorld world = bot.getServerWorld();
+        // 情景记忆:死亡入流(用死亡位置=当前位置,在传送地表之前记)。蒸馏规则:同区两死 → 危险区。
+        io.github.zoyluo.aibot.memory.EpisodeLog.INSTANCE.record(bot,
+                io.github.zoyluo.aibot.memory.EpisodeLog.Type.DEATH, bot.getBlockPos(),
+                bot.getRecentDamageSource() == null ? "unknown" : bot.getRecentDamageSource().getName());
         BlockPos surface = world.getTopPosition(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, bot.getBlockPos());
         bot.setHealth(20.0F);
         bot.deathTime = 0;

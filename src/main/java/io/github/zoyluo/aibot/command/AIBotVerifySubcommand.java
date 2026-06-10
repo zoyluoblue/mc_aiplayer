@@ -92,6 +92,9 @@ public final class AIBotVerifySubcommand {
             "achieve_obsidian",
             "achieve_iron_pickaxe",
             "achieve_diamond",
+            "iron_extreme",
+            "diamond_extreme",
+            "food_extreme",
             "achieve_armor",
             "achieve_workstation",
             "stockpile",
@@ -143,6 +146,12 @@ public final class AIBotVerifySubcommand {
             "achieve_gold_ingot",
             "achieve_diamond",
             "achieve_obsidian");
+
+    // 极端环境回归套件:矿物/食物在"怪物围攻 + 深暗"下仍要完成。/aibot verify extreme_suite
+    private static final List<String> EXTREME_SUITE = List.of(
+            "iron_extreme",
+            "diamond_extreme",
+            "food_extreme");
     private static final Map<UUID, VerifyRun> RUNS = new ConcurrentHashMap<>();
 
     private AIBotVerifySubcommand() {
@@ -219,6 +228,8 @@ public final class AIBotVerifySubcommand {
                 features.addAll(FOOD_SUITE); // 食物回归套件别名
             } else if ("material_suite".equals(feature)) {
                 features.addAll(MATERIAL_SUITE); // 矿物材料回归套件别名
+            } else if ("extreme_suite".equals(feature)) {
+                features.addAll(EXTREME_SUITE); // 极端环境回归套件别名
             } else if (ALL_FEATURES.contains(feature)) {
                 features.add(feature);
             }
@@ -253,6 +264,9 @@ public final class AIBotVerifySubcommand {
             case "achieve_iron_ingot" -> assignAchieveIronIngot(bot);
             case "achieve_gold_ingot" -> assignAchieveGoldIngot(bot);
             case "achieve_obsidian" -> assignAchieveObsidian(bot);
+            case "iron_extreme" -> assignIronExtreme(bot);
+            case "diamond_extreme" -> assignDiamondExtreme(bot);
+            case "food_extreme" -> assignFoodExtreme(bot);
             case "achieve_iron_pickaxe" -> assignAchieveIronPickaxe(bot);
             case "achieve_diamond" -> assignAchieveDiamond(bot);
             case "achieve_armor" -> assignAchieveArmor(bot);
@@ -677,6 +691,79 @@ public final class AIBotVerifySubcommand {
         }
         return Result.runningGoal("achieve_obsidian", 8000,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.OBSIDIAN) >= 1);
+    }
+
+    // 极端环境①:铁锭 + 怪物围攻。穿甲 + 2 僵尸,bot 要边打边挖铁→熔炼。验证战斗 pauseFor/resume 不丢任务。
+    private static Result assignIronExtreme(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin);
+        fillStoneCube(world, origin, 4, 10);
+        InventoryAction.giveItem(bot, new ItemStack(Items.STONE_PICKAXE, 1));
+        InventoryAction.giveItem(bot, new ItemStack(Items.FURNACE, 1));
+        InventoryAction.giveItem(bot, new ItemStack(Items.COAL, 4));
+        giveDeepMineKit(bot);
+        io.github.zoyluo.aibot.action.EquipAction.equipBestArmor(bot);
+        world.setBlockState(origin.down(3), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        spawnHostiles(world, origin, 2);
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.IRON_INGOT, 1));
+        if (!started) {
+            return Result.fail("iron_extreme", "goal_submit_failed");
+        }
+        return Result.runningGoal("iron_extreme", 12000,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.IRON_INGOT) >= 1);
+    }
+
+    // 极端环境②:钻石(深层 -59,黑暗)+ 怪物围攻。深 + 暗 + 2 僵尸三重极端,bot 要边打边挖钻石。
+    private static Result assignDiamondExtreme(AIPlayerEntity bot) {
+        clearInventory(bot);
+        BlockPos origin = prepareDeepArea(bot, -59);
+        ServerWorld world = bot.getServerWorld();
+        InventoryAction.giveItem(bot, new ItemStack(Items.IRON_PICKAXE, 1));
+        giveDeepMineKit(bot);
+        giveDeepMineSupplies(bot);
+        io.github.zoyluo.aibot.action.EquipAction.equipBestArmor(bot);
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                world.setBlockState(origin.add(dx, -2, dz), Blocks.DIAMOND_ORE.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        spawnHostiles(world, origin, 2);
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.DIAMOND, 1));
+        if (!started) {
+            return Result.fail("diamond_extreme", "goal_submit_failed");
+        }
+        return Result.runningGoal("diamond_extreme", 12000,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.DIAMOND) >= 1);
+    }
+
+    // 极端环境③:收集食物(打猎+烤)+ 怪物围攻。穿甲 + 2 僵尸,bot 要边打边猎边烤够 4 熟食。
+    private static Result assignFoodExtreme(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin);
+        InventoryAction.giveItem(bot, new ItemStack(Items.FURNACE, 1));
+        InventoryAction.giveItem(bot, new ItemStack(Items.COAL, 8));
+        giveDeepMineKit(bot); // 含铁剑(打猎+打怪两用)+ 甲
+        io.github.zoyluo.aibot.action.EquipAction.equipBestArmor(bot);
+        for (int i = 0; i < 6; i++) {
+            var cow = EntityType.COW.create(world, SpawnReason.COMMAND);
+            if (cow != null) {
+                cow.refreshPositionAndAngles(origin.getX() + 2.0D, origin.getY(), origin.getZ() + (i - 3), 0.0F, 0.0F);
+                world.spawnEntity(cow);
+            }
+        }
+        spawnHostiles(world, origin, 2);
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.Food(4));
+        if (!started) {
+            return Result.fail("food_extreme", "goal_submit_failed");
+        }
+        return Result.runningGoal("food_extreme", 12000,
+                ignored -> bot.isAlive() && cookedFoodCount(bot) >= 4);
     }
 
     /**
@@ -1213,6 +1300,20 @@ public final class AIBotVerifySubcommand {
         InventoryAction.giveItem(bot, new ItemStack(Items.TORCH, 16));
         InventoryAction.giveItem(bot, new ItemStack(Items.COAL, 8));
         InventoryAction.giveItem(bot, new ItemStack(Items.CRAFTING_TABLE, 1));
+    }
+
+    // 极端环境:在 bot 周围 spawn count 只僵尸(战斗阈值 maxEnemiesToFight=2,故默认 2 只——bot 会迎战而非逃)。
+    // 测"边打边干":生存反射 pauseFor 战斗、打完 resume 原任务,任务仍要完成。
+    private static void spawnHostiles(ServerWorld world, BlockPos origin, int count) {
+        for (int i = 0; i < count; i++) {
+            ZombieEntity zombie = EntityType.ZOMBIE.create(world, SpawnReason.COMMAND);
+            if (zombie != null) {
+                zombie.setPersistent(); // 防自然消失
+                double side = (i % 2 == 0) ? 2.5D : -2.5D;
+                zombie.refreshPositionAndAngles(origin.getX() + side, origin.getY(), origin.getZ() + (i - count / 2), 0.0F, 0.0F);
+                world.spawnEntity(zombie);
+            }
+        }
     }
 
     private static int countContainer(AIPlayerEntity bot, BlockPos pos, Item item) {

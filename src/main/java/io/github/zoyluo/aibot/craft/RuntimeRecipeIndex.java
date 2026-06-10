@@ -64,12 +64,35 @@ public final class RuntimeRecipeIndex {
                 // 单条坏配方(模组自定义序列化等)不毁整个索引
             }
         }
+        pruneReciprocalPairs(fresh);
         synchronized (INDEX) {
             INDEX.clear();
             INDEX.putAll(fresh);
         }
         ready = true;
         BotLog.comm(null, "runtime_recipe_index_built", "scanned", scanned, "indexed", INDEX.size());
+    }
+
+    // 剔除互逆配方对(块↔物存储转换:铁块↔9铁锭/粗铁块↔9粗铁/煤块↔9煤…):它们是仓储压缩,
+    // 不是获取途径——进了索引会被"材料种类最少"选中压过正道,倒推成 A→B→A 死循环
+    //(实测 cycle:iron_block 后修了锭,又在 raw_iron_block 复发——系统性问题系统性除)。
+    private static void pruneReciprocalPairs(Map<Item, RecipeRegistry.Recipe> index) {
+        List<Item> toRemove = new ArrayList<>();
+        for (Map.Entry<Item, RecipeRegistry.Recipe> e : index.entrySet()) {
+            RecipeRegistry.Recipe r = e.getValue();
+            if (r.ingredients().size() != 1 || r.ingredients().get(0).anyOf().size() != 1) {
+                continue;
+            }
+            Item material = r.ingredients().get(0).anyOf().get(0);
+            RecipeRegistry.Recipe back = index.get(material);
+            if (back != null && back.ingredients().size() == 1
+                    && back.ingredients().get(0).anyOf().size() == 1
+                    && back.ingredients().get(0).anyOf().get(0) == e.getKey()) {
+                toRemove.add(e.getKey());
+                toRemove.add(material);
+            }
+        }
+        toRemove.forEach(index::remove);
     }
 
     /** 手写表未命中时的兜底查找(见 RecipeRegistry.find 两级策略)。索引未建(单测/早期)返回 empty。 */

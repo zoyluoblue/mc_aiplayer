@@ -193,6 +193,8 @@ public final class AIBotVerifySubcommand {
             "llm_food",
             "llm_iron");
     private static final Map<UUID, VerifyRun> RUNS = new ConcurrentHashMap<>();
+    // 场景空间隔离计数:每场景在 x 方向轮转到新地块,防套件内场景互染(prepareArea 注释详述)。
+    private static int scenarioSlot = 0;
 
     private AIBotVerifySubcommand() {
     }
@@ -1595,15 +1597,20 @@ public final class AIBotVerifySubcommand {
         // 换自然世界后 y6 是黑暗地下,把所有场景传进地下:黑暗触发 DangerWatcher 困死保命传送
         // (dark_trap_escape)中止被测任务(实测 nav_pillar_out 连续两轮 aborted 的真根因)。
         bot.getActionPack().stopAll();
-        // 传送列鲁棒化:固定 (0,0) 列可能正好是裂缝/洞口(实测该列 NO_LEAVES 顶面 y29,bot 被送进
-        // 黑暗深谷又触发保命传送把场景搅乱)。从 (0,0) 向外按 8 格步进螺旋,取第一个顶面可站的列。
+        // 场景空间隔离:每场景换一片新地(x 方向 64 格步进轮转)。同一锚点连跑 13 场景,前面挖矿/爆破
+        // 把地基啃成烂地,后场景的挖矿阶梯走出 fillStoneCube 范围就掉进残局 → ore_dig_no_progress
+        // 集中爆发(实测 mining 套件 6 场景 FAIL,同场景在 material_suite 单跑却全绿——互染实锤)。
+        scenarioSlot++;
+        int baseX = (scenarioSlot % 32) * 64;
+        // 传送列鲁棒化:基准列可能正好是裂缝/洞口(实测 (0,0) 列 NO_LEAVES 顶面 y29,bot 被送进
+        // 黑暗深谷又触发保命传送把场景搅乱)。从基准列向外按 8 格步进,取第一个顶面可站的列。
         BlockPos anchor = null;
         outer:
         for (int r = 0; r <= 32 && anchor == null; r += 8) {
             for (int dx = -r; dx <= r; dx += 8) {
                 for (int dz = -r; dz <= r; dz += 8) {
-                    int ty = world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, dx, dz);
-                    BlockPos cand = new BlockPos(dx, ty, dz);
+                    int ty = world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, baseX + dx, dz);
+                    BlockPos cand = new BlockPos(baseX + dx, ty, dz);
                     if (io.github.zoyluo.aibot.pathfinding.Standability.isStandable(world, cand)
                             && world.isSkyVisible(cand)) {
                         anchor = cand;
@@ -1613,7 +1620,7 @@ public final class AIBotVerifySubcommand {
             }
         }
         if (anchor == null) {
-            anchor = new BlockPos(0, world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, 0, 0), 0);
+            anchor = new BlockPos(baseX, world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, baseX, 0), 0);
         }
         bot.teleport(world, anchor.getX() + 0.5D, anchor.getY(), anchor.getZ() + 0.5D,
                 java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);

@@ -41,6 +41,10 @@ public final class NavSafetyNet {
     //(实测 hunt roam 路过湖:30s 内 navsafe 触发 12 次仍 drowned)。改:一旦触发即置危机态,
     // 持续接管(jump+朝最近可呼吸岸点游)直到脚踩实地才释放——自救的目标是"上岸",不是"换口气"。
     private final Map<UUID, BlockPos> waterRescueShore = new ConcurrentHashMap<>();
+    // SAFE-DROWN3:水危机开始 tick。游向岸点可能永远到不了(岸壁 2 格高跳不上去/被流推回,
+    // 实测平原湖远征 hp 2.2 仍 drowned)——危机持续超时就放弃体面,直接紧急传送上岸保命。
+    private final Map<UUID, Integer> waterRescueSince = new ConcurrentHashMap<>();
+    private static final int WATER_RESCUE_TELEPORT_AFTER = 200; // 10s 还没脱水 → 强制传送
 
     private NavSafetyNet() {
     }
@@ -74,12 +78,18 @@ public final class NavSafetyNet {
             // 释放条件:脚踩实地且不在水里 → 危机解除,交还控制。
             if (!bot.isTouchingWater() && bot.isOnGround()) {
                 waterRescueShore.remove(bot.getUuid());
+                waterRescueSince.remove(bot.getUuid());
                 return false;
             }
+            int now = server.getTicks();
+            Integer since = waterRescueSince.putIfAbsent(bot.getUuid(), now);
             // SAFE-DROWN:空气危急且头顶无空气可上浮(被石头封顶的水兜)→ 紧急传送到最近可呼吸落点。
-            if (bot.getAir() <= EMERGENCY_AIR && !breathableAbove(world, feet)) {
+            // SAFE-DROWN3:或者危机拖太久(游向岸点到不了:岸壁高/水流推)→ 同样强制传送保命。
+            boolean rescueTimedOut = since != null && now - since > WATER_RESCUE_TELEPORT_AFTER;
+            if (rescueTimedOut || (bot.getAir() <= EMERGENCY_AIR && !breathableAbove(world, feet))) {
                 if (emergencyTeleportToAir(bot, world, feet)) {
                     waterRescueShore.remove(bot.getUuid());
+                    waterRescueSince.remove(bot.getUuid());
                     throttledLog(server, bot, "navsafe_drown_teleport", feet);
                     return true;
                 }

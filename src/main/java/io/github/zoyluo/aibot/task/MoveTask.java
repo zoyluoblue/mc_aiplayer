@@ -5,6 +5,7 @@ import io.github.zoyluo.aibot.action.BlockMiner;
 import io.github.zoyluo.aibot.action.DigNav;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
+import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
 
 public final class MoveTask extends AbstractTask {
@@ -54,6 +55,15 @@ public final class MoveTask extends AbstractTask {
 
     @Override
     protected void onStart(AIPlayerEntity bot) {
+        // 越界目标快速认输:y 超出世界范围(虚空下/建筑上限外)物理不可达,任何走/挖都是空转
+        //(实测朝 y330 目标"挖天"耗满 2400t 不认输——空转是实操里最隐蔽的故障形态)。
+        ServerWorld world = bot.getServerWorld();
+        int bottom = world.getBottomY();
+        int top = bottom + world.getHeight();
+        if (goal.getY() < bottom || goal.getY() >= top) {
+            fail("goal_out_of_world y=" + goal.getY());
+            return;
+        }
         startWalkOrDig(bot);
     }
 

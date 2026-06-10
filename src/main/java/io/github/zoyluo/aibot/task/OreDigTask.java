@@ -143,6 +143,11 @@ public final class OreDigTask extends AbstractTask {
             return;
         }
 
+        // P0 背包满自救:满了先丢低值占位(每种留 8 个),腾不出位才失败交编排——否则破了矿捡不起白挖。
+        if (HarvestCore.isInventoryFull(bot) && !io.github.zoyluo.aibot.action.InventoryAction.dropJunk(bot, 8)) {
+            fail("inventory_full");
+            return;
+        }
         // 收集计数:固定基线绝对增量(刚破矿的掉落物随后落袋会被算进来)。
         HarvestCore.forcePickupNearbyAnyOf(bot, targetDrops, 3.0D, 3.0D);
         int total = Math.max(0, HarvestCore.countInventoryItems(bot, targetDrops) - invBaseline);

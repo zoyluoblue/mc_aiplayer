@@ -179,7 +179,32 @@ public final class NeighborEnumerator {
         }
         boolean footOk = footOpen || isMineable(world, target);
         boolean headOk = headOpen || isMineable(world, head);
-        return footOk && headOk && !collisionEmpty(world, target.down());
+        if (!footOk || !headOk || collisionEmpty(world, target.down())) {
+            return false;
+        }
+        // P0 安全预检(深层挖矿头号死因):挖开这两格后侧面/上方岩浆会涌入——-59 钻石层就是岩浆层,
+        // 实操挖钻石最常见死法。脚/头任一格暴露面贴岩浆 → 这条路不挖,A* 自然绕行。
+        if (adjacentLava(world, target) || adjacentLava(world, head)) {
+            return false;
+        }
+        // P0 沙砾坍塌预检:头位上方是悬沙/砾(FallingBlock)→ 挖开即连环下落,砸头窒息+填回通道。
+        if (world.getBlockState(head.up()).getBlock() instanceof net.minecraft.block.FallingBlock) {
+            return false;
+        }
+        return true;
+    }
+
+    // 暴露面岩浆:四水平邻+上方任一岩浆即危险(下方由 target.down 实心保证不漏)。
+    private static boolean adjacentLava(ServerWorld world, BlockPos pos) {
+        if (world.getFluidState(pos.up()).isIn(net.minecraft.registry.tag.FluidTags.LAVA)) {
+            return true;
+        }
+        for (Direction d : HORIZONTAL) {
+            if (world.getFluidState(pos.offset(d)).isIn(net.minecraft.registry.tag.FluidTags.LAVA)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean hasHeadroom(ServerWorld world, BlockPos target) {

@@ -178,6 +178,27 @@ public final class InventoryAction {
         return ActionResult.SUCCESS;
     }
 
+    // P0 背包满自救:丢低值占位方块(圆石/泥土/砂砾族),每种保留 keepEach 个(搭路垫脚仍够用)。
+    // 挖矿挖到背包满="破了块捡不起→计数不涨→白挖到超时"(挖掘类任务的隐形杀手)。
+    private static final net.minecraft.item.Item[] JUNK_ITEMS = {
+            net.minecraft.item.Items.COBBLESTONE, net.minecraft.item.Items.COBBLED_DEEPSLATE,
+            net.minecraft.item.Items.DIRT, net.minecraft.item.Items.GRAVEL, net.minecraft.item.Items.SAND,
+            net.minecraft.item.Items.DIORITE, net.minecraft.item.Items.ANDESITE,
+            net.minecraft.item.Items.GRANITE, net.minecraft.item.Items.TUFF};
+
+    public static boolean dropJunk(AIPlayerEntity player, int keepEach) {
+        boolean droppedAny = false;
+        for (net.minecraft.item.Item junk : JUNK_ITEMS) {
+            int have = countItem(player, junk);
+            if (have > keepEach && removeItems(player, junk, have - keepEach)) {
+                player.dropItem(new ItemStack(junk, have - keepEach), false, true);
+                BotLog.action(player, "drop_junk", "item", junk, "count", have - keepEach);
+                droppedAny = true;
+            }
+        }
+        return droppedAny;
+    }
+
     private static void addStack(Map<String, Integer> summary, ItemStack stack) {
         if (stack.isEmpty()) {
             return;

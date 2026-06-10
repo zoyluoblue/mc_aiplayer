@@ -131,7 +131,10 @@ public final class AIBotVerifySubcommand {
             "geo_overhang",
             "geo_wall",
             "geo_pocket",
-            "geo_deep");
+            "geo_deep",
+            "geo_lava",
+            "geo_gravel",
+            "geo_fullinv");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
@@ -178,7 +181,8 @@ public final class AIBotVerifySubcommand {
 
     // 地形矩阵套件(②):同一挖矿任务 × 六种几何,统一接近原语的考场。/aibot verify geo_suite
     private static final List<String> GEO_SUITE = List.of(
-            "geo_vertical", "geo_slope", "geo_overhang", "geo_wall", "geo_pocket", "geo_deep");
+            "geo_vertical", "geo_slope", "geo_overhang", "geo_wall", "geo_pocket", "geo_deep",
+            "geo_lava", "geo_gravel", "geo_fullinv");
 
     // 贴近实操套件:自然世界、空背包、零给予,从零完成目标。/aibot verify real_suite
     // 失败 = 自动化与实操的真实差距,逐个修复;real_obsidian 预期 FAIL(浇水造黑曜石能力未实现)。
@@ -396,6 +400,9 @@ public final class AIBotVerifySubcommand {
             case "geo_wall" -> assignMineGeo(bot, "wall");
             case "geo_pocket" -> assignMineGeo(bot, "pocket");
             case "geo_deep" -> assignMineGeo(bot, "deep");
+            case "geo_lava" -> assignMineGeo(bot, "lava");
+            case "geo_gravel" -> assignMineGeo(bot, "gravel");
+            case "geo_fullinv" -> assignMineGeo(bot, "fullinv");
             default -> Result.fail(feature, "unknown_feature");
         };
     }
@@ -1518,6 +1525,43 @@ public final class AIBotVerifySubcommand {
             // 深层斜下:矿在斜下方 6 格(深板岩铁矿,考验斜向下挖)
             case "deep" -> {
                 world.setBlockState(origin.add(4, -6, 4), Blocks.DEEPSLATE_IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+            }
+            // P0 验证·岩浆邻接:全包裹矿的东面贴一格岩浆源——预检该让 A* 从北/南/上等安全面进,
+            // 挖错面=岩浆涌入烧死(零死亡断言抓)。
+            case "lava" -> {
+                for (int dx = 4; dx <= 9; dx++) {
+                    for (int dz = -3; dz <= 3; dz++) {
+                        for (int dy = -1; dy <= 4; dy++) {
+                            world.setBlockState(origin.add(dx, dy, dz), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                        }
+                    }
+                }
+                world.setBlockState(origin.add(7, 1, 0), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(origin.add(8, 1, 0), Blocks.LAVA.getDefaultState(), Block.NOTIFY_ALL); // 矿东面贴岩浆
+            }
+            // P0 验证·沙砾顶:穿墙必经段头顶悬 3 格沙砾柱(z=0 直线),预检该绕 z±1 安全列穿——
+            // 直线穿=塌方砸头窒息(零死亡断言抓)。
+            case "gravel" -> {
+                for (int dx = 3; dx <= 5; dx++) {
+                    for (int dz = -2; dz <= 2; dz++) {
+                        for (int dy = 0; dy <= 3; dy++) {
+                            world.setBlockState(origin.add(dx, dy, dz), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                        }
+                    }
+                }
+                for (int dx = 3; dx <= 5; dx++) {
+                    for (int dy = 4; dy <= 6; dy++) {
+                        world.setBlockState(origin.add(dx, dy, 0), Blocks.GRAVEL.getDefaultState(), Block.NOTIFY_ALL);
+                    }
+                }
+                world.setBlockState(origin.add(7, 1, 0), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+            }
+            // P0 验证·背包满:36 格塞满圆石开局——dropJunk 应腾位让矿捡得起(否则白挖到超时)。
+            case "fullinv" -> {
+                for (int i = 0; i < 36; i++) {
+                    InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 64));
+                }
+                world.setBlockState(origin.down(3), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
             }
             default -> {
                 return Result.fail("geo_" + geo, "unknown_geometry");

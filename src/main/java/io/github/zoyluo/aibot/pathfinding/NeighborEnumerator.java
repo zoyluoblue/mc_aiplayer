@@ -64,6 +64,21 @@ public final class NeighborEnumerator {
             if (allowDig && digEnterable(world, target)) {
                 result.add(new NeighborCandidate(target, MoveType.DIG_THROUGH, 0));
             }
+            // 斜上挖登(DIG 垂直分量之上行):目标=邻位高一格,挖开其脚头两格后跳进去。
+            // 仅当自己头顶跳跃空间已空才生成(执行器只挖目标两格,不清自己头顶)——坡面/露天爬坡够用,
+            // 全封闭竖井上行交给 pillar。治 geo_slope:坡体内矿(高 3 格)水平 DIG 永远够不到。
+            BlockPos upTarget = target.up();
+            if (allowDig && digEnterable(world, upTarget) && collisionEmpty(world, current.up(2))) {
+                result.add(new NeighborCandidate(upTarget, MoveType.DIG_THROUGH, 0));
+            }
+        }
+        // 垂直向下挖落(DIG 垂直分量之下行):挖开脚下一格掉下去站稳。治 geo_deep/埋矿族:
+        // 矿在正下方若干格,水平 DIG 在本层泛洪永远够不到(实测 ore_dig_buried/deep 同源)。
+        if (allowDig) {
+            BlockPos below = current.down();
+            if (isMineable(world, below) && !collisionEmpty(world, below.down())) {
+                result.add(new NeighborCandidate(below, MoveType.DIG_THROUGH, 0));
+            }
         }
         addDiagonals(current, world, result);
         addPillar(current, world, result);

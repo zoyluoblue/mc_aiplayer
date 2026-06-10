@@ -124,7 +124,8 @@ public final class AIBotVerifySubcommand {
             "goal_build_auto",
             "goal_build_custom",
             "msg_keep_goal",
-            "knowledge_smoke");
+            "knowledge_smoke",
+            "craft_runtime");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
@@ -376,6 +377,7 @@ public final class AIBotVerifySubcommand {
             case "goal_build_custom" -> assignGoalBuildCustom(bot);
             case "msg_keep_goal" -> assignMsgKeepGoal(bot);
             case "knowledge_smoke" -> assignKnowledgeSmoke(bot);
+            case "craft_runtime" -> assignCraftRuntime(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
     }
@@ -1439,6 +1441,23 @@ public final class AIBotVerifySubcommand {
      * (圆石≥6 且零死亡)收尾——保留语义不只是没清,还得真的继续干完。无 DEEPSEEK key 时 handleMessage
      * 异步才报 key 缺失,同步路径照走,不影响本验证。
      */
+    // 运行时配方索引端到端:OAK_TRAPDOOR 不在手写表(grep 确认),只能靠 RuntimeRecipeIndex 从
+    // RecipeManager 学来的配方(6 板)倒推合成——模组物品走同一路径,这里用 vanilla 表外物品代证。
+    private static Result assignCraftRuntime(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        InventoryAction.giveItem(bot, new ItemStack(Items.OAK_PLANKS, 8));
+        InventoryAction.giveItem(bot, new ItemStack(Items.CRAFTING_TABLE, 1));
+        final int deathBase = deathCount(bot);
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.OAK_TRAPDOOR, 1));
+        if (!started) {
+            return Result.fail("craft_runtime", "goal_submit_failed(运行时索引未让规划器认识活板门)");
+        }
+        return Result.runningGoal("craft_runtime", 2400,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.OAK_TRAPDOOR) >= 1
+                        && deathCount(bot) == deathBase);
+    }
+
     // 记忆/知识子系统 API 冒烟(同步,一次判定):情景流入死亡×2 同点 → 蒸馏出危险区(单次不立牌);
     // 资源发现×2 同点 → 去重只记一条;落盘文件存在。纯 API 行为,不跑任务。
     private static Result assignKnowledgeSmoke(AIPlayerEntity bot) {

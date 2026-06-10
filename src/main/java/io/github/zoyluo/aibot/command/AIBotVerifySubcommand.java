@@ -1564,7 +1564,12 @@ public final class AIBotVerifySubcommand {
         prepareArea(bot);
         clearInventory(bot);
         clearNearbyMobs(bot.getServerWorld(), bot.getBlockPos()); // 防怪把 bot 打死造成"假干净失败"(死亡中止≠主动认输)
-        BlockPos goal = bot.getBlockPos().up(80);
+        // 目标放到世界高度上限之外:resolveEndpoint 会把"够不到的目标"降级到附近可站点(这是导航的
+        // 容错 feature)——up(80) 在开阔地表会被降级成脚下、1t 假完成(实测 should_have_failed)。
+        // 超出 build limit 的点周围不存在任何可站点,降级也无解,才能逼出"干净认输"路径。
+        ServerWorld unreachableWorld = bot.getServerWorld();
+        int topLimit = unreachableWorld.getBottomY() + unreachableWorld.getHeight();
+        BlockPos goal = new BlockPos(bot.getBlockPos().getX(), topLimit + 10, bot.getBlockPos().getZ());
         // 不走 assignTask(它只会包出常规 running 语义):直接 assign + 反向 Result,语义是"应当失败"。
         TaskManager.INSTANCE.assign(bot, new MoveTask(bot, goal));
         return Result.runningExpectCleanFail("nav_unreachable", 2400);
@@ -1583,8 +1588,28 @@ public final class AIBotVerifySubcommand {
         // 换自然世界后 y6 是黑暗地下,把所有场景传进地下:黑暗触发 DangerWatcher 困死保命传送
         // (dark_trap_escape)中止被测任务(实测 nav_pillar_out 连续两轮 aborted 的真根因)。
         bot.getActionPack().stopAll();
-        int surfaceY = world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, 0, 0);
-        bot.teleport(world, 0.5D, surfaceY, 0.5D, java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+        // 传送列鲁棒化:固定 (0,0) 列可能正好是裂缝/洞口(实测该列 NO_LEAVES 顶面 y29,bot 被送进
+        // 黑暗深谷又触发保命传送把场景搅乱)。从 (0,0) 向外按 8 格步进螺旋,取第一个顶面可站的列。
+        BlockPos anchor = null;
+        outer:
+        for (int r = 0; r <= 32 && anchor == null; r += 8) {
+            for (int dx = -r; dx <= r; dx += 8) {
+                for (int dz = -r; dz <= r; dz += 8) {
+                    int ty = world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, dx, dz);
+                    BlockPos cand = new BlockPos(dx, ty, dz);
+                    if (io.github.zoyluo.aibot.pathfinding.Standability.isStandable(world, cand)
+                            && world.isSkyVisible(cand)) {
+                        anchor = cand;
+                        break outer;
+                    }
+                }
+            }
+        }
+        if (anchor == null) {
+            anchor = new BlockPos(0, world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, 0, 0), 0);
+        }
+        bot.teleport(world, anchor.getX() + 0.5D, anchor.getY(), anchor.getZ() + 0.5D,
+                java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
         BlockPos origin = bot.getBlockPos();
         for (BlockPos pos : BlockPos.iterate(origin.add(-4, 0, -4), origin.add(4, 3, 4))) {
             world.setBlockState(pos, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);

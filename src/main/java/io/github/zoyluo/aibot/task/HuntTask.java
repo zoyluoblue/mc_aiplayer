@@ -109,7 +109,11 @@ public final class HuntTask extends AbstractTask {
     private static void surfaceIfUnderground(AIPlayerEntity bot) {
         ServerWorld world = bot.getServerWorld();
         BlockPos feet = bot.getBlockPos();
-        if (world.isSkyVisible(feet)) {
+        // 凹陷判定不能只看 isSkyVisible:露天竖坑(挖石现场)坑底头顶见天,但 roam 落点 A* 全不可达
+        // (实测 hunt 仍 1t 速死)。改比"该列地表顶面":低于顶面 3 格以上=身处坑/谷,需要上浮。
+        int surfaceY = world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES,
+                feet.getX(), feet.getZ());
+        if (feet.getY() >= surfaceY - 3) {
             return;
         }
         int top = world.getBottomY() + world.getHeight();

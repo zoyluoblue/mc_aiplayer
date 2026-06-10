@@ -444,7 +444,9 @@ public final class AIBotVerifySubcommand {
     private static Result assignBuild(AIPlayerEntity bot) throws IOException {
         prepareArea(bot);
         clearInventory(bot);
-        InventoryAction.giveItem(bot, new ItemStack(Items.OAK_PLANKS, 64));
+        // small_hut 实测需 114 板(地板25+墙66-门2+顶25),原 64 板建到一半料尽 missing_material
+        //(BuildTask 只拿成品不合成;自动备料是 Goal.Build 链的事,本场景测纯建造)。
+        InventoryAction.giveItem(bot, new ItemStack(Items.OAK_PLANKS, 128));
         InventoryAction.giveItem(bot, new ItemStack(Items.OAK_LOG, 64));
         InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 64));
         InventoryAction.giveItem(bot, new ItemStack(Items.GLASS, 32));

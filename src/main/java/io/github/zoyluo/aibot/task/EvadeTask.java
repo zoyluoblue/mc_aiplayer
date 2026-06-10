@@ -31,11 +31,16 @@ public final class EvadeTask extends AbstractTask {
     protected void onStart(AIPlayerEntity bot) {
         escapeGoal = chooseGoal(bot);
         bot.getActionPack().startPathTo(escapeGoal);
+        // 逃命必须冲刺:走路 4.3m/s 对僵尸追击 4.0m/s 只快一线,寻路绕障/起步延迟就被贴脸磨死
+        //(实测无装备 bot 夜间远征被僵尸追杀致死)。冲刺 5.6m/s 才能真正甩开。
+        bot.getActionPack().setSprinting(true);
     }
 
     @Override
     protected void onTick(AIPlayerEntity bot) {
+        bot.getActionPack().setSprinting(true); // 持续保持(其他控制器可能每 tick 复位)
         if (escapeGoal != null && bot.getBlockPos().getSquaredDistance(escapeGoal) <= 6.25D) {
+            bot.getActionPack().setSprinting(false);
             complete();
             return;
         }
@@ -44,8 +49,14 @@ public final class EvadeTask extends AbstractTask {
             bot.getActionPack().startPathTo(escapeGoal);
         }
         if (elapsed > 400) {
+            bot.getActionPack().setSprinting(false);
             fail("evade_timeout");
         }
+    }
+
+    @Override
+    protected void onAbort(AIPlayerEntity bot) {
+        bot.getActionPack().setSprinting(false);
     }
 
     private BlockPos chooseGoal(AIPlayerEntity bot) {
@@ -58,7 +69,9 @@ public final class EvadeTask extends AbstractTask {
         if (away.lengthSquared() < 0.01D) {
             away = new Vec3d(1.0D, 0.0D, 0.0D);
         }
-        away = away.normalize().multiply(12.0D);
+        // 12→20 格:原 12 格停下时怪仍在感知圈内,evade 完成→任务 resume→再触发 evade,
+        // 反复被蹭血磨死。20 格出圈,一次逃干净。
+        away = away.normalize().multiply(20.0D);
         BlockPos base = BlockPos.ofFloored(bot.getPos().add(away));
         for (int radius = 0; radius <= 4; radius++) {
             for (BlockPos candidate : BlockPos.iterate(base.add(-radius, -2, -radius), base.add(radius, 2, radius))) {

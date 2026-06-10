@@ -288,6 +288,11 @@ public final class AIBotVerifySubcommand {
     }
 
     private static Result startScenario(ServerCommandSource source, AIPlayerEntity bot, String feature) throws IOException {
+        // 场景开始前统一清执行状态:上一场景断言满足判 PASS 时 goal 可能仍有剩余步骤在跑
+        //(runningGoal 的 assertion≠goal 完成),活跃 plan 会拒掉本场景的 submit(实测 forage
+        // goal_submit_failed)或把残余任务泄进来。每场景从干净执行状态开跑,一处治所有场景间泄漏。
+        GoalExecutor.INSTANCE.clear(bot);
+        TaskManager.INSTANCE.abort(bot);
         return switch (feature) {
             case "persist" -> verifyPersist(source);
             case "memory" -> verifyMemory(bot);

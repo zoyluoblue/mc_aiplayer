@@ -1787,6 +1787,7 @@ public final class AIBotVerifySubcommand {
                     return;
                 }
                 if (elapsedTicks >= running.timeoutTicks()) {
+                    GoalExecutor.INSTANCE.clear(bot); // 先清 goal:abort 任务会触发其 replan 复活,跨场景泄漏(实测污染后续 3 场景)
                     TaskManager.INSTANCE.abort(bot);
                     record(Result.fail(running.feature(), "verify_timeout status=" + status.name() + " " + status.description()));
                     active = null;
@@ -1826,6 +1827,7 @@ public final class AIBotVerifySubcommand {
                 return;
             }
             if (elapsedTicks >= running.timeoutTicks()) {
+                GoalExecutor.INSTANCE.clear(bot); // 先清 goal 再 abort,杜绝 replan 复活跨场景泄漏(同上)
                 TaskManager.INSTANCE.abort(bot);
                 // expectFail 场景超时 = 任务既没完成也没认输、一直空转——这正是反向场景要钉死的故障形态,换专属前缀好认。
                 record(Result.fail(running.feature(), (running.expectFail() ? "no_clean_fail_before_timeout" : "verify_timeout")

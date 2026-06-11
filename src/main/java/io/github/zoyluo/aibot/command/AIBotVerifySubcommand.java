@@ -183,7 +183,7 @@ public final class AIBotVerifySubcommand {
     // 地形矩阵套件(②):同一挖矿任务 × 六种几何,统一接近原语的考场。/aibot verify geo_suite
     private static final List<String> GEO_SUITE = List.of(
             "geo_vertical", "geo_slope", "geo_overhang", "geo_wall", "geo_pocket", "geo_deep",
-            "geo_lava", "geo_gravel", "geo_fullinv");
+            "geo_lava", "geo_gravel", "geo_fullinv", "geo_rich");
 
     // 贴近实操套件:自然世界、空背包、零给予,从零完成目标。/aibot verify real_suite
     // 失败 = 自动化与实操的真实差距,逐个修复;real_obsidian 预期 FAIL(浇水造黑曜石能力未实现)。

@@ -135,7 +135,7 @@ public final class AIBotVerifySubcommand {
             "geo_lava",
             "geo_gravel",
             "geo_fullinv",
-            "geo_rich");
+            "geo_rich", "geo_water");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
@@ -183,7 +183,7 @@ public final class AIBotVerifySubcommand {
     // 地形矩阵套件(②):同一挖矿任务 × 六种几何,统一接近原语的考场。/aibot verify geo_suite
     private static final List<String> GEO_SUITE = List.of(
             "geo_vertical", "geo_slope", "geo_overhang", "geo_wall", "geo_pocket", "geo_deep",
-            "geo_lava", "geo_gravel", "geo_fullinv", "geo_rich");
+            "geo_lava", "geo_gravel", "geo_fullinv", "geo_rich", "geo_water");
 
     // 贴近实操套件:自然世界、空背包、零给予,从零完成目标。/aibot verify real_suite
     // 失败 = 自动化与实操的真实差距,逐个修复;real_obsidian 预期 FAIL(浇水造黑曜石能力未实现)。
@@ -405,6 +405,7 @@ public final class AIBotVerifySubcommand {
             case "geo_gravel" -> assignMineGeo(bot, "gravel");
             case "geo_fullinv" -> assignMineGeo(bot, "fullinv");
             case "geo_rich" -> assignGeoRich(bot);
+            case "geo_water" -> assignMineGeo(bot, "water");
             default -> Result.fail(feature, "unknown_feature");
         };
     }
@@ -906,8 +907,11 @@ public final class AIBotVerifySubcommand {
         ServerWorld world = bot.getServerWorld();
         BlockPos origin = bot.getBlockPos();
         clearNearbyMobs(world, origin); // 全链早期无装备,清 y6 怪海
+        // 两列 24 木:from_scratch 链含熔炼,燃料烧原木+craft 整木换板的执行漂移可能吃掉补采余量,
+        // 单列 12 木被第一轮砍光后 replan 补采就 no_resource(套跑实测)。树管够,漂移全兜住。
         for (int dy = 0; dy < 12; dy++) {
             world.setBlockState(origin.offset(Direction.WEST, 2).up(dy), Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
+            world.setBlockState(origin.offset(Direction.WEST, 2).offset(Direction.NORTH, 2).up(dy), Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
         }
         // 实心石区替代 1 列石柱:挖石/挖铁任务是斜挖阶梯,1 列柱第一步就走出柱外掉进残留坑(no_resource 元凶)。
         fillStoneCube(world, origin, 4, 10);
@@ -1543,6 +1547,20 @@ public final class AIBotVerifySubcommand {
                 world.setBlockState(origin.add(7, 1, 0), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
                 world.setBlockState(origin.add(8, 1, 0), Blocks.LAVA.getDefaultState(), Block.NOTIFY_ALL); // 矿东面贴岩浆
                 InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 8)); // 封堵材料(真实玩家身上总有圆石)
+            }
+            // 含水矿:与 lava 行同构,流体换水源——挖开瞬间水涌入会推走 bot/掉落物淹巷道,
+            // 统一危险流体封堵(ore_dig_fluid_seal)该先封水再挖。
+            case "water" -> {
+                for (int dx = 4; dx <= 9; dx++) {
+                    for (int dz = -3; dz <= 3; dz++) {
+                        for (int dy = -1; dy <= 4; dy++) {
+                            world.setBlockState(origin.add(dx, dy, dz), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                        }
+                    }
+                }
+                world.setBlockState(origin.add(7, 1, 0), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(origin.add(8, 1, 0), Blocks.WATER.getDefaultState(), Block.NOTIFY_ALL); // 矿东面贴水源
+                InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 8));
             }
             // P0 验证·沙砾顶:穿墙必经段头顶悬 3 格沙砾柱(z=0 直线),预检该绕 z±1 安全列穿——
             // 直线穿=塌方砸头窒息(零死亡断言抓)。

@@ -741,7 +741,10 @@ public final class GoalPlanner {
             Item fuel = preferredFuelLog();
             int fuelLogs = 0;
             if (fuelDeficit > 0) {
-                fuelLogs = Math.max(1, (int) Math.ceil(fuelDeficit / 1.5));
+                // +1 冗余:执行层与账本天然漂移——craft 换板按整原木消耗、smelt chooseFuel 全额
+                // 单品种装填,两头贪心合计常差 1-2 板,链尾'合成木棍'就 need planks 重采;此时场景
+                // 树若已砍光直接 no_resource(iron_pickaxe 套跑实测)。多砍一根木头吸收漂移。
+                fuelLogs = Math.max(1, (int) Math.ceil(fuelDeficit / 1.5)) + 1;
                 if (!ensureItem(fuel, fuelLogs, depth + 1, visiting)) {
                     return false;
                 }

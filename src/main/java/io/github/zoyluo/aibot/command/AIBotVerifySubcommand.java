@@ -135,7 +135,7 @@ public final class AIBotVerifySubcommand {
             "geo_lava",
             "geo_gravel",
             "geo_fullinv",
-            "geo_rich", "geo_water", "geo_recover");
+            "geo_rich", "geo_water", "geo_recover", "geo_bonus");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
@@ -184,7 +184,7 @@ public final class AIBotVerifySubcommand {
     // 地形矩阵套件(②):同一挖矿任务 × 六种几何,统一接近原语的考场。/aibot verify geo_suite
     private static final List<String> GEO_SUITE = List.of(
             "geo_vertical", "geo_slope", "geo_overhang", "geo_wall", "geo_pocket", "geo_deep",
-            "geo_lava", "geo_gravel", "geo_fullinv", "geo_rich", "geo_water");
+            "geo_lava", "geo_gravel", "geo_fullinv", "geo_rich", "geo_water", "geo_bonus");
 
     // 贴近实操套件:自然世界、空背包、零给予,从零完成目标。/aibot verify real_suite
     // 失败 = 自动化与实操的真实差距,逐个修复;real_obsidian 预期 FAIL(浇水造黑曜石能力未实现)。
@@ -408,6 +408,7 @@ public final class AIBotVerifySubcommand {
             case "geo_rich" -> assignGeoRich(bot);
             case "geo_water" -> assignMineGeo(bot, "water");
             case "geo_recover" -> assignGeoRecover(bot);
+            case "geo_bonus" -> assignGeoBonus(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
     }
@@ -1644,6 +1645,33 @@ public final class AIBotVerifySubcommand {
         }
         return Result.runningGoal("geo_rich", 4800,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.RAW_IRON) >= 1
+                        && deathCount(bot) == deathBase);
+    }
+
+    // 顺路矿(R3):目标铁矿 6 格外,通往它的隧道壁上嵌 2 块煤矿(±1 伸手位)——断言铁照采、
+    // 煤顺手白捡(ore_dig_bonus),改行追脉/绕路都算输(预算与 reach 约束兜着)。
+    private static Result assignGeoBonus(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin);
+        fillStoneCube(world, origin, 6, 8);
+        InventoryAction.giveItem(bot, new ItemStack(Items.STONE_PICKAXE, 1));
+        // 目标铁矿:东 6 格同层
+        world.setBlockState(origin.add(6, 1, 0), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        // 顺路煤:通道两壁(挖隧道经过时进入 ±2 扫描窗)
+        world.setBlockState(origin.add(2, 1, 1), Blocks.COAL_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(origin.add(4, 0, -1), Blocks.COAL_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        final int deathBase = deathCount(bot);
+        boolean started = GoalExecutor.INSTANCE.submit(bot,
+                new Goal.MineOre(java.util.Set.of(Blocks.IRON_ORE), 1));
+        if (!started) {
+            return Result.fail("geo_bonus", "goal_submit_failed");
+        }
+        return Result.runningGoal("geo_bonus", 3600,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.RAW_IRON) >= 1
+                        && InventoryAction.countItem(bot, Items.COAL) >= 1
                         && deathCount(bot) == deathBase);
     }
 

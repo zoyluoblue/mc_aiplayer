@@ -45,6 +45,7 @@ public final class OreDigTask extends AbstractTask {
     private static final int MIN_Y = -60;
     private static final int VEIN_CAP = 64;
     private static final int PICKUP_GRACE_TICKS = 30;
+    private static final int BONUS_CAP = 8;            // R3 顺路矿单任务上限:白捡是好,改行不行
     private static final int APPROACH_LIMIT = 80;       // P0:锁定矿超过此 tick 仍没靠近 → 判够不到,放弃换矿/下挖
     private static final int STRIP_SEGMENT = 48;        // 覆盖效率:扫描是全知 24 格球,巷道价值=移动覆盖;长段直线减少转向与重叠扫描
     private static final Direction[] STRIP_DIRS = {
@@ -70,6 +71,9 @@ public final class OreDigTask extends AbstractTask {
     private int stripDirIndex = -1;   // 优化1:矿层水平找矿当前掘进方向(STRIP_DIRS 下标),-1=未开始
     private int stripStepsLeft;       // 优化1:当前隧道段剩余格数
     private int lastMinedTick = -100; // 挖掉矿本体的时刻:掉落实体在下 tick 才出现,挖完原地驻留捡取
+    private BlockPos bonusOre;        // R3 顺路矿:reach 内的非目标矿,顺手一镐(单块,不追脉)
+    private int bonusMined;           // 顺路预算计数(防喧宾夺主)
+    private int lastBonusScanTick = -100;
 
     public OreDigTask(Set<Block> targetOres, int targetCount) {
         this.targetOres = targetOres == null || targetOres.isEmpty()
@@ -192,6 +196,41 @@ public final class OreDigTask extends AbstractTask {
         // 1) 先清相邻矿脉队列(挖到一块矿后,把同脉相邻矿一起挖净)。
         if (advanceVein(bot, world)) {
             return;
+        }
+
+        // R3 顺路矿(真实玩家肌肉记忆):赶路/掘进途中伸手可及处出现非目标矿——煤是燃料刚需、
+        // 铁是工具通货,白送的不捡是傻。锁定目标矿的接近途中正是顺路高发段(geo_bonus 首验:
+        // 原来只在'无锁定'分支扫,掘进全程锁着铁,顺路永不触发)。唯一不顺的时机:miner 正咬着
+        // 目标矿(挖一半换目标清进度)。约束:单块不追脉、预算封顶、不计目标数。
+        boolean bitingTarget = targetOre != null && miner.target() != null && miner.target().equals(targetOre);
+        if (bonusOre == null && !bitingTarget && bonusMined < BONUS_CAP
+                && bot.getServer().getTicks() - lastBonusScanTick >= SCAN_INTERVAL
+                && !HarvestCore.isInventoryFull(bot)) {
+            lastBonusScanTick = bot.getServer().getTicks();
+            bonusOre = scanBonusOre(bot, world);
+        }
+        if (bonusOre != null) {
+            if (!OreScan.isOreBlock(world.getBlockState(bonusOre).getBlock()) || !withinReach(bot, bonusOre)) {
+                bonusOre = null; // 挖完(executor 顺手)或走远:放手,别为顺路矿回头
+            } else {
+                BlockMiner.Status st = miner.target() != null && miner.target().equals(bonusOre)
+                        ? miner.tick(bot)
+                        : beginMine(bot, bonusOre);
+                targetApproachTick = elapsed; // 顺路一镐不算接近停滞,别让 APPROACH_LIMIT 误杀目标矿
+                if (st == BlockMiner.Status.DONE) {
+                    bonusMined++;
+                    lastMinedTick = elapsed;
+                    lastProgressTick = elapsed;
+                    HarvestCore.forcePickupNearbyAnyOf(bot, null, 7.0D, 4.0D); // 捡一切:掉落不在 targetDrops 里
+                    BotLog.action(bot, "ore_dig_bonus", "pos", bonusOre.toShortString(),
+                            "total", bonusMined + "/" + BONUS_CAP);
+                    bonusOre = null;
+                } else if (st == BlockMiner.Status.FAILED) {
+                    excludeOre(bot, bonusOre);
+                    bonusOre = null;
+                }
+                return;
+            }
         }
 
         // 2) 当前有锁定矿:可达就挖它(挖到后入脉队列),不可达就朝它挖一格隧道。
@@ -567,6 +606,30 @@ public final class OreDigTask extends AbstractTask {
         bot.getActionPack().stopMovement(); // 互斥:开挖矿本体即停掉接近寻路(执行器的 DIG_THROUGH 与 BlockMiner 不抢手)
         miner.begin(bot, pos);
         return miner.tick(bot);
+    }
+
+    // R3 顺路矿扫描:bot 周身 ±2(伸手范围)找任何"非目标、可挖、不贴危险流体"的矿。
+    // 范围刻意小(5×5×5=125 格逐查,限频复用 SCAN_INTERVAL 节拍)——顺路的定义就是不绕路。
+    private BlockPos scanBonusOre(AIPlayerEntity bot, ServerWorld world) {
+        BlockPos feet = bot.getBlockPos();
+        for (BlockPos p : BlockPos.iterate(feet.add(-2, -1, -2), feet.add(2, 3, 2))) {
+            Block b = world.getBlockState(p).getBlock();
+            if (!OreScan.isOreBlock(b) || targetOres.contains(b)) {
+                continue;
+            }
+            BlockPos pos = p.toImmutable();
+            if (oreExcluded(bot, pos) || !withinReach(bot, pos)) {
+                continue;
+            }
+            if (!ToolTier.canHarvestWithInventory(bot, world.getBlockState(pos))) {
+                continue; // 挖不动的不顺(挖钻石路过绿宝石但只有石镐:别空手刨)
+            }
+            if (adjacentDangerFluidOf(world, pos) != null) {
+                continue; // 贴浆/贴水的矿不顺路——顺路的代价必须是零
+            }
+            return pos;
+        }
+        return null;
     }
 
     // 探矿:近处扫不到矿时,在 PROSPECT_RANGE 大范围(只扫已加载区块)定位最近的目标矿;限频护 TPS。

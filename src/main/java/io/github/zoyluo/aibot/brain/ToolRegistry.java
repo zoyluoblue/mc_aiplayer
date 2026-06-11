@@ -633,6 +633,26 @@ public final class ToolRegistry {
             return ok("assigned: " + task.name());
         });
 
+        register("mine_and_stockpile", "Mine ores then deposit the yield into a chest near the remembered base. Use when the player wants mined goods stored, not carried.", objectSchema()
+                .property("ore", stringSchema("ore block id or raw item, e.g. minecraft:iron_ore"))
+                .property("count", integerSchema("how many ore blocks to mine"))
+                .required("ore")
+                .build(), (bot, args) -> {
+            var ores = oreTargetsFrom(requiredString(args, "ore"));
+            int count = optionalInt(args, "count", 1);
+            boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.MineOre(ores, count));
+            if (!started) {
+                return fail("goal_plan_failed");
+            }
+            // 归仓接力:goal 队列自动衔接(挖完即去基地箱入库;无 base 时 Stockpile 自己报 no_base)
+            Item yield = io.github.zoyluo.aibot.action.HarvestCore.expectedDropsFor(ores)
+                    .stream().findFirst().orElse(null);
+            if (yield != null) {
+                GoalExecutor.INSTANCE.submit(bot, new Goal.Stockpile(yield, count));
+            }
+            return ok("goal_assigned: mine_ore + stockpile queued");
+        });
+
         register("recover_drops", "Run back to the most recent death location and pick up dropped items before they despawn (5 min)", objectSchema()
                 .build(), ToolDefinition.Group.MEMORY, (bot, args) -> {
             var deaths = io.github.zoyluo.aibot.memory.EpisodeLog.INSTANCE

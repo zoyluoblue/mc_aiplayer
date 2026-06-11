@@ -135,7 +135,7 @@ public final class AIBotVerifySubcommand {
             "geo_lava",
             "geo_gravel",
             "geo_fullinv",
-            "geo_rich", "geo_water", "geo_recover", "geo_bonus");
+            "geo_rich", "geo_water", "geo_recover", "geo_bonus", "geo_stockpile");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
@@ -152,7 +152,8 @@ public final class AIBotVerifySubcommand {
             "achieve_obsidian",
             "achieve_iron_pickaxe",
             "achieve_diamond",
-            "geo_recover");
+            "geo_recover",
+            "geo_stockpile");
 
     // 食物回归套件:一条命令 /aibot verify food_suite 跑完所有食物/种田相关场景。
     // 覆盖五条食物途径:打猎+烤(food/food_full)、种田做面包(food_farm)、觅食(forage)、
@@ -409,6 +410,7 @@ public final class AIBotVerifySubcommand {
             case "geo_water" -> assignMineGeo(bot, "water");
             case "geo_recover" -> assignGeoRecover(bot);
             case "geo_bonus" -> assignGeoBonus(bot);
+            case "geo_stockpile" -> assignGeoStockpile(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
     }
@@ -1673,6 +1675,45 @@ public final class AIBotVerifySubcommand {
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.RAW_IRON) >= 1
                         && InventoryAction.countItem(bot, Items.COAL) >= 1
                         && deathCount(bot) == deathBase);
+    }
+
+    // 挖矿归仓(R4):base 旁放箱,目标=挖 1 铁并入库。两连 goal(MineOre→queue Stockpile),
+    // 断言箱内 RAW_IRON≥1(不是背包——拿在手里不算归仓)。
+    private static Result assignGeoStockpile(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin);
+        fillStoneCube(world, origin, 4, 8);
+        InventoryAction.giveItem(bot, new ItemStack(Items.STONE_PICKAXE, 1));
+        world.setBlockState(origin.add(5, 1, 0), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        // 基地:脚边 mark + 箱子
+        io.github.zoyluo.aibot.memory.BotMemoryStore.INSTANCE.of(bot.getUuid())
+                .markPlace("base", world, origin);
+        BlockPos chest = origin.add(-2, 0, 0);
+        world.setBlockState(chest, Blocks.CHEST.getDefaultState(), Block.NOTIFY_ALL);
+        boolean started = GoalExecutor.INSTANCE.submit(bot,
+                new Goal.MineOre(java.util.Set.of(Blocks.IRON_ORE), 1));
+        if (!started) {
+            return Result.fail("geo_stockpile", "goal_submit_failed");
+        }
+        GoalExecutor.INSTANCE.submit(bot, new Goal.Stockpile(Items.RAW_IRON, 1));
+        return Result.running("geo_stockpile", 4800, ignored -> {
+            if (!bot.isAlive()) {
+                return false;
+            }
+            var inv = io.github.zoyluo.aibot.action.ContainerAction.resolve(bot, chest).orElse(null);
+            if (inv == null) {
+                return false;
+            }
+            for (int i = 0; i < inv.size(); i++) {
+                if (inv.getStack(i).isOf(Items.RAW_IRON)) {
+                    return true;
+                }
+            }
+            return false;
+        });
     }
 
     // 死亡找回(R1):带高辨识物资被一击致死,断言重生反射自动跑尸、despawn 前把铁锭捡回背包。

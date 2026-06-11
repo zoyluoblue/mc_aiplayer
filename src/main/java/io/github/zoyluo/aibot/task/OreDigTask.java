@@ -426,6 +426,20 @@ public final class OreDigTask extends AbstractTask {
         if (stripStepsLeft % 10 == 0
                 && world.getLightLevel(net.minecraft.world.LightType.BLOCK, bot.getBlockPos()) < 8) {
             var torchSlot = io.github.zoyluo.aibot.action.InventoryAction.findItem(bot, net.minecraft.item.Items.TORCH);
+            // R5 火把自补:没火把但有煤有棍(挖矿常态——顺路煤+随身棍)就地合 4 支(2x2 免台,
+            // 纯背包变换与 CraftTask 内核同式)。缺料不强求,照明始终是增益不是前置。
+            if (torchSlot.isEmpty()) {
+                var coal = io.github.zoyluo.aibot.action.InventoryAction.findItem(bot, net.minecraft.item.Items.COAL);
+                var stick = io.github.zoyluo.aibot.action.InventoryAction.findItem(bot, net.minecraft.item.Items.STICK);
+                if (coal.isPresent() && stick.isPresent()
+                        && io.github.zoyluo.aibot.action.InventoryAction.removeItems(bot, net.minecraft.item.Items.COAL, 1)
+                        && io.github.zoyluo.aibot.action.InventoryAction.removeItems(bot, net.minecraft.item.Items.STICK, 1)) {
+                    io.github.zoyluo.aibot.action.InventoryAction.giveItem(bot,
+                            new net.minecraft.item.ItemStack(net.minecraft.item.Items.TORCH, 4));
+                    BotLog.action(bot, "ore_dig_torch_crafted", "count", 4);
+                    torchSlot = io.github.zoyluo.aibot.action.InventoryAction.findItem(bot, net.minecraft.item.Items.TORCH);
+                }
+            }
             if (torchSlot.isPresent()) {
                 io.github.zoyluo.aibot.action.InventoryAction.equipFromSlot(bot, torchSlot.getAsInt());
                 if (!io.github.zoyluo.aibot.action.BuildAction.placeBlockAt(bot, bot.getBlockPos()).isFailed()) {

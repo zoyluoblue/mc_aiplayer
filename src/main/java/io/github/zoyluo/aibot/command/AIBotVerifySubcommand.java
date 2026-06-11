@@ -135,7 +135,7 @@ public final class AIBotVerifySubcommand {
             "geo_lava",
             "geo_gravel",
             "geo_fullinv",
-            "geo_rich", "geo_water");
+            "geo_rich", "geo_water", "geo_recover");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
@@ -151,7 +151,8 @@ public final class AIBotVerifySubcommand {
             "achieve_gold_ingot",
             "achieve_obsidian",
             "achieve_iron_pickaxe",
-            "achieve_diamond");
+            "achieve_diamond",
+            "geo_recover");
 
     // 食物回归套件:一条命令 /aibot verify food_suite 跑完所有食物/种田相关场景。
     // 覆盖五条食物途径:打猎+烤(food/food_full)、种田做面包(food_farm)、觅食(forage)、
@@ -406,6 +407,7 @@ public final class AIBotVerifySubcommand {
             case "geo_fullinv" -> assignMineGeo(bot, "fullinv");
             case "geo_rich" -> assignGeoRich(bot);
             case "geo_water" -> assignMineGeo(bot, "water");
+            case "geo_recover" -> assignGeoRecover(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
     }
@@ -1643,6 +1645,22 @@ public final class AIBotVerifySubcommand {
         return Result.runningGoal("geo_rich", 4800,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.RAW_IRON) >= 1
                         && deathCount(bot) == deathBase);
+    }
+
+    // 死亡找回(R1):带高辨识物资被一击致死,断言重生反射自动跑尸、despawn 前把铁锭捡回背包。
+    // 灯下黑校验项:掉落确实生成(本 mod respawn 不恢复背包,原版 dropInventory 掉在死亡点)。
+    private static Result assignGeoRecover(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin);
+        InventoryAction.giveItem(bot, new ItemStack(Items.IRON_INGOT, 5));
+        InventoryAction.giveItem(bot, new ItemStack(Items.STONE_PICKAXE, 1));
+        // 一击致死:走原版死亡流程(掉落生成);setHealth(0) 不触发 onDeath 掉落,必须走 damage。
+        bot.damage(world, world.getDamageSources().generic(), 1000.0F);
+        return Result.running("geo_recover", 2400,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.IRON_INGOT) >= 5);
     }
 
     // 运行时配方索引端到端:OAK_TRAPDOOR 不在手写表(grep 确认),只能靠 RuntimeRecipeIndex 从

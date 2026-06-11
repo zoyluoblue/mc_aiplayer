@@ -134,7 +134,8 @@ public final class AIBotVerifySubcommand {
             "geo_deep",
             "geo_lava",
             "geo_gravel",
-            "geo_fullinv");
+            "geo_fullinv",
+            "geo_rich");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
@@ -403,6 +404,7 @@ public final class AIBotVerifySubcommand {
             case "geo_lava" -> assignMineGeo(bot, "lava");
             case "geo_gravel" -> assignMineGeo(bot, "gravel");
             case "geo_fullinv" -> assignMineGeo(bot, "fullinv");
+            case "geo_rich" -> assignGeoRich(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
     }
@@ -1575,6 +1577,41 @@ public final class AIBotVerifySubcommand {
             return Result.fail("geo_" + geo, "goal_submit_failed");
         }
         return Result.runningGoal("geo_" + geo, 3600,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.RAW_IRON) >= 1
+                        && deathCount(bot) == deathBase);
+    }
+
+    // P1 富矿区导向:近处(64 格)无矿,但知识库记得 80 格外的富矿簇(预热 3 个资源点)——
+    // prospect 兜底应直奔富区而非盲目掘进。断言:拿到 80 格外埋的真矿。
+    private static Result assignGeoRich(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin);
+        InventoryAction.giveItem(bot, new ItemStack(Items.STONE_PICKAXE, 1));
+        // 富区:80 格外,3 个资源点记忆(20 格内成簇)+真矿一块;沿途铺石走廊保通(贫瘠带,64 格内无矿)
+        BlockPos rich = origin.add(80, 0, 0);
+        for (int dx = 0; dx <= 82; dx++) {
+            for (int dz = -2; dz <= 2; dz++) {
+                world.setBlockState(origin.add(dx, -1, dz), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                for (int dy = 0; dy <= 2; dy++) {
+                    world.setBlockState(origin.add(dx, dy, dz), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                }
+            }
+        }
+        world.setBlockState(rich, Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        io.github.zoyluo.aibot.memory.EpisodeLog log = io.github.zoyluo.aibot.memory.EpisodeLog.INSTANCE;
+        log.record(bot, io.github.zoyluo.aibot.memory.EpisodeLog.Type.RESOURCE_FOUND, rich.add(0, 0, 10), "minecraft:iron_ore");
+        log.record(bot, io.github.zoyluo.aibot.memory.EpisodeLog.Type.RESOURCE_FOUND, rich.add(10, 0, 0), "minecraft:iron_ore");
+        log.record(bot, io.github.zoyluo.aibot.memory.EpisodeLog.Type.RESOURCE_FOUND, rich.add(0, 0, -10), "minecraft:iron_ore");
+        final int deathBase = deathCount(bot);
+        boolean started = GoalExecutor.INSTANCE.submit(bot,
+                new Goal.MineOre(java.util.Set.of(Blocks.IRON_ORE), 1));
+        if (!started) {
+            return Result.fail("geo_rich", "goal_submit_failed");
+        }
+        return Result.runningGoal("geo_rich", 4800,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.RAW_IRON) >= 1
                         && deathCount(bot) == deathBase);
     }

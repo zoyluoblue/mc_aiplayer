@@ -46,7 +46,7 @@ public final class OreDigTask extends AbstractTask {
     private static final int VEIN_CAP = 64;
     private static final int PICKUP_GRACE_TICKS = 30;
     private static final int APPROACH_LIMIT = 80;       // P0:锁定矿超过此 tick 仍没靠近 → 判够不到,放弃换矿/下挖
-    private static final int STRIP_SEGMENT = 16;        // S(优化1):矿层扫不到矿时,水平掘进的隧道段长(暴露两侧矿面)
+    private static final int STRIP_SEGMENT = 48;        // 覆盖效率:扫描是全知 24 格球,巷道价值=移动覆盖;长段直线减少转向与重叠扫描
     private static final Direction[] STRIP_DIRS = {
             Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST};
 
@@ -323,12 +323,30 @@ public final class OreDigTask extends AbstractTask {
                     "dist", (int) Math.sqrt(bot.getBlockPos().getSquaredDistance(prospected)));
             return;
         }
-        // 探矿也没有 → 水平 strip-mine 掘进暴露新矿面(每前进一格,下一轮 nearestOre 都会扫到隧道两侧新矿);
+        // 探矿也没有 → 先问知识库富矿区(以前总在那挖到的地方,128 格内、≥3 点聚在 24 格):
+        // 有则当 prospected 目标走过去——"记得哪里矿多"比盲目掘进省一个数量级的时间。
+        for (Block oreBlock : targetOres) {
+            String oreId = net.minecraft.registry.Registries.BLOCK.getId(oreBlock).toString();
+            var rich = io.github.zoyluo.aibot.memory.KnowledgeBase.INSTANCE
+                    .richZoneNear(bot.getUuid(), oreId, bot.getBlockPos(), 128, 3, 24);
+            if (rich.isPresent() && !oreExcluded(bot, rich.get())) {
+                targetOre = rich.get();
+                lastTargetDist = Double.MAX_VALUE;
+                targetApproachTick = elapsed;
+                BotLog.action(bot, "ore_dig_rich_zone", "to", rich.get().toShortString());
+                return;
+            }
+        }
+        // 水平 strip-mine 掘进暴露新矿面(每前进一格,下一轮 nearestOre 都会扫到隧道两侧新矿);
         // 一整段(STRIP_SEGMENT)挖完仍无矿 → 向下换一层 + 换个水平方向继续。比旧的"只垂直换层"找矿快得多
         //(实测:Y=16 这片铁矿稀疏,旧逻辑原地 201t 扫不到就 no_progress 失败 → goal 失败 → 大脑接管手动挖耗尽轮次)。
         if (stripStepsLeft <= 0) {
             if (stripDirIndex >= 0) {
-                digDownOneLayer(bot, world); // 一段挖完,顺带下沉一层换新平面
+                // 跳 4 层换平面:垂直扫描 VERTICAL_SCAN=±10,逐层下沉的扫描区 90% 重叠纯浪费;
+                // 跳 4 仍有 6 层重叠余量不漏矿,贫瘠区迁移速度 ×4。
+                for (int i = 0; i < 4; i++) {
+                    digDownOneLayer(bot, world);
+                }
             }
             stripDirIndex = (stripDirIndex + 1) % STRIP_DIRS.length;
             stripStepsLeft = STRIP_SEGMENT;

@@ -142,6 +142,28 @@ public final class KnowledgeBase {
                 .min(java.util.Comparator.comparingDouble(r -> r.pos().getSquaredDistance(from)));
     }
 
+    /** 富矿区(P1 消费口):同 blockId 资源点 ≥minPoints 个聚在 radius 内 → 返回簇心。
+     * 运行时聚类(零新 schema):prospect 兜底用——64 格内扫不到矿时,直奔"以前总在那挖到"的富区。 */
+    public Optional<BlockPos> richZoneNear(UUID botId, String blockId, BlockPos from, double maxDist, int minPoints, double radius) {
+        List<ResourcePoint> mine = of(botId).resources.stream()
+                .filter(r -> r.blockId().equals(blockId))
+                .filter(r -> r.pos().isWithinDistance(from, maxDist))
+                .toList();
+        Optional<BlockPos> best = Optional.empty();
+        double bestDist = Double.MAX_VALUE;
+        for (ResourcePoint center : mine) {
+            long n = mine.stream().filter(r -> r.pos().isWithinDistance(center.pos(), radius)).count();
+            if (n >= minPoints && !isDanger(botId, center.pos())) {
+                double d = center.pos().getSquaredDistance(from);
+                if (d < bestDist) {
+                    bestDist = d;
+                    best = Optional.of(center.pos());
+                }
+            }
+        }
+        return best;
+    }
+
     public boolean isDanger(UUID botId, BlockPos pos) {
         for (DangerZone z : of(botId).dangers) {
             if (z.center().isWithinDistance(pos, z.radius())) {

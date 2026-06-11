@@ -118,6 +118,9 @@ public final class ToolTier {
     }
 
     private static Item pickaxeItem(int tier) {
+        if (tier >= DIAMOND) {
+            return Items.DIAMOND_PICKAXE; // 黑曜石级:漏这档时 need_better_tool 误报 iron,规划补错镐
+        }
         if (tier >= IRON) {
             return Items.IRON_PICKAXE;
         }

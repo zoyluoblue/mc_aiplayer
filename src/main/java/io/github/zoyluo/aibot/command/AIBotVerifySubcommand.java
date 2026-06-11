@@ -2007,12 +2007,13 @@ public final class AIBotVerifySubcommand {
                 }
             }
         }
-        if (anchor == null) {
-            anchor = new BlockPos(baseX, world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, baseX, 0), 0);
+        // 兜底不赌 heightmap:轮转列可能整片不可用(海面/裂谷/heightmap 空——实测 x=640 列 obsidian
+        // 场景 fallback 取到虚空 y,bot 传进去 79 ticks 坠到 -206,LOW_HP+工具闸假错全是坠落次生噪声,
+        // 即 mining 套件 obsidian"套件顺序污染"的真身)。直接硬造 y=32 实验室平面,确定性优先。
+        if (anchor == null || anchor.getY() <= world.getBottomY() + 8) {
+            anchor = new BlockPos(baseX, 32, 0);
         }
-        bot.teleport(world, anchor.getX() + 0.5D, anchor.getY(), anchor.getZ() + 0.5D,
-                java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
-        BlockPos origin = bot.getBlockPos();
+        BlockPos origin = anchor;
         // 实验室化:轮转地块的天然地形(湖/坡/洞/沙)让确定性回归变抽卡——同一场景红绿每轮洗牌
         //(实测挖石族在湖边泡死、矿场景 need_planks/no_progress 轮换)。场景区整体替换为人造平台:
         // floor 之下 16 格实心石(挖矿/下挖全程吃人造石,不穿进天然含水层),上方 8 格清空。
@@ -2026,6 +2027,10 @@ public final class AIBotVerifySubcommand {
         for (BlockPos pos : BlockPos.iterate(origin.add(-4, -1, -4), origin.add(4, -1, 4))) {
             world.setBlockState(pos, Blocks.COBBLESTONE.getDefaultState(), Block.NOTIFY_ALL);
         }
+        // 先铺平台后传送:反过来 bot 会在未铺区里有 1+ tick 坠落窗口(虚空列直接自由落体)。
+        bot.teleport(world, origin.getX() + 0.5D, origin.getY(), origin.getZ() + 0.5D,
+                java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+        bot.fallDistance = 0.0F;
         bot.getActionPack().stopAll();
     }
 

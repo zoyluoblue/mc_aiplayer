@@ -81,7 +81,9 @@ public final class BuildAction {
             return ActionResult.failed("not_block_item");
         }
         var item = stack.getItem();
-        if (!player.getServerWorld().getBlockState(pos).isAir()) {
+        var existing = player.getServerWorld().getBlockState(pos);
+        // 可替换格(流体源/草丛等)放行:封岩浆就是对浆格直接放块,原版玩家合法操作。
+        if (!existing.isAir() && !existing.isReplaceable()) {
             return ActionResult.failed("target_not_air");
         }
         player.getServerWorld().setBlockState(pos, blockItem.getBlock().getDefaultState(), 3);

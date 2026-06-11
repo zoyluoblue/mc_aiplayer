@@ -232,16 +232,24 @@ public final class OreDigTask extends AbstractTask {
                 if (!miningTarget) {
                     BlockPos lava = adjacentLavaOf(world, targetOre);
                     if (lava != null) {
-                        if (io.github.zoyluo.aibot.action.MaterialPalette.pickAnyBlockSlot(bot).isEmpty()) {
+                        var blockSlot = io.github.zoyluo.aibot.action.MaterialPalette.pickAnyBlockSlot(bot);
+                        if (blockSlot.isEmpty()) {
                             BotLog.action(bot, "ore_dig_lava_unsealable", "ore", targetOre.toShortString());
                             excludeOre(bot, targetOre);
                             targetOre = null;
                             return;
                         }
                         if (bot.getEyePos().squaredDistanceTo(lava.toCenterPos()) <= REACH_SQUARED) {
-                            if (!io.github.zoyluo.aibot.action.BuildAction.placeBlockAt(bot, lava).isFailed()) {
+                            // 放置走主手:镐在手时对浆格交互被原版判 PASS 静默吞掉
+                            //(geo_lava 实测 80 ticks 零放置日志,封堵纹丝不动直到接近超时弃矿)。
+                            io.github.zoyluo.aibot.action.InventoryAction.equipFromSlot(bot, blockSlot.getAsInt());
+                            var sealResult = io.github.zoyluo.aibot.action.BuildAction.placeBlockAt(bot, lava);
+                            if (!sealResult.isFailed()) {
                                 BotLog.action(bot, "ore_dig_lava_seal", "sealed", lava.toShortString());
                                 lastProgressTick = elapsed; // 封堵也是进展
+                            } else {
+                                BotLog.action(bot, "ore_dig_seal_fail",
+                                        "lava", lava.toShortString(), "reason", sealResult.reason());
                             }
                         } else if (bot.getActionPack().isPathExecutorIdle()) {
                             bot.getActionPack().startDigPathTo(targetOre.down()); // 贴近到封得着

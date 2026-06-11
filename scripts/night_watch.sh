@@ -20,9 +20,18 @@ for round in $(seq 1 "$ROUNDS"); do
     line=$(SEED="$SEED" bash scripts/food_test.sh "$suite" 2400 2>/dev/null | grep -E "\[AIBot Verify\] summary" | tail -1)
     summary="${line#*summary }"
     echo "- $suite: ${summary:-NO_RESULT(server异常,查 /tmp/mc_test_${suite}_*.log)}"
+    LOG=$(ls -t /tmp/mc_test_${suite}_*.log 2>/dev/null | head -1)
     # 失败用例的存档日志路径附在报告里,起床直接取证
     if echo "$summary" | grep -q "FAIL"; then
-      echo "  - 日志: $(ls -t /tmp/mc_test_${suite}_*.log 2>/dev/null | head -1)"
+      echo "  - 日志: $LOG"
+    fi
+    # 挖矿效率基准(P3):按任务类型汇总耗时 ticks——跨夜对比抓"没红但变慢"的隐性退化
+    if [ "$suite" = "mining" ] && [ -n "${LOG:-}" ]; then
+      bench=$(grep -aE "TASK event=task_completed" "$LOG" 2>/dev/null \
+        | grep -aoE "name=[a-z_]+|elapsed_ticks=[0-9]+" \
+        | paste - - \
+        | awk -F'[=\t]' '{sum[$2]+=$4; n[$2]++} END {for(k in sum) printf "%s=%d(x%d) ", k, sum[k]/n[k], n[k]}')
+      echo "  - 任务均耗时(ticks): ${bench:-n/a}"
     fi
   done
   echo ""

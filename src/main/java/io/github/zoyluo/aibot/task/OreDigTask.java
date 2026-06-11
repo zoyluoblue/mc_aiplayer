@@ -237,11 +237,11 @@ public final class OreDigTask extends AbstractTask {
                 // 独立封堵阶段:岩浆格可能比矿远一格,刚进 reach 时够不着 → 继续贴近(向矿正下走),
                 // 够着了用低值方块替换岩浆源(一 tick 一格);没块可封才安全弃挖(命比矿值钱)。
                 if (!miningTarget) {
-                    BlockPos lava = adjacentLavaOf(world, targetOre);
+                    BlockPos lava = adjacentDangerFluidOf(world, targetOre);
                     if (lava != null) {
                         var blockSlot = io.github.zoyluo.aibot.action.MaterialPalette.pickAnyBlockSlot(bot);
                         if (blockSlot.isEmpty()) {
-                            BotLog.action(bot, "ore_dig_lava_unsealable", "ore", targetOre.toShortString());
+                            BotLog.action(bot, "ore_dig_fluid_unsealable", "ore", targetOre.toShortString());
                             excludeOre(bot, targetOre);
                             targetOre = null;
                             return;
@@ -252,7 +252,7 @@ public final class OreDigTask extends AbstractTask {
                             io.github.zoyluo.aibot.action.InventoryAction.equipFromSlot(bot, blockSlot.getAsInt());
                             var sealResult = io.github.zoyluo.aibot.action.BuildAction.placeBlockAt(bot, lava);
                             if (!sealResult.isFailed()) {
-                                BotLog.action(bot, "ore_dig_lava_seal", "sealed", lava.toShortString());
+                                BotLog.action(bot, "ore_dig_fluid_seal", "sealed", lava.toShortString());
                                 lastProgressTick = elapsed; // 封堵也是进展
                             } else {
                                 BotLog.action(bot, "ore_dig_seal_fail",
@@ -538,7 +538,7 @@ public final class OreDigTask extends AbstractTask {
 
     // 接近落点:常规=矿正下(执行器顺手挖,少走一步);贴岩浆=反岩浆侧水平邻位(安全封堵位)。
     private static BlockPos approachGoalFor(ServerWorld world, BlockPos ore) {
-        BlockPos lava = adjacentLavaOf(world, ore);
+        BlockPos lava = adjacentDangerFluidOf(world, ore);
         if (lava == null) {
             return ore.down();
         }
@@ -550,10 +550,13 @@ public final class OreDigTask extends AbstractTask {
         return ore.offset(away);
     }
 
-    private static BlockPos adjacentLavaOf(ServerWorld world, BlockPos pos) {
+    // 危险流体(岩浆|水)统一:水虽不烧人,但挖开矿的瞬间涌入会推走 bot 和掉落物、淹没巷道,
+    // 接近监控反复超时弃矿(深层含水矿高发)。封堵语义与岩浆完全一致——放块替换源。
+    private static BlockPos adjacentDangerFluidOf(ServerWorld world, BlockPos pos) {
         for (Direction d : Direction.values()) {
             BlockPos side = pos.offset(d);
-            if (world.getFluidState(side).isIn(FluidTags.LAVA)) {
+            var fs = world.getFluidState(side);
+            if (fs.isIn(FluidTags.LAVA) || fs.isIn(FluidTags.WATER)) {
                 return side;
             }
         }

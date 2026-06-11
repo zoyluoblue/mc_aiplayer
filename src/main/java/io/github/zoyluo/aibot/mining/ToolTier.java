@@ -105,16 +105,23 @@ public final class ToolTier {
             return true;
         }
         for (ItemStack stack : bot.getInventory().main) {
-            if (!stack.isEmpty() && stack.isSuitableFor(state)) {
+            if (!stack.isEmpty() && stack.isSuitableFor(state) && !nearlyBroken(stack)) {
                 return true;
             }
         }
         for (ItemStack stack : bot.getInventory().offHand) {
-            if (!stack.isEmpty() && stack.isSuitableFor(state)) {
+            if (!stack.isEmpty() && stack.isSuitableFor(state) && !nearlyBroken(stack)) {
                 return true;
             }
         }
         return false;
+    }
+
+    // 耐久闸:剩 1 耐久的镐视作没有——挖矿半路镐碎了才发现是最差时机(空手对深层矿干瞪眼),
+    // 提前一格触发 need_better_tool,GoalExecutor 既有 replan 链就地取材补新镐。与 ToolSelector
+    // 的"近耗尽评分 0.001"同一阈值,两层口径一致。
+    private static boolean nearlyBroken(ItemStack stack) {
+        return stack.isDamageable() && stack.getDamage() >= stack.getMaxDamage() - 1;
     }
 
     private static Item pickaxeItem(int tier) {

@@ -56,13 +56,21 @@ public final class OreScan {
                 continue;
             }
             result.add(current);
-            for (Direction direction : Direction.values()) {
-                BlockPos next = current.offset(direction).toImmutable();
-                if (!seen.add(next)) {
-                    continue;
-                }
-                if (world.getBlockState(next).isOf(seedBlock)) {
-                    open.addLast(next);
+            // 26 邻泛洪:MC 矿脉生成常以斜对角连接(同簇噪声),只查 6 面邻会把一条脉拦腰漏一半。
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dz = -1; dz <= 1; dz++) {
+                        if (dx == 0 && dy == 0 && dz == 0) {
+                            continue;
+                        }
+                        BlockPos next = current.add(dx, dy, dz).toImmutable();
+                        if (!seen.add(next)) {
+                            continue;
+                        }
+                        if (world.getBlockState(next).isOf(seedBlock)) {
+                            open.addLast(next);
+                        }
+                    }
                 }
             }
         }

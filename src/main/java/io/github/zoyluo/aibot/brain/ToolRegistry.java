@@ -633,6 +633,19 @@ public final class ToolRegistry {
             return ok("assigned: " + task.name());
         });
 
+        register("recover_drops", "Run back to the most recent death location and pick up dropped items before they despawn (5 min)", objectSchema()
+                .build(), ToolDefinition.Group.MEMORY, (bot, args) -> {
+            var deaths = io.github.zoyluo.aibot.memory.EpisodeLog.INSTANCE
+                    .recentOfType(bot.getUuid(), io.github.zoyluo.aibot.memory.EpisodeLog.Type.DEATH, 1);
+            if (deaths.isEmpty()) {
+                return fail("no_recent_death");
+            }
+            var death = deaths.get(0);
+            Task task = new io.github.zoyluo.aibot.task.RecoverDropsTask(death.pos(), death.gameTick());
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: recover_drops -> " + death.pos().toShortString());
+        });
+
         register("set_goal", "Set a persistent long-term goal with ordered steps. Steps should be an array of short strings.", objectSchema()
                 .property("title", stringSchema("goal title"))
                 .property("steps", arrayOfStringsSchema("ordered goal steps"))

@@ -62,11 +62,27 @@ public final class DangerWatcher {
     public boolean scanBot(MinecraftServer server, AIPlayerEntity bot) {
         // SAFE-DEAD:死亡的 bot 不再无限派 evade(僵尸循环)。满血复活到地表,清任务/计划,中文告知。
         if (bot.getHealth() <= 0.0F || !bot.isAlive()) {
+            BlockPos deathPos = bot.getBlockPos();
+            long deathTick = server.getTicks();
             AIPlayerManager.INSTANCE.respawnDeadBot(bot);
             TaskManager.INSTANCE.abort(bot);
             io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.clear(bot);
-            BrainCoordinator.INSTANCE.sendPanelChat(bot, "system",
-                    bot.getGameProfile().getName() + " 死亡后已自动复活到地面。");
+            // 死亡找回反射:装备掉在死亡点(5 分钟 despawn),真实玩家第一反应就是跑尸。
+            // 自动出发的两个闸:①重生点离死亡点 ≤160(太远赶不上白跑);②死亡点不在危险区
+            // (同区两死记忆会立牌——记忆劝阻就听劝,别第三次送死,装备认亏)。
+            boolean nearEnough = bot.getBlockPos().isWithinDistance(deathPos, 160.0D);
+            boolean dangerous = io.github.zoyluo.aibot.memory.KnowledgeBase.INSTANCE
+                    .isDanger(bot.getUuid(), deathPos);
+            if (nearEnough && !dangerous) {
+                TaskManager.INSTANCE.assign(bot, new RecoverDropsTask(deathPos, deathTick));
+                BrainCoordinator.INSTANCE.sendPanelChat(bot, "system",
+                        bot.getGameProfile().getName() + " 死亡后已复活,正赶回 "
+                                + deathPos.toShortString() + " 找回掉落装备。");
+            } else {
+                BrainCoordinator.INSTANCE.sendPanelChat(bot, "system",
+                        bot.getGameProfile().getName() + " 死亡后已自动复活到地面。"
+                                + (dangerous ? "(死亡点已是危险区,放弃跑尸)" : ""));
+            }
             return true;
         }
         Optional<Threat> threat = collectTopThreat(bot);

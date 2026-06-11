@@ -633,6 +633,36 @@ public final class ToolRegistry {
             return ok("assigned: " + task.name());
         });
 
+        register("resume_mining", "Continue mining where the last mining session left off: walks back to the remembered mine face and mines the same ore kinds. Use when the player says things like '继续挖矿'/'接着挖'.", objectSchema()
+                .property("count", integerSchema("how many more ore blocks to mine, default 8"))
+                .build(), (bot, args) -> {
+            var mem = BotMemoryStore.INSTANCE.of(bot.getUuid());
+            var face = mem.place("mine_face");
+            if (face.isEmpty()) {
+                return fail("no_mine_face: 没有上次挖矿的作业面记录");
+            }
+            if (!bot.getServerWorld().getRegistryKey().getValue().toString().equals(face.get().dimension())) {
+                return fail("mine_face_in_other_dimension");
+            }
+            java.util.Set<net.minecraft.block.Block> ores = new java.util.HashSet<>();
+            mem.recall("mine_face_ores").ifPresent(csv -> {
+                for (String id : csv.split(",")) {
+                    var block = net.minecraft.registry.Registries.BLOCK
+                            .get(net.minecraft.util.Identifier.of(id.trim()));
+                    if (block != net.minecraft.block.Blocks.AIR) {
+                        ores.add(block);
+                    }
+                }
+            });
+            // 队列接力:先走回作业面,再原矿种续挖(goal 队列自动衔接,中途打断也能再续)。
+            Task back = new MoveTask(bot, face.get().pos());
+            TaskManager.INSTANCE.assign(bot, back);
+            GoalExecutor.INSTANCE.submit(bot, new Goal.MineOre(
+                    ores.isEmpty() ? java.util.Set.of(net.minecraft.block.Blocks.IRON_ORE) : ores,
+                    optionalInt(args, "count", 8)));
+            return ok("resuming at " + face.get().pos().toShortString());
+        });
+
         register("mine_and_stockpile", "Mine ores then deposit the yield into a chest near the remembered base. Use when the player wants mined goods stored, not carried.", objectSchema()
                 .property("ore", stringSchema("ore block id or raw item, e.g. minecraft:iron_ore"))
                 .property("count", integerSchema("how many ore blocks to mine"))

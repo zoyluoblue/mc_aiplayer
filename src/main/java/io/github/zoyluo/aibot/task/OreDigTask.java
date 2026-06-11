@@ -125,12 +125,27 @@ public final class OreDigTask extends AbstractTask {
         lastProgressTick = 0;
         pickupGrace = 0;
         targetOre = null;
+        // R6 入口地标:开挖处自动 mark(goto_place mine_entry 一步回来;玩家问'矿洞在哪'也答得出)。
+        io.github.zoyluo.aibot.memory.BotMemoryStore.INSTANCE.of(bot.getUuid())
+                .markPlace("mine_entry", bot.getServerWorld(), bot.getBlockPos());
     }
 
     @Override
     protected void onAbort(AIPlayerEntity bot) {
+        markMineFace(bot);
         miner.cancel(bot);
         bot.getActionPack().stopAll();
+    }
+
+    // R6/R7 作业面地标:任务结束处=下次续挖起点。矿种一并 remember,resume_mining 免问。
+    private void markMineFace(AIPlayerEntity bot) {
+        var mem = io.github.zoyluo.aibot.memory.BotMemoryStore.INSTANCE.of(bot.getUuid());
+        mem.markPlace("mine_face", bot.getServerWorld(), bot.getBlockPos());
+        String ores = targetOres.stream()
+                .map(b -> net.minecraft.registry.Registries.BLOCK.getId(b).toString())
+                .sorted()
+                .collect(java.util.stream.Collectors.joining(","));
+        mem.remember("mine_face_ores", ores);
     }
 
     @Override
@@ -169,6 +184,7 @@ public final class OreDigTask extends AbstractTask {
             HarvestCore.sweepPickupAnyOf(bot, targetDrops, 16);
             if (pickupGrace++ >= PICKUP_GRACE_TICKS
                     || HarvestCore.countInventoryItems(bot, targetDrops) - invBaseline >= targetCount) {
+                markMineFace(bot);
                 complete();
             }
             return;

@@ -90,7 +90,13 @@ public final class RecoverDropsTask extends AbstractTask {
         if (arrivedTick >= 0) {
             HarvestCore.sweepPickupAnyOf(bot, null, 10.0D, 6);
             if (elapsed - arrivedTick >= PICKUP_WINDOW) {
-                BotLog.action(bot, "recover_drops_done", "at", deathPos.toShortString());
+                // 掉落物雷达:窗口结束时还有多少没捡走(=0 才算真干净;>0 说明捡取被什么拦了)
+                var leftovers = bot.getServerWorld().getEntitiesByClass(
+                        net.minecraft.entity.ItemEntity.class,
+                        bot.getBoundingBox().expand(32.0D, 16.0D, 32.0D), e -> true);
+                BotLog.action(bot, "recover_drops_done", "at", deathPos.toShortString(),
+                        "leftover", leftovers.size(),
+                        "nearest", leftovers.isEmpty() ? "-" : leftovers.get(0).getBlockPos().toShortString());
                 complete();
             }
             return;

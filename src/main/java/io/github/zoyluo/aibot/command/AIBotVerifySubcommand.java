@@ -135,7 +135,7 @@ public final class AIBotVerifySubcommand {
             "geo_lava",
             "geo_gravel",
             "geo_fullinv",
-            "geo_rich", "geo_water", "geo_recover", "geo_bonus", "geo_stockpile");
+            "geo_rich", "geo_water", "geo_recover", "geo_bonus", "geo_stockpile", "geo_resume");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
@@ -153,7 +153,8 @@ public final class AIBotVerifySubcommand {
             "achieve_iron_pickaxe",
             "achieve_diamond",
             "geo_recover",
-            "geo_stockpile");
+            "geo_stockpile",
+            "geo_resume");
 
     // 食物回归套件:一条命令 /aibot verify food_suite 跑完所有食物/种田相关场景。
     // 覆盖五条食物途径:打猎+烤(food/food_full)、种田做面包(food_farm)、觅食(forage)、
@@ -299,7 +300,11 @@ public final class AIBotVerifySubcommand {
         List<String> features = new ArrayList<>();
         for (String raw : requested) {
             String feature = raw.toLowerCase(java.util.Locale.ROOT);
-            if ("all".equals(feature)) {
+            if (feature.contains("+")) {
+                // 加号组合:任意场景/套件串成一跑(诊断'单跑 PASS 套跑 FAIL'的顺序污染对最常用;
+                // Brigadier word() 字符集不含逗号,故用 +)。
+                features.addAll(expandFeatures(java.util.Arrays.asList(feature.split("\\+"))));
+            } else if ("all".equals(feature)) {
                 features.addAll(ALL_FEATURES);
             } else if ("mining".equals(feature)) {
                 features.addAll(MINING_SUITE); // 挖矿回归套件别名
@@ -411,6 +416,7 @@ public final class AIBotVerifySubcommand {
             case "geo_recover" -> assignGeoRecover(bot);
             case "geo_bonus" -> assignGeoBonus(bot);
             case "geo_stockpile" -> assignGeoStockpile(bot);
+            case "geo_resume" -> assignGeoResume(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
     }
@@ -1716,6 +1722,40 @@ public final class AIBotVerifySubcommand {
         });
     }
 
+    // 续挖(R6/R7):预置 mine_face 地标+矿种记忆于 35 格外(矿就埋在作业面旁),复刻 resume_mining
+    // 工具体(MoveTask 回面+MineOre 排队),断言走回去挖到矿——验证地标记忆与任务/目标衔接语义。
+    private static Result assignGeoResume(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin);
+        InventoryAction.giveItem(bot, new ItemStack(Items.STONE_PICKAXE, 1));
+        // 作业面:东 35 格,走廊保通,面旁嵌 2 铁矿
+        BlockPos face = origin.add(35, 0, 0);
+        for (int dx = 0; dx <= 37; dx++) {
+            for (int dz = -2; dz <= 2; dz++) {
+                world.setBlockState(origin.add(dx, -1, dz), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                for (int dy = 0; dy <= 2; dy++) {
+                    world.setBlockState(origin.add(dx, dy, dz), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                }
+            }
+        }
+        world.setBlockState(face.add(1, 0, 1), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(face.add(1, 0, -1), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        var mem = io.github.zoyluo.aibot.memory.BotMemoryStore.INSTANCE.of(bot.getUuid());
+        mem.markPlace("mine_face", world, face);
+        mem.remember("mine_face_ores", "minecraft:iron_ore");
+        // 复刻 resume_mining 工具体
+        TaskManager.INSTANCE.assign(bot, new io.github.zoyluo.aibot.task.MoveTask(bot, face));
+        GoalExecutor.INSTANCE.submit(bot,
+                new Goal.MineOre(java.util.Set.of(Blocks.IRON_ORE), 2));
+        final int deathBase = deathCount(bot);
+        return Result.running("geo_resume", 4800,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.RAW_IRON) >= 2
+                        && deathCount(bot) == deathBase);
+    }
+
     // 死亡找回(R1):带高辨识物资被一击致死,断言重生反射自动跑尸、despawn 前把铁锭捡回背包。
     // 灯下黑校验项:掉落确实生成(本 mod respawn 不恢复背包,原版 dropInventory 掉在死亡点)。
     private static Result assignGeoRecover(AIPlayerEntity bot) {
@@ -2126,7 +2166,10 @@ public final class AIBotVerifySubcommand {
         // 兜底不赌 heightmap:轮转列可能整片不可用(海面/裂谷/heightmap 空——实测 x=640 列 obsidian
         // 场景 fallback 取到虚空 y,bot 传进去 79 ticks 坠到 -206,LOW_HP+工具闸假错全是坠落次生噪声,
         // 即 mining 套件 obsidian"套件顺序污染"的真身)。直接硬造 y=32 实验室平面,确定性优先。
-        if (anchor == null || anchor.getY() <= world.getBottomY() + 8) {
+        // y>200 拒锚:历史场景的高空实验平台(y250)残骸会顶高 heightmap,spiral 把残骸当"地表"
+        // 选进来,后续场景建在豆腐渣上(geo_resume 实测 bot 半路坠落到天然层)。测试世界天然地形
+        // 不过百,>200 必是残骸。
+        if (anchor == null || anchor.getY() <= world.getBottomY() + 8 || anchor.getY() > 200) {
             anchor = new BlockPos(baseX, 32, 0);
         }
         BlockPos origin = anchor;

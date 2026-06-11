@@ -155,6 +155,10 @@ public final class OreDigTask extends AbstractTask {
             collected = total;
             lastProgressTick = elapsed;
             BotLog.action(bot, "ore_dig_collected", "total", collected + "/" + targetCount);
+            // P2 进度播报:挖到就说一声(面板可见),贵重矿尤其有"报喜"的真实感。
+            io.github.zoyluo.aibot.brain.BotReporter.INSTANCE.onGoalMessage(bot,
+                    "挖到了!" + io.github.zoyluo.aibot.craft.ItemNames.cn(targetDrops.iterator().next())
+                    + " " + collected + "/" + targetCount);
         }
         if (collected >= targetCount) {
             miner.cancel(bot);

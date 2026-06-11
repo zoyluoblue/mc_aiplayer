@@ -212,12 +212,19 @@ public final class OreDigTask extends AbstractTask {
             if (dist2 < lastTargetDist - 0.25D) {
                 lastTargetDist = dist2;
                 targetApproachTick = elapsed;
+                // 接近也是进展:远矿 DIG 接近一格一挖,16 格隧道就要 ~190t,只认"挖到矿"的
+                // no_progress(200t)会把正常长接近误杀在半路(geo_rich 单跑实测 dist 16→停在 201t)。
+                lastProgressTick = elapsed;
             } else if (elapsed - targetApproachTick > APPROACH_LIMIT) {
                 excludeOre(bot, targetOre);
                 BotLog.action(bot, "ore_dig_unreachable_skip",
                         "pos", targetOre.getX() + "," + targetOre.getY() + "," + targetOre.getZ());
                 targetOre = null;
                 lastTargetDist = Double.MAX_VALUE;
+                // 主动换目标是决策性进展:嵌深处的天然矿可能要连排除好几块才轮到可达矿/富区兜底,
+                // 不刷进度的话 no_progress(200t)会在合理轮换中途误杀任务。真卡死(同矿反复
+                // reject 不 skip)不会走到这,看门狗照常生效。
+                lastProgressTick = elapsed;
                 return;
             }
             // 挖掘锁定:已对这块矿开挖就继续挖完,不管当前是否仍在 reach 内——bot 站在阶梯上微移会让
@@ -336,16 +343,26 @@ public final class OreDigTask extends AbstractTask {
             return;
         }
         // 探矿也没有 → 先问知识库富矿区(以前总在那挖到的地方,128 格内、≥3 点聚在 24 格):
-        // 有则当 prospected 目标走过去——"记得哪里矿多"比盲目掘进省一个数量级的时间。
+        // 簇心是"资源点坐标"不是矿格——当 targetOre 用会被"矿没了"分支秒清成死循环(实测每秒
+        // 重触发原地打转)。正确语义=导航去富区,人到了近距扫描自然接管;到了还没矿说明记忆过期,
+        // 销掉这片资源点换下一策略。
         for (Block oreBlock : targetOres) {
             String oreId = net.minecraft.registry.Registries.BLOCK.getId(oreBlock).toString();
             var rich = io.github.zoyluo.aibot.memory.KnowledgeBase.INSTANCE
                     .richZoneNear(bot.getUuid(), oreId, bot.getBlockPos(), 128, 3, 24);
             if (rich.isPresent() && !oreExcluded(bot, rich.get())) {
-                targetOre = rich.get();
-                lastTargetDist = Double.MAX_VALUE;
-                targetApproachTick = elapsed;
-                BotLog.action(bot, "ore_dig_rich_zone", "to", rich.get().toShortString());
+                BlockPos zone = rich.get();
+                if (bot.getBlockPos().isWithinDistance(zone, 16)) {
+                    io.github.zoyluo.aibot.memory.KnowledgeBase.INSTANCE
+                            .invalidateResource(bot.getUuid(), zone);
+                    BotLog.action(bot, "ore_dig_rich_zone_stale", "at", zone.toShortString());
+                } else if (bot.getActionPack().isPathExecutorIdle()) {
+                    // walk 优先(startPathTo 两阶段):富区常在百格级,大预算 DIG 单阶段 50ms 必
+                    // TIMEOUT→每个冷却期重发一次失败寻路,原地风暴到超时(实测每秒 2 发零移动)。
+                    bot.getActionPack().startPathTo(zone);
+                    BotLog.action(bot, "ore_dig_rich_zone", "to", zone.toShortString());
+                    lastProgressTick = elapsed; // 启程也是进展
+                }
                 return;
             }
         }
@@ -365,6 +382,18 @@ public final class OreDigTask extends AbstractTask {
             return;
         }
         stripStepsLeft--;
+        // 定距插火把(真实玩家 strip 标准操作):光照 <8 的巷道刷怪,不照明等于给自己挖刷怪走廊。
+        // 每 10 格一支、光照不足才插、有火把才插——照明是增益不是前置,缺火把不阻塞掘进。
+        if (stripStepsLeft % 10 == 0
+                && world.getLightLevel(net.minecraft.world.LightType.BLOCK, bot.getBlockPos()) < 8) {
+            var torchSlot = io.github.zoyluo.aibot.action.InventoryAction.findItem(bot, net.minecraft.item.Items.TORCH);
+            if (torchSlot.isPresent()) {
+                io.github.zoyluo.aibot.action.InventoryAction.equipFromSlot(bot, torchSlot.getAsInt());
+                if (!io.github.zoyluo.aibot.action.BuildAction.placeBlockAt(bot, bot.getBlockPos()).isFailed()) {
+                    BotLog.action(bot, "ore_dig_torch", "pos", bot.getBlockPos().toShortString());
+                }
+            }
+        }
         Direction dir = STRIP_DIRS[stripDirIndex];
         digTowardStep(bot, world, bot.getBlockPos().offset(dir, 2)); // 复用掘进原语:挖脚位+头位→走进去
     }
@@ -544,7 +573,11 @@ public final class OreDigTask extends AbstractTask {
             return null;
         }
         lastProspectTick = now;
-        return OreProspector.nearest(world, bot.getBlockPos(), targetOres, PROSPECT_RANGE);
+        // 拉黑过滤:不带 posFilter 时,unreachable_skip 刚排除的矿会被 prospect 原样再选——
+        // skip→prospect→同矿→skip 死循环直到 no_progress(geo_rich 套跑实测 637,47,-11 五连)。
+        return OreProspector.nearest(world, bot.getBlockPos(), PROSPECT_RANGE,
+                state -> OreScan.isOre(state, targetOres),
+                p -> !oreExcluded(bot, p));
     }
 
     private BlockPos nearestOre(AIPlayerEntity bot, ServerWorld world) {

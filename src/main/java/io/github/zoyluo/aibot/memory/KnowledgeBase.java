@@ -173,6 +173,16 @@ public final class KnowledgeBase {
         return false;
     }
 
+    /** 测试隔离:清掉该 bot 的全部知识。套件互染实锤:前 9 个挖矿场景的资源点让 richZoneNear
+     * 把 geo_rich 的富区导向拐去早挖空的废区(套跑 FAIL 单跑 PASS)。真实使用不走此口,知识照常持久。 */
+    public void resetFor(UUID botId) {
+        BotKnowledge k = of(botId);
+        k.resources.clear();
+        k.dangers.clear();
+        k.lessons.clear();
+        save(botId, k);
+    }
+
     public void invalidateResource(UUID botId, BlockPos pos) {
         BotKnowledge k = of(botId);
         if (k.resources.removeIf(r -> r.pos().isWithinDistance(pos, 4))) {

@@ -1524,9 +1524,11 @@ public final class AIBotVerifySubcommand {
                 }
                 world.setBlockState(origin.add(7, 1, 0), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
             }
-            // 深层斜下:矿在斜下方 6 格(深板岩铁矿,考验斜向下挖)
+            // 深层斜下:矿在斜下方 6 格(深板岩铁矿,考验斜向下挖)。火把给足:strip 巷道定距照明
+            // (ore_dig_torch)在这行顺带验证——黑暗巷道里每 10 格该见一支。
             case "deep" -> {
                 world.setBlockState(origin.add(4, -6, 4), Blocks.DEEPSLATE_IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+                InventoryAction.giveItem(bot, new ItemStack(Items.TORCH, 16));
             }
             // P0 验证·岩浆邻接:全包裹矿的东面贴一格岩浆源——预检该让 A* 从北/南/上等安全面进,
             // 挖错面=岩浆涌入烧死(零死亡断言抓)。
@@ -1590,6 +1592,11 @@ public final class AIBotVerifySubcommand {
         BlockPos origin = bot.getBlockPos();
         clearNearbyMobs(world, origin);
         InventoryAction.giveItem(bot, new ItemStack(Items.STONE_PICKAXE, 1));
+        // 高空实验室:场景前提是"prospect 64 球真无矿"(逼出富区导向),但天然世界铁矿无处不在,
+        // 灭矿圈扩两轮(±12→±24)都被圈外矿截胡(三轮实测:645,41/637,47/77,41 轮番)。高空平台
+        // 天然零矿,前提物理成立。绝对 y(非相对 up):上一轮的平台会顶高 heightmap,相对抬升
+        // 一轮叠一轮直撞世界顶(实测 186→306)。
+        origin = new BlockPos(origin.getX(), 250, origin.getZ());
         // 富区:80 格外,3 个资源点记忆(20 格内成簇)+真矿一块;沿途铺石走廊保通(贫瘠带,64 格内无矿)
         BlockPos rich = origin.add(80, 0, 0);
         for (int dx = 0; dx <= 82; dx++) {
@@ -1601,6 +1608,10 @@ public final class AIBotVerifySubcommand {
             }
         }
         world.setBlockState(rich, Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        // 平台铺完才上人(先铺后传,防坠落窗口)
+        bot.teleport(world, origin.getX() + 0.5D, origin.getY(), origin.getZ() + 0.5D,
+                java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+        bot.fallDistance = 0.0F;
         io.github.zoyluo.aibot.memory.EpisodeLog log = io.github.zoyluo.aibot.memory.EpisodeLog.INSTANCE;
         log.record(bot, io.github.zoyluo.aibot.memory.EpisodeLog.Type.RESOURCE_FOUND, rich.add(0, 0, 10), "minecraft:iron_ore");
         log.record(bot, io.github.zoyluo.aibot.memory.EpisodeLog.Type.RESOURCE_FOUND, rich.add(10, 0, 0), "minecraft:iron_ore");
@@ -2031,6 +2042,10 @@ public final class AIBotVerifySubcommand {
         bot.teleport(world, origin.getX() + 0.5D, origin.getY(), origin.getZ() + 0.5D,
                 java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
         bot.fallDistance = 0.0F;
+        // 记忆层隔离:情景流+语义知识跨场景互染(前面挖矿场景的资源点把 geo_rich 富区导向拐去废区,
+        // 残留情景让蒸馏去重拦截预热点)。确定性测试逐场景清;真实使用不走这里,知识照常持久。
+        io.github.zoyluo.aibot.memory.EpisodeLog.INSTANCE.clearFor(bot.getUuid());
+        io.github.zoyluo.aibot.memory.KnowledgeBase.INSTANCE.resetFor(bot.getUuid());
         bot.getActionPack().stopAll();
     }
 

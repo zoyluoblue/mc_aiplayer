@@ -1593,9 +1593,12 @@ public final class AIBotVerifySubcommand {
                         }
                     }
                 }
-                // 水箱:x=5..6, z=0..1, y=1..2 灌源(四周石壁已就位)
+                // 水箱:x=5..6, z=2..3 贴墙侧位(四周石壁已就位)。考题=主路侧旁有暗湖,
+                // 掘进路过不被勾引/封堵不乱触发——z=0 直线仍可达矿。原 z=0..1 正压主路:
+                // 预检"邻位无流体"会把 z=-1 贴箱列也全拒,A* 需绕 z=-2,80t 接近闸内
+                // 常走不完(轮3b 实测 silent skip),考题失真为"绕行竞速"。
                 for (int dx = 5; dx <= 6; dx++) {
-                    for (int dz = 0; dz <= 1; dz++) {
+                    for (int dz = 2; dz <= 3; dz++) {
                         for (int dy = 1; dy <= 2; dy++) {
                             world.setBlockState(origin.add(dx, dy, dz), Blocks.WATER.getDefaultState(), Block.NOTIFY_ALL);
                         }
@@ -1782,8 +1785,12 @@ public final class AIBotVerifySubcommand {
                 }
             }
         }
-        world.setBlockState(face.add(1, 0, 1), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
-        world.setBlockState(face.add(1, 0, -1), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        // 画布规则:矿至少 y+1——放地面层(y+0)时 approach goal=矿.down 落到唯一石板层之下的
+        // 虚空,支撑检查全拒 → TIMEOUT 连环 skip(轮4b 实测)。垫一格石头当矿座。
+        world.setBlockState(face.add(1, 0, 1), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(face.add(1, 0, -1), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(face.add(1, 1, 1), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(face.add(1, 1, -1), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
         var mem = io.github.zoyluo.aibot.memory.BotMemoryStore.INSTANCE.of(bot.getUuid());
         mem.markPlace("mine_face", world, face);
         mem.remember("mine_face_ores", "minecraft:iron_ore");
@@ -2268,6 +2275,14 @@ public final class AIBotVerifySubcommand {
         }
         for (BlockPos pos : BlockPos.iterate(origin.add(-4, -1, -4), origin.add(4, -1, 4))) {
             world.setBlockState(pos, Blocks.COBBLESTONE.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        // 护栏:画布四周是虚空,走动型场景(打猎/觅食/探索)会把 bot 带出边沿摔落天然层
+        // (food_full 实测 y211→65,坠落中放熔炉连环 no_place)。2 格石墙圈住;走廊型场景
+        // 自己的清空 setBlockState 会在墙上拆出门洞,互不妨碍。
+        for (BlockPos pos : BlockPos.iterate(origin.add(-16, 0, -16), origin.add(16, 1, 16))) {
+            if (Math.abs(pos.getX() - origin.getX()) == 16 || Math.abs(pos.getZ() - origin.getZ()) == 16) {
+                world.setBlockState(pos, Blocks.STONE.getDefaultState(), Block.NOTIFY_LISTENERS);
+            }
         }
         // 先铺平台后传送:反过来 bot 会在未铺区里有 1+ tick 坠落窗口(虚空列直接自由落体)。
         bot.teleport(world, origin.getX() + 0.5D, origin.getY(), origin.getZ() + 0.5D,

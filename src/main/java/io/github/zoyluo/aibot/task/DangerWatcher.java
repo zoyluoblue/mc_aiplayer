@@ -368,7 +368,9 @@ public final class DangerWatcher {
     // 与 idle 静止——挖矿/熔炼等有各自看门狗或属合理静止,先让它们 fail。检测到困死就 teleport 撤回
     // 地面 + 清当前目标 + 求助(节流)。牺牲当次目标换保命;回地面后大脑可重试(届时已备火把更安全)。
     private boolean maybeEscapeDarkTrap(MinecraftServer server, AIPlayerEntity bot, Optional<Task> active) {
-        if (active.isPresent() && !"move".equals(active.get().name())) {
+        // isWaiting=任务自报"原地作业是正常态":MoveTask 挖掘式直行破硬石时一站好几秒,
+        // 黑暗+同格被误判困死、被'救'上地面任务报废(nav 套件画布后实测两连 aborted)。
+        if (active.isPresent() && (!"move".equals(active.get().name()) || active.get().isWaiting())) {
             darkStuckRecords.remove(bot.getUuid());
             return false;
         }

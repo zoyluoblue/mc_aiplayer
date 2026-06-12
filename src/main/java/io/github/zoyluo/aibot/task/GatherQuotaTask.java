@@ -34,6 +34,17 @@ public final class GatherQuotaTask extends AbstractTask {
     //(如原木),再寻路走过去。专治"无树高原/恶劣地形"——roam 只在同片横移跨不出高原,prospect 能直接锁定山脚/远处的树。
     private static final int PROSPECT_RANGE = 96;
     private static final int PROSPECT_INTERVAL = 40; // 大范围扫描限频(2s 一次),护 TPS
+    // EXPLORE(定向走出去找):roam 的 28 格小步在真实地形上 8 方向乒乓、净位移≈0,survey 永远在同一片
+    // 打转(real_wood seed=20260610 实测:找不到/找到不可达树时原地循环到 6001t 超时)。EXPLORE 以
+    // 48/40/32 格大步跳点定向外推,最多 4 跳(~190 格);知识库记得资源点就朝记忆点走,否则罗盘盲探。
+    private static final int EXPLORE_MAX_HOPS = 4;
+    private static final double[] EXPLORE_HOP_DISTANCES = {48.0D, 40.0D, 32.0D};
+    private static final int[] EXPLORE_DEFLECTIONS_DEG = {0, 45, -45, 90, -90}; // 偏角序列:先沿航向,再左右扇形
+    private static final int EXPLORE_MOVE_LIMIT = 300;   // 单跳走 15s 还没到 → 弃跳回 SURVEY
+    private static final int EXPLORE_SCAN_INTERVAL = 20; // 途中轻扫限频(1s 一次,16 格),见目标即收手
+    private static final int EXPLORE_PATH_ATTEMPTS = 5;  // 单次选点最多实跑几次同步 A*(防单 tick 长卡)
+    private static final int KNOWN_RESOURCE_RANGE = 192; // 知识库记忆点导向的最大距离
+    private static final int GOTO_FAIL_EXCLUDE = 2;      // 同一目标 GOTO 连续走崩 N 次 → 工作记忆拉黑
 
     private enum Phase {
         SURVEY,
@@ -42,6 +53,7 @@ public final class GatherQuotaTask extends AbstractTask {
         PICKUP,
         DEPOSIT,
         ROAM,
+        EXPLORE,
         DONE
     }
 
@@ -73,6 +85,18 @@ public final class GatherQuotaTask extends AbstractTask {
     private BlockPos roamTarget;  // 漫游换片的落脚点(走过去,不 teleport)
     private int selfStuckTick;     // A:上次"采到新木"的 tick
     private int selfStuckCount;    // A:上次记录的已采数
+    // EXPLORE 状态:跳数额度(采到新东西即复位)、当前航向(弧度)、当前跳点、本跳起始 tick、
+    // 记忆点导向(知识库命中时朝它走,到场没货销账)、"自上次找到以来经历过探索"(控制 RESOURCE_FOUND 入流)、
+    // 途中轻扫限频;另两个是不可达拉黑:上一个 GOTO 目标 + 同目标连续走崩计数。
+    private int exploreHops;
+    private double exploreHeading;
+    private BlockPos exploreTarget;
+    private int exploreHopStartTick;
+    private BlockPos exploreHint;
+    private boolean exploredSinceFind;
+    private int lastExploreScanTick = -100;
+    private BlockPos lastGotoTarget;
+    private int gotoFailStreak;
 
     public GatherQuotaTask(Item targetItem, int targetCount) {
         this.targetItem = targetItem;
@@ -128,12 +152,14 @@ public final class GatherQuotaTask extends AbstractTask {
         }
         // A:采集自愈——只看"是否采到新木"(count 是否增长),不看位置。GOTO 缓慢挪动但久采不到(走不到树/
         // 砍不动)也算卡 → 及时漫游换片,而非缓慢耗到 gather_timeout(实测:采到 5 根后走不到剩下的、5min 超时被秒)。
-        if (phase != Phase.ROAM) {
+        if (phase != Phase.ROAM && phase != Phase.EXPLORE) {
             if (countSoFar != selfStuckCount) {
                 selfStuckCount = countSoFar;
                 selfStuckTick = elapsed;
-            } else if (elapsed - selfStuckTick > SELF_STUCK_LIMIT && roamToNewArea(bot)) {
-                return; // roamToNewArea 内已设 phase=ROAM(走过去换片),漫游中不再自检
+                exploreHops = 0;          // 采到新东西=这片有产出,探索跳数额度重置
+                exploredSinceFind = true; // 下次"探索后的发现"重新值得入流记忆
+            } else if (elapsed - selfStuckTick > SELF_STUCK_LIMIT && (roamToNewArea(bot) || startExplore(bot))) {
+                return; // 两者内部已设 phase=ROAM/EXPLORE(走过去换片/定向外探),移动中不再自检
             }
         }
         switch (phase) {
@@ -143,6 +169,7 @@ public final class GatherQuotaTask extends AbstractTask {
             case PICKUP -> pickup(bot);
             case DEPOSIT -> deposit(bot);
             case ROAM -> roamMove(bot);
+            case EXPLORE -> exploreMove(bot);
             case DONE -> complete();
         }
     }
@@ -328,6 +355,180 @@ public final class GatherQuotaTask extends AbstractTask {
         }
     }
 
+    // EXPLORE 起跳:定航向(知识库 192 格内记得同类资源 → 朝记忆点;否则罗盘盲探,避开刚走过的轨迹),
+    // 选一个 48/40/32 格外的跳点并寻路出发。跳数额度耗尽/选不出点返回 false(由 survey 的 fail 链定生死)。
+    private boolean startExplore(AIPlayerEntity bot) {
+        if (exploreHops >= EXPLORE_MAX_HOPS) {
+            return false;
+        }
+        var world = bot.getServerWorld();
+        BlockPos feet = bot.getBlockPos();
+        exploreHint = null;
+        boolean aimed = false;
+        // 记忆导向:语义知识库(跨会话)里最近的同类资源点 → 直奔(哪怕中途轻扫先截胡也赚)。
+        for (Block block : harvestBlocks) {
+            var known = io.github.zoyluo.aibot.memory.KnowledgeBase.INSTANCE.nearestResource(
+                    bot.getUuid(), Registries.BLOCK.getId(block).toString(), feet, KNOWN_RESOURCE_RANGE);
+            if (known.isPresent()) {
+                exploreHint = known.get().pos();
+                exploreHeading = Math.atan2(exploreHint.getZ() + 0.5D - bot.getZ(), exploreHint.getX() + 0.5D - bot.getX());
+                aimed = true;
+                break;
+            }
+        }
+        if (!aimed) {
+            // 盲探:8 个罗盘方向(45° 步)里取第一个"44 格外有地面落点且不在最近轨迹 16 格内"的航向。
+            // 全不合格就沿用当前航向(默认 0/上一跳方向),交给 pickExploreWaypoint 的偏角扇形兜底。
+            for (int i = 0; i < 8; i++) {
+                double heading = Math.toRadians(i * 45.0D);
+                int px = (int) Math.floor(bot.getX() + 44.0D * Math.cos(heading));
+                int pz = (int) Math.floor(bot.getZ() + 44.0D * Math.sin(heading));
+                BlockPos probe = findGroundAt(world, px, pz);
+                if (probe == null || EpisodeMemory.INSTANCE.nearTrail(bot.getUuid(), probe, 16.0D)) {
+                    continue;
+                }
+                exploreHeading = heading;
+                break;
+            }
+        }
+        BlockPos picked = pickExploreWaypoint(bot);
+        if (picked == null) {
+            exploreHeading += Math.PI / 2.0D; // 该航向扇形全选不出 → 旋 90° 再试一次
+            picked = pickExploreWaypoint(bot);
+        }
+        if (picked == null) {
+            exploreHops++; // 烧掉一跳额度:防"永远选不出点"时每 tick 重入,额度耗尽由 fail 链收尾
+            return false;
+        }
+        exploreHops++;
+        exploreTarget = picked;
+        exploreHopStartTick = elapsed;
+        exploredSinceFind = true;
+        phase = Phase.EXPLORE;
+        BotLog.action(bot, "gather_explore_hop",
+                "hop", exploreHops,
+                "to", picked.getX() + "," + picked.getY() + "," + picked.getZ(),
+                "mode", exploreHint == null ? "blind" : "known");
+        return true;
+    }
+
+    // 跳点选择(照 MoveTask.pickWaypoint 骨架):航向±偏角 {0,±45,±90} × 距离档 {48,40,32} 双层循环;
+    // 候选取该列地表落脚点,须干列(湖面悬空格/浅滩水脚全排除);记忆导向模式额外要求候选距记忆点
+    // 不比当前远 10%+(防偏角扇形越带越偏)。第一个 startPathTo 不失败的候选即采用(寻路成功即已出发);
+    // 同步 A* 实跑封顶 EXPLORE_PATH_ATTEMPTS 次防单 tick 长卡。
+    private BlockPos pickExploreWaypoint(AIPlayerEntity bot) {
+        var world = bot.getServerWorld();
+        double bx = bot.getX();
+        double bz = bot.getZ();
+        double maxHintDistSq = Double.MAX_VALUE;
+        if (exploreHint != null) {
+            double maxHintDist = Math.sqrt(exploreHint.getSquaredDistance(bot.getBlockPos())) * 1.10D;
+            maxHintDistSq = maxHintDist * maxHintDist;
+        }
+        int pathAttempts = 0;
+        for (int deg : EXPLORE_DEFLECTIONS_DEG) {
+            double phi = exploreHeading + Math.toRadians(deg);
+            double cos = Math.cos(phi);
+            double sin = Math.sin(phi);
+            for (double dist : EXPLORE_HOP_DISTANCES) {
+                BlockPos candidate = findGroundAt(world, (int) Math.floor(bx + dist * cos), (int) Math.floor(bz + dist * sin));
+                if (candidate == null || !isDryColumn(world, candidate)) {
+                    continue;
+                }
+                if (exploreHint != null && candidate.getSquaredDistance(exploreHint) > maxHintDistSq) {
+                    continue;
+                }
+                if (pathAttempts >= EXPLORE_PATH_ATTEMPTS) {
+                    return null;
+                }
+                pathAttempts++;
+                bot.getActionPack().stopAll();
+                if (!bot.getActionPack().startPathTo(candidate).isFailed()) {
+                    return candidate;
+                }
+            }
+        }
+        return null;
+    }
+
+    // 干列检查(从 MoveTask 复制):候选脚格及其向下 4 格全部无流体才算"干"。
+    // MOTION_BLOCKING_NO_LEAVES 在湖面取到的是水面上方悬空格、在浅滩取到的脚格本身是水,
+    // 两类都必须排除——否则跳点把 bot 直接引进水里,探索变送死。
+    private static boolean isDryColumn(net.minecraft.server.world.ServerWorld world, BlockPos feet) {
+        for (int i = 0; i <= 4; i++) {
+            if (!world.getFluidState(feet.down(i)).isEmpty()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // EXPLORE 推进:大步走向跳点,途中每秒轻扫;到点/泡水/超时/断线都收敛回 SURVEY——由 survey 决定
+    // 下一步(近处有货接管采集,没货走 fail 链触发下一跳 startExplore),状态机单一出口不发散。
+    private void exploreMove(AIPlayerEntity bot) {
+        // ① 这一跳走太久没到(跳点其实难达/路线绕远)→ 弃跳回 SURVEY 重扫(扫描半径/限频复位)。
+        if (elapsed - exploreHopStartTick > EXPLORE_MOVE_LIMIT) {
+            bot.getActionPack().stopAll();
+            exploreTarget = null;
+            searchRadius = SEARCH_RADIUS;
+            lastScanTick = -100;
+            phase = Phase.SURVEY;
+            return;
+        }
+        // ② 沾水即弃当前路线(与 roamMove 同款):NavSafetyNet 拖上岸后回 SURVEY 重选。
+        if (bot.isTouchingWater()) {
+            bot.getActionPack().stopAll();
+            exploreTarget = null;
+            searchRadius = SEARCH_RADIUS;
+            phase = Phase.SURVEY;
+            return;
+        }
+        // ③ 途中轻扫(每 EXPLORE_SCAN_INTERVAL tick,16 格):看到目标方块就收手,交回 SURVEY 精确采集。
+        int now = bot.getServer().getTicks();
+        if (now - lastExploreScanTick >= EXPLORE_SCAN_INTERVAL) {
+            lastExploreScanTick = now;
+            BlockPos seen = OreProspector.nearest(bot.getServerWorld(), bot.getBlockPos(), 16,
+                    state -> harvestBlocks.contains(state.getBlock()));
+            if (seen != null) {
+                bot.getActionPack().stopAll();
+                exploreTarget = null;
+                searchRadius = SEARCH_RADIUS;
+                phase = Phase.SURVEY;
+                return;
+            }
+        }
+        // ④ 到达跳点(≤3 格):记忆导向走到记忆点 16 格内却没被③拦下=旧情报没货 → 资源点销账,
+        // 防下次 startExplore 又朝同一条旧情报奔;之后回 SURVEY(没货由 fail 链继续外探)。
+        if (exploreTarget == null || bot.getBlockPos().getSquaredDistance(exploreTarget) <= 9.0D) {
+            if (exploreHint != null && bot.getBlockPos().getSquaredDistance(exploreHint) <= 256.0D) {
+                io.github.zoyluo.aibot.memory.KnowledgeBase.INSTANCE.invalidateResource(bot.getUuid(), exploreHint);
+                exploreHint = null;
+            }
+            bot.getActionPack().stopAll();
+            exploreTarget = null;
+            searchRadius = SEARCH_RADIUS;
+            phase = Phase.SURVEY;
+            return;
+        }
+        // ⑤ 半路断线(起步宽限 20t,刚 startPathTo 时 executor 可能仍 idle)→ 同航向重选一跳;
+        // 旋 90° 仍选不出 → 回 SURVEY(本跳预算 EXPLORE_MOVE_LIMIT 对整跳含重选连续计)。
+        if (elapsed - exploreHopStartTick > 20 && bot.getActionPack().isPathExecutorIdle()) {
+            BlockPos repick = pickExploreWaypoint(bot);
+            if (repick == null) {
+                exploreHeading += Math.PI / 2.0D;
+                repick = pickExploreWaypoint(bot);
+            }
+            if (repick == null) {
+                bot.getActionPack().stopAll();
+                exploreTarget = null;
+                searchRadius = SEARCH_RADIUS;
+                phase = Phase.SURVEY;
+                return;
+            }
+            exploreTarget = repick;
+        }
+    }
+
     private void survey(AIPlayerEntity bot) {
         if (harvestBlocks.isEmpty()) {
             fail("unsupported_resource_type");
@@ -343,7 +544,11 @@ public final class GatherQuotaTask extends AbstractTask {
             return;
         }
         lastScanTick = now;
-        HarvestCore.TargetChoice choice = HarvestCore.nearestReachableBlock(bot, harvestBlocks, searchRadius, SEARCH_DOWN, SEARCH_UP);
+        // 不可达拉黑生效点:被 goToTarget 拉黑(同目标连续走崩)的坐标从候选流里滤掉——survey 不再
+        // 反复重锁同一棵不可达的树(real_wood 实测:重锁→GOTO 崩→重锁 乒乓到 6001t 超时)。
+        java.util.UUID botId = bot.getUuid();
+        HarvestCore.TargetChoice choice = HarvestCore.nearestReachableBlock(bot, harvestBlocks, searchRadius, SEARCH_DOWN, SEARCH_UP,
+                pos -> !EpisodeMemory.INSTANCE.isExcluded(botId, pos, now));
         if (choice == null) {
             // F1:近处没有 → 自动扩大半径走远找,而不是立刻失败交还大脑乱试/空手挖/求助。
             if (searchRadius < MAX_SEARCH_RADIUS) {
@@ -370,10 +575,26 @@ public final class GatherQuotaTask extends AbstractTask {
                 surfaceTried = false; // 新区域重新允许"上浮兜底"
                 return;
             }
-            fail("no_resource_nearby");
+            // EXPLORE:roam 也走不出去(8 方向全拒/次数耗尽)→ 定向大步走出去找(知识库导向或罗盘盲探)。
+            if (startExplore(bot)) {
+                return;
+            }
+            // 探索额度也烧完(4 跳 ~190 格都没找到)→ 用专属 reason 让大脑/玩家知道"已走出去找过"。
+            fail(exploreHops >= EXPLORE_MAX_HOPS ? "no_resource_after_explore" : "no_resource_nearby");
             return;
         }
         targetPos = choice.pos();
+        // 探索得手:RESOURCE_FOUND 入流(蒸馏成知识库资源点,下次同类需求直奔),只记"经历过探索后的首个发现",
+        // 避免每次 survey 命中都刷流(8 格去重之外的噪声)。
+        if (exploreHops > 0 && exploredSinceFind) {
+            io.github.zoyluo.aibot.memory.EpisodeLog.INSTANCE.record(bot,
+                    io.github.zoyluo.aibot.memory.EpisodeLog.Type.RESOURCE_FOUND, targetPos,
+                    Registries.BLOCK.getId(bot.getServerWorld().getBlockState(targetPos).getBlock()).toString());
+            exploredSinceFind = false;
+            BotLog.action(bot, "gather_explore_found",
+                    "pos", targetPos.getX() + "," + targetPos.getY() + "," + targetPos.getZ(),
+                    "hops", exploreHops);
+        }
         if (choice.direct()) {
             startHarvest(bot);
             return;
@@ -393,6 +614,18 @@ public final class GatherQuotaTask extends AbstractTask {
             return;
         }
         if (bot.getActionPack().isPathExecutorIdle()) {
+            // 不可达拉黑:同一目标连续 GOTO 走崩 GOTO_FAIL_EXCLUDE 次 → 工作记忆排除(TTL 后复活),
+            // survey 的 posFilter 不再重锁它。治"找到了但永远走不到"的乒乓死循环(real_wood 实测根因之一)。
+            if (!targetPos.equals(lastGotoTarget)) {
+                gotoFailStreak = 0; // 换了新目标,失败计数重开
+                lastGotoTarget = targetPos;
+            }
+            if (++gotoFailStreak >= GOTO_FAIL_EXCLUDE) {
+                EpisodeMemory.INSTANCE.exclude(bot.getUuid(), targetPos, bot.getServer().getTicks(), EpisodeMemory.TTL_UNREACHABLE);
+                BotLog.action(bot, "gather_target_excluded",
+                        "pos", targetPos.getX() + "," + targetPos.getY() + "," + targetPos.getZ(),
+                        "fails", gotoFailStreak);
+            }
             phase = Phase.SURVEY;
         }
     }

@@ -156,6 +156,19 @@ public final class OreDigTask extends AbstractTask {
         }
         ServerWorld world = bot.getServerWorld();
 
+        // 溺水熔断:湖底/水下矿会把 bot 勾进水里持续作业,air 耗尽淹死且任务全程无反应
+        // (geo_lake 实测:天然湖底铁矿,air 278→0 致死)。MoveTask 的挖掘直行早有同款熔断,
+        // 挖矿任务漏配。air<100(剩 5 秒)停手撤单,矿短排除(TTL 复活),交安全网上浮换气。
+        if (bot.isSubmergedInWater() && bot.getAir() < 100) {
+            if (targetOre != null) {
+                excludeOre(bot, targetOre);
+            }
+            miner.cancel(bot);
+            bot.getActionPack().stopAll();
+            fail("ore_dig_drowning_abort");
+            return;
+        }
+
         // 工具闸:挖不动目标矿(无合格镐)立即失败,交 GoalExecutor 倒推补镐。
         if (!canHarvestAnyTarget(bot)) {
             fail("need_better_tool:" + ToolTier.requiredPickaxeItemId(targetOres));

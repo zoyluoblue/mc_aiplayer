@@ -19,6 +19,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Predicate;
 
 public final class HarvestCore {
     // NAV-OPT(第0层B):可达性"名副其实"——只验证最近 N 个候选,用纯步行小预算 A*,兼顾准确与性能。
@@ -41,10 +42,18 @@ public final class HarvestCore {
 
     // MINE-DIG/Fix C:在一组候选方块里找最近可达的(如"任意原木"),供 GatherQuotaTask 跨树种采集。
     public static TargetChoice nearestReachableBlock(AIPlayerEntity bot, Set<Block> targetBlocks, int horizontalRadius, int down, int up) {
+        return nearestReachableBlock(bot, targetBlocks, horizontalRadius, down, up, null);
+    }
+
+    // EXPLORE/不可达拉黑:带坐标过滤版——posFilter 拒绝的候选直接跳过(如工作记忆里"反复走不到"的目标),
+    // null 不过滤。供 GatherQuotaTask.survey 滤掉拉黑目标,不再重锁同一棵不可达的树死循环。
+    public static TargetChoice nearestReachableBlock(AIPlayerEntity bot, Set<Block> targetBlocks, int horizontalRadius, int down, int up,
+                                                     Predicate<BlockPos> posFilter) {
         BlockPos origin = bot.getBlockPos();
         return firstWalkReachable(bot, origin,
                 BlockPos.stream(origin.add(-horizontalRadius, -down, -horizontalRadius), origin.add(horizontalRadius, up, horizontalRadius))
                         .filter(pos -> targetBlocks.contains(bot.getServerWorld().getBlockState(pos).getBlock()))
+                        .filter(pos -> posFilter == null || posFilter.test(pos))
                         .map(BlockPos::toImmutable)
                         .map(pos -> targetChoice(bot, pos))
                         .filter(choice -> choice != null));

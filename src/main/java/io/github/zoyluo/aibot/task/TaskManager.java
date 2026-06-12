@@ -131,6 +131,16 @@ public final class TaskManager {
                 BotProfiler.INSTANCE.record(player, "task_tick_skipped", 0L);
                 continue;
             }
+            // V1 统一生存层:任务 tick 前熔断检查——溺水/岩浆/着火/垂死作业一律叫停,
+            // 失败原因透传给 goal 层 replan。任务私有熔断可以更早更聪明,但漏配时这里兜底。
+            String breaker = SurvivalGuard.INSTANCE.check(player, task);
+            if (breaker != null && task.state() == TaskState.RUNNING) {
+                task.abort(player);
+                if (task instanceof AbstractTask at) {
+                    at.failureReason = breaker; // abort 默认 "aborted",改成可诊断的熔断理由
+                }
+                BotLog.danger(player, "survival_guard_abort", "task", task.name(), "why", breaker);
+            }
             long started = System.nanoTime();
             try {
                 task.tick(player);

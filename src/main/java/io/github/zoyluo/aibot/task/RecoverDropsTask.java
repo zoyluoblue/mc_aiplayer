@@ -84,6 +84,8 @@ public final class RecoverDropsTask extends AbstractTask {
 
     @Override
     protected void onTick(AIPlayerEntity bot) {
+        // (溺水熔断已收编 SurvivalGuard 统一层——水底死亡点跑尸再淹死的死循环由它兜,
+        //  第二次死亡知识库立危险区,反射闸劝住第三次。)
         // 沿途顺手捡:掉落可能被水流/爆炸冲散在路上
         HarvestCore.forcePickupNearbyAnyOf(bot, null, 4.0D, 2.0D);
 

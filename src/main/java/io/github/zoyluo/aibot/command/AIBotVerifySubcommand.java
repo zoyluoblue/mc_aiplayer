@@ -135,7 +135,8 @@ public final class AIBotVerifySubcommand {
             "geo_lava",
             "geo_gravel",
             "geo_fullinv",
-            "geo_rich", "geo_water", "geo_recover", "geo_bonus", "geo_stockpile", "geo_resume");
+            "geo_rich", "geo_water", "geo_recover", "geo_bonus", "geo_stockpile", "geo_resume",
+            "geo_flow", "geo_lake", "geo_guard", "explore_wood");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
@@ -154,7 +155,8 @@ public final class AIBotVerifySubcommand {
             "achieve_diamond",
             "geo_recover",
             "geo_stockpile",
-            "geo_resume");
+            "geo_resume",
+            "geo_guard");
 
     // 食物回归套件:一条命令 /aibot verify food_suite 跑完所有食物/种田相关场景。
     // 覆盖五条食物途径:打猎+烤(food/food_full)、种田做面包(food_farm)、觅食(forage)、
@@ -186,7 +188,8 @@ public final class AIBotVerifySubcommand {
     // 地形矩阵套件(②):同一挖矿任务 × 六种几何,统一接近原语的考场。/aibot verify geo_suite
     private static final List<String> GEO_SUITE = List.of(
             "geo_vertical", "geo_slope", "geo_overhang", "geo_wall", "geo_pocket", "geo_deep",
-            "geo_lava", "geo_gravel", "geo_fullinv", "geo_rich", "geo_water", "geo_bonus");
+            "geo_lava", "geo_gravel", "geo_fullinv", "geo_rich", "geo_water", "geo_bonus",
+            "geo_flow", "geo_lake");
 
     // 贴近实操套件:自然世界、空背包、零给予,从零完成目标。/aibot verify real_suite
     // 失败 = 自动化与实操的真实差距,逐个修复;real_obsidian 预期 FAIL(浇水造黑曜石能力未实现)。
@@ -413,10 +416,14 @@ public final class AIBotVerifySubcommand {
             case "geo_fullinv" -> assignMineGeo(bot, "fullinv");
             case "geo_rich" -> assignGeoRich(bot);
             case "geo_water" -> assignMineGeo(bot, "water");
+            case "geo_flow" -> assignMineGeo(bot, "flow");
+            case "geo_lake" -> assignMineGeo(bot, "lake");
             case "geo_recover" -> assignGeoRecover(bot);
             case "geo_bonus" -> assignGeoBonus(bot);
             case "geo_stockpile" -> assignGeoStockpile(bot);
             case "geo_resume" -> assignGeoResume(bot);
+            case "geo_guard" -> assignGeoGuard(bot);
+            case "explore_wood" -> assignExploreWood(bot);
             default -> Result.fail(feature, "unknown_feature");
         };
     }
@@ -1559,6 +1566,44 @@ public final class AIBotVerifySubcommand {
                 world.setBlockState(origin.add(8, 1, 0), Blocks.LAVA.getDefaultState(), Block.NOTIFY_ALL); // 矿东面贴岩浆
                 InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 8)); // 封堵材料(真实玩家身上总有圆石)
             }
+            // R9 流动水贴矿(瀑布脚):水源悬在矿邻位上方 2 格,自然流下漫过矿东邻——流动水(非源)
+            // 的 fluidState 同样 isIn(WATER),封堵/侧位链路应当一致生效;封掉流经格即可安全开挖。
+            case "flow" -> {
+                for (int dx = 4; dx <= 9; dx++) {
+                    for (int dz = -3; dz <= 3; dz++) {
+                        for (int dy = -1; dy <= 4; dy++) {
+                            world.setBlockState(origin.add(dx, dy, dz), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                        }
+                    }
+                }
+                world.setBlockState(origin.add(7, 1, 0), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(origin.add(8, 1, 0), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(origin.add(8, 2, 0), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(origin.add(8, 3, 0), Blocks.WATER.getDefaultState(), Block.NOTIFY_ALL); // 高处源,流抵矿邻
+                InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 8));
+            }
+            // R9 暗湖破壁:通往矿的 z=0/1 直线壁后藏水箱(挖穿即涌),z 负侧留干路——
+            // 预检(digEnterable 流体邻位拒)应让 A* 自动绕干路,湖是绕出来的不是堵出来的。
+            case "lake" -> {
+                // (统一画布天然零矿零湖,人造水箱的破壁涌水考题不再被天然湖截胡。)
+                for (int dx = 3; dx <= 9; dx++) {
+                    for (int dz = -4; dz <= 3; dz++) {
+                        for (int dy = -1; dy <= 4; dy++) {
+                            world.setBlockState(origin.add(dx, dy, dz), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                        }
+                    }
+                }
+                // 水箱:x=5..6, z=0..1, y=1..2 灌源(四周石壁已就位)
+                for (int dx = 5; dx <= 6; dx++) {
+                    for (int dz = 0; dz <= 1; dz++) {
+                        for (int dy = 1; dy <= 2; dy++) {
+                            world.setBlockState(origin.add(dx, dy, dz), Blocks.WATER.getDefaultState(), Block.NOTIFY_ALL);
+                        }
+                    }
+                }
+                world.setBlockState(origin.add(9, 1, 0), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+                InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 8));
+            }
             // 含水矿:与 lava 行同构,流体换水源——挖开瞬间水涌入会推走 bot/掉落物淹巷道,
             // 统一危险流体封堵(ore_dig_fluid_seal)该先封水再挖。
             case "water" -> {
@@ -1621,11 +1666,7 @@ public final class AIBotVerifySubcommand {
         BlockPos origin = bot.getBlockPos();
         clearNearbyMobs(world, origin);
         InventoryAction.giveItem(bot, new ItemStack(Items.STONE_PICKAXE, 1));
-        // 高空实验室:场景前提是"prospect 64 球真无矿"(逼出富区导向),但天然世界铁矿无处不在,
-        // 灭矿圈扩两轮(±12→±24)都被圈外矿截胡(三轮实测:645,41/637,47/77,41 轮番)。高空平台
-        // 天然零矿,前提物理成立。绝对 y(非相对 up):上一轮的平台会顶高 heightmap,相对抬升
-        // 一轮叠一轮直撞世界顶(实测 186→306)。
-        origin = new BlockPos(origin.getX(), 250, origin.getZ());
+        // (高空前提已由统一画布满足:prospect 64 球内天然零矿,富区导向考题不再被截胡。)
         // 富区:80 格外,3 个资源点记忆(20 格内成簇)+真矿一块;沿途铺石走廊保通(贫瘠带,64 格内无矿)
         BlockPos rich = origin.add(80, 0, 0);
         for (int dx = 0; dx <= 82; dx++) {
@@ -1754,6 +1795,70 @@ public final class AIBotVerifySubcommand {
         return Result.running("geo_resume", 4800,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.RAW_IRON) >= 2
                         && deathCount(bot) == deathBase);
+    }
+
+    // 统一生存层(二期 V1):水底站桩(HoldTask 无任何私有熔断——兜底语义的最严考题),
+    // air 耗向阈值时 SurvivalGuard 该斩任务,NavSafetyNet 上浮,bot 活命。断言:任务以
+    // guard_drowning 终止+bot 存活——"任何任务都不能比统一层做得更差"。
+    private static Result assignGeoGuard(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos(); // 统一画布已是高空,天然水体零干扰
+        // 石壁水井:内腔 1x1、深 4,bot 沉底,头顶 3 格水(上不来才算真淹)
+        for (int dy = -1; dy <= 4; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    world.setBlockState(origin.add(dx, dy, dz),
+                            (dx == 0 && dz == 0 && dy >= 0 && dy <= 3)
+                                    ? Blocks.WATER.getDefaultState()
+                                    : Blocks.STONE.getDefaultState(),
+                            Block.NOTIFY_ALL);
+                }
+            }
+        }
+        bot.teleport(world, origin.getX() + 0.5D, origin.getY(), origin.getZ() + 0.5D,
+                java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+        bot.fallDistance = 0.0F;
+        bot.setAir(120); // 压缩等待:从 120 起跌,~1 秒到阈值(全程 300 要白等 10 秒)
+        TaskManager.INSTANCE.assign(bot, new io.github.zoyluo.aibot.task.HoldTask());
+        // 反向场景:guard 斩任务=干净 FAILED 即 PASS(detail 自带失败原因可核对是 guard_drowning);
+        // 任务傻跑到超时(=统一层没兜住)才是 FAIL。
+        return Result.runningExpectCleanFail("geo_guard", 1200);
+    }
+
+    // 资源探索(EXPLORE):近处(48 格 survey + 96 格 prospect)零树,唯一的树簇在 120 格外走廊
+    // 尽头——roam 的 28 格乒乓够不着,必须靠 EXPLORE 定向大步走出去才找得到。画布天然零树
+    //(prepareArea 统一画布),无需清场。断言:存活且原木族(白桦/橡木)计数 ≥4。
+    private static Result assignExploreWood(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin);
+        // 石板走廊通到 120 格外(dy-1 铺石、dy0..2 清空,与 geo_rich 走廊同构):保证树簇物理可达。
+        for (int dx = 0; dx <= 124; dx++) {
+            for (int dz = -2; dz <= 2; dz++) {
+                world.setBlockState(origin.add(dx, -1, dz), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                for (int dy = 0; dy <= 2; dy++) {
+                    world.setBlockState(origin.add(dx, dy, dz), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                }
+            }
+        }
+        // 树簇:3 根 2 格高白桦柱(合计 6 logs,凑 4 根目标有余量;走廊已清空,后立柱不被覆盖)。
+        for (BlockPos base : new BlockPos[]{origin.add(120, 0, 0), origin.add(121, 0, 1), origin.add(121, 0, -1)}) {
+            world.setBlockState(base, Blocks.BIRCH_LOG.getDefaultState(), Block.NOTIFY_ALL);
+            world.setBlockState(base.up(), Blocks.BIRCH_LOG.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        // HaveItem(OAK_LOG) 对原木族宽容:GatherQuotaTask.acceptItemsFor 对 LOGS 族返回整族
+        //(任意树种计数),白桦照样推进进度——所以采的是 BIRCH、目标写 OAK 也能完成。
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.OAK_LOG, 4));
+        if (!started) {
+            return Result.fail("explore_wood", "goal_submit_failed");
+        }
+        return Result.runningGoal("explore_wood", 6000,
+                ignored -> bot.isAlive()
+                        && InventoryAction.countItem(bot, Items.BIRCH_LOG) + InventoryAction.countItem(bot, Items.OAK_LOG) >= 4);
     }
 
     // 死亡找回(R1):带高辨识物资被一击致死,断言重生反射自动跑尸、despawn 前把铁锭捡回背包。
@@ -2145,34 +2250,12 @@ public final class AIBotVerifySubcommand {
         // 集中爆发(实测 mining 套件 6 场景 FAIL,同场景在 material_suite 单跑却全绿——互染实锤)。
         scenarioSlot++;
         int baseX = (scenarioSlot % 32) * 64;
-        // 传送列鲁棒化:基准列可能正好是裂缝/洞口(实测 (0,0) 列 NO_LEAVES 顶面 y29,bot 被送进
-        // 黑暗深谷又触发保命传送把场景搅乱)。从基准列向外按 8 格步进,取第一个顶面可站的列。
-        BlockPos anchor = null;
-        outer:
-        for (int r = 0; r <= 32 && anchor == null; r += 8) {
-            for (int dx = -r; dx <= r; dx += 8) {
-                for (int dz = -r; dz <= r; dz += 8) {
-                    int ty = world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, baseX + dx, dz);
-                    BlockPos cand = new BlockPos(baseX + dx, ty, dz);
-                    if (io.github.zoyluo.aibot.pathfinding.Standability.isStandable(world, cand)
-                            && world.isSkyVisible(cand)
-                            && dryColumn(world, cand)) { // 下方无水:挖矿场景的阶梯会下挖,湖上地块必泡死
-                        anchor = cand;
-                        break outer;
-                    }
-                }
-            }
-        }
-        // 兜底不赌 heightmap:轮转列可能整片不可用(海面/裂谷/heightmap 空——实测 x=640 列 obsidian
-        // 场景 fallback 取到虚空 y,bot 传进去 79 ticks 坠到 -206,LOW_HP+工具闸假错全是坠落次生噪声,
-        // 即 mining 套件 obsidian"套件顺序污染"的真身)。直接硬造 y=32 实验室平面,确定性优先。
-        // y>200 拒锚:历史场景的高空实验平台(y250)残骸会顶高 heightmap,spiral 把残骸当"地表"
-        // 选进来,后续场景建在豆腐渣上(geo_resume 实测 bot 半路坠落到天然层)。测试世界天然地形
-        // 不过百,>200 必是残骸。
-        if (anchor == null || anchor.getY() <= world.getBottomY() + 8 || anchor.getY() > 200) {
-            anchor = new BlockPos(baseX, 32, 0);
-        }
-        BlockPos origin = anchor;
+        // V3 统一高空画布:场景一律建在 y=232 虚空层固定列——anchor 搜索/heightmap/拒残骸锚
+        // 全部退役。一期实测:天然矿截胡(geo_rich 三轮)、天然湖勾引淹死(geo_lake)、残骸列坠落
+        // (geo_resume)、虚空列(obsidian 案),这一整类"地形抽卡"假阳性吃掉 ~60% 调试时间——
+        // 画布脚下 16 格人造石、四周虚空,天然干扰物理归零。真实地形考验仍由 real_suite 专职。
+        // y=232:顶上余 88 格(232+清空 8+场景结构),不碰 320 世界上限。
+        BlockPos origin = new BlockPos(baseX, 232, 0);
         // 实验室化:轮转地块的天然地形(湖/坡/洞/沙)让确定性回归变抽卡——同一场景红绿每轮洗牌
         //(实测挖石族在湖边泡死、矿场景 need_planks/no_progress 轮换)。场景区整体替换为人造平台:
         // floor 之下 16 格实心石(挖矿/下挖全程吃人造石,不穿进天然含水层),上方 8 格清空。

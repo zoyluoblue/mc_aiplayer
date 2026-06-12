@@ -28,9 +28,11 @@ for round in $(seq 1 "$ROUNDS"); do
     # 挖矿效率基准(P3):按任务类型汇总耗时 ticks——跨夜对比抓"没红但变慢"的隐性退化
     if [ "$suite" = "mining" ] && [ -n "${LOG:-}" ]; then
       bench=$(grep -aE "TASK event=task_completed" "$LOG" 2>/dev/null \
-        | grep -aoE "name=[a-z_]+|elapsed_ticks=[0-9]+" \
-        | paste - - \
-        | awk -F'[=\t]' '{sum[$2]+=$4; n[$2]++} END {for(k in sum) printf "%s=%d(x%d) ", k, sum[k]/n[k], n[k]}')
+        | awk '{ n=""; t="";
+            if (match($0,/name=[a-z_]+/)) n=substr($0,RSTART+5,RLENGTH-5);
+            if (match($0,/elapsed_ticks=[0-9]+/)) t=substr($0,RSTART+14,RLENGTH-14);
+            if (n!="" && t!="") { sum[n]+=t; cnt[n]++ } }
+          END { for (k in cnt) printf "%s=%d(x%d) ", k, sum[k]/cnt[k], cnt[k] }')
       echo "  - 任务均耗时(ticks): ${bench:-n/a}"
     fi
   done

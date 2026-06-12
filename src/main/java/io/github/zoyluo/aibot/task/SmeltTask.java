@@ -180,6 +180,16 @@ public final class SmeltTask extends AbstractTask {
         }
         furnacePos = nearestFurnace(bot).orElse(null);
         if (furnacePos == null) {
+            // 局部扫不到 → 问记忆:我自己放过的炉在哪(同维度+方块仍是熔炉才认,被拆即作废)
+            var remembered = io.github.zoyluo.aibot.memory.BotMemoryStore.INSTANCE
+                    .of(bot.getUuid()).placeIn(bot.getServerWorld(), "furnace");
+            if (remembered.isPresent()
+                    && bot.getServerWorld().getBlockState(remembered.get()).isOf(Blocks.FURNACE)
+                    && remembered.get().isWithinDistance(bot.getBlockPos(), 96.0D)) {
+                furnacePos = remembered.get();
+            }
+        }
+        if (furnacePos == null) {
             if (InventoryAction.findItem(bot, Items.FURNACE).isEmpty()) {
                 fail("missing minecraft:furnace");
                 return;
@@ -249,6 +259,10 @@ public final class SmeltTask extends AbstractTask {
             return;
         }
         furnacePos = pos;
+        // R2 修:炉位入记忆——挖矿走远后 nearestFurnace(局部扫描)找不回自己放的炉,
+        // missing furnace 整链报废(real_diamond 实测:第一炉用完,挖第二批铁回来炉'丢了')。
+        io.github.zoyluo.aibot.memory.BotMemoryStore.INSTANCE.of(bot.getUuid())
+                .markPlace("furnace", bot.getServerWorld(), pos);
         phase = Phase.LOADING;
     }
 

@@ -288,7 +288,9 @@ public final class GoalExecutor {
             assignNext(bot, plan);
             return;
         }
-        if (plan.replanned || !AIBotConfig.get().goal().replanOnFailureEnabled()) {
+        // 重规划预算 3 次:20 分钟级长链(real_diamond 31 步)中途的小坎(missing furnace 这种
+        // replan 必能修的缺料)一次定生死太苛刻,整链报废重来。风暴防御不变:同步骤硬失败仍直接判死。
+        if (plan.replanCount >= 3 || !AIBotConfig.get().goal().replanOnFailureEnabled()) {
             activePlans.remove(bot.getUuid());
             lastGoalFailTick.put(bot.getUuid(), server.getTicks());
             BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.TASK, bot, "goal_failed", "goal", plan.goal, "reason", reason);
@@ -299,7 +301,7 @@ public final class GoalExecutor {
             advanceQueue(bot); // 像真人:这件办不成说一声,接着办队列里的下一件
             return;
         }
-        plan.replanned = true;
+        plan.replanCount++;
         GoalPlanner.GoalPlan fresh = GoalPlanner.plan(bot, plan.goal);
         BotLog.task(bot, "goal_replan", "goal", plan.goal, "reason", reason, "steps", fresh.describeSteps(), "unresolved", fresh.unresolved());
         if (!fresh.success() || fresh.steps().isEmpty()) {
@@ -424,6 +426,10 @@ public final class GoalExecutor {
     // P1:目标失败时给出可执行的中文引导,避免大脑收到原始 reason 后用 move 乱走探索而遇险。
     private static String humanGoalFailure(String reason) {
         String r = reason == null ? "" : reason;
+        if (r.contains("no_resource_after_explore")) {
+            // EXPLORE 已定向走出去几片区域都找过(非"原地没找到"),如实区分,免得大脑再让 move 乱走重试。
+            return "我已经走出去好几片区域找过了,还是没找到需要的资源,暂时无法继续。我会待在原地,不乱走也不空手挖。";
+        }
         if (r.contains("no_resource_nearby") || r.contains("no_reachable") || r.contains("no_ore_found")) {
             return "我在较大范围内都没找到可用的树木/石头/矿石,暂时无法继续。我会待在原地,不乱走也不空手挖。";
         }
@@ -440,7 +446,7 @@ public final class GoalExecutor {
         private GoalStep current;
         private Task currentTask;
         private int totalSteps;
-        private boolean replanned;
+        private int replanCount;
 
         private ActivePlan(Goal goal, ArrayDeque<GoalStep> steps, int totalSteps, java.util.List<String> stepLabels) {
             this.goal = goal;

@@ -28,6 +28,7 @@ public final class ReasonText {
             Map.entry("unknown_palette", "蓝图里的材料表我识别不了。"),
             Map.entry("inventory_full", "背包满了,需要先回仓库存放。"),
             Map.entry("no_resource_nearby", "附近没找到可采集的资源。"),
+            Map.entry("no_resource_after_explore", "我走出去找了好几片地方,还是没找到可采集的资源。"),
             Map.entry("unsupported_resource_type", "这种资源暂时还不能自动采集。"),
             Map.entry("gather_timeout", "采集时间太久了,我先停下来重新判断。"),
             Map.entry("no_base", "还没有标记基地,先让我记住基地位置。"),

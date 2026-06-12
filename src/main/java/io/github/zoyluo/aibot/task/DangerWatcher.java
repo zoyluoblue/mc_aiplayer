@@ -268,6 +268,21 @@ public final class DangerWatcher {
             return false;
         }
         int repeat = rec.repeatCount() + 1;
+        // 绝境反击:困住(逃跑反复原地)且正在挨打——退避=站着等死(real_iron 实测:洞穴 13 蛛贴脸,
+        // evade 目标算出原地 1t 完成,backoff 停发威胁任务后被围殴致死)。canFight 的武器/数量闸
+        // 是"打得划算吗"的算计,绝境没得算:空手也开打,伤害换活命窗口。
+        if (repeat >= 2 && bot.hurtTime > 0) {
+            trapRecords.remove(bot.getUuid());
+            var hostile = bot.getServerWorld().getEntitiesByClass(
+                    net.minecraft.entity.mob.HostileEntity.class,
+                    bot.getBoundingBox().expand(4.0D), e -> e.isAlive())
+                    .stream().findFirst().orElse(null);
+            if (hostile != null) {
+                BotLog.danger(bot, "trapped_fight_back", "target", hostile.getType().toString());
+                TaskManager.INSTANCE.assign(bot, new CombatTask(hostile.getType(), 1, 0.0F));
+                return true;
+            }
+        }
         if (repeat < TRAP_REPEAT_LIMIT) {
             trapRecords.put(bot.getUuid(), new TrapRecord(rec.pos(), repeat, rec.lastHelpTick()));
             return false;

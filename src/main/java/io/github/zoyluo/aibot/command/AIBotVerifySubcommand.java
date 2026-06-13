@@ -218,7 +218,8 @@ public final class AIBotVerifySubcommand {
     private static final List<String> LLM_SUITE = List.of(
             "llm_move",
             "llm_food",
-            "llm_iron");
+            "llm_iron",
+            "llm_diamond");
 
     // 对话式助手层套件:/aibot verify assistant_suite。验证助手层四块新地基(此前只编译过、零运行验证):
     // P0 目标队列(连续吩咐自动排队接续)、P1 Goal.Build 自动备料(只给原木自己算料合成)、
@@ -395,6 +396,7 @@ public final class AIBotVerifySubcommand {
             case "llm_move" -> assignLlmMove(bot);
             case "llm_food" -> assignLlmFood(bot);
             case "llm_iron" -> assignLlmIron(bot);
+            case "llm_diamond" -> assignLlmDiamond(bot);
             case "real_nav_far" -> assignRealNavFar(bot);
             case "nav_pillar_out" -> assignNavPillarOut(bot);
             case "nav_buried_escape" -> assignNavBuriedEscape(bot);
@@ -1394,6 +1396,21 @@ public final class AIBotVerifySubcommand {
         final int deathBase = deathCount(bot); // 零死亡红线:死亡重生也判 FAIL(照抄 real_* 标准)
         return Result.runningPatient("llm_iron", 24000,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.IRON_INGOT) >= 1
+                        && deathCount(bot) == deathBase);
+    }
+
+    // 实操(LLM)·旗舰:口语化钻石指令 → 大脑应跑通整条深链(铁镐前置→下潜深层→地下探矿→挖钻石)。
+    // 这是真实地形最深的缺口(campaign 实测 real_diamond 两 seed no_resource):地表觅食已被 EXPLORE
+    // 解决,地下定向探矿尚缺。用真实对话层验收,卡点即下一个该修的能力(数据驱动,不靠猜)。
+    // 超时给足(地下找钻石本就慢);零死亡红线照旧——深层岩浆/坠落/怪一次失误都判 FAIL,逼出真实鲁棒性。
+    private static Result assignLlmDiamond(AIPlayerEntity bot) {
+        Result rejected = startLlmScenario(bot, "llm_diamond", "帮我挖一颗钻石回来");
+        if (rejected != null) {
+            return rejected;
+        }
+        final int deathBase = deathCount(bot);
+        return Result.runningPatient("llm_diamond", 48000,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.DIAMOND) >= 1
                         && deathCount(bot) == deathBase);
     }
 

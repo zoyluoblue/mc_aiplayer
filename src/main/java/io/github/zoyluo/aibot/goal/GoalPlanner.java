@@ -671,11 +671,19 @@ public final class GoalPlanner {
                 return true;
             }
             if (item == Items.OBSIDIAN) {
-                // 黑曜石:需钻石镐(ToolTier 已映射 DIAMOND);倒推钻石镐链 + 直接挖该块(非矿石,不走 oreBlockFor)。
+                // 黑曜石:需钻石镐(ToolTier 已映射 DIAMOND,否则破坏无掉落)。15 块远超自然矿脉——
+                // 真实玩家靠"水浇岩浆源现造"。倒推:钻石镐 + 几个空桶(软放水,缺桶时任务直接确定性成型)
+                // + MAKE_OBSIDIAN 步循环造够数。比原"假设世界已有 N 块黑曜石"(mine 步)对任意有岩浆环境
+                // 都鲁棒;无岩浆时 CreateObsidianTask 干净失败(create_obsidian_no_lava)交大脑换策略。
                 if (!ensurePickaxeTier(ToolTier.DIAMOND, depth + 1, visiting)) {
                     return false;
                 }
-                addStep(GoalStep.mine(Blocks.OBSIDIAN, missing));
+                // 备空桶(3 铁/个),保守封顶 4 个免把铁需求顶到天(15 桶=45 铁);软放水不强求,缺桶不阻断。
+                int buckets = Math.min(missing, 4);
+                if (!ensureItem(Items.BUCKET, buckets, depth + 1, visiting)) {
+                    unresolved.add("obsidian_buckets_best_effort:" + buckets);
+                }
+                addStep(GoalStep.makeObsidian(missing));
                 counts.merge(Items.OBSIDIAN, missing, Integer::sum);
                 return true;
             }

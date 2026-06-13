@@ -32,6 +32,7 @@ public record GoalStep(Kind kind,
         PLACE_STATIONS,
         STOCKPILE,
         DESCEND_TO_Y,
+        MAKE_OBSIDIAN,
         BUILD
     }
 
@@ -100,6 +101,11 @@ public record GoalStep(Kind kind,
         return new GoalStep(Kind.DESCEND_TO_Y, null, 1, null, Set.of(), null, null, new BlockPos(0, y, 0), null);
     }
 
+    /** 造黑曜石:MAKE_OBSIDIAN 步——水浇岩浆现造 count 块(需背包桶+钻石镐)。 */
+    public static GoalStep makeObsidian(int count) {
+        return new GoalStep(Kind.MAKE_OBSIDIAN, null, count, null, Set.of(), null, null, null, null);
+    }
+
     /** 盖房:BUILD 步——tag=蓝图名(如 small_hut/hut_5x5),材料已由规划期倒推备齐。 */
     public static GoalStep build(String blueprintName) {
         return new GoalStep(Kind.BUILD, null, 1, null, Set.of(), null, null, null, blueprintName);
@@ -140,6 +146,7 @@ public record GoalStep(Kind kind,
             case PLACE_STATIONS -> "摆放工作台/熔炉/箱子";
             case STOCKPILE -> "囤入箱子 " + ItemNames.cn(item);
             case DESCEND_TO_Y -> "下挖到 Y=" + pos.getY();
+            case MAKE_OBSIDIAN -> "造黑曜石 ×" + count;
             case BUILD -> "建造 " + tag;
         };
     }

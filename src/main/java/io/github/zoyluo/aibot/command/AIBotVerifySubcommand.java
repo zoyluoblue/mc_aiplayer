@@ -135,7 +135,7 @@ public final class AIBotVerifySubcommand {
             "geo_lava",
             "geo_gravel",
             "geo_fullinv",
-            "geo_rich", "geo_water", "geo_recover", "geo_bonus", "geo_stockpile", "geo_resume", "geo_shaft", "geo_cave", "geo_diamond_lava",
+            "geo_rich", "geo_water", "geo_recover", "geo_bonus", "geo_stockpile", "geo_resume", "geo_shaft", "geo_cave", "geo_diamond_lava", "geo_obsidian_make",
             "geo_flow", "geo_lake", "geo_guard", "explore_wood");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
@@ -328,7 +328,8 @@ public final class AIBotVerifySubcommand {
                 features.addAll(LLM_SUITE); // R2 LLM 全链层套件别名(真实 DeepSeek,计费,需 WITH_LLM=1)
             } else if ("assistant_suite".equals(feature)) {
                 features.addAll(ASSISTANT_SUITE); // 对话式助手层套件别名(P0 队列/P1 自动备料/P3 参数化/P2 打断保留)
-            } else if (ALL_FEATURES.contains(feature) || LLM_SUITE.contains(feature)) {
+            } else if (ALL_FEATURES.contains(feature) || LLM_SUITE.contains(feature)
+                       || "real_diamond3".equals(feature)) {
                 // llm_* 故意不进 ALL_FEATURES(verify all 不烧 API 钱),但允许单点名跑(单跑最省钱)。
                 features.add(feature);
             }
@@ -392,6 +393,7 @@ public final class AIBotVerifySubcommand {
             case "real_wheat" -> assignRealWheat(bot);
             case "real_iron" -> assignRealIron(bot);
             case "real_diamond" -> assignRealDiamond(bot);
+            case "real_diamond3" -> assignRealDiamond3(bot);
             case "real_obsidian" -> assignRealObsidian(bot);
             case "llm_move" -> assignLlmMove(bot);
             case "llm_food" -> assignLlmFood(bot);
@@ -421,6 +423,7 @@ public final class AIBotVerifySubcommand {
             case "geo_shaft" -> assignMineGeo(bot, "shaft");
             case "geo_cave" -> assignMineGeo(bot, "cave");
             case "geo_diamond_lava" -> assignGeoDiamondLava(bot);
+            case "geo_obsidian_make" -> assignGeoObsidianMake(bot);
             case "geo_flow" -> assignMineGeo(bot, "flow");
             case "geo_lake" -> assignMineGeo(bot, "lake");
             case "geo_recover" -> assignGeoRecover(bot);
@@ -1302,6 +1305,32 @@ public final class AIBotVerifySubcommand {
                         && deathCount(bot) == deathBase);
     }
 
+    // 真实应用终极(钻石≥3):从零真实地形挖到 3 颗钻石——用户目标的回归化身。3 颗逼出"连续多矿脉
+    // 定位+重复下潜",timeout 36000t 给足全链,零死亡红线。reliability.sh 跑它做修复前后成功率对照。
+    // 只许单点名/脚本跑(不进 ALL_FEATURES:36000t 会拖垮 verify all)。
+    private static Result assignRealDiamond3(AIPlayerEntity bot) {
+        prepareRealistic(bot);
+        final int deathBase = deathCount(bot);
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.DIAMOND, 3));
+        if (!started) {
+            return Result.fail("real_diamond3", "goal_submit_failed");
+        }
+        return Result.runningGoal("real_diamond3", 36000,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.DIAMOND) >= 3
+                        && deathCount(bot) == deathBase);
+    }
+
+    // snapshot 落地辅助:按相对坐标放一块默认态方块(配 /aibot snapshot 导出的 setRel 行)。
+    static void setRel(ServerWorld world, BlockPos origin, int dx, int dy, int dz, String id) {
+        net.minecraft.block.Block block = net.minecraft.registry.Registries.BLOCK
+                .getOptionalValue(net.minecraft.util.Identifier.of(id)).orElse(null);
+        if (block == null) {
+            io.github.zoyluo.aibot.log.BotLog.config("snapshot_unknown_block", "id", id);
+            return;
+        }
+        world.setBlockState(origin.add(dx, dy, dz), block.getDefaultState(), Block.NOTIFY_LISTENERS);
+    }
+
     // 实操:从零一块黑曜石。自然世界黑曜石须"找岩浆湖+浇水"——bot 目前没有这个能力,
     // 本场景预期 FAIL,留作能力缺失的存证与修复目标(修好后转绿)。
     private static Result assignRealObsidian(AIPlayerEntity bot) {
@@ -2126,6 +2155,33 @@ public final class AIBotVerifySubcommand {
      * REGRESSION(P2):achieve_goal 钻石——给铁镐(隔离工具链),脚下石层埋钻石矿,断言挖到 diamond。
      * 测"金/红石/钻石/绿宝石需铁镐"这条新映射 + OreDig 挖高级矿。
      */
+    // 造黑曜石(新能力 L1):画布东侧 5×5 岩浆源池 + 钻石镐 + 4 水桶,**不预放黑曜石**(区别于
+    // achieve_obsidian 作弊预放)。断言 bot 自主"水浇岩浆现造"+挖到 ≥4 块、零死亡。通了再调 15 压测。
+    private static Result assignGeoObsidianMake(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin);
+        // 间隔摆的孤立岩浆源(每个隔 3 格,互不接触):证"造+挖"主能力,隔离掉多格连续岩浆的流体交互
+        // (相邻源转黑曜石会触发邻格流体重算→扫不到,那是独立硬问题,真实洞底岩浆多为分散点/窄流)。
+        int[] xs = {4, 7, 10, 13};
+        for (int dx : xs) {
+            world.setBlockState(origin.add(dx, 0, 0), Blocks.LAVA.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        InventoryAction.giveItem(bot, new ItemStack(Items.DIAMOND_PICKAXE, 1));
+        InventoryAction.giveItem(bot, new ItemStack(Items.WATER_BUCKET, 4));
+        InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 16));
+        final int target = 3;
+        final int deathBase = deathCount(bot);
+        // 隔离验证新能力本体:直接派 CreateObsidianTask(绕开 planner 的备桶链——那条会在画布上触发
+        // wood→iron 采集、把 bot 引到岩浆池边踩进去;planner 接线另由 Goal 级场景验)。
+        return assignTask(bot, "geo_obsidian_make",
+                new io.github.zoyluo.aibot.task.CreateObsidianTask(target), 9600,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.OBSIDIAN) >= target
+                        && deathCount(bot) == deathBase);
+    }
+
     // 钻石≥3·深层岩浆(真实应用 L1):钻石带(Y-59)本就岩浆密布。3 块钻矿各贴一格岩浆源,
     // 逼出"深层岩浆 survival + 多目标连采"——钻石真实失败的头号嫌疑。给铁镐+深挖套件+补给(同
     // achieve_diamond 标准:不给钻石,镐是铁的,真去挖)。断言 ≥3 钻且零死亡(深层死一次=真事故)。

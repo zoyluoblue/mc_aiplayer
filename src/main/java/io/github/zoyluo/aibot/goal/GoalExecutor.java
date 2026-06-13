@@ -395,6 +395,7 @@ public final class GoalExecutor {
             case STOCKPILE -> Optional.of(new StockpileTask(true));
             // 挖深层矿:DESCEND_TO_Y 步 → 连续挖竖井下到矿层。
             case DESCEND_TO_Y -> Optional.of(new DescendToYTask(step.pos().getY()));
+            case MAKE_OBSIDIAN -> Optional.of(new io.github.zoyluo.aibot.task.CreateObsidianTask(step.count()));
             // 盖房:BUILD 步 → BuildTask(自动选址+不整地,与 verify build 场景同参),材料已由规划期备齐;
             // 蓝图读取失败(被删/坏档)→ empty,assignNext 按"步骤无法执行"收尾。
             case BUILD -> {

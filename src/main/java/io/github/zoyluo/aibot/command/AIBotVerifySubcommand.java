@@ -135,7 +135,7 @@ public final class AIBotVerifySubcommand {
             "geo_lava",
             "geo_gravel",
             "geo_fullinv",
-            "geo_rich", "geo_water", "geo_recover", "geo_bonus", "geo_stockpile", "geo_resume", "geo_shaft", "geo_cave",
+            "geo_rich", "geo_water", "geo_recover", "geo_bonus", "geo_stockpile", "geo_resume", "geo_shaft", "geo_cave", "geo_diamond_lava",
             "geo_flow", "geo_lake", "geo_guard", "explore_wood");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
@@ -420,6 +420,7 @@ public final class AIBotVerifySubcommand {
             case "geo_water" -> assignMineGeo(bot, "water");
             case "geo_shaft" -> assignMineGeo(bot, "shaft");
             case "geo_cave" -> assignMineGeo(bot, "cave");
+            case "geo_diamond_lava" -> assignGeoDiamondLava(bot);
             case "geo_flow" -> assignMineGeo(bot, "flow");
             case "geo_lake" -> assignMineGeo(bot, "lake");
             case "geo_recover" -> assignGeoRecover(bot);
@@ -2125,6 +2126,33 @@ public final class AIBotVerifySubcommand {
      * REGRESSION(P2):achieve_goal 钻石——给铁镐(隔离工具链),脚下石层埋钻石矿,断言挖到 diamond。
      * 测"金/红石/钻石/绿宝石需铁镐"这条新映射 + OreDig 挖高级矿。
      */
+    // 钻石≥3·深层岩浆(真实应用 L1):钻石带(Y-59)本就岩浆密布。3 块钻矿各贴一格岩浆源,
+    // 逼出"深层岩浆 survival + 多目标连采"——钻石真实失败的头号嫌疑。给铁镐+深挖套件+补给(同
+    // achieve_diamond 标准:不给钻石,镐是铁的,真去挖)。断言 ≥3 钻且零死亡(深层死一次=真事故)。
+    private static Result assignGeoDiamondLava(AIPlayerEntity bot) {
+        clearInventory(bot);
+        BlockPos origin = prepareDeepArea(bot, -59);
+        ServerWorld world = bot.getServerWorld();
+        InventoryAction.giveItem(bot, new ItemStack(Items.IRON_PICKAXE, 1));
+        giveDeepMineKit(bot);
+        giveDeepMineSupplies(bot);
+        // 3 块钻矿散布(隔开,逼真正的"采完一块奔下一块"),每块东侧贴岩浆源
+        int[][] spots = {{3, -1, 0}, {-3, -1, 2}, {0, -2, -3}};
+        for (int[] s : spots) {
+            BlockPos ore = origin.add(s[0], s[1], s[2]);
+            world.setBlockState(ore, Blocks.DIAMOND_ORE.getDefaultState(), Block.NOTIFY_ALL);
+            world.setBlockState(ore.east(), Blocks.LAVA.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        final int deathBase = deathCount(bot);
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.DIAMOND, 3));
+        if (!started) {
+            return Result.fail("geo_diamond_lava", "goal_submit_failed");
+        }
+        return Result.runningGoal("geo_diamond_lava", 9600,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.DIAMOND) >= 3
+                        && deathCount(bot) == deathBase);
+    }
+
     // 钻石(深层矿,需铁镐):传送到钻石矿层(-59)、脚下埋钻石矿,给铁镐+深矿安全装+供给 → 挖钻石矿得钻石。
     private static Result assignAchieveDiamond(AIPlayerEntity bot) {
         clearInventory(bot);

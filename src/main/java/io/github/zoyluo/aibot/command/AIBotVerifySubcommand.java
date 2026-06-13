@@ -135,7 +135,7 @@ public final class AIBotVerifySubcommand {
             "geo_lava",
             "geo_gravel",
             "geo_fullinv",
-            "geo_rich", "geo_water", "geo_recover", "geo_bonus", "geo_stockpile", "geo_resume",
+            "geo_rich", "geo_water", "geo_recover", "geo_bonus", "geo_stockpile", "geo_resume", "geo_shaft", "geo_cave",
             "geo_flow", "geo_lake", "geo_guard", "explore_wood");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
@@ -418,6 +418,8 @@ public final class AIBotVerifySubcommand {
             case "geo_fullinv" -> assignMineGeo(bot, "fullinv");
             case "geo_rich" -> assignGeoRich(bot);
             case "geo_water" -> assignMineGeo(bot, "water");
+            case "geo_shaft" -> assignMineGeo(bot, "shaft");
+            case "geo_cave" -> assignMineGeo(bot, "cave");
             case "geo_flow" -> assignMineGeo(bot, "flow");
             case "geo_lake" -> assignMineGeo(bot, "lake");
             case "geo_recover" -> assignGeoRecover(bot);
@@ -1661,6 +1663,29 @@ public final class AIBotVerifySubcommand {
                     InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 64));
                 }
                 world.setBlockState(origin.down(3), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+            }
+            // 竖井旁下沉矿(real_iron seed777 确定性复现):矿在下方5/横向10 的实心石里,
+            // 身旁 2 格留一条到底开放竖井(模拟 bot 刚挖完 dig_down 的遗留井)。real 实测:
+            // bot 破14块全在出发 Y 层横向掘进、不下沉到矿的 Y → no_progress。geo_deep(纯实心斜下)
+            // 却 PASS,差异就在这条混合地形的开放井。修好接近器下沉,此场景与 real_iron 同时转绿。
+            case "shaft" -> {
+                world.setBlockState(origin.add(10, -5, 0), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+                for (int dy = 0; dy >= -8; dy--) {
+                    world.setBlockState(origin.add(2, dy, 0), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                }
+            }
+            // 空腔下沉矿(real_iron seed777 二号假设):bot 与下沉矿之间横亘一个 5x4x5 洞穴。
+            // 假设:接近器 A* 见空腔走 WALK 进洞,落在洞底后从错误角度面对矿,横向掘进卡死。
+            // geo_shaft(纯实心)PASS 而本场景若红 → 空气缺口即真因。
+            case "cave" -> {
+                world.setBlockState(origin.add(10, -5, 0), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
+                for (int dx = 3; dx <= 7; dx++) {
+                    for (int dy = -1; dy >= -4; dy--) {
+                        for (int dz = -2; dz <= 2; dz++) {
+                            world.setBlockState(origin.add(dx, dy, dz), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                        }
+                    }
+                }
             }
             default -> {
                 return Result.fail("geo_" + geo, "unknown_geometry");

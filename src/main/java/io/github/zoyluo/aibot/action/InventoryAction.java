@@ -191,7 +191,15 @@ public final class InventoryAction {
         for (net.minecraft.item.Item junk : JUNK_ITEMS) {
             int have = countItem(player, junk);
             if (have > keepEach && removeItems(player, junk, have - keepEach)) {
-                player.dropItem(new ItemStack(junk, have - keepEach), false, true);
+                // 必须按最大堆叠分堆扔:单个 ItemStack/ItemEntity 的 count 上限 99,
+                // 一次性扔 2232 个 → 存档 ItemStack.toNbt 抛 "range [1;99]" → server 崩(实测 geo_flow 崩服根因)。
+                int toDrop = have - keepEach;
+                int max = Math.max(1, new ItemStack(junk).getMaxCount());
+                while (toDrop > 0) {
+                    int chunk = Math.min(toDrop, max);
+                    player.dropItem(new ItemStack(junk, chunk), false, true);
+                    toDrop -= chunk;
+                }
                 BotLog.action(player, "drop_junk", "item", junk, "count", have - keepEach);
                 droppedAny = true;
             }

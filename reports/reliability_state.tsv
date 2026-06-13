@@ -1,0 +1,14 @@
+feature	seed	run	result	reason	stage	summary
+real_wood	20260610	1	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	20260610	2	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	20260610	3	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	20260610	4	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	3000	1	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	3000	2	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	3000	3	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	3000	4	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	777	1	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	777	2	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	777	3	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	777	4	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+ALLDONE

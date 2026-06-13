@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AIBot Mermaid Architecture</title>
+  <style>
+    body {
+      margin: 0;
+      background: #07110d;
+      font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+    }
+    .page {
+      width: 2200px;
+      min-height: 1900px;
+      padding: 64px;
+      color: #f2fff7;
+      background:
+        radial-gradient(circle at 18% 0%, rgba(99, 245, 160, 0.18), transparent 34%),
+        radial-gradient(circle at 82% 12%, rgba(117, 217, 255, 0.14), transparent 32%),
+        #07110d;
+    }
+    h1 {
+      margin: 0 0 14px;
+      font-size: 54px;
+      line-height: 1.1;
+      font-weight: 900;
+      letter-spacing: 0;
+    }
+    p {
+      margin: 0 0 34px;
+      color: rgba(235, 255, 245, 0.76);
+      font-size: 24px;
+      line-height: 1.45;
+    }
+    .canvas {
+      padding: 36px;
+      border: 1px solid rgba(99, 245, 160, 0.24);
+      background: rgba(2, 11, 8, 0.78);
+      box-shadow: 0 30px 90px rgba(0, 0, 0, 0.35);
+    }
+    .mermaid {
+      display: flex;
+      justify-content: center;
+    }
+    svg {
+      max-width: none !important;
+      height: auto !important;
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <h1>AIBot 项目架构图</h1>
+    <p>LLM 高层意图 + 可验证目标规划 + 确定性任务状态机 + Minecraft 原生假玩家执行</p>
+    <section class="canvas">
+      <pre class="mermaid">
+flowchart TB
+    Player["玩家 / 服务器管理员&lt;br/&gt;命令 + Bob 面板 + 自然语言"] --&gt; Entry["Fabric Mod 入口&lt;br/&gt;AIBotMod"]
+    Entry --&gt; Cmd["/aibot 命令层&lt;br/&gt;spawn, task, brain, verify, deplint, observe"]
+    Entry --&gt; Net["客户端/服务端网络&lt;br/&gt;AIBotServerNetworking + Payloads"]
+    Entry --&gt; Tick["服务端 Tick 主循环&lt;br/&gt;TaskManager.tickAll + BotTickCoordinator"]
+
+    Cmd --&gt; Manager["AIPlayerManager&lt;br/&gt;生成/移除/持久化 AI 假玩家"]
+    Manager --&gt; Bot["AIPlayerEntity&lt;br/&gt;真实服务端玩家实体"]
+
+    Player --&gt; Client["客户端 Bob 控制面板&lt;br/&gt;Alt/Option + O&lt;br/&gt;状态、背包、快捷动作、聊天"]
+    Client --&gt; Net
+    Net --&gt; Bot
+
+    Bot --&gt; Perception["感知层&lt;br/&gt;PerceptionCollector&lt;br/&gt;位置/生命/饥饿/背包/周围世界/当前任务"]
+    Perception --&gt; Brain["大脑协调层&lt;br/&gt;BrainCoordinator"]
+    Brain --&gt; LLM["DeepSeek / OpenAI 风格接口&lt;br/&gt;DeepSeekApiClient"]
+    Brain --&gt; Tools["工具注册与调度&lt;br/&gt;ToolRegistry + ActionDispatcher"]
+
+    Tools --&gt; HighGoal["高层目标&lt;br/&gt;Goal: HaveItem / MineOre / Armor / Workstation / Farm / Stockpile"]
+    HighGoal --&gt; Planner["确定性目标规划&lt;br/&gt;GoalPlanner&lt;br/&gt;配方链/矿链/工具等级/冶炼链/食物/护甲"]
+    Planner --&gt; Executor["目标执行器&lt;br/&gt;GoalExecutor&lt;br/&gt;步骤队列、失败重规划、目标降级拦截"]
+    Executor --&gt; Tasks["Task 状态机层&lt;br/&gt;Move / Mine / OreDig / Craft / Smelt / Build / Farm / Hunt / Combat / Eat / Stockpile"]
+
+    Tools --&gt; DirectTask["直接任务工具&lt;br/&gt;craft, smelt, gather, eat, trade, strip_mine..."]
+    DirectTask --&gt; Tasks
+
+    Tick --&gt; Safety["生存与可靠性安全网&lt;br/&gt;NavSafetyNet / StuckWatcher / DangerWatcher / TpsGuard"]
+    Safety --&gt; Tasks
+    Tasks --&gt; Actions["低层动作原语&lt;br/&gt;ActionPack / MovementAction / BlockMiner / DigNav / ToolSelector / BuildAction / InventoryAction"]
+    Actions --&gt; World["Minecraft 世界&lt;br/&gt;移动、挖掘、合成、熔炼、战斗、农牧、容器交互"]
+    World --&gt; Perception
+
+    Planner --&gt; Data["数据地基&lt;br/&gt;RecipeRegistry / MiningChain / ToolTier / SmeltChain / AcquisitionHints"]
+    Tasks --&gt; Path["寻路与可站立性&lt;br/&gt;AStarPathfinder / Standability / CostModel / DangerCheck"]
+    Path --&gt; Actions
+
+    Brain --&gt; Memory["记忆与协作&lt;br/&gt;BotMemoryStore / TaskBoard / IdleCoordinator"]
+    Executor --&gt; Memory
+    Tasks --&gt; Observe["观察与验证&lt;br/&gt;BotLog / ReplayRecorder / BotProfiler / /aibot verify / /aibot deplint"]
+    Safety --&gt; Observe
+    Observe --&gt; Player
+      </pre>
+    </section>
+  </main>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: "base",
+      flowchart: {
+        htmlLabels: true,
+        curve: "basis",
+        nodeSpacing: 58,
+        rankSpacing: 78
+      },
+      themeVariables: {
+        darkMode: true,
+        background: "#07110d",
+        primaryColor: "#10251a",
+        primaryTextColor: "#f2fff7",
+        primaryBorderColor: "#63f5a0",
+        lineColor: "#75d9ff",
+        secondaryColor: "#0b1a15",
+        tertiaryColor: "#13281d",
+        fontFamily: "PingFang SC, Microsoft YaHei, Arial, sans-serif",
+        fontSize: "24px"
+      }
+    });
+    window.mermaidReady = new Promise((resolve) => {
+      const check = () => {
+        const svg = document.querySelector(".mermaid svg");
+        if (svg && svg.getBBox().width > 100) resolve(true);
+        else setTimeout(check, 100);
+      };
+      check();
+    });
+  </script>
+</body>
+</html>

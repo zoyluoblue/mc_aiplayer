@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AIBot 方版宣传图</title>
+  <style>
+    :root{
+      --w:1080px; --h:1080px;
+      --green:#63f5a0; --cyan:#75d9ff; --gold:#ffd47d; --ink:#f2fff7;
+      --muted:rgba(235,255,245,.74); --line:rgba(112,245,166,.26);
+      --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    }
+    *{box-sizing:border-box;margin:0}
+    body{min-height:100vh;display:grid;place-items:center;background:#030706;padding:20px;
+         font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",Arial,sans-serif}
+    .hint{position:fixed;top:10px;left:0;right:0;text-align:center;color:#46604f;font:500 12px/1 var(--mono)}
+    .poster{position:relative;width:var(--w);height:var(--h);max-width:100%;overflow:hidden;color:var(--ink);
+      background:#06100c;box-shadow:0 36px 100px rgba(0,0,0,.55);isolation:isolate}
+    .poster::before{content:"";position:absolute;inset:0;z-index:-3;
+      background:
+        linear-gradient(180deg,rgba(1,5,4,.34) 0%,rgba(1,5,4,.05) 30%,rgba(2,9,7,.72) 64%,rgba(1,5,4,.96) 100%),
+        url("poster-bg.png") center 22% / cover no-repeat;}
+    .poster::after{content:"";position:absolute;inset:0;z-index:-2;
+      background-image:linear-gradient(rgba(99,245,160,.08) 1px,transparent 1px),
+                       linear-gradient(90deg,rgba(99,245,160,.07) 1px,transparent 1px);
+      background-size:50px 50px;mask-image:linear-gradient(180deg,#000 0%,transparent 40%,transparent 60%,#000 100%)}
+    .glow{position:absolute;left:50%;top:300px;width:460px;height:460px;transform:translateX(-50%);border-radius:50%;
+      background:radial-gradient(circle,rgba(99,245,160,.2),rgba(117,217,255,.06) 46%,transparent 70%);filter:blur(6px)}
+    .content{position:absolute;inset:0;padding:64px 64px 58px;display:flex;flex-direction:column;z-index:2}
+    .topline{display:flex;align-items:center;justify-content:space-between;gap:20px;color:var(--muted);font-size:23px}
+    .brand{display:flex;align-items:center;gap:14px;font-weight:800;color:#eafff2}
+    .mark{width:42px;height:42px;display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:4px;
+      border:1px solid rgba(99,245,160,.56);background:rgba(6,24,16,.75);box-shadow:0 0 22px rgba(99,245,160,.25)}
+    .mark span{background:var(--green);box-shadow:0 0 11px rgba(99,245,160,.62)}
+    .tag{padding:9px 14px;border:1px solid rgba(117,217,255,.3);background:rgba(5,20,17,.5);
+      color:rgba(230,250,255,.86);font-size:18px}
+    .spacer{flex:1}
+    h1{margin:0;font-size:74px;line-height:1.06;font-weight:900;letter-spacing:-.5px;
+      text-shadow:0 10px 34px rgba(0,0,0,.62);text-wrap:balance}
+    .accent{color:var(--green)}
+    .subtitle{margin:26px 0 0;font-size:27px;line-height:1.5;color:rgba(242,255,248,.88);font-weight:600;width:850px;max-width:100%}
+    .chips{display:flex;flex-wrap:wrap;gap:11px;margin-top:30px}
+    .chip{padding:11px 15px;border:1px solid rgba(99,245,160,.28);background:rgba(4,16,12,.64);
+      color:rgba(234,255,241,.85);font-size:20px;line-height:1.2}
+    .metrics{display:flex;gap:14px;margin-top:34px}
+    .metric{flex:1;padding:18px 18px;background:rgba(2,10,8,.66);border:1px solid rgba(99,245,160,.24);backdrop-filter:blur(8px)}
+    .metric strong{display:block;color:var(--green);font-size:40px;line-height:1;font-weight:900}
+    .metric span{display:block;margin-top:8px;color:rgba(238,255,246,.8);font-size:17px}
+    .footer{margin-top:34px;display:flex;justify-content:space-between;align-items:center;gap:20px;
+      color:rgba(233,255,243,.62);font-size:18px;line-height:1.3}
+    .slogan{font:800 19px/1 var(--mono);color:var(--green)}
+    @media print{body{padding:0;background:#fff}.hint{display:none}.poster{box-shadow:none}}
+  </style>
+</head>
+<body>
+  <div class="hint">方版 1080×1080 · 小红书 / 朋友圈 · Cmd/Ctrl+P 存 PDF 或截图</div>
+  <main class="poster" aria-label="AIBot Minecraft AI 玩家 Mod 方版宣传图">
+    <div class="glow"></div>
+    <section class="content">
+      <header class="topline">
+        <div class="brand">
+          <div class="mark" aria-hidden="true">
+            <span></span><span></span><span></span>
+            <span></span><span></span><span></span>
+            <span></span><span></span><span></span>
+          </div>
+          <div>AIBot</div>
+        </div>
+        <div class="tag">Minecraft 1.21.3 · DeepSeek · Fabric</div>
+      </header>
+
+      <div class="spacer"></div>
+
+      <h1>让 Minecraft 里出现<br><span class="accent">真正会做事</span>的 AI 玩家</h1>
+      <p class="subtitle">你说一句目标,它感知世界、倒推计划、执行任务、失败重规划——挖矿、战斗、种田、自保全自动。</p>
+
+      <div class="chips" aria-label="项目能力">
+        <div class="chip">目标倒推</div>
+        <div class="chip">确定性 Task FSM</div>
+        <div class="chip">五层生存安全网</div>
+        <div class="chip">Bob 客户端面板</div>
+      </div>
+
+      <div class="metrics" aria-label="项目亮点">
+        <div class="metric"><strong>151</strong><span>核心 Java 类</span></div>
+        <div class="metric"><strong>56</strong><span>大脑工具</span></div>
+        <div class="metric"><strong>44</strong><span>任务状态机</span></div>
+      </div>
+
+      <div class="footer">
+        <span>/aibot brain say Bob 帮我准备一把铁镐</span>
+        <span class="slogan">LLM plans. Tasks execute.</span>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

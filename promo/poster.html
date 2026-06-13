@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AIBot 宣传海报</title>
+  <style>
+    :root {
+      --paper-w: 1080px;
+      --paper-h: 1620px;
+      --green: #64f4a5;
+      --cyan: #72d7ff;
+      --gold: #ffd27a;
+      --ink: #f5fff8;
+      --muted: rgba(236, 255, 246, 0.72);
+      --line: rgba(137, 255, 190, 0.24);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #050807;
+      font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif;
+    }
+
+    .poster {
+      position: relative;
+      width: var(--paper-w);
+      height: var(--paper-h);
+      overflow: hidden;
+      color: var(--ink);
+      background: #06100c;
+      box-shadow: 0 36px 100px rgba(0, 0, 0, 0.55);
+      isolation: isolate;
+    }
+
+    .poster::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(90deg, rgba(2, 8, 6, 0.98) 0%, rgba(3, 12, 9, 0.88) 35%, rgba(4, 13, 9, 0.22) 67%, rgba(2, 6, 5, 0.62) 100%),
+        linear-gradient(180deg, rgba(1, 5, 4, 0.58) 0%, rgba(1, 5, 4, 0.05) 44%, rgba(1, 5, 4, 0.9) 100%),
+        url("poster-bg.png") center / cover no-repeat;
+      z-index: -3;
+    }
+
+    .poster::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(100, 244, 165, 0.09) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(100, 244, 165, 0.08) 1px, transparent 1px);
+      background-size: 48px 48px;
+      mask-image: linear-gradient(90deg, #000 0%, rgba(0, 0, 0, 0.86) 42%, transparent 78%);
+      z-index: -2;
+    }
+
+    .glow {
+      position: absolute;
+      right: 150px;
+      top: 250px;
+      width: 420px;
+      height: 420px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(100, 244, 165, 0.24), rgba(114, 215, 255, 0.08) 42%, transparent 70%);
+      filter: blur(6px);
+      z-index: -1;
+    }
+
+    .content {
+      position: absolute;
+      inset: 0;
+      padding: 86px 76px 70px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .topline {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 28px;
+      width: 100%;
+      letter-spacing: 0;
+      color: var(--muted);
+      font-size: 24px;
+      line-height: 1.2;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-weight: 700;
+      color: #eafff2;
+    }
+
+    .mark {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 4px;
+      padding: 4px;
+      border: 1px solid rgba(100, 244, 165, 0.55);
+      background: rgba(7, 26, 17, 0.74);
+      box-shadow: 0 0 22px rgba(100, 244, 165, 0.22);
+    }
+
+    .mark span {
+      background: var(--green);
+      box-shadow: 0 0 12px rgba(100, 244, 165, 0.62);
+    }
+
+    .tag {
+      padding: 9px 14px;
+      border: 1px solid rgba(114, 215, 255, 0.32);
+      background: rgba(5, 20, 17, 0.46);
+      color: rgba(228, 250, 255, 0.86);
+      font-size: 20px;
+    }
+
+    h1 {
+      margin: 118px 0 0;
+      width: 690px;
+      font-size: 92px;
+      line-height: 1.04;
+      letter-spacing: 0;
+      font-weight: 900;
+      text-wrap: balance;
+      text-shadow: 0 8px 30px rgba(0, 0, 0, 0.55);
+    }
+
+    .accent {
+      color: var(--green);
+    }
+
+    .subtitle {
+      width: 600px;
+      margin-top: 34px;
+      font-size: 31px;
+      line-height: 1.46;
+      color: rgba(242, 255, 248, 0.85);
+      font-weight: 500;
+    }
+
+    .thesis {
+      margin-top: 48px;
+      width: 638px;
+      padding-left: 22px;
+      border-left: 4px solid var(--green);
+      color: rgba(236, 255, 246, 0.9);
+      font-size: 26px;
+      line-height: 1.55;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      width: 650px;
+      margin-top: 42px;
+    }
+
+    .chip {
+      padding: 10px 15px;
+      border: 1px solid rgba(100, 244, 165, 0.28);
+      background: rgba(4, 16, 12, 0.62);
+      color: rgba(234, 255, 241, 0.82);
+      font-size: 20px;
+      line-height: 1.2;
+    }
+
+    .architecture {
+      margin-top: auto;
+      width: 690px;
+      padding: 28px 30px 30px;
+      background: linear-gradient(135deg, rgba(3, 14, 11, 0.9), rgba(4, 30, 20, 0.62));
+      border: 1px solid var(--line);
+      box-shadow: 0 18px 60px rgba(0, 0, 0, 0.38);
+    }
+
+    .architecture h2 {
+      margin: 0 0 22px;
+      color: var(--gold);
+      font-size: 25px;
+      line-height: 1.2;
+      font-weight: 700;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .node {
+      min-height: 86px;
+      padding: 14px 12px;
+      border: 1px solid rgba(114, 215, 255, 0.22);
+      background: rgba(2, 11, 9, 0.72);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .node strong {
+      display: block;
+      color: #f6fff9;
+      font-size: 21px;
+      line-height: 1.18;
+      font-weight: 800;
+    }
+
+    .node span {
+      display: block;
+      margin-top: 8px;
+      color: rgba(217, 246, 230, 0.68);
+      font-size: 16px;
+      line-height: 1.25;
+    }
+
+    .metrics {
+      position: absolute;
+      right: 58px;
+      bottom: 74px;
+      width: 270px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .metric {
+      padding: 18px 20px;
+      background: rgba(2, 10, 8, 0.7);
+      border: 1px solid rgba(100, 244, 165, 0.24);
+      backdrop-filter: blur(8px);
+    }
+
+    .metric strong {
+      display: block;
+      color: var(--green);
+      font-size: 34px;
+      line-height: 1;
+      font-weight: 900;
+    }
+
+    .metric span {
+      display: block;
+      margin-top: 8px;
+      color: rgba(238, 255, 246, 0.78);
+      font-size: 17px;
+      line-height: 1.25;
+    }
+
+    .footer {
+      position: absolute;
+      left: 76px;
+      right: 76px;
+      bottom: 30px;
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      color: rgba(233, 255, 243, 0.58);
+      font-size: 18px;
+      line-height: 1.3;
+    }
+  </style>
+</head>
+<body>
+  <main class="poster" aria-label="AIBot Minecraft AI 玩家 Mod 宣传海报">
+    <div class="glow"></div>
+    <section class="content">
+      <header class="topline">
+        <div class="brand">
+          <div class="mark" aria-hidden="true">
+            <span></span><span></span><span></span>
+            <span></span><span></span><span></span>
+            <span></span><span></span><span></span>
+          </div>
+          <div>AIBot / Fabric AI Player</div>
+        </div>
+        <div class="tag">Minecraft 1.21.3 · Java 21 · DeepSeek</div>
+      </header>
+
+      <h1>让 Minecraft 里出现<span class="accent">真正会做事</span>的 AI 玩家</h1>
+
+      <p class="subtitle">
+        不是聊天机器人,而是能感知世界、拆解目标、执行任务、失败重规划的真实服务端假玩家。
+      </p>
+
+      <p class="thesis">
+        LLM 负责高层意图,GoalPlanner 倒推资源链,Task 状态机执行移动、挖矿、合成、熔炼、战斗与生存。
+      </p>
+
+      <div class="chips" aria-label="项目能力">
+        <div class="chip">目标倒推</div>
+        <div class="chip">确定性 Task FSM</div>
+        <div class="chip">矿链 / 配方链 / 工具链</div>
+        <div class="chip">Bob 客户端面板</div>
+        <div class="chip">生存安全网</div>
+        <div class="chip">verify + deplint</div>
+      </div>
+
+      <section class="architecture" aria-label="架构摘要">
+        <h2>从一句自然语言到一次真实世界行动</h2>
+        <div class="flow">
+          <div class="node"><strong>感知</strong><span>位置 / 背包 / 生命 / 周围世界</span></div>
+          <div class="node"><strong>大脑</strong><span>DeepSeek 工具调用与策略判断</span></div>
+          <div class="node"><strong>规划</strong><span>GoalPlanner 倒推目标链</span></div>
+          <div class="node"><strong>执行</strong><span>GoalExecutor 派发步骤</span></div>
+          <div class="node"><strong>任务</strong><span>TaskManager 驱动状态机</span></div>
+          <div class="node"><strong>行动</strong><span>ActionPack 操作 MC 世界</span></div>
+        </div>
+      </section>
+    </section>
+
+    <aside class="metrics" aria-label="项目亮点">
+      <div class="metric"><strong>151</strong><span>核心 Java 类</span></div>
+      <div class="metric"><strong>23.4K</strong><span>行代码</span></div>
+      <div class="metric"><strong>56</strong><span>大脑工具</span></div>
+      <div class="metric"><strong>44</strong><span>任务状态机</span></div>
+    </aside>
+
+    <footer class="footer">
+      <span>/aibot brain say Bob 帮我准备一把铁镐</span>
+      <span>LLM plans. Tasks execute. Bob survives.</span>
+    </footer>
+  </main>
+</body>
+</html>

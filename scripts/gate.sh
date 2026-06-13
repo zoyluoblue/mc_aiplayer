@@ -9,8 +9,11 @@ cd "$(dirname "$0")/.." || exit 1
 
 # 锁定全绿基线:确定性实验室套件(geo 矩阵 + mining)。real_*/nav_* 不入闸(它们是能力 backlog,非基线)。
 SUITES=("geo_suite" "mining")
-# 已知未修红账(campaign 实测稳定红);修好后从此处除名,闸即纳入守护。
-KNOWN_RED="geo_bonus"
+# 已知未修红账;修好后从此处除名,闸即纳入守护。区分两类(闸首跑即暴露):
+#   geo_bonus —— 稳定红(画布开放空间顺路矿空转,我引入的回归,待还债)
+#   geo_flow  —— flaky(流动水 move_dig_drowning 时序敏感,轮15红/28绿/闸首跑红),待稳定后除名
+# 进白名单不是放过,是承认它们还没 gate-stable;闸守的是"其余基线不许新回归"。
+KNOWN_RED="geo_bonus geo_flow"
 
 fail=0
 for s in "${SUITES[@]}"; do

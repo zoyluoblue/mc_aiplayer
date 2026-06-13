@@ -1,5 +1,6 @@
 package io.github.zoyluo.aibot.task;
 
+import io.github.zoyluo.aibot.action.ActionResult;
 import io.github.zoyluo.aibot.action.HarvestCore;
 import io.github.zoyluo.aibot.action.InventoryAction;
 import io.github.zoyluo.aibot.craft.RecipeRegistry;
@@ -97,6 +98,7 @@ public final class GatherQuotaTask extends AbstractTask {
     private int lastExploreScanTick = -100;
     private BlockPos lastGotoTarget;
     private int gotoFailStreak;
+    private boolean treeDigTried; // 当前目标是否已升级过挖掘接近(崖壁/下方树走不到时下沉掘进)
 
     public GatherQuotaTask(Item targetItem, int targetCount) {
         this.targetItem = targetItem;
@@ -614,12 +616,25 @@ public final class GatherQuotaTask extends AbstractTask {
             return;
         }
         if (bot.getActionPack().isPathExecutorIdle()) {
-            // 不可达拉黑:同一目标连续 GOTO 走崩 GOTO_FAIL_EXCLUDE 次 → 工作记忆排除(TTL 后复活),
-            // survey 的 posFilter 不再重锁它。治"找到了但永远走不到"的乒乓死循环(real_wood 实测根因之一)。
             if (!targetPos.equals(lastGotoTarget)) {
                 gotoFailStreak = 0; // 换了新目标,失败计数重开
+                treeDigTried = false;
                 lastGotoTarget = targetPos;
             }
+            // 崖壁/下方树走不到(纯步行 GOAL_UNREACHABLE,real 钻石 67% 失败的头号坎):升级挖掘接近——
+            // 像挖矿够埋藏矿一样 startDigPathTo 下沉/掘进过去,而非直接拉黑换树(全是崖壁树时换无可换)。
+            // 每个目标只升级一次;挖掘接近也到不了才拉黑(TTL 后复活)。这是"任何地形都能采到木"的关键。
+            if (!treeDigTried) {
+                treeDigTried = true;
+                ActionResult dig = bot.getActionPack().startDigPathTo(targetPos);
+                BotLog.action(bot, "gather_dig_approach",
+                        "to", targetPos.getX() + "," + targetPos.getY() + "," + targetPos.getZ(),
+                        "ok", !dig.isFailed());
+                if (!dig.isFailed()) {
+                    return; // 挖掘接近已发起,留在 GOTO 等它掘过去
+                }
+            }
+            // 步行+挖掘接近都到不了 → 拉黑换树(survey posFilter 不再重锁;治乒乓死循环)。
             if (++gotoFailStreak >= GOTO_FAIL_EXCLUDE) {
                 EpisodeMemory.INSTANCE.exclude(bot.getUuid(), targetPos, bot.getServer().getTicks(), EpisodeMemory.TTL_UNREACHABLE);
                 BotLog.action(bot, "gather_target_excluded",

@@ -135,7 +135,7 @@ public final class AIBotVerifySubcommand {
             "geo_lava",
             "geo_gravel",
             "geo_fullinv",
-            "geo_rich", "geo_water", "geo_recover", "geo_bonus", "geo_stockpile", "geo_resume", "geo_shaft", "geo_cave", "geo_diamond_lava", "geo_obsidian_make",
+            "geo_rich", "geo_water", "geo_recover", "geo_bonus", "geo_stockpile", "geo_resume", "geo_shaft", "geo_cave", "geo_diamond_lava", "geo_obsidian_make", "geo_cliff_tree",
             "geo_flow", "geo_lake", "geo_guard", "explore_wood");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
@@ -424,6 +424,7 @@ public final class AIBotVerifySubcommand {
             case "geo_cave" -> assignMineGeo(bot, "cave");
             case "geo_diamond_lava" -> assignGeoDiamondLava(bot);
             case "geo_obsidian_make" -> assignGeoObsidianMake(bot);
+            case "geo_cliff_tree" -> assignGeoCliffTree(bot);
             case "geo_flow" -> assignMineGeo(bot, "flow");
             case "geo_lake" -> assignMineGeo(bot, "lake");
             case "geo_recover" -> assignGeoRecover(bot);
@@ -2155,6 +2156,41 @@ public final class AIBotVerifySubcommand {
      * REGRESSION(P2):achieve_goal 钻石——给铁镐(隔离工具链),脚下石层埋钻石矿,断言挖到 diamond。
      * 测"金/红石/钻石/绿宝石需铁镐"这条新映射 + OreDig 挖高级矿。
      */
+    // 崖壁采木(钻石 67% 失败的头号坎,确定性复现):bot 在画布平台,树长在东侧一道**陡坑**底部
+    // (与平台间隔一道 6 格垂直落差,纯步行 GOAL_UNREACHABLE)。断言 bot 升级挖掘接近、下沉够到、
+    // 采足 3 木、零死亡。这是"任何地形都能采到木"→"任何地形都能挖钻石"的第一关。
+    private static Result assignGeoCliffTree(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin);
+        // 东侧 dx 4..10 挖一道陡坑:坑口 y0 起向下清 6 格成竖壁,坑底 y-7 铺石地。
+        for (int dx = 4; dx <= 10; dx++) {
+            for (int dz = -3; dz <= 3; dz++) {
+                for (int dy = 0; dy >= -6; dy--) {
+                    world.setBlockState(origin.add(dx, dy, dz), Blocks.AIR.getDefaultState(), Block.NOTIFY_LISTENERS);
+                }
+                world.setBlockState(origin.add(dx, -7, dz), Blocks.STONE.getDefaultState(), Block.NOTIFY_LISTENERS);
+            }
+        }
+        // 坑底种 2 棵 4 高橡木(共 8 段),bot 必须下到坑底才够得到。
+        for (int dy = -6; dy <= -3; dy++) {
+            world.setBlockState(origin.add(7, dy, -1), Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
+            world.setBlockState(origin.add(8, dy, 1), Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        InventoryAction.giveItem(bot, new ItemStack(Items.STONE_PICKAXE, 1)); // 给镐(挖掘接近要破石)
+        final int target = 3;
+        final int deathBase = deathCount(bot);
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.OAK_LOG, target));
+        if (!started) {
+            return Result.fail("geo_cliff_tree", "goal_submit_failed");
+        }
+        return Result.runningGoal("geo_cliff_tree", 6000,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.OAK_LOG) >= target
+                        && deathCount(bot) == deathBase);
+    }
+
     // 造黑曜石(新能力 L1):画布东侧 5×5 岩浆源池 + 钻石镐 + 4 水桶,**不预放黑曜石**(区别于
     // achieve_obsidian 作弊预放)。断言 bot 自主"水浇岩浆现造"+挖到 ≥4 块、零死亡。通了再调 15 压测。
     private static Result assignGeoObsidianMake(AIPlayerEntity bot) {

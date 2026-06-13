@@ -230,16 +230,23 @@ public final class GatherQuotaTask extends AbstractTask {
         // 与目标差几十格高度,走过去也够不到(实测 found=y66 to=y86 死循环)。A* 自己解决下坡路线。
         BlockPos ground = standNearTarget(world, found);
         if (ground == null) {
-            // 观测:静默拉黑无法取证(实测速死定位绕了三轮)——找到了资源却没法站过去,值得记一笔。
+            // 崖壁/高差树周边无可站点:纯步行无解,但挖掘接近能下沉/掘进过去(钻石 67% 失败的崖壁采木真因——
+            // 实测 GOAL_UNREACHABLE×3 却从不触发兜底,因兜底原先只在 goToTarget,而崖壁失败走这条 prospect 路)。
+            if (tryDigApproach(bot, found, "no_stand")) {
+                return true;
+            }
             BotLog.action(bot, "gather_prospect_unreachable",
                     "found", found.toShortString(), "why", "no_stand");
-            EpisodeMemory.INSTANCE.exclude(botId, found, now, EpisodeMemory.TTL_UNREACHABLE); // 周边无可站点 → 排除换下一个
+            EpisodeMemory.INSTANCE.exclude(botId, found, now, EpisodeMemory.TTL_UNREACHABLE);
             return false;
         }
         bot.getActionPack().stopAll();
-        // 寻路被拒 → 拉黑该目标换下一个;不能不看结果就进 ROAM(瞬退会把好目标误判为走不到)。
+        // 步行被拒 → 先升级挖掘接近(崖下/崖壁树掘进过去);挖掘也不通才拉黑换下一个。
         var pathResult = bot.getActionPack().startPathTo(ground);
         if (pathResult.isFailed()) {
+            if (tryDigApproach(bot, found, pathResult.reason())) {
+                return true;
+            }
             BotLog.action(bot, "gather_prospect_unreachable",
                     "found", found.toShortString(), "why", pathResult.reason());
             EpisodeMemory.INSTANCE.exclude(botId, found, now, EpisodeMemory.TTL_UNREACHABLE);
@@ -603,6 +610,24 @@ public final class GatherQuotaTask extends AbstractTask {
         }
         phase = Phase.GOTO;
         bot.getActionPack().startPathTo(choice.stand());
+    }
+
+    // 挖掘接近:崖壁/高差树纯步行 GOAL_UNREACHABLE 时,改用 startDigPathTo 下沉/掘进过去(与挖矿够
+    // 埋藏矿同一原语)。成功发起 → 设 targetPos=树、转 GOTO,由 goToTarget 统一驱动"到达→采集";
+    // treeDigTried=true 防 goToTarget 立刻重发。挖掘也不通(罕见:基岩封死/越界)→ false,调用方拉黑换树。
+    private boolean tryDigApproach(AIPlayerEntity bot, BlockPos tree, String why) {
+        ActionResult dig = bot.getActionPack().startDigPathTo(tree);
+        if (dig.isFailed()) {
+            return false;
+        }
+        BotLog.action(bot, "gather_dig_approach",
+                "to", tree.getX() + "," + tree.getY() + "," + tree.getZ(), "why", why);
+        targetPos = tree.toImmutable();
+        lastGotoTarget = targetPos;
+        treeDigTried = true;
+        gotoFailStreak = 0;
+        phase = Phase.GOTO;
+        return true;
     }
 
     private void goToTarget(AIPlayerEntity bot) {

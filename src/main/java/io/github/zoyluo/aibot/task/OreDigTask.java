@@ -365,6 +365,12 @@ public final class OreDigTask extends AbstractTask {
                 if (approach.isFailed() && !"pathfinding_throttled".equals(approach.reason())) { // 观测:首败必打(节流不打)
                     BotLog.action(bot, "ore_dig_approach_rejected", "why", approach.reason(),
                             "target", targetOre.toShortString());
+                    // A* 接近无解的兜底(real_diamond ore_dig 主因:深层 8-14 格全实心石,DIG-A* 超
+                    // 24k 节点/50ms 预算 TIMEOUT → bot 原地不动 → dist 不缩 → 200t no_progress)。
+                    // 退回控制式掘进 digTowardStep:朝矿一格一格挖脚头位+走进去(strip 同款可靠原语,
+                    // 不吃 A* 预算),保证 dist 持续缩、不空转。只在 A* 真失败时触发——A* 能解的干净场景
+                    // (geo_shaft/cave/deep 全 PASS)走不到这,零回归风险。
+                    digTowardStep(bot, world, targetOre);
                 }
             }
             return;

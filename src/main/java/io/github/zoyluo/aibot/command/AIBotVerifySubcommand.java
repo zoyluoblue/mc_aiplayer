@@ -135,7 +135,7 @@ public final class AIBotVerifySubcommand {
             "geo_lava",
             "geo_gravel",
             "geo_fullinv",
-            "geo_rich", "geo_water", "geo_recover", "geo_bonus", "geo_stockpile", "geo_resume", "geo_shaft", "geo_cave", "geo_diamond_lava", "geo_obsidian_make", "geo_cliff_tree",
+            "geo_rich", "geo_water", "geo_recover", "geo_bonus", "geo_stockpile", "geo_resume", "geo_shaft", "geo_cave", "geo_diamond_lava", "geo_obsidian_make", "geo_cliff_tree", "geo_night_swarm",
             "geo_flow", "geo_lake", "geo_guard", "explore_wood");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
@@ -425,6 +425,7 @@ public final class AIBotVerifySubcommand {
             case "geo_diamond_lava" -> assignGeoDiamondLava(bot);
             case "geo_obsidian_make" -> assignGeoObsidianMake(bot);
             case "geo_cliff_tree" -> assignGeoCliffTree(bot);
+            case "geo_night_swarm" -> assignGeoNightSwarm(bot);
             case "geo_flow" -> assignMineGeo(bot, "flow");
             case "geo_lake" -> assignMineGeo(bot, "lake");
             case "geo_recover" -> assignGeoRecover(bot);
@@ -2156,7 +2157,46 @@ public final class AIBotVerifySubcommand {
      * REGRESSION(P2):achieve_goal 钻石——给铁镐(隔离工具链),脚下石层埋钻石矿,断言挖到 diamond。
      * 测"金/红石/钻石/绿宝石需铁镐"这条新映射 + OreDig 挖高级矿。
      */
-    // 崖壁采木(钻石 67% 失败的头号坎,确定性复现):bot 在画布平台,树长在东侧一道**陡坑**底部
+    // 夜间怪海保命(A 前沿,确定性复现 real_diamond 死亡螺旋):夜晚+低血(8)+3 僵尸围攻+给圆石无武器
+    // (逼 shelter 非 combat)。断言:bot 把自己封进墙里(头部四面非空)且存活——保命筑墙成功才达成;
+    // 中途被打死则 deathCount 变,断言永不成立→超时 FAIL。验"濒死无视冷却立即筑墙"是否真救命。
+    private static Result assignGeoNightSwarm(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin);
+        world.setTimeOfDay(13000L); // 夜:刷的僵尸不被晒死,持续围攻
+        InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 32)); // 筑墙料(无武器逼 shelter)
+        bot.setHealth(8.0F); // ≤ EMERGENCY_SHELTER_HP,触发保命筑墙
+        for (int i = 0; i < 3; i++) {
+            net.minecraft.entity.mob.ZombieEntity z = EntityType.ZOMBIE.create(world, SpawnReason.COMMAND);
+            if (z != null) {
+                z.setPersistent();
+                double ang = i * 2.094D;
+                z.refreshPositionAndAngles(bot.getX() + 2.0D * Math.cos(ang), bot.getY(),
+                        bot.getZ() + 2.0D * Math.sin(ang), 0.0F, 0.0F);
+                world.spawnEntity(z);
+            }
+        }
+        TaskManager.INSTANCE.assign(bot, new io.github.zoyluo.aibot.task.HoldTask());
+        final int deathBase = deathCount(bot);
+        return Result.running("geo_night_swarm", 600, ignored -> {
+            if (!bot.isAlive() || deathCount(bot) != deathBase) {
+                return false; // 被打死=没救成
+            }
+            BlockPos h = bot.getBlockPos().up();
+            int walls = 0;
+            for (Direction d : Direction.Type.HORIZONTAL) {
+                if (!world.getBlockState(h.offset(d)).isAir()) {
+                    walls++;
+                }
+            }
+            return walls >= 4; // 头部四面封住=保命筑墙成功
+        });
+    }
+
+    // 崖壁采木(钻石 67% 失败的头号坎,确定性复现):    // 崖壁采木(钻石 67% 失败的头号坎,确定性复现):bot 在画布平台,树长在东侧一道**陡坑**底部
     // (与平台间隔一道 6 格垂直落差,纯步行 GOAL_UNREACHABLE)。断言 bot 升级挖掘接近、下沉够到、
     // 采足 3 木、零死亡。这是"任何地形都能采到木"→"任何地形都能挖钻石"的第一关。
     private static Result assignGeoCliffTree(AIPlayerEntity bot) {

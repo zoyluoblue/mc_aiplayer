@@ -43,6 +43,7 @@ public final class DangerWatcher {
     private static final int TRAP_HELP_INTERVAL = 1200;  // 求助消息最短间隔 60s(防刷屏)
     private static final int HUNT_FOOD_TARGET = 3;       // 第2层 饥饿链:没食物时主动猎取的生肉数量
     private static final int DARK_STUCK_TICKS = 160;     // 规避:地下黑暗处静止 8s 判"困死陷阱",撤回地面
+    private static final float EMERGENCY_SHELTER_HP = 8.0F; // 夜间怪海:≤4 心+有敌 → 无视冷却立即筑墙保命
 
     private DangerWatcher() {
     }
@@ -87,6 +88,22 @@ public final class DangerWatcher {
         }
         Optional<Threat> threat = collectTopThreat(bot);
         Optional<Task> active = TaskManager.INSTANCE.getActive(bot);
+        // 夜间怪海保命(治死亡螺旋):濒死(≤4 心)+ 有敌 + 当前没在筑墙 → 立即筑墙自保,**无视威胁冷却**。
+        // 元凶:combat 完(~100t 没杀光)→进 100t 冷却→gather 恢复挨打→guard 中止→冷却没过 shelter
+        // 派不出→再挨打到死(real_diamond 三种子全栽这,bot 会打但打不赢多怪围殴)。保命压倒一切:
+        // 围一圈墙把自己封进去,怪够不到,血止住,熬过去。需有可放方块(有原木/圆石即可)。
+        if (threat.isPresent() && threat.get().type() == Threat.Type.HOSTILE
+                && bot.getHealth() <= EMERGENCY_SHELTER_HP
+                && EmergencyShelterTask.hasShelterBlock(bot)
+                && !(active.isPresent() && active.get() instanceof EmergencyShelterTask)) {
+            if (active.isPresent()) {
+                TaskManager.INSTANCE.pauseFor(bot, "emergency_entomb");
+            }
+            TaskManager.INSTANCE.assign(bot, new EmergencyShelterTask());
+            BotLog.danger(bot, "emergency_entomb", "hp", (int) bot.getHealth(),
+                    "threat", threat.get().type());
+            return true;
+        }
         if (threat.isPresent()) {
             Threat top = threat.get();
             if (top.severity().ordinal() >= Threat.Severity.MEDIUM.ordinal()

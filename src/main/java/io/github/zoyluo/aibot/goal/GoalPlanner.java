@@ -308,23 +308,13 @@ public final class GoalPlanner {
             if (!ensurePickaxeTier(tier, depth + 1, visiting)) {
                 return false;
             }
-            // 第3层:深层贵重矿(需铁镐及以上,如钻石/金/红石/绿宝石)下矿凶险 → 先备一身铁甲+铁剑再开挖。
+            // 精简速降(用户选·治本):深危矿(钻石/金/红石/绿宝石,Y<0 岩浆+怪多)**只备最小必需**——
+            // 火把(廉价:煤+棍;照明=从源头少刷怪,性价比最高)。**砍掉铁甲/铁剑/盾/烤肉**——它们要先挖
+            // 5+ 铁+熔炼+合成,把"挖钻"变成又长又险的地表远征(跨昼夜撞尽夜间怪海/淹死/崖壁,real_diamond
+            // 实测全栽在这段而非挖矿本身)。深层危险改靠**反应式生存**兜底:濒死封墙(emergency_entomb)、
+            // 岩浆封堵(ore_dig_fluid_seal)、黑暗撤离——遇险才花代价,不提前过度武装。暴露时间砍一个数量级。
             if (tier >= ToolTier.IRON) {
-                if (!ensureArmor(false, depth + 1, visiting)) {
-                    return false;
-                }
-                // 分级装备(用户选):钻石/金/红石/绿宝石等深危矿(都在 Y<0、岩浆+怪多)额外备铁剑+盾——
-                // 主动清怪 + 挡爆炸/远程。best-effort:护甲维持头胸折中(不加腿靴),剑/盾做不出也不阻断挖矿。
-                if (counts.getOrDefault(Items.IRON_SWORD, 0) <= 0) {
-                    ensureItem(Items.IRON_SWORD, 1, depth + 1, visiting);
-                }
-                if (counts.getOrDefault(Items.SHIELD, 0) <= 0) {
-                    ensureItem(Items.SHIELD, 1, depth + 1, visiting);
-                }
-                // 规避:备火把(best-effort),供地下黑暗处点亮防刷怪。
-                ensureTorches(depth + 1, visiting);
-                // 第4层:再备点粮(best-effort,周围没动物不阻断)。
-                ensureFood(depth + 1, visiting);
+                ensureTorches(depth + 1, visiting); // 唯一保留的主动备货:火把(best-effort,缺也不阻断)
             }
             // 挖深层矿重构 P1:bot 远高于矿层 → 先下竖井到矿层,再挖。否则在错误高度(实测 Y=48)
             // 反复"锁定斜下方够不到的矿→水平掘隧道→dist 卡死→no_progress",卡死 11 分钟。

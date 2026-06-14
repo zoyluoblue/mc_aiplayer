@@ -668,12 +668,18 @@ public final class GoalPlanner {
                 if (!ensurePickaxeTier(ToolTier.DIAMOND, depth + 1, visiting)) {
                     return false;
                 }
-                // 备空桶(3 铁/个),保守封顶 4 个免把铁需求顶到天(15 桶=45 铁);软放水不强求,缺桶不阻断。
-                int buckets = Math.min(missing, 4);
-                if (!ensureItem(Items.BUCKET, buckets, depth + 1, visiting)) {
-                    unresolved.add("obsidian_buckets_best_effort:" + buckets);
+                // 附近有现成黑曜石(自然矿脉/预放)→ 直接挖;扫不到才水浇岩浆现造(凑 15 块的真实手段)。
+                // 二分支兼顾:既不丢"挖现成黑曜石"(achieve_obsidian 等),又补"无现成时现造"的新能力。
+                if (oreNearby.test(java.util.Set.of(Blocks.OBSIDIAN))) {
+                    addStep(GoalStep.mine(Blocks.OBSIDIAN, missing));
+                } else {
+                    // 备空桶(3 铁/个),保守封顶 4 个免把铁需求顶到天(15 桶=45 铁);软放水不强求,缺桶不阻断。
+                    int buckets = Math.min(missing, 4);
+                    if (!ensureItem(Items.BUCKET, buckets, depth + 1, visiting)) {
+                        unresolved.add("obsidian_buckets_best_effort:" + buckets);
+                    }
+                    addStep(GoalStep.makeObsidian(missing));
                 }
-                addStep(GoalStep.makeObsidian(missing));
                 counts.merge(Items.OBSIDIAN, missing, Integer::sum);
                 return true;
             }

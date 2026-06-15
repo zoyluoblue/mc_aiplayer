@@ -611,7 +611,9 @@ public final class OreDigTask extends AbstractTask {
         }
         BlockPos ahead = feet.offset(dir);   // 下一级头位 (x+d, y)
         BlockPos next = ahead.down();         // 下一级站位 (x+d, y-1)
-        BlockPos solid = firstSolid(world, next, ahead);
+        // 清三格身位:ahead(前方头位,可见先挖) + ahead.up()(前上头顶净空) + next(脚位)。补挖 ahead.up()
+        // 让下潜矿道沿对角线 2 格可走高——只清 next+ahead 时玩家下台阶头撞前方实心顶,巷道等效 1 格高过不去。
+        BlockPos solid = firstSolid(world, ahead, ahead.up(), next);
         if (solid != null) {
             BlockMiner.Status st = miner.target() != null && miner.target().equals(solid)
                     ? miner.tick(bot)
@@ -786,6 +788,17 @@ public final class OreDigTask extends AbstractTask {
 
     private static boolean withinReach(AIPlayerEntity bot, BlockPos pos) {
         return bot.getEyePos().squaredDistanceTo(pos.toCenterPos()) <= REACH_SQUARED;
+    }
+
+    // 3 参版:依次返回第一个"固体且非流体"的格(流体跳过不挖→防溃浆/溃水)。下潜台阶清三格身位
+    // (ahead 头位 + ahead.up 头顶净空 + next 脚位),保证下潜矿道 2 格可走高、正常玩家能通过。
+    private static BlockPos firstSolid(ServerWorld world, BlockPos a, BlockPos b, BlockPos c) {
+        for (BlockPos p : new BlockPos[]{a, b, c}) {
+            if (!world.getBlockState(p).isAir() && world.getFluidState(p).isEmpty()) {
+                return p.toImmutable();
+            }
+        }
+        return null;
     }
 
     private static BlockPos firstSolid(ServerWorld world, BlockPos a, BlockPos b) {

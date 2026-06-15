@@ -266,11 +266,12 @@ public final class DigDownTask extends AbstractTask {
             digHorizontal(bot, world, feet);
             return;
         }
-        // 清出下一级身位:先挖 ahead(前方身位,眼睛永远看得见) → 再挖 next(前下踏面)。
-        // 顺序至关重要:斜坡/上坡地形里 ahead 是挡在正前方的实心墙,会遮住通往 next 的视线——
-        // 若先挖被遮的 next,BlockMiner 射线撞上 ahead 判够不到→FAILED→每tick重发→零破块卡死
-        // (真实针叶林 podzol 坡 seed20260610 主因)。平地深层 ahead/next 皆石料无遮挡,顺序无差异(不回归)。
-        BlockPos solid = firstSolid(world, ahead, next);
+        // 清出下一级身位:ahead(前方身位,眼睛永远看得见,先挖) → ahead.up()(前上头顶净空) → next(前下踏面)。
+        // ① 顺序:斜坡/上坡里 ahead 是挡在正前方的实心墙遮住通往 next 的视线,先挖被遮的 next 会射线撞墙
+        //    判够不到→FAILED→零破块卡死(seed20260610 主因);ahead 先挖清遮挡。
+        // ② 补挖 ahead.up():只清 next+ahead 每列仅 2 格(Y-1,Y),玩家从上一级下来时头撞前方 Y+1 实心顶,
+        //    下台阶只剩 1 格可走高、正常玩家过不去。补头顶净空→下潜巷道 2 格可通行。firstSolid3 跳流体防溃浆。
+        BlockPos solid = firstSolid(world, ahead, ahead.up(), next);
         if (solid != null) {
             miner.begin(bot, solid);
             miner.tick(bot); // 立即发起本格挖掘,不浪费一 tick
@@ -344,6 +345,17 @@ public final class DigDownTask extends AbstractTask {
 
     private static boolean isLava(ServerWorld world, BlockPos pos) {
         return world.getBlockState(pos).getFluidState().isIn(FluidTags.LAVA);
+    }
+
+    // 3 参版:依次返回第一个"固体且非流体"的格(流体跳过不挖→防溃浆/溃水)。下潜台阶清三格身位
+    // (ahead 头位 + ahead.up 头顶净空 + next 脚位),保证下潜巷道 2 格可走高、正常玩家能通过。
+    private static BlockPos firstSolid(ServerWorld world, BlockPos a, BlockPos b, BlockPos c) {
+        for (BlockPos p : new BlockPos[]{a, b, c}) {
+            if (!world.getBlockState(p).isAir() && world.getFluidState(p).isEmpty()) {
+                return p.toImmutable();
+            }
+        }
+        return null;
     }
 
     private static BlockPos firstSolid(ServerWorld world, BlockPos a, BlockPos b) {

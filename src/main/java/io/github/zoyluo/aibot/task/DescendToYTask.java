@@ -128,8 +128,11 @@ public final class DescendToYTask extends AbstractTask {
             fail("descend_blocked at_y=" + next.getY());
             return;
         }
-        // 清出下一级身位:next(脚位) + ahead(头位),挖第一个固体。
-        BlockPos solid = firstSolid(world, next, ahead);
+        // 清出下一级身位:ahead(前方头位,可见先挖) + ahead.up()(前上,头顶净空) + next(脚位)。
+        // 关键补挖 ahead.up()——只清 next+ahead 的旧台阶每列仅 2 格(Y-1,Y),玩家从上一级走下来时头会撞到
+        // 前方 Y+1 的实心顶,对角下台阶只剩 1 格可走高、正常玩家(1.8高)钻不进(实测下潜矿道人过不去)。
+        // 补 ahead.up() 后下潜巷道沿对角线真正 2 格净空可通行。firstSolid3 跳流体防溃浆。
+        BlockPos solid = firstSolid(world, ahead, ahead.up(), next);
         if (solid != null) {
             miner.begin(bot, solid);
             miner.tick(bot);
@@ -214,6 +217,17 @@ public final class DescendToYTask extends AbstractTask {
             }
         }
         return false;
+    }
+
+    // 3 参版:依次返回第一个"固体且非流体"的格(流体跳过,绝不挖→防溃浆/溃水)。用于下潜台阶清三格身位
+    // (ahead 头位 + ahead.up 头顶净空 + next 脚位),保证下潜巷道 2 格可走高。
+    private static BlockPos firstSolid(ServerWorld world, BlockPos a, BlockPos b, BlockPos c) {
+        for (BlockPos p : new BlockPos[]{a, b, c}) {
+            if (!world.getBlockState(p).isAir() && world.getFluidState(p).isEmpty()) {
+                return p.toImmutable();
+            }
+        }
+        return null;
     }
 
     private static BlockPos firstSolid(ServerWorld world, BlockPos a, BlockPos b) {

@@ -5,6 +5,7 @@ import io.github.zoyluo.aibot.log.BotLog;
 import net.minecraft.block.BlockState;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.ItemStack;
+import net.minecraft.registry.Registries;
 
 public final class ToolSelector {
     private ToolSelector() {
@@ -56,11 +57,42 @@ public final class ToolSelector {
         }
         float speed = stack.getMiningSpeedMultiplier(state);
         if (stack.isDamageable() && stack.getDamage() >= stack.getMaxDamage() - 1) {
-            return 0.001F;
+            return 0.001F; // 即将断 → 别用,免得断在手里
         }
-        if (state.isToolRequired() && !stack.isSuitableFor(state)) {
+        // 不要求工具的块(土/砂/砾/原木等):保持原行为,按最快工具选(铲/斧最快),不影响。
+        if (!state.isToolRequired()) {
+            return speed;
+        }
+        // 要求工具但本工具档不够(挖不出掉落,如石镐挖钻石矿):兜底极低分,只在没别的选时勉强用。
+        if (!stack.isSuitableFor(state)) {
             return Math.max(0.001F, speed * 0.01F);
         }
-        return speed;
+        // 要求工具且能挖:耐久保全策略——同样能挖的工具里,优先用【易补充】的石器(无限鹅卵石+耐久足),
+        // 把稀缺的铁/钻镐耐久留给真正要求高档的矿(钻石/金/红石矿,石镐挖不动会落到上面的 !suitable 分支自然选铁)。
+        // 治本:旧逻辑纯按速度选→有铁就拿铁挖石头/下潜上百格→铁镐磨穿→到钻石矿 need_better_tool(real_diamond 主回归)。
+        // 分层:suitable 基础分(100)压倒一切;其上叠加 preservationRank(石>木/金>铁>钻)*10;speed 仅做同档微小 tiebreak。
+        return 100.0F + preservationRank(stack) * 10.0F + Math.min(speed, 9.9F) * 0.1F;
+    }
+
+    // 耐久保全偏好:数值越大越优先使用。石器最优先(鹅卵石无限、断了 replan 秒补、耐久 131 够用);
+    // 木/金次之(易补但耐久低);铁/钻最该保留(稀缺、做一把要挖矿+熔炼),留给石镐挖不动的高档矿。
+    private static int preservationRank(ItemStack stack) {
+        String path = Registries.ITEM.getId(stack.getItem()).getPath();
+        if (path.startsWith("stone_")) {
+            return 5;
+        }
+        if (path.startsWith("wooden_") || path.startsWith("golden_")) {
+            return 4;
+        }
+        if (path.startsWith("iron_")) {
+            return 2;
+        }
+        if (path.startsWith("diamond_")) {
+            return 1;
+        }
+        if (path.startsWith("netherite_")) {
+            return 0;
+        }
+        return 3; // 非分层材质工具:居中,不特别保留也不特别消耗
     }
 }

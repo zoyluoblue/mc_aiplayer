@@ -160,7 +160,7 @@ public final class GatherQuotaTask extends AbstractTask {
                 selfStuckTick = elapsed;
                 exploreHops = 0;          // 采到新东西=这片有产出,探索跳数额度重置
                 exploredSinceFind = true; // 下次"探索后的发现"重新值得入流记忆
-            } else if (elapsed - selfStuckTick > SELF_STUCK_LIMIT && (roamToNewArea(bot) || startExplore(bot))) {
+            } else if (elapsed - selfStuckTick > SELF_STUCK_LIMIT && escapeBarrenArea(bot)) {
                 return; // 两者内部已设 phase=ROAM/EXPLORE(走过去换片/定向外探),移动中不再自检
             }
         }
@@ -282,6 +282,16 @@ public final class GatherQuotaTask extends AbstractTask {
             }
         }
         return findGroundAt(world, found.getX(), found.getZ());
+    }
+
+    // 逃离无树片区(治 gather_timeout 死循环):roam 是局部换片(28-56格小步),在大片无树/恶劣地形里会
+    // 反复跳同几个点跳不出去;explore 是定向远逃(160格)。先 roam 试两次(近处可能就有,省得乱跑),
+    // 连续 2 次还没跳出(roamCount>=2)就改【优先 explore 远逃】,别再原地乒乓把时间烧到 gather_timeout。
+    private boolean escapeBarrenArea(AIPlayerEntity bot) {
+        if (roamCount >= 2) {
+            return startExplore(bot) || roamToNewArea(bot);
+        }
+        return roamToNewArea(bot) || startExplore(bot);
     }
 
     // 卡步逃逸:同一片连续多棵采不到 → 走到 ROAM_DISTANCE 外的露天地表换片林子重试(走过去,不 teleport),
@@ -579,13 +589,11 @@ public final class GatherQuotaTask extends AbstractTask {
             if (prospectAndApproach(bot)) {
                 return;
             }
-            // 这片 + 探测范围(96 格)都没树 → 漫游盲目换片(可走到探测范围外的新片),再不行才 fail 交大脑/玩家。
-            if (roamToNewArea(bot)) {
+            // 这片 + 探测范围(96 格)都没树 → 逃离无树片区:roam 局部换片(28-56格)连跳 2 次没跳出 →
+            // 优先 explore 远逃(160格)。治"roam 在无树/恶劣区反复跳同点、explore 过早耗尽、耗到 gather_timeout"
+            //(实测日志 160048:gather_roam×16 在 4 个点间乒乓、explore 仅 4 跳;非 prospect 节流)。
+            if (escapeBarrenArea(bot)) {
                 surfaceTried = false; // 新区域重新允许"上浮兜底"
-                return;
-            }
-            // EXPLORE:roam 也走不出去(8 方向全拒/次数耗尽)→ 定向大步走出去找(知识库导向或罗盘盲探)。
-            if (startExplore(bot)) {
                 return;
             }
             // 探索额度也烧完(4 跳 ~190 格都没找到)→ 用专属 reason 让大脑/玩家知道"已走出去找过"。

@@ -14,6 +14,9 @@ public record BotSnapshotS2C(
         float health,
         float maxHealth,
         int food,
+        int x,
+        int y,
+        int z,
         String taskName,
         String taskState,
         float progress,
@@ -40,6 +43,9 @@ public record BotSnapshotS2C(
                 buf.readFloat(),
                 buf.readFloat(),
                 buf.readInt(),
+                buf.readInt(),
+                buf.readInt(),
+                buf.readInt(),
                 buf.readString(),
                 buf.readString(),
                 buf.readFloat(),
@@ -63,6 +69,9 @@ public record BotSnapshotS2C(
         buf.writeFloat(health);
         buf.writeFloat(maxHealth);
         buf.writeInt(food);
+        buf.writeInt(x);
+        buf.writeInt(y);
+        buf.writeInt(z);
         buf.writeString(taskName);
         buf.writeString(taskState);
         buf.writeFloat(progress);

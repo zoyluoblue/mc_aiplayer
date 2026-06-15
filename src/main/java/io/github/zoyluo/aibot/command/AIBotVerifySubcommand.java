@@ -135,7 +135,7 @@ public final class AIBotVerifySubcommand {
             "geo_lava",
             "geo_gravel",
             "geo_fullinv",
-            "geo_rich", "geo_water", "geo_recover", "geo_bonus", "geo_stockpile", "geo_resume", "geo_shaft", "geo_cave", "geo_diamond_lava", "geo_obsidian_make", "geo_cliff_tree", "geo_night_swarm",
+            "geo_rich", "geo_water", "geo_recover", "geo_bonus", "geo_stockpile", "geo_resume", "geo_shaft", "geo_cave", "geo_diamond_lava", "geo_obsidian_make", "geo_cliff_tree", "geo_night_swarm", "geo_replay_ore",
             "geo_flow", "geo_lake", "geo_guard", "explore_wood");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
@@ -423,6 +423,7 @@ public final class AIBotVerifySubcommand {
             case "geo_shaft" -> assignMineGeo(bot, "shaft");
             case "geo_cave" -> assignMineGeo(bot, "cave");
             case "geo_diamond_lava" -> assignGeoDiamondLava(bot);
+            case "geo_replay_ore" -> assignGeoReplayOre(bot);
             case "geo_obsidian_make" -> assignGeoObsidianMake(bot);
             case "geo_cliff_tree" -> assignGeoCliffTree(bot);
             case "geo_night_swarm" -> assignGeoNightSwarm(bot);
@@ -2258,7 +2259,60 @@ public final class AIBotVerifySubcommand {
                         && deathCount(bot) == deathBase);
     }
 
-    // 钻石≥3·深层岩浆(真实应用 L1):钻石带(Y-59)本就岩浆密布。3 块钻矿各贴一格岩浆源,
+    // 深层接近抖动·确定性复现(回放 seed777 捕获的确切失败几何,ore_dig_region 快照还原):
+    // bot 在自挖空气隧道里(B 周围有空腔),钻石脉嵌 +X/+Z 实心石 5-6 格、目标 T 在最远端——
+    // "开放隧道在侧+矿在前方实心"诱发 A* 在隧道/挖掘面间抖动(破块却不缩 dist→no_progress)。
+    // 7 层 ASCII 按 X 段(|)、Z 字符排布;#实心 .空气 O矿 T目标。bot 站 B,给铁镐+深挖套件。
+    private static final String[] REPLAY_ROWS_Y = { // index 0 = y+4 .. 6 = y-2 (相对 bot)
+        "#############|#############|#############|#############|#############|#############|#############|#############|#############|#############|#############|#############", // +4
+        "#############|#############|#############|#############|#############|#############|#############|#############|#############|#############|#############|#############", // +3
+        "#############|#############|#############|#############|####.########|###...#######|###OO########|#############|#############|#############|#############|#############", // +2
+        "#.###########|#...#########|###.#########|###.#########|####..#######|##....#######|##OOO########|##OO#########|#########T###|#############|#############|#############", // +1
+        "#.###########|#...#########|###.#########|###B#########|#############|###..########|##OOO########|##O##########|#############|#############|#############|#############", // 0 (bot)
+        "#############|#############|#############|#############|#############|#############|#############|#############|#############|#############|#############|#############", // -1
+        "#############|#############|#############|#############|#############|#############|#############|#############|#############|#############|#############|#############", // -2
+    };
+
+    private static Result assignGeoReplayOre(AIPlayerEntity bot) {
+        clearInventory(bot);
+        BlockPos origin = prepareDeepArea(bot, -59); // 深层环境(Y-59 带),bot 落在 origin
+        ServerWorld world = bot.getServerWorld();
+        InventoryAction.giveItem(bot, new ItemStack(Items.IRON_PICKAXE, 1));
+        giveDeepMineKit(bot);
+        giveDeepMineSupplies(bot);
+        // 还原网格:相对 bot(B)。dxMin=-3(seg0 是 X-3),dz 从 -3(char0)起;dy: 行0=+4 .. 行6=-2。
+        for (int yi = 0; yi < REPLAY_ROWS_Y.length; yi++) {
+            int dy = 4 - yi;
+            String[] segs = REPLAY_ROWS_Y[yi].split("\\|");
+            for (int xi = 0; xi < segs.length; xi++) {
+                int dx = xi - 3; // seg3 = bot 的 X
+                String seg = segs[xi];
+                for (int zi = 0; zi < seg.length(); zi++) {
+                    int dz = zi - 3; // char3 = bot 的 Z
+                    char c = seg.charAt(zi);
+                    BlockPos pos = origin.add(dx, dy, dz);
+                    if (c == '#') {
+                        world.setBlockState(pos, Blocks.STONE.getDefaultState(), Block.NOTIFY_LISTENERS);
+                    } else if (c == '.' || c == 'B') {
+                        world.setBlockState(pos, Blocks.AIR.getDefaultState(), Block.NOTIFY_LISTENERS);
+                    } else if (c == 'O' || c == 'T') {
+                        world.setBlockState(pos, Blocks.DEEPSLATE_DIAMOND_ORE.getDefaultState(), Block.NOTIFY_LISTENERS);
+                    }
+                }
+            }
+        }
+        final int deathBase = deathCount(bot);
+        boolean started = GoalExecutor.INSTANCE.submit(bot,
+                new Goal.MineOre(java.util.Set.of(Blocks.DIAMOND_ORE, Blocks.DEEPSLATE_DIAMOND_ORE), 1));
+        if (!started) {
+            return Result.fail("geo_replay_ore", "goal_submit_failed");
+        }
+        return Result.runningGoal("geo_replay_ore", 4800,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.DIAMOND) >= 1
+                        && deathCount(bot) == deathBase);
+    }
+
+    // 钻石≥3·深层岩浆(真实应用 L1):钻石带(Y-59)本就岩浆密布。    // 钻石≥3·深层岩浆(真实应用 L1):钻石带(Y-59)本就岩浆密布。3 块钻矿各贴一格岩浆源,
     // 逼出"深层岩浆 survival + 多目标连采"——钻石真实失败的头号嫌疑。给铁镐+深挖套件+补给(同
     // achieve_diamond 标准:不给钻石,镐是铁的,真去挖)。断言 ≥3 钻且零死亡(深层死一次=真事故)。
     private static Result assignGeoDiamondLava(AIPlayerEntity bot) {

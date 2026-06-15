@@ -74,6 +74,7 @@ public final class OreDigTask extends AbstractTask {
     private BlockPos bonusOre;        // R3 顺路矿:reach 内的非目标矿,顺手一镐(单块,不追脉)
     private int bonusMined;           // 顺路预算计数(防喧宾夺主)
     private int lastBonusScanTick = -100;
+    private int lastReLockTick = -100;  // 接近途中重扫改投更近矿的限频
 
     public OreDigTask(Set<Block> targetOres, int targetCount) {
         this.targetOres = targetOres == null || targetOres.isEmpty()
@@ -277,6 +278,27 @@ public final class OreDigTask extends AbstractTask {
                 queueVeinAround(bot, world, targetOre);
                 targetOre = null;
                 return;
+            }
+            // 接近途中改投更近矿(real_diamond seed777 主因,确诊):bot 从 35 格外锁定一块钻石、掘进
+            // 途中路过同脉更近的矿块(dist 3-4)却死盯远锁不放,最后 8 格在远矿局部几何里抖死
+            // (三个静态合成场景都复现不出——因为它们 bot 一开局 targetOre 为空就选了最近矿)。
+            // 每 SCAN_INTERVAL 重扫:发现显著更近(<0.6×当前距)且未排除的目标矿就改投——就近开挖,
+            // 自然绕开远矿的抖动死角。不打断正在挖的矿(miningNow),阈值 0.6 防同距反复横跳。
+            boolean miningNow = miner.target() != null && miner.target().equals(targetOre);
+            int nowRe = bot.getServer().getTicks();
+            if (!miningNow && nowRe - lastReLockTick >= SCAN_INTERVAL) {
+                lastReLockTick = nowRe;
+                BlockPos nearer = nearestOre(bot, world);
+                if (nearer != null && !nearer.equals(targetOre)
+                        && bot.getEyePos().squaredDistanceTo(nearer.toCenterPos())
+                           < bot.getEyePos().squaredDistanceTo(targetOre.toCenterPos()) * 0.36D) {
+                    BotLog.action(bot, "ore_dig_relock_nearer",
+                            "from", targetOre.toShortString(), "to", nearer.toShortString());
+                    targetOre = nearer.toImmutable();
+                    lastTargetDist = Double.MAX_VALUE;
+                    targetApproachTick = elapsed;
+                    return;
+                }
             }
             // P0:接近监控——朝矿挖了一阵仍没靠近(斜下方够不到等)→ 放弃该矿,别原地空转
             //(实测在 Y=48 反复锁定斜下方钻石、dist 卡死、no_progress 11 分钟的根因)。

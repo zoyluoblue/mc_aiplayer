@@ -92,8 +92,13 @@ public final class DangerWatcher {
         // 元凶:combat 完(~100t 没杀光)→进 100t 冷却→gather 恢复挨打→guard 中止→冷却没过 shelter
         // 派不出→再挨打到死(real_diamond 三种子全栽这,bot 会打但打不赢多怪围殴)。保命压倒一切:
         // 围一圈墙把自己封进去,怪够不到,血止住,熬过去。需有可放方块(有原木/圆石即可)。
+        // 地下无处可逃:深处隧道挖矿被怪贴脸时,evade 逃向 20 格外的点多半落在实心石里→假逃磨血(已在
+        // EvadeTask 修为 fail)。这里主动兜底:头顶不见天(地下)且正在挨打(hurtTime>0)→ 不等濒死直接封墙,
+        // 因为地下逃跑无效、拖到 ≤4 心才入土往往已死(real_diamond 深层挖矿 evade/guard_low_hp 送命主因)。
+        boolean cannotFlee = !bot.getServerWorld().isSkyVisible(bot.getBlockPos());
+        boolean entombNow = bot.getHealth() <= EMERGENCY_SHELTER_HP || (cannotFlee && bot.hurtTime > 0);
         if (threat.isPresent() && threat.get().type() == Threat.Type.HOSTILE
-                && bot.getHealth() <= EMERGENCY_SHELTER_HP
+                && entombNow
                 && EmergencyShelterTask.hasShelterBlock(bot)
                 && !(active.isPresent() && active.get() instanceof EmergencyShelterTask)) {
             if (active.isPresent()) {
@@ -101,7 +106,7 @@ public final class DangerWatcher {
             }
             TaskManager.INSTANCE.assign(bot, new EmergencyShelterTask());
             BotLog.danger(bot, "emergency_entomb", "hp", (int) bot.getHealth(),
-                    "threat", threat.get().type());
+                    "underground", cannotFlee, "threat", threat.get().type());
             return true;
         }
         if (threat.isPresent()) {

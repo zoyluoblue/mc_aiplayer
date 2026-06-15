@@ -30,22 +30,34 @@ public final class EvadeTask extends AbstractTask {
     @Override
     protected void onStart(AIPlayerEntity bot) {
         escapeGoal = chooseGoal(bot);
-        bot.getActionPack().startPathTo(escapeGoal);
-        // 逃命必须冲刺:走路 4.3m/s 对僵尸追击 4.0m/s 只快一线,寻路绕障/起步延迟就被贴脸磨死
-        //(实测无装备 bot 夜间远征被僵尸追杀致死)。冲刺 5.6m/s 才能真正甩开。
-        bot.getActionPack().setSprinting(true);
+        if (escapeGoal != null) {
+            bot.getActionPack().startPathTo(escapeGoal);
+            // 逃命必须冲刺:走路 4.3m/s 对僵尸追击 4.0m/s 只快一线,寻路绕障/起步延迟就被贴脸磨死
+            //(实测无装备 bot 夜间远征被僵尸追杀致死)。冲刺 5.6m/s 才能真正甩开。
+            bot.getActionPack().setSprinting(true);
+        }
+        // escapeGoal==null(无处可逃)→ 不启动寻路,onTick 首 tick 即 fail 交筑墙升级。
     }
 
     @Override
     protected void onTick(AIPlayerEntity bot) {
+        if (escapeGoal == null) {
+            // 无处可逃(深处隧道/被围)→ 干净失败,交 DangerWatcher 升级筑墙自保,不假完成空转挨打。
+            fail("no_valid_escape_route");
+            return;
+        }
         bot.getActionPack().setSprinting(true); // 持续保持(其他控制器可能每 tick 复位)
-        if (escapeGoal != null && bot.getBlockPos().getSquaredDistance(escapeGoal) <= 6.25D) {
+        if (bot.getBlockPos().getSquaredDistance(escapeGoal) <= 6.25D) {
             bot.getActionPack().setSprinting(false);
             complete();
             return;
         }
         if (bot.getActionPack().isPathExecutorIdle() && elapsed > 10) {
             escapeGoal = chooseGoal(bot);
+            if (escapeGoal == null) {
+                fail("no_valid_escape_route");
+                return;
+            }
             bot.getActionPack().startPathTo(escapeGoal);
         }
         if (elapsed > 400) {
@@ -80,7 +92,10 @@ public final class EvadeTask extends AbstractTask {
                 }
             }
         }
-        return bot.getBlockPos();
+        // 逃向方向 20+4 格内无可站点(深处隧道四周全实心/被围)→ 返回 null 表"无处可逃",
+        // 由 onTick 干净 fail 交 DangerWatcher 升级筑墙。绝不返回当前位置(旧 bug:距离=0 → 立即假完成 →
+        // DangerWatcher 见威胁仍在又派 evade → 原地反复假逃被磨死,real_diamond 深层挖矿送命主因)。
+        return null;
     }
 
     private static String compact(BlockPos pos) {

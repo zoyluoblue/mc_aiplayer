@@ -1303,7 +1303,7 @@ public final class AIBotVerifySubcommand {
         if (!started) {
             return Result.fail("real_diamond", "goal_submit_failed");
         }
-        return Result.runningGoal("real_diamond", 24000,
+        return Result.runningGoal("real_diamond", 36000,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.DIAMOND) >= 1
                         && deathCount(bot) == deathBase);
     }

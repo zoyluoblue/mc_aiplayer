@@ -46,6 +46,7 @@ public final class DigDownTask extends AbstractTask {
     private static final Direction[] HDIRS = {Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST};
     private int hdirIndex;    // 撞基岩后水平掘进的当前方向
     private int stairDirIndex; // 台阶斜下的当前水平方向(HDIRS 下标)
+    private boolean horizontalMode; // 下挖到上限/撞基岩后永久转横挖,经主体统一原语+看门狗(治 MAX_DESCENT 每tick自废)
 
     private int invBaseline;
     private int collected;
@@ -157,21 +158,26 @@ public final class DigDownTask extends AbstractTask {
         }
         ServerWorld world = bot.getServerWorld();
         // 下挖深度兜底:超过 MAX_DESCENT 还没采够,多半是掉落物没及时捡(collected 不增)→ 大范围扫拾一次再判;
-        // 仍不够则转水平掘进(同层找石),绝不继续无限往深里挖(实测无限下挖到 y6 被蜘蛛围杀)。
-        if (startPos != null && startPos.getY() - bot.getBlockPos().getY() >= MAX_DESCENT) {
-            miner.cancel(bot);
+        // 仍不够则【一次性】永久转水平掘进(置 horizontalMode 标志),绝不继续无限往深里挖(实测无限下挖到 y6 被蜘蛛围杀)。
+        // 关键:此处绝不每 tick cancel+begin+return——旧逻辑那样会绕过下面的 miner.tick(永不推进)和
+        // L207 无进展看门狗(白等满 MAX_DESCENT 硬超时),每 tick 自废零破块(seed20260610 dig_down_timeout 根因)。
+        // 改为只置标志一次,之后正常流经主体统一原语:miner.tick 逐块推进 + 看门狗真卡时 200t 干净失败交回 replan。
+        if (!horizontalMode && startPos != null && startPos.getY() - bot.getBlockPos().getY() >= MAX_DESCENT) {
             HarvestCore.sweepPickupAnyOf(bot, targetDrops, 12.0D, 64);
             int got = Math.max(0, HarvestCore.countInventoryItems(bot, targetDrops) - invBaseline);
             if (got >= targetCount) {
                 collected = got;
+                miner.cancel(bot);
                 returning = true;
                 returnStartTick = elapsed;
                 BotLog.action(bot, "dig_down_return_start", "from", bot.getBlockPos().toShortString(),
                         "to", startPos.toShortString());
-            } else {
-                digHorizontal(bot, world, bot.getBlockPos()); // 不再下挖,同层横向找石
+                return;
             }
-            return;
+            horizontalMode = true;        // 永久转横挖,后续走 L236 的 digHorizontal 决策(经 miner.tick + 看门狗)
+            lastProgressTick = elapsed;   // 给横挖一个干净的看门狗起算窗口
+            BotLog.action(bot, "dig_down_go_horizontal", "from", bot.getBlockPos().toShortString(),
+                    "collected", collected + "/" + targetCount);
         }
 
         // 工具闸:挖不动目标(无合格镐)直接失败,交 GoalExecutor 倒推补镐。
@@ -236,9 +242,11 @@ public final class DigDownTask extends AbstractTask {
         // DONE / FAILED / IDLE → 决定下一格(脚下柱)。
 
         BlockPos feet = bot.getBlockPos();
-        if (feet.down().getY() <= MIN_Y) {
-            // 到基岩上方、向下已无空间 → 转水平掘进继续挖石料(实测 Y=-59 时第一步 below 就 <= MIN_Y,
+        if (horizontalMode || feet.down().getY() <= MIN_Y) {
+            // horizontalMode:下挖到 MAX_DESCENT 上限后永久横挖(见上方一次性置标志处)。
+            // 或到基岩上方、向下已无空间 → 转水平掘进继续挖石料(实测 Y=-59 时第一步 below 就 <= MIN_Y,
             // 旧逻辑直接 fail collected=0 → MINE stone 失败 → goal replan 死循环)。
+            // 两路皆复用统一 digHorizontal:其 begin 有防重入守卫,经上面 miner.tick 推进 + L207 看门狗止损。
             digHorizontal(bot, world, feet);
             return;
         }

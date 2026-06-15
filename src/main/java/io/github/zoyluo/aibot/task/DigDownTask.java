@@ -258,8 +258,11 @@ public final class DigDownTask extends AbstractTask {
             digHorizontal(bot, world, feet);
             return;
         }
-        // 清出下一级身位:next(脚位) + ahead(头位),挖第一个固体(石料,随后落袋计入 collected)。
-        BlockPos solid = firstSolid(world, next, ahead);
+        // 清出下一级身位:先挖 ahead(前方身位,眼睛永远看得见) → 再挖 next(前下踏面)。
+        // 顺序至关重要:斜坡/上坡地形里 ahead 是挡在正前方的实心墙,会遮住通往 next 的视线——
+        // 若先挖被遮的 next,BlockMiner 射线撞上 ahead 判够不到→FAILED→每tick重发→零破块卡死
+        // (真实针叶林 podzol 坡 seed20260610 主因)。平地深层 ahead/next 皆石料无遮挡,顺序无差异(不回归)。
+        BlockPos solid = firstSolid(world, ahead, next);
         if (solid != null) {
             miner.begin(bot, solid);
             miner.tick(bot); // 立即发起本格挖掘,不浪费一 tick

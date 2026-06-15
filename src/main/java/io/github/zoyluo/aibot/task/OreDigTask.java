@@ -217,6 +217,10 @@ public final class OreDigTask extends AbstractTask {
                     "ignored", EpisodeMemory.INSTANCE.excludedCount(bot.getUuid()),
                     "vein_queue", veinQueue.size(),
                     "strip_left", stripStepsLeft);
+            // 自动地形快照(诊断 real_diamond seed777 深层接近抖动的钥匙):把 bot↔矿 之间的几何
+            // 按 Y 层 dump 成紧凑 ASCII(#实心/.空气/O矿/~流体/B=bot/T=矿),记进日志(测试 log 可 grep
+            // 还原)。盲改深层接近已回归过 geo_deep——必须拿确切几何冻成确定性复现再精修。零行为改动。
+            dumpStallRegion(bot, world);
             miner.cancel(bot);
             fail("ore_dig_no_progress collected=" + collected);
             return;
@@ -649,6 +653,41 @@ public final class OreDigTask extends AbstractTask {
             }
         }
         return null;
+    }
+
+    // 卡死现场地形快照:把 bot 与目标矿构成的包围盒(各向外扩 3)按 Y 层 dump 成 ASCII,记进日志。
+    // 字符:B=bot 脚位,T=目标矿,O=其它矿,~=流体,#=实心(挖得动),X=实心(挖不动/基岩),.=空气。
+    // 用途:把"A* 返回路径、执行器破块却不缩 dist"的真实地形冻成确定性复现场景,精修接近抖动。
+    private void dumpStallRegion(AIPlayerEntity bot, ServerWorld world) {
+        BlockPos b = bot.getBlockPos();
+        BlockPos t = targetOre != null ? targetOre : b;
+        int minX = Math.min(b.getX(), t.getX()) - 3, maxX = Math.max(b.getX(), t.getX()) + 3;
+        int minY = Math.min(b.getY(), t.getY()) - 2, maxY = Math.max(b.getY(), t.getY()) + 3;
+        int minZ = Math.min(b.getZ(), t.getZ()) - 3, maxZ = Math.max(b.getZ(), t.getZ()) + 3;
+        BotLog.action(bot, "ore_dig_region_head",
+                "bot", b.toShortString(), "target", t.toShortString(),
+                "box", (maxX - minX + 1) + "x" + (maxY - minY + 1) + "x" + (maxZ - minZ + 1));
+        for (int y = maxY; y >= minY; y--) {
+            StringBuilder row = new StringBuilder();
+            for (int x = minX; x <= maxX; x++) {
+                for (int z = minZ; z <= maxZ; z++) {
+                    BlockPos p = new BlockPos(x, y, z);
+                    char c;
+                    if (p.equals(b)) c = 'B';
+                    else if (p.equals(t)) c = 'T';
+                    else {
+                        var st = world.getBlockState(p);
+                        if (!st.getFluidState().isEmpty()) c = '~';
+                        else if (OreScan.isOreBlock(st.getBlock())) c = 'O';
+                        else if (st.getCollisionShape(world, p).isEmpty()) c = '.';
+                        else c = st.getHardness(world, p) < 0 ? 'X' : '#';
+                    }
+                    row.append(c);
+                }
+                row.append('|'); // 分隔 x 行(每段是固定 z 跨度)
+            }
+            BotLog.action(bot, "ore_dig_region_y", "y", y, "row", row.toString());
+        }
     }
 
     private BlockMiner.Status beginMine(AIPlayerEntity bot, BlockPos pos) {

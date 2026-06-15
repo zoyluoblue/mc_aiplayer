@@ -61,6 +61,7 @@
   "status.aibot.brain.busy": "● 思考中",
   "status.aibot.brain.idle": "○ 空闲",
   "status.aibot.tokens": "tokens %s/%s",
+  "status.aibot.pos": "坐标 %s, %s, %s",
   "inventory.aibot.empty": "背包为空",
   "inventory.aibot.section_equip": "AI 装备(头/胸/腿/脚/主手/副手)",
   "inventory.aibot.section_ai": "AI 背包(点击拿出)",

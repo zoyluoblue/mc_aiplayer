@@ -60,6 +60,7 @@
   "status.aibot.brain.busy": "thinking",
   "status.aibot.brain.idle": "idle",
   "status.aibot.tokens": "tokens %s/%s",
+  "status.aibot.pos": "Pos %s, %s, %s",
   "inventory.aibot.empty": "Inventory is empty",
   "inventory.aibot.section_equip": "AI equipment (armor + hands)",
   "inventory.aibot.section_ai": "AI inventory (click to take)",

@@ -12,7 +12,7 @@ public final class StatusCard extends PanelCard {
 
     @Override
     protected int bodyHeight() {
-        return 86;
+        return 100;
     }
 
     @Override
@@ -35,6 +35,9 @@ public final class StatusCard extends PanelCard {
         context.drawTextWithShadow(renderer, brain, bx, by + 73, brainColor);
         String tokens = Theme.tr("status.aibot.tokens", snapshot.promptTokens(), snapshot.completionTokens());
         context.drawTextWithShadow(renderer, tokens, bx + Math.max(0, bw - renderer.getWidth(tokens)), by + 73, Theme.TEXT_DIM);
+        // 实时坐标:快照由服务端周期下发,bot 移动即刷新(挖矿/下潜时可直接看到 bot 在哪)。
+        String pos = Theme.tr("status.aibot.pos", snapshot.x(), snapshot.y(), snapshot.z());
+        context.drawTextWithShadow(renderer, pos, bx, by + 87, Theme.TEXT);
     }
 
     private static void drawStat(DrawContext context, TextRenderer renderer, int x, int y, int w, String label, float value, float max, int color) {

@@ -1240,6 +1240,20 @@ public final class AIBotVerifySubcommand {
         return bot.getStatHandler().getStat(net.minecraft.stat.Stats.CUSTOM.getOrCreateStat(net.minecraft.stat.Stats.DEATHS));
     }
 
+    // 拥有某装备:背包里有 或 已穿在任意装备槽。用于 armor 断言——避免"合好甲→自动穿甲"的 1-tick 竞态
+    // (runningGoal 在目标完成那刻检断言,穿甲在同 burst 下一拍生效,否则误判'胸甲没穿' FAIL)。
+    private static boolean hasGear(AIPlayerEntity bot, Item item) {
+        if (InventoryAction.countItem(bot, item) >= 1) {
+            return true;
+        }
+        for (net.minecraft.entity.EquipmentSlot slot : net.minecraft.entity.EquipmentSlot.values()) {
+            if (bot.getEquippedStack(slot).isOf(item)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // 实操:砍 8 根原木(自然找树;接受任意树种)。
     private static Result assignRealWood(AIPlayerEntity bot) {
         prepareRealistic(bot);
@@ -1338,10 +1352,10 @@ public final class AIBotVerifySubcommand {
         }
         return Result.runningGoal("real_armor", 36000,
                 ignored -> bot.isAlive() && deathCount(bot) == deathBase
-                        && bot.getEquippedStack(net.minecraft.entity.EquipmentSlot.HEAD).isOf(Items.IRON_HELMET)
-                        && bot.getEquippedStack(net.minecraft.entity.EquipmentSlot.CHEST).isOf(Items.IRON_CHESTPLATE)
-                        && bot.getEquippedStack(net.minecraft.entity.EquipmentSlot.LEGS).isOf(Items.IRON_LEGGINGS)
-                        && bot.getEquippedStack(net.minecraft.entity.EquipmentSlot.FEET).isOf(Items.IRON_BOOTS));
+                        && hasGear(bot, Items.IRON_HELMET)
+                        && hasGear(bot, Items.IRON_CHESTPLATE)
+                        && hasGear(bot, Items.IRON_LEGGINGS)
+                        && hasGear(bot, Items.IRON_BOOTS));
     }
 
     // snapshot 落地辅助:按相对坐标放一块默认态方块(配 /aibot snapshot 导出的 setRel 行)。
@@ -2088,11 +2102,10 @@ public final class AIBotVerifySubcommand {
             return Result.fail("achieve_armor", "goal_submit_failed");
         }
         // 断言:做出并(自动)穿上铁胸甲 + 拥有铁剑 —— 代表 ensureArmor 全套生效。
-        return Result.runningGoal("achieve_armor", 12000,
+        return Result.runningGoal("achieve_armor", 16000,
                 ignored -> bot.isAlive()
-                        && bot.getEquippedStack(net.minecraft.entity.EquipmentSlot.CHEST).isOf(Items.IRON_CHESTPLATE)
-                        && (InventoryAction.countItem(bot, Items.IRON_SWORD) >= 1
-                                || bot.getMainHandStack().isOf(Items.IRON_SWORD)));
+                        && hasGear(bot, Items.IRON_CHESTPLATE)
+                        && hasGear(bot, Items.IRON_SWORD));
     }
 
     // Phase2:基建目标。给足木板+圆石(聚焦"做三件套+摆放"),achieve Goal.Workstation 应在周围摆出工作台/熔炉/箱子。

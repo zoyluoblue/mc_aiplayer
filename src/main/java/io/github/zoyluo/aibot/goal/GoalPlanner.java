@@ -346,6 +346,21 @@ public final class GoalPlanner {
         // full=false(挖矿前置,用户选"折中"):只备头盔+胸甲——挡掉大部分伤害,又让计划短一半、少很多失败点。
         private boolean ensureArmor(boolean full, int depth, Set<String> visiting) {
             List<Item> pieces = full ? IRON_ARMOR : List.of(Items.IRON_HELMET, Items.IRON_CHESTPLATE);
+            // 一趟挖够(治本·real_armor 实测 no_stand_position_for_furnace):先把所有缺甲片/剑所需铁锭【一次性】
+            // 备齐,合并成一次挖矿 + 一次熔炼。否则逐件分批挖→每件挖完铁回炉熔——深处挖完铁找不回地表那个远炉的
+            // 落脚点就卡死(实测做完头盔、给胸甲熔铁时 no_stand_position_for_furnace)。真人也是一趟挖满再统一熔。
+            int totalIron = 0;
+            for (Item piece : pieces) {
+                if (counts.getOrDefault(piece, 0) <= 0) {
+                    totalIron += ironIngotCost(piece);
+                }
+            }
+            if (full && counts.getOrDefault(Items.IRON_SWORD, 0) <= 0) {
+                totalIron += ironIngotCost(Items.IRON_SWORD);
+            }
+            if (totalIron > 0) {
+                ensureItem(Items.IRON_INGOT, totalIron, depth + 1, visiting); // 一次挖+熔够,后续合甲/剑直接消耗库存,不再分批回炉
+            }
             for (Item piece : pieces) {
                 if (counts.getOrDefault(piece, 0) <= 0 && !ensureItem(piece, 1, depth + 1, visiting)) {
                     return false;
@@ -356,6 +371,17 @@ public final class GoalPlanner {
                 return false;
             }
             return true;
+        }
+
+        // 算一件成品(甲/剑)配方里需要多少铁锭(用 RecipeRegistry,不硬编码——armorOf=单一 iron_ingot 配料,
+        // sword=iron_ingot×2+棍)。供 ensureArmor 合并预备总铁量,实现"一趟挖满 26 铁再统一熔"。
+        private int ironIngotCost(Item item) {
+            return RecipeRegistry.find(item)
+                    .map(r -> r.ingredients().stream()
+                            .filter(ing -> ing.anyOf().contains(Items.IRON_INGOT))
+                            .mapToInt(RecipeRegistry.Ingredient::count)
+                            .sum())
+                    .orElse(0);
         }
 
         // 规避加固:挖深矿(凶险)前备一批火把,供 DangerWatcher 在地下黑暗处点亮防刷怪。

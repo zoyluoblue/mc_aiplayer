@@ -115,6 +115,7 @@ public final class AIBotVerifySubcommand {
             "real_wheat",
             "real_iron",
             "real_diamond",
+            "real_armor",
             "real_obsidian",
             "real_nav_far",
             "nav_pillar_out",
@@ -199,6 +200,7 @@ public final class AIBotVerifySubcommand {
             "real_wheat",
             "real_iron",
             "real_diamond",
+            "real_armor",
             "real_obsidian");
 
     // 寻路容错专项套件:/aibot verify nav_suite。四条各钉一种实操高频故障形态:
@@ -394,6 +396,7 @@ public final class AIBotVerifySubcommand {
             case "real_iron" -> assignRealIron(bot);
             case "real_diamond" -> assignRealDiamond(bot);
             case "real_diamond3" -> assignRealDiamond3(bot);
+            case "real_armor" -> assignRealArmor(bot);
             case "real_obsidian" -> assignRealObsidian(bot);
             case "llm_move" -> assignLlmMove(bot);
             case "llm_food" -> assignLlmFood(bot);
@@ -1321,6 +1324,24 @@ public final class AIBotVerifySubcommand {
         return Result.runningGoal("real_diamond3", 36000,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.DIAMOND) >= 3
                         && deathCount(bot) == deathBase);
+    }
+
+    // 从零做整套铁甲(真实地形,不预置任何材料——区别于 achieve_armor 的预置 30 铁只测合甲)。
+    // 链路:木→工具→挖铁×24+→熔炼→合 4 甲+剑→穿。比钻石浅(铁在 Y16-48,石镐够,无 Y-59 岩浆),但量大。
+    // 断言:整套四件铁甲全部穿上 + 存活 + 零死亡(死一次=大事故,与 real_diamond 同红线)。
+    private static Result assignRealArmor(AIPlayerEntity bot) {
+        prepareRealistic(bot);
+        final int deathBase = deathCount(bot);
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.Armor());
+        if (!started) {
+            return Result.fail("real_armor", "goal_submit_failed");
+        }
+        return Result.runningGoal("real_armor", 36000,
+                ignored -> bot.isAlive() && deathCount(bot) == deathBase
+                        && bot.getEquippedStack(net.minecraft.entity.EquipmentSlot.HEAD).isOf(Items.IRON_HELMET)
+                        && bot.getEquippedStack(net.minecraft.entity.EquipmentSlot.CHEST).isOf(Items.IRON_CHESTPLATE)
+                        && bot.getEquippedStack(net.minecraft.entity.EquipmentSlot.LEGS).isOf(Items.IRON_LEGGINGS)
+                        && bot.getEquippedStack(net.minecraft.entity.EquipmentSlot.FEET).isOf(Items.IRON_BOOTS));
     }
 
     // snapshot 落地辅助:按相对坐标放一块默认态方块(配 /aibot snapshot 导出的 setRel 行)。

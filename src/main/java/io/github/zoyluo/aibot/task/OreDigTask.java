@@ -72,6 +72,7 @@ public final class OreDigTask extends AbstractTask {
     private int stripDirIndex = -1;   // 优化1:矿层水平找矿当前掘进方向(STRIP_DIRS 下标),-1=未开始
     private int stripStepsLeft;       // 优化1:当前隧道段剩余格数
     private int consecutiveSkips;     // 连续"锁矿够不到被跳过"次数(挖到矿清零);超阈值强制 strip 推进破死锁
+    private BlockPos lastSkipPos;     // 上次弃矿时 bot 所在格:原地反复弃矿(位置不变)不喂活看门狗,让其能熔断破thrash
     private final int maxElapsed;     // 硬超时:大配额(整套铁甲26铁)按量缩放,小配额用基线
     private int lastMinedTick = -100; // 挖掉矿本体的时刻:掉落实体在下 tick 才出现,挖完原地驻留捡取
     private BlockPos bonusOre;        // R3 顺路矿:reach 内的非目标矿,顺手一镐(单块,不追脉)
@@ -322,10 +323,14 @@ public final class OreDigTask extends AbstractTask {
                         "skips", consecutiveSkips);
                 targetOre = null;
                 lastTargetDist = Double.MAX_VALUE;
-                // 主动换目标是决策性进展:嵌深处的天然矿可能要连排除好几块才轮到可达矿/富区兜底,
-                // 不刷进度的话 no_progress(200t)会在合理轮换中途误杀任务。真卡死(同矿反复
-                // reject 不 skip)不会走到这,看门狗照常生效。
-                lastProgressTick = elapsed;
+                // 主动换目标是决策性进展:嵌深处的天然矿可能要连排除好几块才轮到可达矿/富区兜底,合理轮换不该被误杀。
+                // 但【大配额(整套铁甲≥16)】下原地反复锁同片够不到的矿(位置不变)若无条件喂活看门狗,会 thrash 100s+
+                // 永不熔断、strip/replan 永不接管(real_armor 实测 found324/collected9/bot静止106s)。故大配额仅在 bot
+                // 真换territory(位移)才算进展;小配额(稀疏钻石 targetCount<16)沿用旧无条件喂活,零回归。
+                if (targetCount < 16 || !bot.getBlockPos().equals(lastSkipPos)) {
+                    lastProgressTick = elapsed;
+                    lastSkipPos = bot.getBlockPos().toImmutable();
+                }
                 return;
             }
             // 挖掘锁定:已对这块矿开挖就继续挖完,不管当前是否仍在 reach 内——bot 站在阶梯上微移会让
@@ -573,6 +578,15 @@ public final class OreDigTask extends AbstractTask {
     // ── 朝目标挖一格隧道(只挖伸手可及的那一格,BlockMiner 驱动) ──
     private void digTowardStep(AIPlayerEntity bot, ServerWorld world, BlockPos goal) {
         BlockPos feet = bot.getBlockPos();
+        // P0(治深层斜下矿零位移空转):目标深在脚下(低≥2)且水平已贴近(≤2)→ 同层横向兜不到它,
+        // 改走安全台阶下沉一级(digDownOneLayer 自带避水/避岩浆/补头顶净空,与下潜矿道同款可靠原语)。
+        // 实测 real_armor:bot 站 Y47 锁 Y40 矿,stepToward 只水平东走永不下降→dist不降→skip→thrash 100s+。
+        int dyToGoal = goal.getY() - feet.getY();
+        if (dyToGoal <= -2
+                && Math.abs(goal.getX() - feet.getX()) + Math.abs(goal.getZ() - feet.getZ()) <= 2) {
+            digDownOneLayer(bot, world);
+            return;
+        }
         BlockPos step = stepToward(feet, goal);
         if (step == null) {
             excludeOre(bot, goal);

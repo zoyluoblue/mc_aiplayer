@@ -55,6 +55,7 @@ public final class GoalPlanner {
             Items.BEEF, Items.PORKCHOP, Items.MUTTON, Items.CHICKEN, Items.RABBIT);
     private static final int FOOD_TARGET = 4;
     private static final int DESCEND_THRESHOLD = 8; // bot 高于矿层超过这么多格,先下竖井到矿层再挖
+    private static final int SPARE_IRON_INGOTS = 3; // 深潜挖矿前多备 1 把铁镐的料(3 铁锭),镐磨穿时深处背包直接合新镐
     private static final int FOOD_GRASS_SCAN = 32;  // Goal.Food 择源:扫这个半径内有无草(种植面包链的种子来源)
 
     public record GoalPlan(Goal goal, List<GoalStep> steps, List<String> unresolved) {
@@ -321,7 +322,15 @@ public final class GoalPlanner {
             int mineY = bestMiningY(expanded);
             // 附近已有目标矿 → 不下潜直接挖(站在矿旁先挖竖井到矿层是蠢的,且竖井穿天然地形
             // 极易 blocked;实操"带 bot 到矿边让它挖"也走这条捷径)。
-            if (botY - mineY > DESCEND_THRESHOLD && !oreNearby.test(expanded)) {
+            boolean willDescend = botY - mineY > DESCEND_THRESHOLD && !oreNearby.test(expanded);
+            // 深潜耐久兜底(治本·real_diamond 手测死因):深处铁镐磨穿后无法就地补给——深层没树做熔炉/燃料,
+            // resupply 倒推"采橡木→合熔炉→熔炼铁锭"在 Y<0 必败(96 格无树)→ 反复 replan 卡死被怪杀。
+            // 解法:深潜前多备 3 铁锭备料(地表一次性多挖/熔炼好)。镐磨穿时深处直接用备料+背包工作台+棍合新镐
+            //(只需 craft,无需树/熔炉/熔炼),不被困死深处。仅深潜才备(就近挖在地表附近,坏了能正常补)。
+            if (tier >= ToolTier.IRON && willDescend) {
+                ensureItem(Items.IRON_INGOT, SPARE_IRON_INGOTS, depth + 1, visiting);
+            }
+            if (willDescend) {
                 addStep(GoalStep.descendToY(mineY));
             }
             addStep(GoalStep.mineOre(expanded, remaining));

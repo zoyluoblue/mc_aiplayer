@@ -317,6 +317,12 @@ public final class GoalPlanner {
             if (!ensurePickaxeTier(tier, depth + 1, visiting)) {
                 return false;
             }
+            // 大批量挖矿备足镐(治本·real_armor 26铁挖到9超时):石镐~131耐久,挖24+铁含掘进要磨断多把。
+            // 途中磨穿→resupply 就地合会打断大配额单 mine_ore、丢挖矿进度→ore_dig_timeout。按量预备(含掘进≈1把/12块)
+            // 一把磨穿换备用、不中断,一趟挖完。仅 STONE 档(挖铁/铜,圆石无限廉价)预备;IRON 档(钻石)已由备铁锭兜。
+            if (tier <= ToolTier.STONE && remaining >= 12) {
+                ensureItem(pickaxeForTier(tier), 1 + remaining / 12, depth + 1, visiting);
+            }
             // 精简速降(用户选·治本):深危矿(钻石/金/红石/绿宝石,Y<0 岩浆+怪多)**只备最小必需**——
             // 火把(廉价:煤+棍;照明=从源头少刷怪,性价比最高)。**砍掉铁甲/铁剑/盾/烤肉**——它们要先挖
             // 5+ 铁+熔炼+合成,把"挖钻"变成又长又险的地表远征(跨昼夜撞尽夜间怪海/淹死/崖壁,real_diamond

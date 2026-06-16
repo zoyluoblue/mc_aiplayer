@@ -582,8 +582,17 @@ public final class OreDigTask extends AbstractTask {
         // 改走安全台阶下沉一级(digDownOneLayer 自带避水/避岩浆/补头顶净空,与下潜矿道同款可靠原语)。
         // 实测 real_armor:bot 站 Y47 锁 Y40 矿,stepToward 只水平东走永不下降→dist不降→skip→thrash 100s+。
         int dyToGoal = goal.getY() - feet.getY();
-        if (dyToGoal <= -2
-                && Math.abs(goal.getX() - feet.getX()) + Math.abs(goal.getZ() - feet.getZ()) <= 2) {
+        if (dyToGoal <= -2) {
+            // 目标明显在下方(低≥2):同层横向永远够不到它(real_armor 实测死钉 Y47 锁 Y40 矿、skip265/collected9)。
+            // 走安全台阶下沉(digDownOneLayer 避水/避岩浆/补头顶净空),并把台阶方向【偏向矿的水平方位】——
+            // 形成"斜向下直奔矿"的阶梯:既降 Y 也朝矿靠拢,降到矿层后同层逻辑自然够到。比旧"仅水平≤2才降"宽。
+            int dx = goal.getX() - feet.getX();
+            int dz = goal.getZ() - feet.getZ();
+            if (Math.abs(dx) >= Math.abs(dz)) {
+                stripDirIndex = dx >= 0 ? 1 : 3; // STRIP_DIRS{N,E,S,W}: EAST=1 / WEST=3
+            } else {
+                stripDirIndex = dz >= 0 ? 2 : 0; // SOUTH=2 / NORTH=0
+            }
             digDownOneLayer(bot, world);
             return;
         }

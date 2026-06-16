@@ -176,9 +176,17 @@ public final class GoalPlanner {
     }
 
     private static void add(Map<Item, Integer> counts, ItemStack stack) {
-        if (!stack.isEmpty()) {
-            counts.merge(stack.getItem(), stack.getCount(), Integer::sum);
+        if (stack.isEmpty()) {
+            return;
         }
+        // 即将断的工具/装备(与 ToolSelector 同阈值 damage>=max-1)不计入库存:选镐保全根本不会用它,
+        // planner 若把它当"有镐"就不补新的 → 挖矿 need_better_tool 与"已有镐"死锁(real_armor 实测:
+        // 挖26铁把石镐磨到将断,被当"有石镐"不补 → mine_ore 反复 need_better_tool:stone_pickaxe 失败)。
+        // 不计 → ensurePickaxeTier 用背包圆石补一把新石镐,选镐保全改用新的,链路续上。
+        if (stack.isDamageable() && stack.getDamage() >= stack.getMaxDamage() - 1) {
+            return;
+        }
+        counts.merge(stack.getItem(), stack.getCount(), Integer::sum);
     }
 
     private static final class Planner {

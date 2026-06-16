@@ -343,6 +343,11 @@ public final class GoalPlanner {
             //(只需 craft,无需树/熔炉/熔炼),不被困死深处。仅深潜才备(就近挖在地表附近,坏了能正常补)。
             if (tier >= ToolTier.IRON && willDescend) {
                 ensureItem(Items.IRON_INGOT, SPARE_IRON_INGOTS, depth + 1, visiting);
+                // 带铁套加成回攻钻石(用户选·铁套链已加固到正常地形4/4可靠):深潜前备【头盔+胸甲】(挡大部分伤害的
+                // 性价比甜点,13铁,比整套短一半)。当初精简砍甲是因甲链不稳=又长又险的远征;现在甲链已治本可靠,
+                // 重新武装划算——深潜死因多是生存(岩浆/怪/低血),铁甲直接减伤。best-effort:甲做不出不阻断挖钻(降级反应式生存)。
+                // 配合 DescendToYTask.onStart 的 equipBestArmor 主动穿上。
+                ensureArmor(false, depth + 1, visiting);
             }
             if (willDescend) {
                 addStep(GoalStep.descendToY(mineY));

@@ -6,6 +6,7 @@ import io.github.zoyluo.aibot.action.BuildAction;
 import io.github.zoyluo.aibot.action.ContainerAction;
 import io.github.zoyluo.aibot.action.DigNav;
 import io.github.zoyluo.aibot.action.InventoryAction;
+import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.craft.SmeltChain;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.memory.BotMemoryStore;
@@ -203,6 +204,14 @@ public final class SmeltTask extends AbstractTask {
         }
         BlockPos stand = adjacentStand(bot, furnacePos);
         if (stand == null) {
+            // 现有炉够不到落脚点(悬崖/狭地形,real_armor 20260610 实测 no_stand 整局失败):别失败——
+            // 有炉就地放一座新炉,熔炼永远能就近进行(旧炉弃用,几块鹅卵石认亏)。无炉才真失败交 replan 补炉。
+            if (InventoryAction.findItem(bot, Items.FURNACE).isPresent()) {
+                BotLog.action(bot, "smelt_furnace_unreachable_replace", "old", furnacePos.toShortString());
+                furnacePos = null;
+                phase = Phase.PLACING_FURNACE;
+                return;
+            }
             fail("no_stand_position_for_furnace");
             return;
         }

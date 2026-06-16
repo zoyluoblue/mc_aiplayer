@@ -46,6 +46,7 @@ public final class GatherQuotaTask extends AbstractTask {
     private static final int EXPLORE_PATH_ATTEMPTS = 5;  // 单次选点最多实跑几次同步 A*(防单 tick 长卡)
     private static final int KNOWN_RESOURCE_RANGE = 192; // 知识库记忆点导向的最大距离
     private static final int GOTO_FAIL_EXCLUDE = 2;      // 同一目标 GOTO 连续走崩 N 次 → 工作记忆拉黑
+    private static final int GOTO_STUCK_LIMIT = 80;      // R1:GOTO 朝树寻路时坐标连续这么久(4s)不动 → 判悬空/卡死,强制脱困
 
     private enum Phase {
         SURVEY,
@@ -99,6 +100,8 @@ public final class GatherQuotaTask extends AbstractTask {
     private BlockPos lastGotoTarget;
     private int gotoFailStreak;
     private boolean treeDigTried; // 当前目标是否已升级过挖掘接近(崖壁/下方树走不到时下沉掘进)
+    private BlockPos gotoStuckPos; // R1:GOTO 上次记录的坐标(久不动判悬空死锁)
+    private int gotoStuckTick;
 
     public GatherQuotaTask(Item targetItem, int targetCount) {
         this.targetItem = targetItem;
@@ -272,9 +275,11 @@ public final class GatherQuotaTask extends AbstractTask {
         if (Standability.isStandable(world, found)) {
             return found;
         }
+        // R2:四邻纵向搜索 ±1 → ±3。崖壁/下方树常有 3-4 格高差(实测 seed20260610 bot在y77、树在y73,
+        // ±1 搜不到落脚点→no_stand→prospect速死)。±3 覆盖常见崖差,显著提升"够到下方/崖壁树"的成功率。
         for (var dir : net.minecraft.util.math.Direction.Type.HORIZONTAL) {
             BlockPos side = found.offset(dir);
-            for (int dy : new int[]{0, -1, 1}) {
+            for (int dy : new int[]{0, -1, 1, -2, 2, -3, 3}) {
                 BlockPos p = side.up(dy);
                 if (Standability.isStandable(world, p)) {
                     return p;
@@ -647,6 +652,26 @@ public final class GatherQuotaTask extends AbstractTask {
             bot.getActionPack().stopAll();
             startHarvest(bot);
             return;
+        }
+        // R1 悬空/卡死兜底(治平原 gather_timeout):朝树寻路时,若 pathExecutor 卡死(它仍"以为"在走→非idle),
+        // 下面整段自愈链(isPathExecutorIdle 分支)成死代码,bot 坐标原地不动直到 6001t 超时
+        //(实测 GOTO on_ground=false 160秒0位移)。看门狗:坐标连续 GOTO_STUCK_LIMIT 不动 → 强制 stopAll 清 executor +
+        // 拉黑该树 + 回 SURVEY 重选。正常寻路坐标在变、挖掘接近也在推进,均不触发(阈值 4s 远超单块挖掘)。
+        BlockPos hereNow = bot.getBlockPos();
+        if (hereNow.equals(gotoStuckPos)) {
+            if (elapsed - gotoStuckTick >= GOTO_STUCK_LIMIT) {
+                bot.getActionPack().stopAll();
+                EpisodeMemory.INSTANCE.exclude(bot.getUuid(), targetPos,
+                        bot.getServer().getTicks(), EpisodeMemory.TTL_UNREACHABLE);
+                BotLog.action(bot, "gather_goto_unstick",
+                        "pos", hereNow.toShortString(), "on_ground", bot.isOnGround());
+                gotoStuckPos = null;
+                phase = Phase.SURVEY;
+                return;
+            }
+        } else {
+            gotoStuckPos = hereNow.toImmutable();
+            gotoStuckTick = elapsed;
         }
         if (bot.getActionPack().isPathExecutorIdle()) {
             if (!targetPos.equals(lastGotoTarget)) {

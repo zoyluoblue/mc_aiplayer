@@ -1,6 +1,8 @@
 package io.github.zoyluo.aibot.task;
 
 import io.github.zoyluo.aibot.action.BlockMiner;
+import io.github.zoyluo.aibot.action.BuildAction;
+import io.github.zoyluo.aibot.action.InventoryAction;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import net.minecraft.block.BlockState;
@@ -32,6 +34,8 @@ public final class DescendToYTask extends AbstractTask {
     private int lateralDetours; // 已横移绕岩浆/卡点的次数
     private int stairDirIndex;  // 台阶斜下的当前水平方向(HORIZONTAL 下标)
     private boolean started;    // 是否已打 descend_started 日志
+    private int lastTorchY = Integer.MAX_VALUE; // P1:上次插火把的 Y(每下 TORCH_EVERY 格插一支)
+    private static final int TORCH_EVERY = 6;   // 火把光照半径足够覆盖 6 格落差,不刷怪
 
     public DescendToYTask(int targetY) {
         this.targetY = targetY;
@@ -84,6 +88,7 @@ public final class DescendToYTask extends AbstractTask {
         }
         ServerWorld world = bot.getServerWorld();
         BlockPos feet = bot.getBlockPos();
+        maybePlaceTorch(bot, world, feet); // P1:下潜途中定距点火把,深井不再全黑刷怪(实测下潜 Y-58 全程 light=0 被骷髅围杀)
         BlockPos below = feet.down();
         if (below.getY() <= MIN_Y) {
             fail("descend_reached_min_y");
@@ -217,6 +222,40 @@ public final class DescendToYTask extends AbstractTask {
             }
         }
         return false;
+    }
+
+    // P1 下潜照明(真实玩家下矿标准操作):每下 TORCH_EVERY 格、光照<8、有火把(或煤+棍可现合)就在脚位插一支。
+    // 治"下潜深井全程 light=0、骷髅/僵尸成群刷出来围杀"(实测 real_diamond 下潜 Y-58 全程 light=0 被 5 只骷髅围攻)。
+    // 照明是增益不是前置:缺火把不阻塞下潜。
+    private void maybePlaceTorch(AIPlayerEntity bot, ServerWorld world, BlockPos feet) {
+        if (lastTorchY - feet.getY() < TORCH_EVERY) {
+            return;
+        }
+        if (world.getLightLevel(net.minecraft.world.LightType.BLOCK, feet) >= 8) {
+            lastTorchY = feet.getY(); // 已够亮也推进基准,避免每 tick 重判
+            return;
+        }
+        var torchSlot = InventoryAction.findItem(bot, net.minecraft.item.Items.TORCH);
+        if (torchSlot.isEmpty()) {
+            // 火把自补:有煤+棍就地合 4 支(下潜常态:顺路煤 + 随身棍),缺料不强求。
+            var coal = InventoryAction.findItem(bot, net.minecraft.item.Items.COAL);
+            var stick = InventoryAction.findItem(bot, net.minecraft.item.Items.STICK);
+            if (coal.isPresent() && stick.isPresent()
+                    && InventoryAction.removeItems(bot, net.minecraft.item.Items.COAL, 1)
+                    && InventoryAction.removeItems(bot, net.minecraft.item.Items.STICK, 1)) {
+                InventoryAction.giveItem(bot, new net.minecraft.item.ItemStack(net.minecraft.item.Items.TORCH, 4));
+                torchSlot = InventoryAction.findItem(bot, net.minecraft.item.Items.TORCH);
+            }
+        }
+        if (torchSlot.isPresent()) {
+            int held = bot.getInventory().selectedSlot;
+            InventoryAction.equipFromSlot(bot, torchSlot.getAsInt());
+            if (!BuildAction.placeBlockAt(bot, feet).isFailed()) {
+                lastTorchY = feet.getY();
+                BotLog.action(bot, "descend_torch", "pos", feet.toShortString());
+            }
+            InventoryAction.equipFromSlot(bot, held); // 换回镐,不耽误下一格挖掘
+        }
     }
 
     // 3 参版:依次返回第一个"固体且非流体"的格(流体跳过,绝不挖→防溃浆/溃水)。用于下潜台阶清三格身位

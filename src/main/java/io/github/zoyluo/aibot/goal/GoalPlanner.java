@@ -343,11 +343,10 @@ public final class GoalPlanner {
             //(只需 craft,无需树/熔炉/熔炼),不被困死深处。仅深潜才备(就近挖在地表附近,坏了能正常补)。
             if (tier >= ToolTier.IRON && willDescend) {
                 ensureItem(Items.IRON_INGOT, SPARE_IRON_INGOTS, depth + 1, visiting);
-                // 带铁套加成回攻钻石(用户选·铁套链已加固到正常地形4/4可靠):深潜前备【头盔+胸甲】(挡大部分伤害的
-                // 性价比甜点,13铁,比整套短一半)。当初精简砍甲是因甲链不稳=又长又险的远征;现在甲链已治本可靠,
-                // 重新武装划算——深潜死因多是生存(岩浆/怪/低血),铁甲直接减伤。best-effort:甲做不出不阻断挖钻(降级反应式生存)。
-                // 配合 DescendToYTask.onStart 的 equipBestArmor 主动穿上。
-                ensureArmor(false, depth + 1, visiting);
+                // 【实验回退】带铁套加成回攻钻石实测净拖累(real_diamond 0/6 vs 精简基线3/6):深潜前备头胸甲(13铁)
+                // 把链拉太长——bot 在36000t内多挖13铁+熔炼+合甲、还没下潜挖钻就超时(5/6 timeout),且铁甲一次没穿上
+                // (前段就败、根本没走到深潜)。survival收益=0、代价=链翻倍。故撤回备甲,深潜survival改靠反应式
+                // (入浆自救/濒死入土/点火把,遇险才花代价)。下潜穿甲(DescendToYTask.onStart equipBestArmor)保留:零成本,有甲就穿。
             }
             if (willDescend) {
                 addStep(GoalStep.descendToY(mineY));

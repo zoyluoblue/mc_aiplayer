@@ -88,6 +88,18 @@ public final class DangerWatcher {
         }
         Optional<Threat> threat = collectTopThreat(bot);
         Optional<Task> active = TaskManager.INSTANCE.getActive(bot);
+        // 入浆即自救(最高优先,压倒威胁):岩浆每 tick 烧 4,几秒就死。SurvivalGuard 只中断作业、注释说
+        // "让位 DangerWatcher 脱困"但从未实现——bot 泡在岩浆里被烧死(real_diamond 下潜挖穿岩浆袋,14/15 步功亏一篑)。
+        // 这里补上:身陷岩浆且当前不是逃浆任务 → 立即派 LavaEscapeTask,把命先捞回来。
+        if (bot.isInLava() && !(active.isPresent() && active.get() instanceof LavaEscapeTask)) {
+            if (active.isPresent()) {
+                TaskManager.INSTANCE.pauseFor(bot, "lava_escape");
+            }
+            TaskManager.INSTANCE.assign(bot, new LavaEscapeTask());
+            BotLog.danger(bot, "lava_escape_start", "pos", bot.getBlockPos().toShortString(),
+                    "hp", (int) bot.getHealth());
+            return true;
+        }
         // 夜间怪海保命(治死亡螺旋):濒死(≤4 心)+ 有敌 + 当前没在筑墙 → 立即筑墙自保,**无视威胁冷却**。
         // 元凶:combat 完(~100t 没杀光)→进 100t 冷却→gather 恢复挨打→guard 中止→冷却没过 shelter
         // 派不出→再挨打到死(real_diamond 三种子全栽这,bot 会打但打不赢多怪围殴)。保命压倒一切:

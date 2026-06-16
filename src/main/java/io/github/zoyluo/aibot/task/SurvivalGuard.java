@@ -29,8 +29,9 @@ public final class SurvivalGuard {
      */
     public String check(AIPlayerEntity bot, Task task) {
         if (task instanceof EvadeTask || task instanceof CombatTask
-                || task instanceof EmergencyShelterTask || task instanceof EatTask) {
-            return null;
+                || task instanceof EmergencyShelterTask || task instanceof EatTask
+                || task instanceof LavaEscapeTask) {
+            return null; // LavaEscapeTask 是入浆自救本身,绝不能被 guard_in_lava 反过来打断
         }
         // 注意:RecoverDropsTask 故意**不**豁免——水下跑尸 air 告急时斩掉它是对的:
         // 豁免=任务继续=淹死再掉一身,装备认亏换命是唯一正解(审查时曾被建议豁免,勿改)。

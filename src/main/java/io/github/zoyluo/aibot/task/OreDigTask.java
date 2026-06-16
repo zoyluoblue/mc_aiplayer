@@ -32,7 +32,8 @@ import java.util.Set;
  * 自包含状态机(铁律 G1),不在内部 assign;全程主线程(G2)。
  */
 public final class OreDigTask extends AbstractTask {
-    private static final int MAX_ELAPSED = 9600;        // 8 分钟硬超时(整条矿可能要挖很久)
+    private static final int MAX_ELAPSED_BASE = 9600;   // 硬超时基线(小配额);大配额(整套铁甲要26铁)按量缩放,见构造
+    private static final int STRIP_AFTER_SKIPS = 3;     // 连续这么多次"锁矿够不到被跳过" → 强制 strip 推进一步(破原地死锁)
     private static final int NO_PROGRESS_LIMIT = 200;   // 10s 没破任何块 → 失败
     private static final int SCAN_INTERVAL = 10;
     private static final int SCAN_RADIUS = 24;
@@ -70,6 +71,8 @@ public final class OreDigTask extends AbstractTask {
     private int targetApproachTick;
     private int stripDirIndex = -1;   // 优化1:矿层水平找矿当前掘进方向(STRIP_DIRS 下标),-1=未开始
     private int stripStepsLeft;       // 优化1:当前隧道段剩余格数
+    private int consecutiveSkips;     // 连续"锁矿够不到被跳过"次数(挖到矿清零);超阈值强制 strip 推进破死锁
+    private final int maxElapsed;     // 硬超时:大配额(整套铁甲26铁)按量缩放,小配额用基线
     private int lastMinedTick = -100; // 挖掉矿本体的时刻:掉落实体在下 tick 才出现,挖完原地驻留捡取
     private BlockPos bonusOre;        // R3 顺路矿:reach 内的非目标矿,顺手一镐(单块,不追脉)
     private int bonusMined;           // 顺路预算计数(防喧宾夺主)
@@ -82,6 +85,8 @@ public final class OreDigTask extends AbstractTask {
                 : OreScan.expandOreFamilies(targetOres);
         this.targetDrops = HarvestCore.expectedDropsFor(this.targetOres);
         this.targetCount = Math.max(1, targetCount);
+        // 硬超时按配额缩放:整套铁甲一步要挖 26 铁(每块含掘进接近~600t),固定 9600 必然挖不完就超时退回逐件。
+        this.maxElapsed = Math.max(MAX_ELAPSED_BASE, this.targetCount * 700);
     }
 
     @Override
@@ -151,7 +156,7 @@ public final class OreDigTask extends AbstractTask {
 
     @Override
     protected void onTick(AIPlayerEntity bot) {
-        if (elapsed > MAX_ELAPSED) {
+        if (elapsed > maxElapsed) {
             fail("ore_dig_timeout collected=" + collected);
             return;
         }
@@ -311,8 +316,10 @@ public final class OreDigTask extends AbstractTask {
                 lastProgressTick = elapsed;
             } else if (elapsed - targetApproachTick > APPROACH_LIMIT) {
                 excludeOre(bot, targetOre);
+                consecutiveSkips++; // 累计够不到的跳过;连跳超阈值 → 下面扫描分支强制 strip 推进,破"原地锁远矿-跳"死锁
                 BotLog.action(bot, "ore_dig_unreachable_skip",
-                        "pos", targetOre.getX() + "," + targetOre.getY() + "," + targetOre.getZ());
+                        "pos", targetOre.getX() + "," + targetOre.getY() + "," + targetOre.getZ(),
+                        "skips", consecutiveSkips);
                 targetOre = null;
                 lastTargetDist = Double.MAX_VALUE;
                 // 主动换目标是决策性进展:嵌深处的天然矿可能要连排除好几块才轮到可达矿/富区兜底,
@@ -370,6 +377,7 @@ public final class OreDigTask extends AbstractTask {
                     queueVeinAround(bot, world, targetOre);
                     targetOre = null;
                     lastProgressTick = elapsed;
+                    consecutiveSkips = 0; // 挖到了 → 清空跳过计数(当前这片可达,无需强制 strip)
                 } else if (st == BlockMiner.Status.FAILED) {
                     excludeOre(bot, targetOre);
                     targetOre = null;
@@ -415,6 +423,14 @@ public final class OreDigTask extends AbstractTask {
             return;
         }
         lastScanTick = now;
+        // 破"原地锁远矿-跳"死锁:连续 STRIP_AFTER_SKIPS 次锁矿都够不到被跳过 → 别再锁(多半又是够不到的远矿),
+        // 强制 strip 推进一步(直挖隧道前进,把矿挖近到 reach 内 + 暴露新矿面)。推进后清零,下轮正常扫描,
+        // 此时近处矿已可达即锁挖(real_armor 治本:原地 372 跳只挖 9 → strip 推进后稳定挖到)。
+        if (consecutiveSkips >= STRIP_AFTER_SKIPS) {
+            consecutiveSkips = 0;
+            stripMine(bot, world);
+            return;
+        }
         BlockPos found = nearestOre(bot, world);
         if (found != null) {
             targetOre = found;
@@ -466,9 +482,15 @@ public final class OreDigTask extends AbstractTask {
                 return;
             }
         }
-        // 水平 strip-mine 掘进暴露新矿面(每前进一格,下一轮 nearestOre 都会扫到隧道两侧新矿);
-        // 一整段(STRIP_SEGMENT)挖完仍无矿 → 向下换一层 + 换个水平方向继续。比旧的"只垂直换层"找矿快得多
-        //(实测:Y=16 这片铁矿稀疏,旧逻辑原地 201t 扫不到就 no_progress 失败 → goal 失败 → 大脑接管手动挖耗尽轮次)。
+        // 水平 strip-mine 掘进暴露新矿面。
+        stripMine(bot, world);
+    }
+
+    // 水平 strip-mine:沿当前方向直挖隧道暴露新矿面(每前进一格,下一轮 nearestOre 都会扫到隧道两侧新矿);
+    // 一整段(STRIP_SEGMENT)挖完仍无矿 → 向下换一层 + 换个水平方向继续。比旧的"只垂直换层"找矿快得多。
+    // 既是"附近彻底没矿"的兜底,也是"找到矿却全够不到(连跳 STRIP_AFTER_SKIPS 次)"时的破死锁手段——
+    // 推进到新territory + 把原本够不到的矿挖近到 reach 内(real_armor 实测:不强制 strip 会原地锁远矿-跳 372 次只挖到 9)。
+    private void stripMine(AIPlayerEntity bot, ServerWorld world) {
         if (stripStepsLeft <= 0) {
             if (stripDirIndex >= 0) {
                 // 跳 4 层换平面:垂直扫描 VERTICAL_SCAN=±10,逐层下沉的扫描区 90% 重叠纯浪费;

@@ -256,11 +256,19 @@ public final class GatherQuotaTask extends AbstractTask {
             return false;
         }
         lastProspectFound = found.toImmutable();
-        roamTarget = ground;
+        // 直接锁定这棵树走 GOTO,由 goToTarget 统一驱动"到达→采集"(含 dig-approach 崖壁/高差 + R1 悬空脱困)。
+        // 不再走 ROAM-到落脚点-再重扫:重扫常丢这棵树(实测 555 elevated 云杉 prospected dist4 却回 SURVEY 扫不到
+        // → expand → 43t no_resource 速死,3次 goal_failed)。GOTO 提交制:够不到就 dig/拉黑换树,不空转丢树。
+        targetPos = found.toImmutable();
+        lastGotoTarget = targetPos;
+        treeDigTried = false;
+        gotoFailStreak = 0;
+        gotoStuckPos = null;          // 重置 R1 看门狗基准
         searchRadius = SEARCH_RADIUS;
         pickupMisses = 0;
         selfStuckTick = elapsed;
-        phase = Phase.ROAM; // 复用 ROAM 走过去;到达后 roamMove 回 SURVEY,在新片近处采集
+        phase = Phase.GOTO;
+        bot.getActionPack().startPathTo(ground);
         BotLog.action(bot, "gather_prospected",
                 "found", found.getX() + "," + found.getY() + "," + found.getZ(),
                 "to", ground.getX() + "," + ground.getY() + "," + ground.getZ(),

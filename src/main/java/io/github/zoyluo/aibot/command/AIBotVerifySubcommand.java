@@ -1355,7 +1355,8 @@ public final class AIBotVerifySubcommand {
                         && hasGear(bot, Items.IRON_HELMET)
                         && hasGear(bot, Items.IRON_CHESTPLATE)
                         && hasGear(bot, Items.IRON_LEGGINGS)
-                        && hasGear(bot, Items.IRON_BOOTS));
+                        && hasGear(bot, Items.IRON_BOOTS)
+                        && hasGear(bot, Items.IRON_SWORD)); // 铁套+铁剑:整套四件甲 + 铁剑都到手(Goal.Armor full 本就含剑)
     }
 
     // snapshot 落地辅助:按相对坐标放一块默认态方块(配 /aibot snapshot 导出的 setRel 行)。

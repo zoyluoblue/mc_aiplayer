@@ -37,6 +37,12 @@ public final class SurvivalGuard {
         // 豁免=任务继续=淹死再掉一身,装备认亏换命是唯一正解(审查时曾被建议豁免,勿改)。
         // ① 溺水:头没入水且氧量只剩 5 秒——作业再要紧也得先有命换气。
         if (bot.isSubmergedInWater() && bot.getAir() < 100) {
+            // OreDigTask 有自身溺水熔断(line 169)且会【排除这块水下矿】——交给它,本层不抢先中断。
+            // 否则本层只中断不排除矿 → bot 浮上来(NavSafetyNet)又重锁同一水下矿 → 反复 guard_drowning
+            // 死循环(20260610 悬崖临水实测:潜水挖铁,navsafe_surface 32次仍被反复中断 → goal 失败)。
+            if (task instanceof OreDigTask) {
+                return null;
+            }
             return "guard_drowning";
         }
         // ② 身陷岩浆:每 tick 都在烧,任何作业立刻停,让位 DangerWatcher 的脱困/灭火。

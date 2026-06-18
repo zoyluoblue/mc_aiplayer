@@ -315,26 +315,37 @@ public final class DigDownTask extends AbstractTask {
     // 返回 true=本 tick 封了一格(调用方收手,下 tick 续;BlockMiner 开挖会自动换回镐)。
     private boolean sealLateralWater(AIPlayerEntity bot, ServerWorld world) {
         BlockPos feet = bot.getBlockPos();
+        // ① 侧向:脚位+头位四周(阶梯斜下漂向海洋时水平涌入)。
         for (BlockPos level : new BlockPos[]{feet, feet.up()}) {
             for (Direction d : HDIRS) {
-                BlockPos side = level.offset(d);
-                if (!isWater(world, side)) {
-                    continue;
-                }
-                OptionalInt blockSlot = MaterialPalette.pickAnyBlockSlot(bot);
-                if (blockSlot.isEmpty()) {
-                    return false; // 没方块可封 → 交后续/生存层兜底(命比这格值钱),不卡死
-                }
-                // 主手是镐时对水格交互被原版判 PASS 静默吞掉(同 OreDigTask 封浆教训)→ 先装方块再放。
-                InventoryAction.equipFromSlot(bot, blockSlot.getAsInt());
-                if (!BuildAction.placeBlockAt(bot, side).isFailed()) {
-                    BotLog.action(bot, "dig_down_seal_water", "at", side.toShortString());
-                    lastProgressTick = elapsed; // 封堵=进展,别被 NO_PROGRESS 看门狗误杀
+                if (trySealWater(bot, world, level.offset(d))) {
                     return true;
                 }
             }
         }
-        return false;
+        // ② 封顶:头顶上方一格——重水种子只封侧向仍 drown 的根因是水从竖井【上方】灌到头位
+        //(实测 seal 侧向 25 次仍 drown 12);把头顶也堵上,bot 在 1×2 旱泡里下挖,氧不再被顶部灌水耗光。
+        return trySealWater(bot, world, feet.up(2));
+    }
+
+    // 该格是水则封一块(真人砌墙/封顶挡水)。主手是镐时对水格交互被原版判 PASS 静默吞掉
+    //(同 OreDigTask 封浆教训)→ 先装方块再放。返回 true=封了一格(调用方收手下 tick 续,BlockMiner 自动换回镐);
+    // 无水/无块可封→false(交后续逻辑/生存层兜底,命比这格值钱,不卡死)。
+    private boolean trySealWater(AIPlayerEntity bot, ServerWorld world, BlockPos pos) {
+        if (!isWater(world, pos)) {
+            return false;
+        }
+        OptionalInt blockSlot = MaterialPalette.pickAnyBlockSlot(bot);
+        if (blockSlot.isEmpty()) {
+            return false;
+        }
+        InventoryAction.equipFromSlot(bot, blockSlot.getAsInt());
+        if (BuildAction.placeBlockAt(bot, pos).isFailed()) {
+            return false;
+        }
+        BotLog.action(bot, "dig_down_seal_water", "at", pos.toShortString());
+        lastProgressTick = elapsed; // 封堵=进展,别被 NO_PROGRESS 看门狗误杀
+        return true;
     }
 
     private static boolean isWater(ServerWorld world, BlockPos pos) {

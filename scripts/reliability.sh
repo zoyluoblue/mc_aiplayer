@@ -6,8 +6,9 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 FEATURE="${1:-real_diamond3}"; RUNS="${2:-2}"; TIMEOUT="${3:-2200}"
-SEEDS=(20260610 3000 777)
-LOCK=/tmp/reliability.lock; STATE=reports/reliability_state.tsv
+# SEEDS_OVERRIDE="s1 s2 ..." 换种子集(默认三种子);STATE_FILE 换状态文件(随机批测用独立文件不混既有数据)。
+if [ -n "${SEEDS_OVERRIDE:-}" ]; then read -r -a SEEDS <<< "$SEEDS_OVERRIDE"; else SEEDS=(20260610 3000 777); fi
+LOCK=/tmp/reliability.lock; STATE="${STATE_FILE:-reports/reliability_state.tsv}"
 mkdir -p reports
 mkdir "$LOCK" 2>/dev/null || { echo "[reliability] another instance running, exit."; exit 0; }
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT
@@ -43,6 +44,14 @@ run_one() {
   echo "[reliability] $FEATURE#$seed#$run -> $result [$stage]: $reason"
 }
 command -v caffeinate >/dev/null && caffeinate -is -w $$ &
+# 批量同代码多 seed:先 clean 编译一次,之后各局 SKIP_COMPILE 复用(代码冻结,省 N-1 次全量重编)。
+echo "[reliability] compiling once (clean) before batch ..."
+./gradlew --stop >/dev/null 2>&1
+if ./gradlew --no-daemon --rerun-tasks --no-build-cache clean classes >/dev/null 2>&1; then
+  export SKIP_COMPILE=1; echo "[reliability] prebuilt OK, runs will SKIP_COMPILE"
+else
+  echo "[reliability] PREBUILD FAILED, exit"; exit 1
+fi
 for seed in "${SEEDS[@]}"; do for run in $(seq 1 "$RUNS"); do run_one "$seed" "$run"; done; done
 echo "[reliability] ===== SUMMARY $FEATURE ====="
 awk -F'\t' -v f="$FEATURE" 'NR>1&&$1==f{key=$2"#"$3;res[key]=$4;stage[key]=$6} END{t=0;p=0;for(k in res){t++;if(res[k]=="PASS")p++;c[stage[k]]++} if(t==0){print "  no runs";exit} printf "  runs=%d pass=%d rate=%.0f%%\n",t,p,(p*100.0/t); for(st in c)printf "    %-12s %d\n",st,c[st]}' "$STATE"

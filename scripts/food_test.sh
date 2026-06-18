@@ -40,9 +40,14 @@ else
 fi
 # 防 gradle 增量编译/build-cache stale(实测改了源码但 class 没真重编 → 跑旧逻辑):
 # --stop 杀残留 daemon(避免 daemon VFS 缓存旧文件状态);--rerun-tasks 忽略 up-to-date;--no-build-cache 不从缓存恢复旧 class。
-echo "[foodtest] compiling (clean, no-cache, rerun) ..."
-./gradlew --stop >/dev/null 2>&1
-./gradlew --no-daemon --rerun-tasks --no-build-cache clean classes >/dev/null 2>&1 || { echo "[foodtest] COMPILE FAILED"; exit 1; }
+# SKIP_COMPILE=1:批量同代码多 seed 跑时,调用方已编译一次、代码冻结,跳过每局重编省时(勿在改代码后用)。
+if [ "${SKIP_COMPILE:-0}" = "1" ]; then
+  echo "[foodtest] SKIP_COMPILE=1: reusing prebuilt classes (caller compiled once)"
+else
+  echo "[foodtest] compiling (clean, no-cache, rerun) ..."
+  ./gradlew --stop >/dev/null 2>&1
+  ./gradlew --no-daemon --rerun-tasks --no-build-cache clean classes >/dev/null 2>&1 || { echo "[foodtest] COMPILE FAILED"; exit 1; }
+fi
 
 # 保持 FIFO 写端常开,server console 不会读到 EOF
 sleep 100000 > "$FIFO" & HOLDER=$!

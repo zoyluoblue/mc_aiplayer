@@ -247,6 +247,28 @@ public final class GoalExecutor {
     private void assignNext(AIPlayerEntity bot, ActivePlan plan) {
         GoalStep step = plan.steps.pollFirst();
         if (step == null) {
+            // Food 目标续足:步骤跑完 ≠ 真凑够熟食。打猎扑空(附近动物少)、cookAll 只烤了部分生肉时,
+            // COOK_FOOD 会 collected>0 即 complete → 步骤耗尽 → 这里谎报"Food[4] 完成",实则只 2/4
+            // (real_food 随机地形实测此假完成占食物失败 3/10)。重规划一次让 GoalPlanner 重新感知择源:
+            // 它内部按 cooked>=target 判定——已够则返回空步骤(照常下面完成);不够且有源(浆果/种田/再打猎远征)
+            // 则给出补足步骤继续。仅对【独立 Food 目标】生效:挖矿/铁套的备粮是其计划内 best-effort 步,
+            // plan.goal 是 Diamond/Armor 而非 Food,不受影响(续航本就交饥饿链兜底,不该阻断挖矿)。
+            // replanCount<3 兜底:地形真无足量食物源时按尽力收尾,绝不无限循环。
+            if (plan.goal instanceof Goal.Food && bot.isAlive() && plan.replanCount < 3) {
+                GoalPlanner.GoalPlan fresh = GoalPlanner.plan(bot, plan.goal);
+                if (fresh.success() && !fresh.steps().isEmpty()) {
+                    plan.replanCount++;
+                    BotLog.task(bot, "goal_food_topup", "goal", plan.goal,
+                            "steps", fresh.describeSteps(), "replan", String.valueOf(plan.replanCount));
+                    plan.steps.clear();
+                    plan.steps.addAll(fresh.steps());
+                    plan.totalSteps = fresh.steps().size();
+                    plan.current = null;
+                    plan.currentTask = null;
+                    assignNext(bot, plan);
+                    return;
+                }
+            }
             activePlans.remove(bot.getUuid());
             BotLog.task(bot, "goal_completed", "goal", plan.goal);
             io.github.zoyluo.aibot.memory.EpisodeLog.INSTANCE.record(bot,

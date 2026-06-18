@@ -1,7 +1,10 @@
 package io.github.zoyluo.aibot.task;
 
 import io.github.zoyluo.aibot.action.BlockMiner;
+import io.github.zoyluo.aibot.action.BuildAction;
 import io.github.zoyluo.aibot.action.HarvestCore;
+import io.github.zoyluo.aibot.action.InventoryAction;
+import io.github.zoyluo.aibot.action.MaterialPalette;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.mining.ToolTier;
@@ -15,6 +18,7 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 
 import java.util.HashSet;
+import java.util.OptionalInt;
 import java.util.Set;
 
 /**
@@ -180,6 +184,10 @@ public final class DigDownTask extends AbstractTask {
                     "collected", collected + "/" + targetCount);
         }
 
+        // 海平面/含水层下挖防淹:封堵脚位+头位四周的侧向水(见方法注释)。封了本 tick 收手,下 tick 续挖。
+        if (sealLateralWater(bot, world)) {
+            return;
+        }
         // 工具闸:挖不动目标(无合格镐)直接失败,交 GoalExecutor 倒推补镐。
         if (!ToolTier.canHarvestWithInventory(bot, targetBlock.getDefaultState())) {
             fail("need_better_tool:" + ToolTier.requiredPickaxeItemId(targetBlock));
@@ -300,6 +308,35 @@ public final class DigDownTask extends AbstractTask {
         }
     }
 
+    // 海平面/含水层下挖防淹:阶梯斜下会逐步漂向相邻海洋,水从【侧向】涌入脚位/头位泡死
+    // (实测沙滩 Y63 出生 dig_down 连淹 12 次→guard 抢断→上浮→replan 重挖同列→死循环;
+    // stair 只查正下/正前的水(L260),管不住侧向)。真人挖矿砌墙挡水:每 tick 封堵脚位+头位四周的水,
+    // 从根上防淹,而非泡死再被生存层兜底。干燥地形无水→直接返回零放置、不改行为(geo_deep/shaft/cave 不回归)。
+    // 返回 true=本 tick 封了一格(调用方收手,下 tick 续;BlockMiner 开挖会自动换回镐)。
+    private boolean sealLateralWater(AIPlayerEntity bot, ServerWorld world) {
+        BlockPos feet = bot.getBlockPos();
+        for (BlockPos level : new BlockPos[]{feet, feet.up()}) {
+            for (Direction d : HDIRS) {
+                BlockPos side = level.offset(d);
+                if (!isWater(world, side)) {
+                    continue;
+                }
+                OptionalInt blockSlot = MaterialPalette.pickAnyBlockSlot(bot);
+                if (blockSlot.isEmpty()) {
+                    return false; // 没方块可封 → 交后续/生存层兜底(命比这格值钱),不卡死
+                }
+                // 主手是镐时对水格交互被原版判 PASS 静默吞掉(同 OreDigTask 封浆教训)→ 先装方块再放。
+                InventoryAction.equipFromSlot(bot, blockSlot.getAsInt());
+                if (!BuildAction.placeBlockAt(bot, side).isFailed()) {
+                    BotLog.action(bot, "dig_down_seal_water", "at", side.toShortString());
+                    lastProgressTick = elapsed; // 封堵=进展,别被 NO_PROGRESS 看门狗误杀
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private static boolean isWater(ServerWorld world, BlockPos pos) {
         return world.getBlockState(pos).getFluidState().isIn(FluidTags.WATER);
     }
@@ -324,8 +361,10 @@ public final class DigDownTask extends AbstractTask {
         for (int tries = 0; tries < HDIRS.length; tries++) {
             Direction dir = HDIRS[hdirIndex];
             BlockPos side = feet.offset(dir);
-            if (isLava(world, side) || isLava(world, side.up()) || isLava(world, side.down())) {
-                hdirIndex = (hdirIndex + 1) % HDIRS.length; // 这个方向挨岩浆,换一个
+            // 对称岩浆检查也避开水:横挖挖进水里同样溺水(原仅查 lava 是缺口);四面皆水/浆则下面 walled 失败交生存层。
+            if (isLava(world, side) || isLava(world, side.up()) || isLava(world, side.down())
+                    || isWater(world, side) || isWater(world, side.up()) || isWater(world, side.down())) {
+                hdirIndex = (hdirIndex + 1) % HDIRS.length; // 这个方向挨水/岩浆,换一个
                 continue;
             }
             BlockPos solid = firstSolid(world, side, side.up());

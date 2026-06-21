@@ -40,6 +40,7 @@ public final class BuildTask extends AbstractTask {
     private final Deque<FlattenTarget> flattenTargets = new ArrayDeque<>();
     private Phase phase = Phase.SITE;
     private FlattenTarget currentFlattenTarget;
+    private int flattenTargetTick;   // 当前整地格起算 tick:够不到的格超预算即跳过,防 nearbyStand 退化"走向自己"死循环
     private int nextIndex;
     private int retryTicks;
     private int placeDelayTicks;
@@ -83,6 +84,15 @@ public final class BuildTask extends AbstractTask {
     }
 
     @Override
+    public boolean isWaiting() {
+        // 建造=原地立着逐格挖/放(整地+砌房),位置长时间不变是正常作业,不是卡死。
+        // 不豁免则 StuckWatcher 200t 位置不变即误杀(real_build 实测 task_stuck_aborted reason=stuck:build,
+        // 真实地形整地阶段静立施工被斩,phase=FLATTEN progress=0.1)。卡死保护交本任务 build_timeout(7200t)+
+        // moveWithinReach 自身 retryTicks(寻路真失败才计)兜底,比 StuckWatcher 更懂建造语义。
+        return true;
+    }
+
+    @Override
     protected void onStart(AIPlayerEntity bot) {
         nextIndex = 0;
         retryTicks = 0;
@@ -95,7 +105,9 @@ public final class BuildTask extends AbstractTask {
 
     @Override
     protected void onTick(AIPlayerEntity bot) {
-        if (elapsed > 7200) {
+        if (elapsed > 16000) {
+            // 真实地形建房=整地(挖高填低)+逐格砌 100+ 块,且重活拖低 tps;7200t 不够(实测只到 81/116)。
+            // 放宽到 16000t 让真实地形也能整地+落成;lab 平整建房 346t 远不触此上限,零影响。
             fail("build_timeout");
             return;
         }
@@ -116,7 +128,9 @@ public final class BuildTask extends AbstractTask {
                 fail("missing_anchor");
                 return;
             }
-            anchor = SiteFinder.findSite(bot, blueprint.width(), blueprint.depth(), 16).orElse(null);
+            // flatten 开启时用 lenient 选址:真实起伏地形罕有现成平地,选最平可用点交 FLATTEN 整平
+            //(治 real_build no_flat_site 5/10);flatten 关闭时严格(平整画布零回归)。
+            anchor = SiteFinder.findSite(bot, blueprint.width(), blueprint.depth(), 16, flatten).orElse(null);
             if (anchor == null) {
                 fail("no_flat_site");
                 return;
@@ -153,10 +167,18 @@ public final class BuildTask extends AbstractTask {
         if (currentFlattenTarget == null) {
             currentFlattenTarget = flattenTargets.pollFirst();
             flattenMiningStarted = false;
+            flattenTargetTick = elapsed;
             if (currentFlattenTarget == null) {
                 phase = Phase.BUILD;
                 return;
             }
+        }
+        // 整地格预算:够不到的格(nearbyStand 无落脚点会退化成 startPathTo 自己→原地死循环,real_build 实测
+        // path_idle 0 进度 build_timeout)→ 50t 内没搞定就跳过,best-effort 继续整地/盖房,站不到的格不强求。
+        if (elapsed - flattenTargetTick > 50) {
+            note = "flatten_skip=" + compact(currentFlattenTarget.pos()); // 够不到的整地格跳过(防原地死循环)
+            currentFlattenTarget = null;
+            return;
         }
         if (currentFlattenTarget.kind() == FlattenKind.CLEAR) {
             clearFlattenBlock(bot);
@@ -308,9 +330,17 @@ public final class BuildTask extends AbstractTask {
                 }
                 ActionResult path = bot.getActionPack().startPathTo(stand);
                 if (path.isFailed()) {
-                    retryTicks++;
-                    if (retryTicks > 12) {
-                        fail("path_to_" + reason + "_failed: " + path.reason());
+                    if ("pathfinding_throttled".equals(path.reason())) {
+                        // 节流退避:寻路是全局速率限。整地逐块大量请求时每 tick 重请会【永远撞限流】→
+                        // bot 到不了第一个整地目标、0 place/0 mine → build_timeout(real_build 实测 flatten 0 进度)。
+                        // 退避 4 tick 让速率窗口清掉再重试(不计失败预算);onTick 顶部 placeDelayTicks>0 正好跳过。
+                        placeDelayTicks = 4;
+                    } else {
+                        // 真实无路(无 stand/障碍)才累计,>12 判死。
+                        retryTicks++;
+                        if (retryTicks > 12) {
+                            fail("path_to_" + reason + "_failed: " + path.reason());
+                        }
                     }
                 }
             }
@@ -319,6 +349,7 @@ public final class BuildTask extends AbstractTask {
         if (!bot.getActionPack().isPathExecutorIdle()) {
             bot.getActionPack().stopAll();
         }
+        retryTicks = 0; // 够到目标=进展,重置真实失败预算(整地跨多块时不累计误杀)
         return true;
     }
 

@@ -17,10 +17,20 @@ public final class SiteFinder {
     }
 
     public static Optional<BlockPos> findSite(AIPlayerEntity bot, int footprintX, int footprintZ, int searchRadius) {
+        return findSite(bot, footprintX, footprintZ, searchRadius, false);
+    }
+
+    // lenient=true(配合 BuildTask flatten):真实起伏地形罕有现成平地→放宽,选【最平的可用点】
+    //(高差≤5、不踩水/虚空、离出生面±8内),交 FLATTEN 阶段挖高填低整平。
+    // lenient=false 保持严格(平整画布/无整地时不乱选坡地,零回归)。
+    public static Optional<BlockPos> findSite(AIPlayerEntity bot, int footprintX, int footprintZ, int searchRadius, boolean lenient) {
         ServerWorld world = bot.getServerWorld();
         BlockPos origin = bot.getBlockPos();
         BlockPos best = null;
         double bestScore = Double.MAX_VALUE;
+        int ySpread = lenient ? 8 : 4;
+        int maxRange = lenient ? 5 : 2;
+        double scoreCap = lenient ? Double.MAX_VALUE : MAX_SCORE;
         int originSurface = standableY(world, origin.getX(), origin.getZ(), origin.getY()).orElse(origin.getY());
         for (int x = origin.getX() - searchRadius; x <= origin.getX() + searchRadius - footprintX; x++) {
             for (int z = origin.getZ() - searchRadius; z <= origin.getZ() + searchRadius - footprintZ; z++) {
@@ -30,11 +40,11 @@ public final class SiteFinder {
                 }
                 int y = maybeY.getAsInt();
                 BlockPos anchor = new BlockPos(x, y, z);
-                if (Math.abs(y - originSurface) > 4) {
+                if (Math.abs(y - originSurface) > ySpread) {
                     continue;
                 }
-                double score = flatnessScore(world, anchor, footprintX, footprintZ);
-                if (score > MAX_SCORE) {
+                double score = flatnessScore(world, anchor, footprintX, footprintZ, maxRange);
+                if (score > scoreCap) {
                     continue;
                 }
                 if (!hasUsableStand(world, anchor, footprintX, footprintZ)) {
@@ -52,6 +62,10 @@ public final class SiteFinder {
     }
 
     public static double flatnessScore(ServerWorld world, BlockPos anchor, int footprintX, int footprintZ) {
+        return flatnessScore(world, anchor, footprintX, footprintZ, 2);
+    }
+
+    public static double flatnessScore(ServerWorld world, BlockPos anchor, int footprintX, int footprintZ, int maxRange) {
         int minY = Integer.MAX_VALUE;
         int maxY = Integer.MIN_VALUE;
         double sum = 0.0D;
@@ -81,7 +95,7 @@ public final class SiteFinder {
                 count++;
             }
         }
-        if (count == 0 || maxY - minY > 2) {
+        if (count == 0 || maxY - minY > maxRange) {
             return Double.MAX_VALUE;
         }
         double mean = sum / count;

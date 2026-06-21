@@ -116,6 +116,7 @@ public final class AIBotVerifySubcommand {
             "real_iron",
             "real_diamond",
             "real_armor",
+            "real_build",
             "real_obsidian",
             "real_nav_far",
             "nav_pillar_out",
@@ -397,6 +398,7 @@ public final class AIBotVerifySubcommand {
             case "real_diamond" -> assignRealDiamond(bot);
             case "real_diamond3" -> assignRealDiamond3(bot);
             case "real_armor" -> assignRealArmor(bot);
+            case "real_build" -> assignRealBuild(bot);
             case "real_obsidian" -> assignRealObsidian(bot);
             case "llm_move" -> assignLlmMove(bot);
             case "llm_food" -> assignLlmFood(bot);
@@ -1357,6 +1359,38 @@ public final class AIBotVerifySubcommand {
                         && hasGear(bot, Items.IRON_LEGGINGS)
                         && hasGear(bot, Items.IRON_BOOTS)
                         && hasGear(bot, Items.IRON_SWORD)); // 铁套+铁剑:整套四件甲 + 铁剑都到手(Goal.Armor full 本就含剑)
+    }
+
+    // 建筑深化·真实地形建房:备足木板(隔离"建造"本体——选址 autoSite + 整地 + 逐格落成),不测备料。
+    // 真实地形(斜坡/起伏/水边)是 lab 平整画布测不到的:autoSite 选址 + flatten 整地能否干净落成一栋房。
+    // 断言:origin±24、木板族方块 ≥80(small_hut 全房 112,留余量)+ 存活 + 零死亡。先暴露真实地形建造短板。
+    private static Result assignRealBuild(AIPlayerEntity bot) {
+        prepareRealistic(bot);
+        clearInventory(bot);
+        // 备足多树种木板(蓝图按当地树种自适应,只给 oak 会 need birch/spruce_log)+ 整地填料(dirt/cobble),
+        // 真正隔离"建造"本体(选址+整地+落成),不测备料/采木。
+        for (Item p : io.github.zoyluo.aibot.craft.RecipeRegistry.PLANKS) {
+            InventoryAction.giveItem(bot, new ItemStack(p, 128));
+        }
+        InventoryAction.giveItem(bot, new ItemStack(Items.DIRT, 256));        // FLATTEN 挖高填低的填料
+        InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 128));
+        InventoryAction.giveItem(bot, new ItemStack(Items.CRAFTING_TABLE, 1));
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        final int deathBase = deathCount(bot);
+        java.util.Set<Block> plankBlocks = new java.util.HashSet<>();
+        for (Item planks : io.github.zoyluo.aibot.craft.RecipeRegistry.PLANKS) {
+            Block block = Block.getBlockFromItem(planks);
+            if (block != Blocks.AIR) {
+                plankBlocks.add(block);
+            }
+        }
+        if (!GoalExecutor.INSTANCE.submit(bot, new Goal.Build("small_hut"))) {
+            return Result.fail("real_build", "goal_submit_failed");
+        }
+        return Result.runningGoal("real_build", 20000,
+                ignored -> bot.isAlive() && deathCount(bot) == deathBase
+                        && countNearbyBlocksAbove(world, origin, 24, plankBlocks) >= 80);
     }
 
     // snapshot 落地辅助:按相对坐标放一块默认态方块(配 /aibot snapshot 导出的 setRel 行)。

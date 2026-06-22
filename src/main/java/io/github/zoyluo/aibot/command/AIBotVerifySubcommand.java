@@ -126,6 +126,7 @@ public final class AIBotVerifySubcommand {
             "goal_build_auto",
             "goal_build_custom",
             "msg_keep_goal",
+            "tool_dispatch",
             "knowledge_smoke",
             "craft_runtime",
             "geo_vertical",
@@ -412,6 +413,7 @@ public final class AIBotVerifySubcommand {
             case "goal_build_auto" -> assignGoalBuildAuto(bot);
             case "goal_build_custom" -> assignGoalBuildCustom(bot);
             case "msg_keep_goal" -> assignMsgKeepGoal(bot);
+            case "tool_dispatch" -> assignToolDispatch(bot);
             case "knowledge_smoke" -> assignKnowledgeSmoke(bot);
             case "craft_runtime" -> assignCraftRuntime(bot);
             case "geo_vertical" -> assignMineGeo(bot, "vertical");
@@ -2072,6 +2074,59 @@ public final class AIBotVerifySubcommand {
         }
         return Result.pass("knowledge_smoke", "distill+dedup+query ok, dangers=" + kb.dangerCount(bot.getUuid())
                 + " resources=" + kb.resourceCount(bot.getUuid()));
+    }
+
+    // L1 接线回归(不烧 key):直接喂工具调用给各高层工具 handler,断言"选对工具+传对参 → 映射到对的 Goal 且提交成功
+    // (goal_assigned)"。只测接线/参数/映射,不实际执行(每个提交完即 clear)。把这条链锁成确定性回归,防以后改坏。
+    // 不替代 llm_*(那验真 DeepSeek 选不选得对、烧 key);本测验的是【选对之后接线对不对】。
+    private static Result assignToolDispatch(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        GoalExecutor.INSTANCE.clear(bot);
+        TaskManager.INSTANCE.abort(bot);
+        io.github.zoyluo.aibot.brain.ToolRegistry reg = new io.github.zoyluo.aibot.brain.ToolRegistry();
+        record Case(String tool, String args) {
+        }
+        java.util.List<Case> cases = java.util.List.of(
+                new Case("mine_ore", "{\"ore\":\"minecraft:iron_ore\",\"count\":3}"),
+                new Case("achieve_goal", "{\"item\":\"minecraft:iron_pickaxe\"}"),
+                new Case("harvest_crop", "{\"crop\":\"wheat\"}"),
+                new Case("provision_food", "{\"count\":4}"),
+                new Case("forage", "{}"),
+                new Case("achieve_armor", "{}"),
+                new Case("achieve_workstation", "{}"),
+                new Case("stockpile", "{\"item\":\"minecraft:cobblestone\",\"count\":10}"),
+                new Case("build_house", "{\"width\":7,\"material\":\"stone_like\"}"),
+                new Case("build_house", "{}"));
+        StringBuilder fails = new StringBuilder();
+        int ok = 0;
+        for (Case c : cases) {
+            io.github.zoyluo.aibot.brain.ToolDefinition def = reg.get(c.tool()).orElse(null);
+            if (def == null) {
+                fails.append(c.tool()).append(":unregistered; ");
+                continue;
+            }
+            io.github.zoyluo.aibot.brain.ToolDefinition.ToolResult r;
+            try {
+                com.google.gson.JsonObject args = com.google.gson.JsonParser.parseString(c.args()).getAsJsonObject();
+                r = def.handler().invoke(bot, args);
+            } catch (RuntimeException e) {
+                fails.append(c.tool()).append(":threw(").append(e.getClass().getSimpleName()).append("); ");
+                GoalExecutor.INSTANCE.clear(bot);
+                TaskManager.INSTANCE.abort(bot);
+                continue;
+            }
+            if (r != null && r.ok() && r.message() != null && r.message().contains("goal_assigned")) {
+                ok++;
+            } else {
+                fails.append(c.tool()).append("=").append(r == null ? "null" : r.message()).append("; ");
+            }
+            GoalExecutor.INSTANCE.clear(bot); // 只测接线:清掉刚提交的目标,不实际执行
+            TaskManager.INSTANCE.abort(bot);
+        }
+        return fails.length() == 0
+                ? Result.pass("tool_dispatch", ok + "/" + cases.size() + " 高层工具→Goal 接线/参数映射全通")
+                : Result.fail("tool_dispatch", ok + "/" + cases.size() + " ok; FAIL: " + fails.toString().trim());
     }
 
     private static Result assignMsgKeepGoal(AIPlayerEntity bot) {

@@ -82,10 +82,11 @@
     <h1>AIBot — 自主 Minecraft AI 玩家</h1>
     <div class="sub">大语言模型理解意图 · 确定性引擎可靠执行 · 五层安全网兜底求生</div>
     <div class="stats">
-      <div class="stat"><b>151</b><span>Java 类</span></div>
-      <div class="stat"><b>23.4K</b><span>行代码</span></div>
-      <div class="stat"><b>56</b><span>大脑工具</span></div>
-      <div class="stat"><b>44</b><span>任务状态机</span></div>
+      <div class="stat"><b>164</b><span>Java 类</span></div>
+      <div class="stat"><b>30K</b><span>行代码</span></div>
+      <div class="stat"><b>62</b><span>大脑工具</span></div>
+      <div class="stat"><b>36</b><span>任务状态机</span></div>
+      <div class="stat"><b>9</b><span>目标类型</span></div>
       <div class="stat"><b>5</b><span>层安全网</span></div>
     </div>
   </header>
@@ -122,7 +123,7 @@
     <div class="chips">
       <span class="chip k">BrainCoordinator</span>
       <span class="chip">ActionDispatcher · 派发+拦截</span>
-      <span class="chip">ToolRegistry · 56 工具</span>
+      <span class="chip">ToolRegistry · 62 工具</span>
       <span class="chip">DeepSeek LLM</span>
     </div>
   </div>
@@ -145,7 +146,7 @@
   <!-- 任务层 -->
   <div class="layer" style="--accent:var(--teal)">
     <div class="lhead"><span class="ico">⚙️</span><h2>任务层 · 自包含状态机</h2>
-      <span class="pkg">task (44)</span>
+      <span class="pkg">task (51)</span>
       <div class="desc">每个任务独立闭环、自带看门狗;互不嵌套,失败可被上层重规划</div>
     </div>
     <div class="chips">
@@ -164,7 +165,7 @@
   <!-- 支撑三柱 -->
   <div class="grid3">
     <div class="layer" style="--accent:var(--gold);margin:0">
-      <div class="lhead"><span class="ico">🛠️</span><h2>共享原语</h2><span class="pkg">action (19)</span></div>
+      <div class="lhead"><span class="ico">🛠️</span><h2>共享原语</h2><span class="pkg">action (20)</span></div>
       <div class="chips">
         <span class="chip">BlockMiner</span><span class="chip">DigNav</span>
         <span class="chip">ActionPack</span><span class="chip">HarvestCore</span>
@@ -179,7 +180,7 @@
       </div>
     </div>
     <div class="layer" style="--accent:var(--blue);margin:0">
-      <div class="lhead"><span class="ico">📚</span><h2>领域知识</h2><span class="pkg">craft · mining (8)</span></div>
+      <div class="lhead"><span class="ico">📚</span><h2>领域知识</h2><span class="pkg">craft · mining (10)</span></div>
       <div class="chips">
         <span class="chip">RecipeRegistry</span><span class="chip">MiningChain</span>
         <span class="chip">SmeltChain</span><span class="chip">ToolTier</span>

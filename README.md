@@ -32,8 +32,8 @@
 
 Most "AI in games" demos either let a language model hallucinate raw actions, or hard-code a rigid script. AIBot does neither — it splits the brain in two:
 
-- 🧠 **The LLM understands intent.** You say *"mine 3 diamonds"*; DeepSeek interprets it and picks from **56 tools**.
-- ⚙️ **A deterministic engine guarantees execution.** A backward-chaining planner expands that goal into a dependency-correct plan, **44 self-contained task state machines** run it reliably, and a **five-layer safety net** keeps the bot alive.
+- 🧠 **The LLM understands intent.** You say *"mine 3 diamonds"*; DeepSeek interprets it and picks from **62 tools**.
+- ⚙️ **A deterministic engine guarantees execution.** A backward-chaining planner expands that goal into a dependency-correct plan, **36 self-contained task state machines** run it reliably, and a **five-layer safety net** keeps the bot alive.
 
 The result is an agent that is **flexible enough to take orders in natural language, yet robust enough to actually finish the job.**
 
@@ -57,13 +57,16 @@ You never hand it a step list. If a step fails, it **re-plans**. If it's drownin
 
 | | |
 |---|---|
-| 🗣️ **Natural-language control** | Plain English / Chinese commands, understood by a DeepSeek LLM wired to 56 tools. |
+| 🗣️ **Natural-language control** | Plain English / Chinese commands, understood by a DeepSeek LLM wired to 62 tools. |
 | 🎯 **Goal back-chaining** | One goal → a dependency-correct multi-step plan. No manual breakdown. |
 | 🧩 **LLM + deterministic hybrid** | The model reasons; the engine executes. Flexible *and* reliable. |
-| 🛡️ **Five-layer safety net** | Drowning, lava, suffocation, stuck, threats, dark-traps — handled every tick. |
+| 🎒 **9 one-shot goals** | Diamonds, a full iron armor set + sword, a house, a base (table/furnace/chest), cooked food, crops→bread, ore, item stockpiles — each from one command. |
+| 🍞 **Five food paths** | Hunt→cook, farm wheat→bread (waits for crops to grow), forage berries, infinite-water irrigation, cake, raid village fields — auto-picked by what's nearby. |
+| 🛡️ **Unified survival layer** | Drowning, lava, suffocation, stuck, threats, dark-traps — handled every tick; digs shafts that seal out flooding water. |
 | 🧍 **Human-like behavior** | Staircase mining (never straight down), no teleporting, no bunny-hopping. |
-| ⛏️ **Full survival loop** | Mine, smelt, craft, fight, hunt, farm, breed, build, fish, trade, sleep. |
+| ⛏️ **Full survival loop** | Mine, smelt, craft, fight, hunt, farm, breed, build, fish, trade, sleep, gear up. |
 | 🔭 **Ore & tree prospecting** | Palette-level long-range scan locates resources and paths to them. |
+| 🌍 **Verified on real terrain** | A multi-seed reliability harness (`/aibot verify`) proves goals on randomly-generated worlds — not just flat test arenas. |
 | 🖥️ **Client control panel** | `Alt + 0` opens Bob's panel: health, hunger, task, tokens, inventory, chat. |
 
 ## 🏗️ Architecture
@@ -74,17 +77,17 @@ You never hand it a step list. If a step fails, it **re-plans**. If it's drownin
 flowchart TB
     P["🎮 Player — natural language · /aibot · Bob panel"] --> B
     subgraph COG["Cognition &amp; Decision"]
-      B["🧠 Brain · DeepSeek LLM<br/>56 tools"] --> G["🎯 GoalPlanner<br/>backward-chaining"]
+      B["🧠 Brain · DeepSeek LLM<br/>62 tools"] --> G["🎯 GoalPlanner<br/>backward-chaining"]
       G --> E["⚙️ GoalExecutor<br/>step state machine"]
     end
-    E --> T["🔧 Task FSM ×44<br/>mine · smelt · craft · combat · farm · build …"]
+    E --> T["🔧 Task FSM ×36<br/>mine · smelt · craft · combat · farm · build …"]
     T --> A["🛠️ Action primitives + A* pathfinding"]
     A --> W["🌍 Minecraft world · Fabric 1.21.3"]
     W -->|perception| B
     S["🛡️ Safety net · every tick<br/>NavSafety → Stuck → Danger → Idle"] -. guards .-> T
 ```
 
-<p align="center"><sub><b>151</b> classes · <b>23.4K</b> LOC · <b>56</b> tools · <b>44</b> task state machines · <b>5</b>-layer safety net</sub></p>
+<p align="center"><sub><b>164</b> classes · <b>30K</b> LOC · <b>62</b> tools · <b>36</b> task state machines · <b>9</b> goal types · <b>5</b>-layer safety net</sub></p>
 
 ## 🚀 Quick Start
 
@@ -146,7 +149,7 @@ Press **`Alt + 0`** in-game to open the **Bob control panel** — track health, 
 |---|---|---|
 | **Brain** | `brain` | DeepSeek tool-calling loop; turns intent into goals & actions |
 | **Goal engine** | `goal` | `Goal` → `GoalPlanner` (back-chaining) → `GoalExecutor` (FSM) |
-| **Tasks** | `task` | 44 self-contained state machines, each with its own watchdog |
+| **Tasks** | `task` | 36 self-contained state machines, each with its own watchdog |
 | **Action / Pathfinding** | `action` · `pathfinding` | `BlockMiner`, `DigNav`, `ActionPack`; A* with stand-ability checks |
 | **Knowledge** | `craft` · `mining` | recipes, mining/smelt chains, tool tiers, ore & tree prospector |
 | **Safety net** | `task` · `coordination` | `BotTickCoordinator`: NavSafety → Stuck → Danger → Goal → Idle |
@@ -175,11 +178,14 @@ src/main/java/io/github/zoyluo/aibot
 
 ## 🗺️ Roadmap
 
-- [ ] Zero-to-hero survival loop hardening
-- [ ] Multi-bot collaboration
-- [ ] Richer client interaction
-- [ ] Long-term memory recovery
-- [ ] Automated verification scenarios (`/aibot verify`, `/aibot deplint`)
+- [x] Zero-to-hero goals — food (5 paths), full iron armor + sword, house, base, stockpiles
+- [x] Real-terrain reliability harness — `/aibot verify` · multi-seed success-rate measurement
+- [x] Unified survival layer — drowning / lava / fire / threats + corpse recovery; shaft-flood sealing
+- [ ] Natural-language commander hardening — intent→tool wiring regression (`tool_dispatch`), long-range navigation
+- [ ] Reliable deep diamond mining on random terrain
+- [ ] Obsidian via water-on-lava (≥15)
+- [ ] House completion under night mobs (shed-first / build-by-day)
+- [ ] Multi-bot collaboration · long-term memory recall
 
 ## 🤝 Contributing
 

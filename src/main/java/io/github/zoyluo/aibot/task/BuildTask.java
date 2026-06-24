@@ -42,6 +42,8 @@ public final class BuildTask extends AbstractTask {
     private FlattenTarget currentFlattenTarget;
     private int flattenTargetTick;   // 当前整地格起算 tick:够不到的格超预算即跳过,防 nearbyStand 退化"走向自己"死循环
     private int nextIndex;
+    private int buildTargetTick;      // 当前落块格起算 tick:放不到的块超预算即跳过(best-effort),防 moveWithinReach 永续寻路空转
+    private int buildTargetIndex = -1;
     private int retryTicks;
     private int placeDelayTicks;
     private boolean flattenMiningStarted;
@@ -95,6 +97,8 @@ public final class BuildTask extends AbstractTask {
     @Override
     protected void onStart(AIPlayerEntity bot) {
         nextIndex = 0;
+        buildTargetTick = 0;
+        buildTargetIndex = -1;
         retryTicks = 0;
         placeDelayTicks = 0;
         flattenTargets.clear();
@@ -244,6 +248,19 @@ public final class BuildTask extends AbstractTask {
             complete();
             return;
         }
+        // 落块格预算(镜像 flatten 50t skip):同一块连续放不到——moveWithinReach 永续寻路(nearbyStand 退化
+        // 走向自己/够不到,executor 非 idle 时只 return false 不计 retryTicks)→ 80t 跳过该块继续盖,best-effort
+        // 不卡死到 build_timeout(real_build 实测卡 block 54 死住 ~16000t 的根因)。完工判 ≥80/116 容忍少量跳过。
+        if (nextIndex != buildTargetIndex) {
+            buildTargetIndex = nextIndex;
+            buildTargetTick = elapsed;
+            retryTicks = 0;
+        } else if (elapsed - buildTargetTick > 80) {
+            note = "build_skip=" + nextIndex + "@" + elapsed;
+            nextIndex++;
+            retryTicks = 0;
+            return;
+        }
         BlueprintSchema.BlockPlacement placement = blueprint.placements().get(nextIndex);
         BlockPos pos = anchor.add(placement.dx(), placement.dy(), placement.dz());
         Block block = resolveBlock(placement.blockId());
@@ -282,7 +299,11 @@ public final class BuildTask extends AbstractTask {
         }
         placeDelayTicks = 5;
         if (retryTicks > 12) {
-            fail("place_failed: " + result.reason() + " at " + compact(pos));
+            // best-effort:这一块反复放不到(障碍/视线/支撑缺)→ 跳过继续盖,不毁整任务(real 地形单块卡不该全败;
+            // 完工判 ≥80/116 容忍)。与上面的 80t 预算双保险:谁先到谁跳。
+            note = "build_skip_placefail=" + nextIndex + ":" + result.reason();
+            nextIndex++;
+            retryTicks = 0;
         }
     }
 

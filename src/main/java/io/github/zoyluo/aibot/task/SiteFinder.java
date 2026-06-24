@@ -1,6 +1,7 @@
 package io.github.zoyluo.aibot.task;
 
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
+import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.pathfinding.Standability;
 import net.minecraft.fluid.FluidState;
 import net.minecraft.server.world.ServerWorld;
@@ -58,7 +59,66 @@ public final class SiteFinder {
                 }
             }
         }
+        if (best == null) {
+            // 诊断 no_flat_site 拒因分类:对每个可站候选 footprint 跑 flatnessScore 同款检查,统计首个拒因——
+            // okFlat=本可接受(平且干净,若>0 说明 best=null 另有缘故)/obstruct=feet或头非空气(草花雪等可清障碍,
+            // flatten CLEAR 本就清→可放宽)/fluid=ground或feet带水(水域,更难)/groundAir=悬空。据此定修向。
+            int okFlat = 0, obstruct = 0, fluid = 0, groundAir = 0, tooSteep = 0;
+            for (int x = origin.getX() - searchRadius; x <= origin.getX() + searchRadius - footprintX; x++) {
+                for (int z = origin.getZ() - searchRadius; z <= origin.getZ() + searchRadius - footprintZ; z++) {
+                    OptionalInt my = standableY(world, x, z, originSurface);
+                    if (my.isEmpty() || Math.abs(my.getAsInt() - originSurface) > ySpread) {
+                        continue;
+                    }
+                    switch (footprintReject(world, new BlockPos(x, my.getAsInt(), z), footprintX, footprintZ, maxRange)) {
+                        case 0 -> okFlat++;
+                        case 1 -> obstruct++;
+                        case 2 -> fluid++;
+                        case 3 -> groundAir++;
+                        case 4 -> tooSteep++;
+                        default -> { }
+                    }
+                }
+            }
+            BotLog.action(bot, "no_flat_site_diag",
+                    "okFlat", okFlat, "obstruct", obstruct, "fluid", fluid,
+                    "groundAir", groundAir, "tooSteep", tooSteep,
+                    "maxRange", maxRange, "ySpread", ySpread, "searchRadius", searchRadius);
+        }
         return Optional.ofNullable(best);
+    }
+
+    // 诊断用:对 footprint 跑 flatnessScore 同款逐列检查,返回【首个】拒因码——
+    // 0=干净可接受 / 1=feet或头非空气(可清障碍) / 2=ground或feet带流体(水) / 3=ground悬空 / 4=落差>maxRange / -1=不可站。
+    private static int footprintReject(ServerWorld world, BlockPos anchor, int footprintX, int footprintZ, int maxRange) {
+        int minY = Integer.MAX_VALUE;
+        int maxY = Integer.MIN_VALUE;
+        for (int dx = 0; dx < footprintX; dx++) {
+            for (int dz = 0; dz < footprintZ; dz++) {
+                int x = anchor.getX() + dx;
+                int z = anchor.getZ() + dz;
+                OptionalInt my = standableY(world, x, z, anchor.getY());
+                if (my.isEmpty()) {
+                    return -1;
+                }
+                int surfaceY = my.getAsInt();
+                BlockPos feet = new BlockPos(x, surfaceY, z);
+                if (!world.getBlockState(feet).getCollisionShape(world, feet).isEmpty()
+                        || !world.getBlockState(feet.up()).getCollisionShape(world, feet.up()).isEmpty()) {
+                    return 1; // 有碰撞箱的实心障碍(放宽后草等无碰撞植被不再算障碍)
+                }
+                BlockPos ground = feet.down();
+                if (!world.getFluidState(ground).isEmpty() || !world.getFluidState(feet).isEmpty()) {
+                    return 2;
+                }
+                if (world.getBlockState(ground).isAir()) {
+                    return 3;
+                }
+                minY = Math.min(minY, surfaceY);
+                maxY = Math.max(maxY, surfaceY);
+            }
+        }
+        return (maxY - minY) > maxRange ? 4 : 0;
     }
 
     public static double flatnessScore(ServerWorld world, BlockPos anchor, int footprintX, int footprintZ) {
@@ -80,7 +140,12 @@ public final class SiteFinder {
                 }
                 int surfaceY = maybeY.getAsInt();
                 BlockPos feet = new BlockPos(x, surfaceY, z);
-                if (!world.getBlockState(feet).isAir() || !world.getBlockState(feet.up()).isAir()) {
+                // 放宽:接受 feet/头是"可清植被"(草/花/蕨/雪层等无碰撞箱方块)——bot 能站进去(isStandable 同款
+                // 碰撞箱空判据),flatten 的 CLEAR 阶段也会把它们清掉。原"必须严格空气"把大量平整草地误判成
+                // no_flat_site(实测 8888/31337/7777777 obstruct=700+、地形 spread=0 平的、fluid=0 干的)。
+                // 实心障碍(有碰撞箱)仍拒(站不进去需预清);水由下面 fluid 检查拒(不接受水面站点)。
+                if (!world.getBlockState(feet).getCollisionShape(world, feet).isEmpty()
+                        || !world.getBlockState(feet.up()).getCollisionShape(world, feet.up()).isEmpty()) {
                     return Double.MAX_VALUE;
                 }
                 BlockPos ground = feet.down();

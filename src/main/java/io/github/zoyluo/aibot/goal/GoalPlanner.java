@@ -2,6 +2,7 @@ package io.github.zoyluo.aibot.goal;
 
 import io.github.zoyluo.aibot.AIBotConfig;
 import io.github.zoyluo.aibot.action.FarmAction;
+import io.github.zoyluo.aibot.action.MaterialPalette;
 import io.github.zoyluo.aibot.craft.AcquisitionHints;
 import io.github.zoyluo.aibot.craft.SmeltChain;
 import io.github.zoyluo.aibot.craft.RecipeRegistry;
@@ -459,11 +460,25 @@ public final class GoalPlanner {
                     return false;
                 }
             }
-            Map<Item, Integer> materials = new LinkedHashMap<>();
+            // 备料按 palette 家族合计、exact 块精确分别统计。
+            // 【治建到一半误判缺料乱逛】:palette 占位(如 small_hut 的 "planks")执行期 BuildTask/MaterialPalette
+            // 接受家族任意成员(任意木种木板),但旧逻辑只把整组需求记到 preferredPlanks 单一木种上,重规划时
+            // 见"oak 79 < 需 96"就插采橡木步、无视背包另有 896 块其它木板 → bot 丢下工地往黑暗里追原木耗尽
+            // 预算(real_build 实测 54/116 超时根因)。修:palette 材料按家族 owned 合计判足,够则不插采料步。
+            Map<String, Integer> paletteNeeds = new LinkedHashMap<>();
+            Map<Item, Integer> exactNeeds = new LinkedHashMap<>();
             for (BlueprintSchema.BlockPlacement placement : schema.placements()) {
-                Item material = buildMaterialFor(placement);
-                if (material != null) {
-                    materials.merge(material, 1, Integer::sum);
+                if ("minecraft:air".equals(placement.blockId())) {
+                    continue;
+                }
+                if (placement.palette() != null && !placement.palette().isBlank()
+                        && MaterialPalette.isKnown(placement.palette())) {
+                    paletteNeeds.merge(placement.palette(), 1, Integer::sum);
+                } else {
+                    Item material = buildMaterialFor(placement);
+                    if (material != null) {
+                        exactNeeds.merge(material, 1, Integer::sum);
+                    }
                 }
             }
             // 备料 best-effort:单种材料倒推失败(unresolved 已记)不挡其它材料,建造执行期缺哪块再 fail 哪块;
@@ -472,8 +487,31 @@ public final class GoalPlanner {
             // 不像 CraftTask 那样运行期自动把原木展开成木板。craftItem 的 Fix C 会把 depth>0 的中间体
             // 木板 CRAFT 步抑制掉(交给下游 CraftTask 展开),对 BUILD 这是错的;Build 仅以 depth=0 进入
             // (ensureGoal 顶层),传 depth 让木板按顶层产物保留 CRAFT 步,否则只囤原木、开工即缺料。
-            boolean anyResolved = materials.isEmpty();
-            for (Map.Entry<Item, Integer> entry : materials.entrySet()) {
+            boolean anyResolved = paletteNeeds.isEmpty() && exactNeeds.isEmpty();
+            for (Map.Entry<String, Integer> entry : paletteNeeds.entrySet()) {
+                int need = entry.getValue();
+                int ownedInFamily = 0;
+                List<Item> family = MaterialPalette.GROUPS.get(entry.getKey());
+                if (family != null) {
+                    for (Item member : family) {
+                        ownedInFamily += counts.getOrDefault(member, 0);
+                    }
+                }
+                if (ownedInFamily >= need) {
+                    anyResolved = true; // 家族合计已够,不插采料步
+                    continue;
+                }
+                Item species = paletteDefaultItem(entry.getKey());
+                if (species == null) {
+                    continue;
+                }
+                // 只补家族缺口:desiredCount = 该木种现有 + 全家族缺口,ensureItem 内部扣减后只采缺口部分。
+                int desired = counts.getOrDefault(species, 0) + (need - ownedInFamily);
+                if (ensureItem(species, desired, depth, visiting)) {
+                    anyResolved = true;
+                }
+            }
+            for (Map.Entry<Item, Integer> entry : exactNeeds.entrySet()) {
                 if (ensureItem(entry.getKey(), entry.getValue(), depth, visiting)) {
                     anyResolved = true;
                 }

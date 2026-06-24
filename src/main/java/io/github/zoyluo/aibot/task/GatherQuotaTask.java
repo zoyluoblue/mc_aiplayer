@@ -659,6 +659,20 @@ public final class GatherQuotaTask extends AbstractTask {
             phase = Phase.SURVEY;
             return;
         }
+        // 沾水即弃当前目标(治小麦链割草淹水 guard_drowning):草密集长在水岸浅滩,GOTO 朝水边草寻路会把 bot
+        // 趟进深水没顶——NavSafetyNet 只 steer 移动不杀任务,形成"安全网拖上岸一tick / 寻路怼回水一tick"活锁,
+        // air<100 → SurvivalGuard 斩任务。与 roamMove/exploreMove 同款:一沾水就停手 + 拉黑该草(防 SURVEY 立刻
+        // 重锁同一水中草乒乓)+ 回 SURVEY,交 NavSafetyNet 拖上岸后在干地重选(real_wood 不淹:树在干地)。
+        if (bot.isTouchingWater()) {
+            bot.getActionPack().stopAll();
+            EpisodeMemory.INSTANCE.exclude(bot.getUuid(), targetPos,
+                    bot.getServer().getTicks(), EpisodeMemory.TTL_UNREACHABLE);
+            BotLog.action(bot, "gather_goto_water_bail",
+                    "pos", targetPos.getX() + "," + targetPos.getY() + "," + targetPos.getZ());
+            targetPos = null;
+            phase = Phase.SURVEY;
+            return;
+        }
         if (HarvestCore.canReach(bot, targetPos)) {
             bot.getActionPack().stopAll();
             startHarvest(bot);

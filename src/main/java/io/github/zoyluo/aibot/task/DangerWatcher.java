@@ -109,7 +109,13 @@ public final class DangerWatcher {
         // 因为地下逃跑无效、拖到 ≤4 心才入土往往已死(real_diamond 深层挖矿 evade/guard_low_hp 送命主因)。
         boolean cannotFlee = !bot.getServerWorld().isSkyVisible(bot.getBlockPos());
         boolean entombNow = bot.getHealth() <= EMERGENCY_SHELTER_HP || (cannotFlee && bot.hurtTime > 0);
-        if (threat.isPresent() && threat.get().type() == Threat.Type.HOSTILE
+        // 死亡螺旋修复(self-inflicted 倒挂):collectTopThreat 在血<6 时把 top 改写成 LOW_HP/entity=null,
+        // 使本闸的 type==HOSTILE 判定恰在最该入土时失效(血越低越筑不了墙,正是上面注释想治的螺旋)。
+        // 补:LOW_HP 抢占时独立扫一次近处可达 hostile,有则照样入土。不动威胁分类早返回,避免误伤 DROWNING/LAVA。
+        boolean topIsHostile = threat.isPresent() && threat.get().type() == Threat.Type.HOSTILE;
+        boolean lowHpUnderHostile = threat.isPresent() && threat.get().type() == Threat.Type.LOW_HP
+                && hasReachableHostile(bot);
+        if ((topIsHostile || lowHpUnderHostile)
                 && entombNow
                 && EmergencyShelterTask.hasShelterBlock(bot)
                 && !(active.isPresent() && active.get() instanceof EmergencyShelterTask)) {
@@ -573,5 +579,19 @@ public final class DangerWatcher {
     // 远程怪没视线射不到、苦力怕没视线也炸不到——一律不算当前威胁(它们绕过来/露头后会被重新检测到)。
     private static boolean canReachThreat(AIPlayerEntity bot, LivingEntity mob) {
         return CombatCore.hasLineOfSight(bot, mob);
+    }
+
+    // 近处(8 格)是否有可达(有视线)的敌对怪。用于濒死封墙闸在 LOW_HP 抢占下补判——血<6 时 collectTopThreat
+    // 已把 top 改写成 LOW_HP/entity=null,丢了 hostile 信息,这里独立扫一次还原"是否真被怪围"。复用同款视线判定。
+    private static boolean hasReachableHostile(AIPlayerEntity bot) {
+        List<LivingEntity> hostiles = bot.getServerWorld()
+                .getEntitiesByClass(LivingEntity.class, bot.getBoundingBox().expand(8.0D),
+                        entity -> entity instanceof HostileEntity && entity.isAlive());
+        for (LivingEntity mob : hostiles) {
+            if (canReachThreat(bot, mob)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

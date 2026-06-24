@@ -37,8 +37,11 @@ public final class GatherQuotaTask extends AbstractTask {
     private static final int PROSPECT_INTERVAL = 40; // 大范围扫描限频(2s 一次),护 TPS
     // EXPLORE(定向走出去找):roam 的 28 格小步在真实地形上 8 方向乒乓、净位移≈0,survey 永远在同一片
     // 打转(real_wood seed=20260610 实测:找不到/找到不可达树时原地循环到 6001t 超时)。EXPLORE 以
-    // 48/40/32 格大步跳点定向外推,最多 4 跳(~190 格);知识库记得资源点就朝记忆点走,否则罗盘盲探。
-    private static final int EXPLORE_MAX_HOPS = 4;
+    // 48/40/32 格大步跳点定向外推;知识库记得资源点就朝记忆点走,否则罗盘盲探。
+    // 共享根加固(real_wheat seed 206232996 gather_timeout 实测):4 跳~190 格在真实无树片区(雪原/沙漠/
+    // 海岸/高原)常跨不出去——且 server 加载窗口 view/sim-distance=10 约 160 格,explore 必须物理走过去
+    // 才触发新区块加载(prospect 只扫已加载区块,扩范围无效)。8 跳~380 格才能真正跨进另一片群系找到树。
+    private static final int EXPLORE_MAX_HOPS = 8;
     private static final double[] EXPLORE_HOP_DISTANCES = {48.0D, 40.0D, 32.0D};
     private static final int[] EXPLORE_DEFLECTIONS_DEG = {0, 45, -45, 90, -90}; // 偏角序列:先沿航向,再左右扇形
     private static final int EXPLORE_MOVE_LIMIT = 300;   // 单跳走 15s 还没到 → 弃跳回 SURVEY

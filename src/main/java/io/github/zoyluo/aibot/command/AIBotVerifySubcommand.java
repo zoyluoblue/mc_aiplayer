@@ -1378,7 +1378,6 @@ public final class AIBotVerifySubcommand {
         InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 128));
         InventoryAction.giveItem(bot, new ItemStack(Items.CRAFTING_TABLE, 1));
         ServerWorld world = bot.getServerWorld();
-        BlockPos origin = bot.getBlockPos();
         final int deathBase = deathCount(bot);
         java.util.Set<Block> plankBlocks = new java.util.HashSet<>();
         for (Item planks : io.github.zoyluo.aibot.craft.RecipeRegistry.PLANKS) {
@@ -1390,9 +1389,12 @@ public final class AIBotVerifySubcommand {
         if (!GoalExecutor.INSTANCE.submit(bot, new Goal.Build("small_hut"))) {
             return Result.fail("real_build", "goal_submit_failed");
         }
+        // 计数锚点对准真实建房点:断言在 BuildTask 完成时评估(见 pollActive),此刻 bot 就在建好的 hut 处;
+        // SiteFinder 自动选址可能远离/低于出生点(origin),故绕 bot 当前位对称扫描(±10 水平、上下 -6..8),
+        // 而非以出生点为锚的 "only above"——治"建满 116/116 零死亡却被原点计数漏掉"的断言锚点局限。
         return Result.runningGoal("real_build", 20000,
                 ignored -> bot.isAlive() && deathCount(bot) == deathBase
-                        && countNearbyBlocksAbove(world, origin, 24, plankBlocks) >= 80);
+                        && countNearbyBlocks(world, bot.getBlockPos(), 10, -6, 8, plankBlocks) >= 80);
     }
 
     // snapshot 落地辅助:按相对坐标放一块默认态方块(配 /aibot snapshot 导出的 setRel 行)。
@@ -2155,6 +2157,26 @@ public final class AIBotVerifySubcommand {
         int count = 0;
         for (int dx = -r; dx <= r; dx++) {
             for (int dy = 0; dy <= 8; dy++) {
+                for (int dz = -r; dz <= r; dz++) {
+                    if (targets.contains(world.getBlockState(center.add(dx, dy, dz)).getBlock())) {
+                        count++;
+                    }
+                }
+            }
+        }
+        return count;
+    }
+
+    // 对称垂直扫描(center 上下 yLo..yHi):real_build 专用——蓝图 SiteFinder 自动选址,房子可能落在出生点
+    // 远处/下方(实测建在 265,63,587 而出生点在别处),以出生点为锚的 "only above" 数不到建好的房 → 建满
+    // 116/116 零死亡却误判 assertion_failed。real 地形下方是土/石不与 plank 同族,绕"真实建房点"(完工时 bot
+    // 就在房里)对称扫描只数真木板、无假平台问题(不能用于 lab 建房场景:那里平台地板与建材同族,见
+    // countNearbyBlocksAbove 注释)。仍要求 ≥80 块真木板+零死亡+存活,只是把计数锚点对准真实建房点。
+    private static int countNearbyBlocks(ServerWorld world, BlockPos center, int r, int yLo, int yHi,
+                                         java.util.Set<Block> targets) {
+        int count = 0;
+        for (int dx = -r; dx <= r; dx++) {
+            for (int dy = yLo; dy <= yHi; dy++) {
                 for (int dz = -r; dz <= r; dz++) {
                     if (targets.contains(world.getBlockState(center.add(dx, dy, dz)).getBlock())) {
                         count++;

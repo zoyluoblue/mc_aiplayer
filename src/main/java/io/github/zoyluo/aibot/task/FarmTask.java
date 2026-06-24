@@ -58,6 +58,7 @@ public final class FarmTask extends AbstractTask {
     private int completedActions;
     private int lastDepositActionCount;
     private int waitTicks;
+    private boolean waitingForMaturity; // 种完后留在原地等作物自然成熟(数量受限模式),非卡死
     private String note = "";
 
     public FarmTask(BlockPos areaCenter, int radius, Item seed, Block crop, boolean keepTending, boolean harvestOnly) {
@@ -104,6 +105,7 @@ public final class FarmTask extends AbstractTask {
     protected void onStart(AIPlayerEntity bot) {
         phase = Phase.SURVEY;
         lastDepositActionCount = completedActions;
+        waitingForMaturity = false;
         produceBaseline = produceItem == null ? 0 : InventoryAction.countItem(bot, produceItem);
     }
 
@@ -115,7 +117,8 @@ public final class FarmTask extends AbstractTask {
             complete();
             return;
         }
-        if (!keepTending && elapsed > 2400) {
+        if (!keepTending && produceItem == null && elapsed > 2400) {
+            // 数量受限模式(produceItem!=null)要等作物自然成熟,走下面 12000t 配额超时,不受这条 2400t 短超时制约。
             fail("farm_timeout");
             return;
         }
@@ -151,13 +154,27 @@ public final class FarmTask extends AbstractTask {
         if (targets.isEmpty()) {
             if (!harvestOnly && InventoryAction.countItem(bot, seed) <= 0 && completedActions == 0) {
                 fail("missing " + seed + " x1");
-            } else if (keepTending && hasDepositItems(bot)) {
+                return;
+            }
+            // 等熟(真实地形种田做面包命门):种了但还没熟的作物 + 数量受限还没凑够产出 → 别 DONE,
+            // 留在原地等作物自然成熟(配合 random tick),熟了下次 survey 即生成 HARVEST target 去收。
+            // 旧逻辑种完 targets 空即 DONE、从不等熟(real_wheat 实测 till/plant 6-12 次但 harvest=0);
+            // lab food_farm 靠 perTick 强制催熟才过。超时由上面 12000t 配额兜底,熟不了也不会无限等。
+            boolean needMore = produceItem != null
+                    && InventoryAction.countItem(bot, produceItem) - produceBaseline < targetHarvest;
+            if (!harvestOnly && needMore && hasImmatureCrops(world)) {
+                waitingForMaturity = true;
+                return; // 留在 SURVEY,下 tick 继续等熟(不切 DONE);isWaiting() 期间豁免 StuckWatcher
+            }
+            waitingForMaturity = false;
+            if (keepTending && hasDepositItems(bot)) {
                 phase = Phase.DEPOSIT;
             } else {
                 phase = Phase.DONE;
             }
             return;
         }
+        waitingForMaturity = false;
         phase = Phase.NEXT;
     }
 
@@ -385,7 +402,17 @@ public final class FarmTask extends AbstractTask {
 
     @Override
     public boolean isWaiting() {
-        return keepTending && phase == Phase.DONE;
+        // 等熟期间 bot 站在田边不动是正常作业(等作物长熟),豁免 StuckWatcher 误杀;卡死交 12000t 配额超时兜底。
+        return (keepTending && phase == Phase.DONE) || waitingForMaturity;
+    }
+
+    // 区内是否有"已种但还没熟"的本作物——有就值得留下等熟,别种完就走(治 real_wheat harvest=0)。
+    private boolean hasImmatureCrops(ServerWorld world) {
+        return BlockPos.stream(areaCenter.add(-radius, -1, -radius), areaCenter.add(radius, 1, radius))
+                .anyMatch(ground -> {
+                    BlockPos cropPos = ground.up();
+                    return world.getBlockState(cropPos).isOf(crop) && !FarmAction.isMature(world, cropPos);
+                });
     }
 
     private boolean hasDepositItems(AIPlayerEntity bot) {

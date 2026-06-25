@@ -5,8 +5,8 @@
 <h1 align="center">AIBot</h1>
 
 <p align="center">
-  <b>An autonomous Minecraft AI player.</b><br>
-  Tell it once, in plain language — it figures out the rest.
+  <b>An autonomous AI agent that plays Minecraft.</b><br>
+  Tell it once, in plain language — it mines, builds, farms, fights, and survives on its own.
 </p>
 
 <p align="center">
@@ -27,6 +27,16 @@
 > **LLM plans. Tasks execute. Bob survives.**
 >
 > AIBot spawns a real server-side player that perceives the world, back-chains your goal into a complete plan, and carries it out on its own — mining, fighting, farming, surviving.
+
+## 🤖 What is AIBot?
+
+**AIBot is an open-source, autonomous AI agent for Minecraft.** It's a server-side [Fabric](https://fabricmc.net/) mod for **Minecraft 1.21.3** in which a **large language model (LLM)** — DeepSeek by default, or any OpenAI-compatible model — drives a *real in-game player* that plays the game on its own.
+
+Give it a goal in plain **English or Chinese** — *"mine 3 diamonds"*, *"build a house"*, *"get me some food"* — and AIBot perceives the world, plans the dependency-correct steps, and executes them autonomously: **mining, crafting, smelting, building, farming, breeding, fighting, fishing, trading, and surviving** on any randomly-generated, real-terrain world.
+
+Unlike a hard-coded bot or a script, AIBot splits the brain in two: **the LLM decides *what* to do, and a deterministic engine reliably handles *how*.** It is not a client-side hack or cheat — it spawns a legitimate server-side fake player (in the Carpet-mod tradition) that obeys normal game rules.
+
+> **Keywords:** Minecraft AI · autonomous agent · LLM agent · AI that plays Minecraft · Fabric mod · server-side bot · natural-language game AI · DeepSeek / GPT-style tool-calling agent.
 
 ## ✨ Why AIBot
 
@@ -186,6 +196,29 @@ src/main/java/io/github/zoyluo/aibot
 - [ ] Obsidian via water-on-lava (≥15)
 - [ ] House completion under night mobs (shed-first / build-by-day)
 - [ ] Multi-bot collaboration · long-term memory recall
+
+## ❓ FAQ
+
+**Can an AI play Minecraft on its own?**
+Yes. AIBot is an autonomous AI agent that plays Minecraft without human input — you give one natural-language goal and it mines, builds, farms, fights, and survives by itself on real-terrain worlds.
+
+**How does a large language model (LLM) control a Minecraft bot?**
+The LLM only decides *intent* — it emits tool calls like `mine_ore` or `build_house` from a 62-tool API. A deterministic engine then back-chains the goal into a dependency-correct plan and runs it with 36 self-contained task state machines, so the bot is flexible enough to take orders yet reliable enough to finish them.
+
+**Is AIBot a hack, cheat, or client mod?**
+No. AIBot is a **server-side** Fabric mod that spawns a legitimate fake player (in the Carpet-mod tradition) and plays by normal game rules. There is no client-side injection or x-ray.
+
+**Which LLMs / AI models does it support?**
+DeepSeek out of the box, and **any OpenAI-compatible endpoint** (GPT-style chat + tool-calling) — just point the `baseUrl` at your provider in `aibot.json`.
+
+**What Minecraft version and mod loader does it need?**
+Minecraft **1.21.3** on **Fabric** (Loader 0.18.4+, Fabric API 0.114.1+1.21.3), Java 21.
+
+**Can I command the bot in natural language?**
+Yes — English or Chinese, via chat, the `/aibot brain say` command, or the in-game control panel (`Alt + 0`).
+
+**Is it open source?**
+Yes, released under the MIT License.
 
 ## 🤝 Contributing
 

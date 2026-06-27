@@ -114,6 +114,7 @@ public final class AIBotVerifySubcommand {
             "real_food",
             "real_wheat",
             "real_iron",
+            "real_iron_bulk",
             "real_diamond",
             "real_armor",
             "real_build",
@@ -201,6 +202,7 @@ public final class AIBotVerifySubcommand {
             "real_food",
             "real_wheat",
             "real_iron",
+            "real_iron_bulk",
             "real_diamond",
             "real_armor",
             "real_obsidian");
@@ -396,6 +398,7 @@ public final class AIBotVerifySubcommand {
             case "real_food" -> assignRealFood(bot);
             case "real_wheat" -> assignRealWheat(bot);
             case "real_iron" -> assignRealIron(bot);
+            case "real_iron_bulk" -> assignRealIronBulk(bot);
             case "real_diamond" -> assignRealDiamond(bot);
             case "real_diamond3" -> assignRealDiamond3(bot);
             case "real_armor" -> assignRealArmor(bot);
@@ -1314,6 +1317,27 @@ public final class AIBotVerifySubcommand {
         return Result.runningGoal("real_iron", 24000,
                 ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.IRON_INGOT) >= 1
                         && deathCount(bot) == deathBase);
+    }
+
+    // 持续挖矿测量:给镐+甲+火把跳过 bootstrap/生存/照明,真实地形挖 100 块铁矿(raw_iron)。
+    // 隔离"OreDigTask 长跑持续可靠性"——找矿/接近抖死/strip 扩面/耐久/归仓,看天花板卡在哪。
+    private static Result assignRealIronBulk(AIPlayerEntity bot) {
+        prepareRealistic(bot);
+        clearInventory(bot);
+        for (int i = 0; i < 5; i++) {
+            InventoryAction.giveItem(bot, new ItemStack(Items.IRON_PICKAXE, 1)); // 5 把铁镐:耐久不当首瓶颈
+        }
+        giveDeepMineKit(bot);                                          // 护甲+剑+盾:生存不当首瓶颈
+        InventoryAction.giveItem(bot, new ItemStack(Items.TORCH, 64)); // 火把:照明不当首瓶颈
+        final int deathBase = deathCount(bot);
+        java.util.Set<Block> ironOres = java.util.Set.of(Blocks.IRON_ORE, Blocks.DEEPSLATE_IRON_ORE);
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.MineOre(ironOres, 100));
+        if (!started) {
+            return Result.fail("real_iron_bulk", "goal_submit_failed");
+        }
+        return Result.runningGoal("real_iron_bulk", 48000,
+                ignored -> bot.isAlive() && deathCount(bot) == deathBase
+                        && InventoryAction.countItem(bot, Items.RAW_IRON) >= 100);
     }
 
     // 实操:从零一颗钻石(完整工具链 + 真实下挖到 -59 找矿,会遇洞穴/岩浆/黑暗)。

@@ -115,6 +115,8 @@ public final class AIBotVerifySubcommand {
             "real_wheat",
             "real_iron",
             "real_iron_bulk",
+            "real_gold",
+            "real_redstone",
             "real_diamond",
             "real_armor",
             "real_build",
@@ -203,6 +205,8 @@ public final class AIBotVerifySubcommand {
             "real_wheat",
             "real_iron",
             "real_iron_bulk",
+            "real_gold",
+            "real_redstone",
             "real_diamond",
             "real_armor",
             "real_obsidian");
@@ -399,6 +403,8 @@ public final class AIBotVerifySubcommand {
             case "real_wheat" -> assignRealWheat(bot);
             case "real_iron" -> assignRealIron(bot);
             case "real_iron_bulk" -> assignRealIronBulk(bot);
+            case "real_gold" -> assignRealGold(bot);
+            case "real_redstone" -> assignRealRedstone(bot);
             case "real_diamond" -> assignRealDiamond(bot);
             case "real_diamond3" -> assignRealDiamond3(bot);
             case "real_armor" -> assignRealArmor(bot);
@@ -1338,6 +1344,33 @@ public final class AIBotVerifySubcommand {
         return Result.runningGoal("real_iron_bulk", 48000,
                 ignored -> bot.isAlive() && deathCount(bot) == deathBase
                         && InventoryAction.countItem(bot, Items.RAW_IRON) >= 100);
+    }
+
+    // 实操:从零一块金锭(工具链 → 铁镐 → 下挖到 Y-16 找金矿 → 挖 → 熔炼)。金比钻浅,但仍需铁镐+深潜。
+    private static Result assignRealGold(AIPlayerEntity bot) {
+        prepareRealistic(bot);
+        final int deathBase = deathCount(bot);
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.GOLD_INGOT, 1));
+        if (!started) {
+            return Result.fail("real_gold", "goal_submit_failed");
+        }
+        return Result.runningGoal("real_gold", 28000,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.GOLD_INGOT) >= 1
+                        && deathCount(bot) == deathBase);
+    }
+
+    // 实操:从零拿到红石(工具链 → 铁镐 → 下挖到 Y-59 找红石矿 → 挖)。Y-59=钻石同深度,与钻石共享深层硬边。
+    // 红石矿一块掉 4-5 红石、不需熔炼;断言 ≥4(约一块矿)。
+    private static Result assignRealRedstone(AIPlayerEntity bot) {
+        prepareRealistic(bot);
+        final int deathBase = deathCount(bot);
+        boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.HaveItem(Items.REDSTONE, 4));
+        if (!started) {
+            return Result.fail("real_redstone", "goal_submit_failed");
+        }
+        return Result.runningGoal("real_redstone", 32000,
+                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.REDSTONE) >= 4
+                        && deathCount(bot) == deathBase);
     }
 
     // 实操:从零一颗钻石(完整工具链 + 真实下挖到 -59 找矿,会遇洞穴/岩浆/黑暗)。

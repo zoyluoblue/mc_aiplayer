@@ -56,7 +56,6 @@ public final class GoalPlanner {
             Items.BEEF, Items.PORKCHOP, Items.MUTTON, Items.CHICKEN, Items.RABBIT);
     private static final int FOOD_TARGET = 4;
     private static final int DESCEND_THRESHOLD = 8; // bot 高于矿层超过这么多格,先下竖井到矿层再挖
-    private static final int DESCEND_SKIP_VERTICAL = 16; // "矿在身边→跳下潜"仅当矿在当前层垂直±此范围内;更深的矿仍须下潜(治 real_diamond:replan 在 Y57 因脚下 40 格的钻石误判 oreNearby 丢下潜步)
     private static final int SPARE_IRON_INGOTS = 3; // 深潜挖矿前多备 1 把铁镐的料(3 铁锭),镐磨穿时深处背包直接合新镐
     private static final int FOOD_GRASS_SCAN = 32;  // Goal.Food 择源:扫这个半径内有无草(种植面包链的种子来源)
 
@@ -88,23 +87,16 @@ public final class GoalPlanner {
         //(站在铁矿旁还先挖 70 格竖井到 Y16 是蠢的;且竖井穿天然地形洞/水/沙砾极易 descend_blocked,
         // 实测场景地表化后 descend 类失败爆发,旧 y6 出生点 botY<mineY 恰好从不触发才一直没暴露)。
         java.util.function.Predicate<Set<Block>> oreNearby = ores -> {
-            int by = bot.getBlockPos().getY();
-            // 垂直闸(real_diamond 主因修复):48 格扫描是 3D 球——会把 bot 正下方 40+ 格的深矿误判为"身边",
-            // 抑制下潜,导致 ore_dig 在错误高度(实测 Y57)反复锁定 40 格下的钻石却够不到→no_progress→
-            // replan 丢下潜步(实测 4/6 失败)。跳过下潜的本意是"站在矿旁伸手可及",故只认【当前层附近
-            // (垂直 ≤DESCEND_SKIP_VERTICAL 格)】的矿;远在脚下深处的矿仍须先下潜到矿层。
-            net.minecraft.util.math.BlockPos near = OreProspector.nearest(bot.getServerWorld(), bot.getBlockPos(), 48,
-                    state -> ores.contains(state.getBlock()));
-            if (near != null && by - near.getY() <= DESCEND_SKIP_VERTICAL) {
+            if (OreProspector.nearest(bot.getServerWorld(), bot.getBlockPos(), 48,
+                    state -> ores.contains(state.getBlock())) != null) {
                 return true;
             }
             // 知识库第二意见(语义记忆消费口):实扫 48 格没有,但以前在 96 格内见过该矿 → 同样跳过下潜,
-            // OreDigTask 的 prospect(64)+水平掘进能摸到——"记得哪里有"比"现在看得见"覆盖更广。同样受垂直闸约束。
+            // OreDigTask 的 prospect(64)+水平掘进能摸到——"记得哪里有"比"现在看得见"覆盖更广。
             for (Block ore : ores) {
                 String id = Registries.BLOCK.getId(ore).toString();
-                var rp = io.github.zoyluo.aibot.memory.KnowledgeBase.INSTANCE
-                        .nearestResource(bot.getUuid(), id, bot.getBlockPos(), 96);
-                if (rp.isPresent() && by - rp.get().y() <= DESCEND_SKIP_VERTICAL) {
+                if (io.github.zoyluo.aibot.memory.KnowledgeBase.INSTANCE
+                        .nearestResource(bot.getUuid(), id, bot.getBlockPos(), 96).isPresent()) {
                     return true;
                 }
             }

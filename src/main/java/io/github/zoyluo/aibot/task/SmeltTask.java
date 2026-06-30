@@ -68,6 +68,8 @@ public final class SmeltTask extends AbstractTask {
     private final int targetCount;
     private Phase phase = Phase.FINDING_FURNACE;
     private BlockPos furnacePos;
+    private double walkBestDist2 = Double.MAX_VALUE; // WALKING 接近监控:历史最近距²(治 stuck:smelt active-but-stuck)
+    private int walkStallSince;                       // 上次靠近炉子的 elapsed;久不靠近=路径卡死→升级
     private int collected;
     private final BlockMiner clearMiner = new BlockMiner(); // 被围放不下熔炉时,挖一格相邻方块腾位
     private boolean walkDigging; // 纯寻路到不了现有熔炉时,降级挖掘式朝熔炉挖过去(复用 clearMiner)
@@ -219,6 +221,8 @@ public final class SmeltTask extends AbstractTask {
         // 纯寻路到不了现有熔炉(地下被围/自挖隧道复杂,实测 GOAL_UNREACHABLE 会让整条目标 replan 回地表砍木,
         // bot 在深处回不去而卡死)→ 不失败,降级挖掘式朝熔炉挖过去。
         walkDigging = result.isFailed();
+        walkBestDist2 = Double.MAX_VALUE; // 进入 WALKING:重置接近监控
+        walkStallSince = elapsed;
         phase = Phase.WALKING_TO_FURNACE;
     }
 
@@ -227,10 +231,32 @@ public final class SmeltTask extends AbstractTask {
             phase = Phase.FINDING_FURNACE;
             return;
         }
-        if (bot.getEyePos().squaredDistanceTo(furnacePos.toCenterPos()) <= 20.25D) {
+        double dist2 = bot.getEyePos().squaredDistanceTo(furnacePos.toCenterPos());
+        if (dist2 <= 20.25D) {
             clearMiner.cancel(bot);
             bot.getActionPack().stopAll();
             phase = Phase.LOADING;
+            return;
+        }
+        // 接近监控(治 stuck:smelt WALKING_TO_FURNACE:实测 9/18 跑冻在悬崖、on_ground=false、纯寻路
+        // active-but-stuck,isPathExecutorIdle 永 false 漏判,直到外部 200t 看门狗失败触发 replan 烧预算)。
+        // 久不靠近 → 纯寻路升级挖掘式;挖掘式也推不近 → 弃该炉回 FINDING 重选/补炉。位移阈很低,正常移动轻松喂活。
+        if (dist2 < walkBestDist2 - 0.5D) {
+            walkBestDist2 = dist2;
+            walkStallSince = elapsed;
+        } else if (elapsed - walkStallSince > 40) {
+            walkStallSince = elapsed;
+            if (!walkDigging) {
+                bot.getActionPack().stopAll();
+                walkDigging = true;
+                BotLog.action(bot, "smelt_walk_stall_dig", "furnace", furnacePos.toShortString());
+            } else {
+                clearMiner.cancel(bot);
+                furnacePos = null;
+                walkBestDist2 = Double.MAX_VALUE;
+                phase = Phase.FINDING_FURNACE;
+                BotLog.action(bot, "smelt_walk_stall_refind", "dist2", String.format("%.0f", dist2));
+            }
             return;
         }
         if (walkDigging) {

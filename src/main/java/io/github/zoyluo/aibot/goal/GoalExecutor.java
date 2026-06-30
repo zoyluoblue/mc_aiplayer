@@ -100,6 +100,12 @@ public final class GoalExecutor {
         }
         ActivePlan active = new ActivePlan(goal, new ArrayDeque<>(plan.steps()), plan.steps().size(),
                 plan.steps().stream().map(GoalStep::describe).toList());
+        // Phase A:进度快照初始化(开局基准),供 handleStepFailure 的进度赦免对比。
+        net.minecraft.util.math.BlockPos sp0 = bot.getBlockPos();
+        active.snapX = sp0.getX();
+        active.snapY = sp0.getY();
+        active.snapZ = sp0.getZ();
+        active.snapTargetCount = goalTargetCount(bot, goal);
         activePlans.put(bot.getUuid(), active);
         // 工作记忆 episode 边界:新目标=新 episode,上一件事的排除项/轨迹作废。
         // (replan 不走这里——handleStepFailure 原地改 plan.steps,工作记忆跨 replan 存活,这正是设计。)
@@ -143,6 +149,7 @@ public final class GoalExecutor {
         TaskStatus status = TaskManager.INSTANCE.status(bot);
         if (status.state() == TaskState.COMPLETED) {
             BotLog.task(bot, "goal_step_completed", "step", plan.current.describe());
+            plan.completedSteps++; // Phase A:完成一步=进展信号
             plan.current = null;
             plan.currentTask = null;
             assignNext(bot, plan);
@@ -292,6 +299,21 @@ public final class GoalExecutor {
         TaskManager.INSTANCE.assign(bot, task.get());
     }
 
+    // Phase A 进度信号:目标产物当前库存计数(HaveItem/Stockpile 用其物品,MineOre 用矿石掉落)。
+    private static int goalTargetCount(AIPlayerEntity bot, Goal goal) {
+        if (goal instanceof Goal.HaveItem hi) {
+            return io.github.zoyluo.aibot.action.HarvestCore.countInventoryItems(bot, java.util.Set.of(hi.item()));
+        }
+        if (goal instanceof Goal.Stockpile sp) {
+            return io.github.zoyluo.aibot.action.HarvestCore.countInventoryItems(bot, java.util.Set.of(sp.item()));
+        }
+        if (goal instanceof Goal.MineOre mo) {
+            return io.github.zoyluo.aibot.action.HarvestCore.countInventoryItems(bot,
+                    io.github.zoyluo.aibot.action.HarvestCore.expectedDropsFor(mo.ores()));
+        }
+        return 0;
+    }
+
     private void handleStepFailure(MinecraftServer server, AIPlayerEntity bot, ActivePlan plan, String reason) {
         // 第4层:best-effort 步骤(如 HUNT 备粮)失败不阻断整体目标——跳过它直接继续下一步。
         // 这样"挖钻石前备点肉"在周围没动物时也不会让整条挖矿目标 goal_failed(续航仍由饥饿链兜底)。
@@ -310,9 +332,28 @@ public final class GoalExecutor {
             assignNext(bot, plan);
             return;
         }
-        // 重规划预算 3 次:20 分钟级长链(real_diamond 31 步)中途的小坎(missing furnace 这种
-        // replan 必能修的缺料)一次定生死太苛刻,整链报废重来。风暴防御不变:同步骤硬失败仍直接判死。
-        if (plan.replanCount >= 3 || !AIBotConfig.get().goal().replanOnFailureEnabled()) {
+        // Phase A 进度感知预算(断点恢复核心):有进展→清零"连续无进展"计数,产出区被瞬时打断
+        // (骷髅/卡顿)不与原地空转同罪。进展=完成新步 || 挖到更多目标物 || 下潜更深 || 横向位移≥8格
+        //(位移信号对 ore_dig strip-mining 前进尤其关键——它是 real_diamond 主导失败面)。只认单向增量防往返误判。
+        net.minecraft.util.math.BlockPos bp = bot.getBlockPos();
+        int curTarget = goalTargetCount(bot, plan.goal);
+        long hMoved2 = (long) (bp.getX() - plan.snapX) * (bp.getX() - plan.snapX)
+                     + (long) (bp.getZ() - plan.snapZ) * (bp.getZ() - plan.snapZ);
+        boolean madeProgress = plan.completedSteps > plan.snapSteps
+                || curTarget > plan.snapTargetCount
+                || bp.getY() < plan.snapY
+                || hMoved2 >= 64;
+        if (madeProgress) {
+            plan.replanCount = 0; // 进展赦免
+        }
+        plan.snapSteps = plan.completedSteps;
+        plan.snapTargetCount = curTarget;
+        plan.snapX = bp.getX();
+        plan.snapY = bp.getY();
+        plan.snapZ = bp.getZ();
+        plan.lifetimeReplans++;
+        // 死亡闸:连续 3 次无进展 replan,或终生 12 次(防"挖一点卡一点"无限磨),或 replan 关闭 → 判死。
+        if (plan.replanCount >= 3 || plan.lifetimeReplans >= 12 || !AIBotConfig.get().goal().replanOnFailureEnabled()) {
             activePlans.remove(bot.getUuid());
             lastGoalFailTick.put(bot.getUuid(), server.getTicks());
             BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.TASK, bot, "goal_failed", "goal", plan.goal, "reason", reason);
@@ -333,7 +374,7 @@ public final class GoalExecutor {
         }
         // 防呆:若重规划的第一步与刚失败的步骤完全相同,且失败是"硬卡死"类(挖不动/卡住/超时),
         // 重试只会原样再失败一次(实测#9 的 replan 风暴根因)。直接判失败,交大脑/玩家换思路。
-        if (plan.current != null && plan.current.equals(fresh.steps().get(0)) && isHardFailure(reason)) {
+        if (plan.current != null && plan.current.equals(fresh.steps().get(0)) && isHardFailure(reason) && !madeProgress) {
             activePlans.remove(bot.getUuid());
             lastGoalFailTick.put(bot.getUuid(), server.getTicks());
             BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.TASK, bot, "goal_failed",
@@ -470,7 +511,13 @@ public final class GoalExecutor {
         private GoalStep current;
         private Task currentTask;
         private int totalSteps;
-        private int replanCount;
+        private int replanCount;       // Phase A:语义=连续无进展 replan 数(有进展则清零)
+        // Phase A 韧性·进度感知预算(断点恢复):
+        private int completedSteps;    // 累计完成步数(单调增)
+        private int lifetimeReplans;   // 终生 replan 数(永不重置,绝对兜底闸=12)
+        private int snapSteps;         // 上次 replan 时 completedSteps 快照
+        private int snapTargetCount;   // 上次 replan 时目标产物库存计数
+        private int snapX, snapY, snapZ; // 上次 replan 时 bot 坐标(横向位移/下潜=进展判据)
 
         private ActivePlan(Goal goal, ArrayDeque<GoalStep> steps, int totalSteps, java.util.List<String> stepLabels) {
             this.goal = goal;

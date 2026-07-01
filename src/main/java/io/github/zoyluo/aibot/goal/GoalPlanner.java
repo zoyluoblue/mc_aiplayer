@@ -322,7 +322,16 @@ public final class GoalPlanner {
             // 途中磨穿→resupply 就地合会打断大配额单 mine_ore、丢挖矿进度→ore_dig_timeout。按量预备(含掘进≈1把/12块)
             // 一把磨穿换备用、不中断,一趟挖完。仅 STONE 档(挖铁/铜,圆石无限廉价)预备;IRON 档(钻石)已由备铁锭兜。
             if (tier <= ToolTier.STONE && remaining >= 12) {
-                ensureItem(pickaxeForTier(tier), 1 + remaining / 12, depth + 1, visiting);
+                // 扣除已有的更高档镐(治 real_iron_bulk:预装 5 铁镐≈9 石镐当量,原样按 1+100/12=9 无脑备石镐
+                // → 倒推砍木 → 无树地形 need_oak_planks 速死)。只备缺口;从零(无高档镐)照旧,不破 real_armor 26 铁场景。
+                int needPicks = 1 + remaining / 12;
+                int nonStoneEquiv = counts.getOrDefault(Items.IRON_PICKAXE, 0) * 250 / 131
+                        + counts.getOrDefault(Items.DIAMOND_PICKAXE, 0) * 1561 / 131
+                        + counts.getOrDefault(Items.NETHERITE_PICKAXE, 0) * 2031 / 131;
+                int stoneNeeded = needPicks - nonStoneEquiv;
+                if (stoneNeeded > 0) {
+                    ensureItem(pickaxeForTier(tier), stoneNeeded, depth + 1, visiting);
+                }
             }
             // 精简速降(用户选·治本):深危矿(钻石/金/红石/绿宝石,Y<0 岩浆+怪多)**只备最小必需**——
             // 火把(廉价:煤+棍;照明=从源头少刷怪,性价比最高)。**砍掉铁甲/铁剑/盾/烤肉**——它们要先挖

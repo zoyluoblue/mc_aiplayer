@@ -6,7 +6,8 @@
 
 <p align="center">
   <b>An autonomous AI agent that plays Minecraft.</b><br>
-  Tell it once, in plain language — it mines, builds, farms, fights, and survives on its own.
+  Tell <b>Bob</b> once, in plain language — he mines, builds, farms, fights, and survives on his own.<br>
+  <sub><i>A real server-side Fabric mod — not a Python harness or a Mineflayer bot account.</i></sub>
 </p>
 
 <p align="center">
@@ -47,6 +48,20 @@ Most "AI in games" demos either let a language model hallucinate raw actions, or
 
 The result is an agent that is **flexible enough to take orders in natural language, yet robust enough to actually finish the job.**
 
+## 🧭 How AIBot is different
+
+The LLM-in-Minecraft space has two well-known lines of work — AIBot takes a third path.
+
+| | **Skill-learning agents** *([Voyager](https://github.com/MineDojo/Voyager))* | **Mineflayer bots** *([Mindcraft](https://github.com/mindcraft-bots/mindcraft))* | **AIBot** |
+|---|---|---|---|
+| **Runs as** | Python + Mineflayer + a MC instance | Node.js + Mineflayer | **a drop-in server-side Fabric mod** |
+| **The player is** | a Mineflayer client that logs in | a Mineflayer client that logs in | **a real, server-spawned player** (Carpet-style fake player) |
+| **The LLM…** | writes & self-debugs JavaScript | can write / run JavaScript | **only plans** — emits goals & tool calls, never in the execution loop |
+| **Execution** | LLM-generated programs | LLM-generated programs | **deterministic task state machines** |
+| **Default model** | GPT-4 | multi-provider | **DeepSeek** · any OpenAI-compatible |
+
+These are different bets, not better-or-worse. Voyager pioneered open-ended **skill discovery**; Mindcraft explores **multi-agent** social play — things AIBot deliberately doesn't chase. AIBot optimizes for the opposite: **take a goal in plain language and finish it reliably**, because the model never touches the execution loop and every task carries its own watchdog and safety net.
+
 ## 🎬 See it in action
 
 ```
@@ -62,6 +77,13 @@ chop oak → crafting table → wooden pickaxe → mine stone → stone pickaxe
 ```
 
 You never hand it a step list. If a step fails, it **re-plans**. If it's drowning or under attack, it **bails out and survives**.
+
+## 📏 Measured, not marketing
+
+Most "AI plays Minecraft" projects show one lucky highlight reel. AIBot ships with a **reliability harness** (`/aibot verify`) that runs each goal across **many randomly-generated survival worlds** and reports real, multi-seed success rates — so capabilities are *earned*, not cherry-picked.
+
+- ✅ **Reliable today** — the full food chain (self-sufficiency **measured from 2 → 8 out of 10** across random seeds), iron gear & smelting, base-building by day, and ore mining across a battery of geometry stress-tests (pockets, walls, overhangs, deep veins, flooded shafts).
+- 🚧 **Honest about the hard parts** — deep diamond runs and 100-block bulk hauls on *arbitrary* random terrain are still climbing. You'll find them on the **roadmap** below — not dressed up as done.
 
 ## 🧩 Features
 

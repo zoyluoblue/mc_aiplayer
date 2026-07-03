@@ -345,6 +345,12 @@ public final class DangerWatcher {
         if (!night.autoSleep() || bot.getServerWorld().isDay() || active.isPresent()) {
             return false;
         }
+        // 目标计划进行中(步骤间隙 active 短暂为空)不插夜间照明:它是 foreign task,会让 GoalExecutor
+        // 放弃整个目标(与 maybeLightDarkArea 同款守护——实测 real_iron_bulk 夜里挖到 91/100 时,步骤间隙被
+        // 夜间点灯抢走 → goal_abandoned → 卡 light_area churn 永不完成)。深矿照明由 GoalPlanner 火把前置负责。
+        if (io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.hasActivePlan(bot)) {
+            return false;
+        }
         int now = server.getTicks();
         TaskStatus lastStatus = TaskManager.INSTANCE.status(bot);
         if ("sleep".equals(lastStatus.name()) && lastStatus.state() == TaskState.COMPLETED) {

@@ -92,6 +92,22 @@ public final class TaskManager {
         if (current == null) {
             return;
         }
+        // 单槽 paused 池已有暂存任务(必是最早被抢占的目标步)→ 不能被后续生存抢占覆盖驱逐。
+        // 此刻的 current 必是生存反射任务(如 combat 被 shelter 二次抢占):它是反应式的,条件仍在
+        // 会被 DangerWatcher 每 tick 重新派发,无需 resume。直接 abort 出局、保留目标步在池里,生存链
+        // 打完才 resume 回目标——治嵌套抢占(mine_ore→combat→shelter)把目标步挤出单槽池 → tickBot 误判
+        // 显式替换 → goal_abandoned(实测 real_diamond 13 怪围攻深洞 light=0,目标丢后又派 light_area 症状)。
+        if (paused.containsKey(bot.getUuid())) {
+            current.abort(bot);
+            // lastStatus 写保留的池任务(目标步)而非刚 abort 的 current(FAILED):面板显示应是被守护的目标;
+            // 也免"若将来新增无 assign 跟随的 pauseFor 调用点、面板卡 FAILED"的隐患(审查加固建议)。
+            Task preserved = paused.get(bot.getUuid());
+            if (preserved != null) {
+                lastStatus.put(bot.getUuid(), TaskStatus.from(preserved));
+            }
+            BotLog.task(bot, "pause_preempt_abort", "name", current.name(), "why", why);
+            return;
+        }
         current.pause(bot);
         paused.put(bot.getUuid(), current);
         TaskStatus status = TaskStatus.from(current);

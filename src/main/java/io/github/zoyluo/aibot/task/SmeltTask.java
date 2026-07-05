@@ -7,6 +7,7 @@ import io.github.zoyluo.aibot.action.ContainerAction;
 import io.github.zoyluo.aibot.action.DigNav;
 import io.github.zoyluo.aibot.action.InventoryAction;
 import io.github.zoyluo.aibot.log.BotLog;
+import io.github.zoyluo.aibot.craft.CraftingHelper;
 import io.github.zoyluo.aibot.craft.SmeltChain;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.memory.BotMemoryStore;
@@ -31,6 +32,7 @@ public final class SmeltTask extends AbstractTask {
     private enum Phase {
         FINDING_FURNACE,
         WALKING_TO_FURNACE,
+        CRAFTING_FURNACE,
         PLACING_FURNACE,
         LOADING,
         SMELTING,
@@ -73,6 +75,7 @@ public final class SmeltTask extends AbstractTask {
     private int collected;
     private final BlockMiner clearMiner = new BlockMiner(); // 被围放不下熔炉时,挖一格相邻方块腾位
     private boolean walkDigging; // 纯寻路到不了现有熔炉时,降级挖掘式朝熔炉挖过去(复用 clearMiner)
+    private CraftTask furnaceCraftSub; // 走炉卡死且无备炉时,就地合成一座新炉(复用 CraftTask,不重复扣料逻辑)
 
     public SmeltTask(Item input, Item output, int targetCount) {
         this.input = input;
@@ -119,6 +122,10 @@ public final class SmeltTask extends AbstractTask {
     @Override
     protected void onAbort(AIPlayerEntity bot) {
         clearMiner.cancel(bot);
+        if (furnaceCraftSub != null) { // 就地合成子任务对称清理:防 abort 后字段残留 RUNNING 实例被复用
+            furnaceCraftSub.abort(bot);
+            furnaceCraftSub = null;
+        }
         bot.getActionPack().stopAll();
     }
 
@@ -134,6 +141,7 @@ public final class SmeltTask extends AbstractTask {
         switch (phase) {
             case FINDING_FURNACE -> findFurnace(bot);
             case WALKING_TO_FURNACE -> walkToFurnace(bot);
+            case CRAFTING_FURNACE -> craftFurnace(bot);
             case PLACING_FURNACE -> placeFurnace(bot);
             case LOADING -> loadFurnace(bot);
             case SMELTING -> waitForOutput(bot);
@@ -260,6 +268,13 @@ public final class SmeltTask extends AbstractTask {
                 if (InventoryAction.findItem(bot, Items.FURNACE).isPresent()) {
                     phase = Phase.PLACING_FURNACE;
                     BotLog.action(bot, "smelt_walk_stall_replace", "dist2", String.format("%.0f", dist2));
+                } else if (CraftingHelper.plan(bot, Items.FURNACE, 1).success()) {
+                    // 无备炉但有料(实测 24/25 churn 是 cobblestone 满手却只造过 1 座炉,摆出去就没备)——就地合成新炉
+                    // 就近熔炼,而非回 FINDING 死走远炉 churn 到 smelt_timeout。合成纯背包变换(扣 8 石→给炉),
+                    // 工作台"持有即可"由 CraftTask 内部处理;合成失败/短路优雅回退 FINDING(见 craftFurnace)。
+                    bot.getActionPack().stopAll(); // 清残留 walkTo(挖掘式刚 startWalkTo),免合成期杂散位移
+                    phase = Phase.CRAFTING_FURNACE;
+                    BotLog.action(bot, "smelt_walk_stall_craft", "dist2", String.format("%.0f", dist2));
                 } else {
                     phase = Phase.FINDING_FURNACE;
                     BotLog.action(bot, "smelt_walk_stall_refind", "dist2", String.format("%.0f", dist2));
@@ -279,6 +294,26 @@ public final class SmeltTask extends AbstractTask {
             // 纯寻路走不到 → 降级挖掘式,而非反复重找最终 smelt_timeout 失败触发 replan
             walkDigging = true;
         }
+    }
+
+    private void craftFurnace(AIPlayerEntity bot) {
+        if (furnaceCraftSub == null) {
+            furnaceCraftSub = new CraftTask(Items.FURNACE, 1);
+            furnaceCraftSub.start(bot);
+        }
+        furnaceCraftSub.tick(bot);
+        TaskState st = furnaceCraftSub.state();
+        if (st == TaskState.COMPLETED) {
+            furnaceCraftSub = null;
+            // 合成完可能因 CraftTask.utilityAlreadyAvailable 短路(8 格内已有炉)而没真造出物品——
+            // 有物品才摆,否则回 FINDING 让 nearestFurnace 就近接管,绝不带空手进 PLACING 硬失败。
+            phase = InventoryAction.findItem(bot, Items.FURNACE).isPresent()
+                    ? Phase.PLACING_FURNACE : Phase.FINDING_FURNACE;
+        } else if (st == TaskState.FAILED) {
+            furnaceCraftSub = null;
+            phase = Phase.FINDING_FURNACE; // 合成失败(无料/无台且无木)→回退原远炉逻辑,不比基线更差
+        }
+        // else RUNNING:continue ticking(furnace 合成仅 1~2 步,数 tick 内完成,远低于 CraftTask 400t 超时)
     }
 
     private void placeFurnace(AIPlayerEntity bot) {

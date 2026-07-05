@@ -254,8 +254,16 @@ public final class SmeltTask extends AbstractTask {
                 clearMiner.cancel(bot);
                 furnacePos = null;
                 walkBestDist2 = Double.MAX_VALUE;
-                phase = Phase.FINDING_FURNACE;
-                BotLog.action(bot, "smelt_walk_stall_refind", "dist2", String.format("%.0f", dist2));
+                // 挖掘式也推不近这座炉(真够不到:悬崖/深水/自挖隧道复杂地形)——有备炉就地摆一座就近熔炼,
+                // 而非回 FINDING 重选同一座远炉 churn 到 smelt_timeout(real_armor 实测走炉卡死触发 166 次→熔炼步超时,
+                // 其时 bot 手握 furnace×1+cobblestone×71 却在死走远炉)。同 smelt_furnace_unreachable_replace 思路:旧炉弃用认亏几块石头。
+                if (InventoryAction.findItem(bot, Items.FURNACE).isPresent()) {
+                    phase = Phase.PLACING_FURNACE;
+                    BotLog.action(bot, "smelt_walk_stall_replace", "dist2", String.format("%.0f", dist2));
+                } else {
+                    phase = Phase.FINDING_FURNACE;
+                    BotLog.action(bot, "smelt_walk_stall_refind", "dist2", String.format("%.0f", dist2));
+                }
             }
             return;
         }

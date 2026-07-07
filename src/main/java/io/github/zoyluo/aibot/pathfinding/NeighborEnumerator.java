@@ -201,8 +201,13 @@ public final class NeighborEnumerator {
     }
 
     // 暴露面岩浆:四水平邻+上方任一岩浆即危险(下方由 target.down 实心保证不漏)。
+    // 暴露面岩浆:四水平邻+上+下方任一岩浆即危险。
     private static boolean adjacentLava(ServerWorld world, BlockPos pos) {
         if (world.getFluidState(pos.up()).isIn(net.minecraft.registry.tag.FluidTags.LAVA)) {
+            return true;
+        }
+        // BUGFIX: также проверяем снизу — если под тонким слоем lava, копать опасно
+        if (world.getFluidState(pos.down()).isIn(net.minecraft.registry.tag.FluidTags.LAVA)) {
             return true;
         }
         for (Direction d : HORIZONTAL) {

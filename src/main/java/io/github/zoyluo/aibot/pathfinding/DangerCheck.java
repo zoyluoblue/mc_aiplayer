@@ -22,6 +22,11 @@ public final class DangerCheck {
         if (below.getFluidState().isIn(FluidTags.LAVA)) {
             return "lava_below";
         }
+        // BUGFIX: лава может быть на 2 блока ниже (под тонким слоем камня/гравия)
+        BlockState below2 = world.getBlockState(node.down(2));
+        if (below2.getFluidState().isIn(FluidTags.LAVA)) {
+            return "lava_below_2";
+        }
         if (below.isOf(Blocks.FIRE) || below.isOf(Blocks.SOUL_FIRE)) {
             return "fire_below";
         }

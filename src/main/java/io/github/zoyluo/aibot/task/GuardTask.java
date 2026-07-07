@@ -12,6 +12,7 @@ import java.util.Optional;
 public final class GuardTask extends AbstractTask {
     private static final double GUARD_RADIUS = 10.0D;
     private static final double RETURN_DISTANCE = 5.0D;
+    private static final int TIMEOUT_TICKS = 12000;
 
     private enum Phase {
         WATCH,
@@ -71,6 +72,11 @@ public final class GuardTask extends AbstractTask {
 
     @Override
     protected void onTick(AIPlayerEntity bot) {
+        if (elapsed > TIMEOUT_TICKS) {
+            fail("timeout");
+            return;
+        }
+
         BlockPos point = resolveGuardPoint(bot);
         if (point == null) {
             bot.getActionPack().stopAll();

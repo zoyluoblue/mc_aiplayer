@@ -44,6 +44,9 @@ public final class CombatTask extends AbstractTask {
     private int healTicks;
     private boolean eating;
     private int lostSightTicks; // 目标连续无视线(被墙挡)的 tick 数
+    private int noFoodWaitTicks;
+    private boolean noFoodSeen;
+    private int noFoodCycleCount;
 
     public CombatTask(EntityType<?> targetType, int targetKills, float retreatHpThreshold) {
         this.targetType = targetType;
@@ -226,6 +229,22 @@ public final class CombatTask extends AbstractTask {
     }
 
     private void retreat(AIPlayerEntity bot) {
+        if (noFoodSeen) {
+            noFoodWaitTicks++;
+            if (noFoodWaitTicks < 20) {
+                bot.getActionPack().stopMovement();
+                return;
+            }
+            noFoodWaitTicks = 0;
+            noFoodCycleCount++;
+            if (noFoodCycleCount >= 3) {
+                fail("no_food_for_heal");
+                return;
+            }
+            noFoodSeen = false;
+        } else {
+            noFoodCycleCount = 0;
+        }
         if (target != null && target.isAlive()) {
             Vec3d away = bot.getPos().subtract(target.getPos());
             if (away.lengthSquared() < 0.01D) {
@@ -249,7 +268,13 @@ public final class CombatTask extends AbstractTask {
             phase = Phase.ACQUIRE;
             return;
         }
-        if (!eating && InventoryAction.findFoodSlot(bot) >= 0) {
+        if (!eating && InventoryAction.findFoodSlot(bot) < 0) {
+            noFoodSeen = true;
+            bot.getActionPack().stopMovement();
+            phase = Phase.RETREAT;
+            return;
+        }
+        if (!eating) {
             bot.getActionPack().stopMovement();
             ActionResult result = EatAction.startEating(bot);
             eating = !result.isFailed();

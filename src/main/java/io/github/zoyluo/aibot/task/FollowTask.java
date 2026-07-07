@@ -11,6 +11,7 @@ public final class FollowTask extends AbstractTask {
     private static final double STOP_DISTANCE = 3.0D;
     private static final double START_DISTANCE = 4.5D;
     private static final int REPATH_TICKS = 40;
+    private static final int TIMEOUT_TICKS = 12000;
 
     private final String targetName;
     private int nextRepathTick;
@@ -48,6 +49,11 @@ public final class FollowTask extends AbstractTask {
 
     @Override
     protected void onTick(AIPlayerEntity bot) {
+        if (elapsed > TIMEOUT_TICKS) {
+            fail("player_not_in_dimension");
+            return;
+        }
+
         ServerPlayerEntity target = target(bot).orElse(null);
         if (target == null || target.getServerWorld() != bot.getServerWorld()) {
             bot.getActionPack().stopAll();

@@ -104,6 +104,12 @@ public final class BlockMiner {
         // 只在挖掘空闲(尚未对本块发起 / 上一块已结束)时发起一次;之后交给 MiningController 累加进度。
         // 绝不每 tick 重发 startMining —— 那会把 progress 清零,永远破不了块。
         if (bot.getActionPack().isMiningIdle()) {
+            // 二次验证:刚结束的 MiningController 可能已设 idle 但世界方块尚未更新为空气,
+            // 此时若不做 isAir 检查,会重新装备、创建 MiningController 挖空气浪费一次 tick。
+            if (world.getBlockState(target).isAir()) {
+                target = null;
+                return Status.DONE;
+            }
             BlockState equipTarget = world.getBlockState(target);
             ToolSelector.equipBestTool(bot, equipTarget);
             Direction face = faceToward(bot, target);

@@ -118,8 +118,11 @@ public final class Standability {
         if (isDangerous(feet) || isDangerous(head) || isDangerous(below)) {
             return false;
         }
-        // NAV-11: лестницы/лианы — стоим в них, опора не нужна
+        // BUGFIX: лестница/лиана — стоим в них, но только если снизу не опасно
         if (feet.isIn(BlockTags.CLIMBABLE)) {
+            if (isDangerous(below)) {
+                return false;
+            }
             return true;
         }
         // Блок опоры снизу: partial-блоки (плиты) дают опору

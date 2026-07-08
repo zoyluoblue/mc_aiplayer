@@ -38,6 +38,12 @@ public final class StuckWatcher {
         }
 
         Task task = active.get();
+        // BUGFIX: не abort-ить если бот активно ломает блок или двигается
+        if (!bot.getActionPack().isMiningIdle() || !bot.getActionPack().isPathExecutorIdle() || !bot.getActionPack().isWalkToIdle()) {
+            samples.remove(bot.getUuid());
+            return;
+        }
+
         Sample current = new Sample(bot.getBlockPos().toImmutable(), task.progress(), inventoryTotal(bot), now);
         Sample previous = samples.get(bot.getUuid());
         if (previous == null || previous.changed(current)) {

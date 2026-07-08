@@ -1,6 +1,7 @@
 package io.github.zoyluo.aibot.task;
 
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
+import net.minecraft.util.math.Vec3d;
 
 /**
  * 统一生存层(二期 V1):生存熔断从各任务收编至此,每个任务 tick 前无差别执行。
@@ -43,7 +44,11 @@ public final class SurvivalGuard {
             if (task instanceof OreDigTask) {
                 return null;
             }
-            return "guard_drowning";
+            // Active emergency: abort, force upward velocity, set swimming so bot surfaces immediately
+            bot.getActionPack().stopAll();
+            bot.setVelocity(bot.getVelocity().x, 0.3D, bot.getVelocity().z);
+            bot.setSwimming(true);
+            return "guard_drowning_emergency";
         }
         // ② 身陷岩浆:每 tick 都在烧,任何作业立刻停,让位 DangerWatcher 的脱困/灭火。
         if (bot.isInLava()) {

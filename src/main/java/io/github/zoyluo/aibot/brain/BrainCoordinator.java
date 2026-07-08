@@ -70,8 +70,8 @@ public final class BrainCoordinator {
         }
         synchronized (conversation) {
             if (conversation.busy) {
-                sendPanelChat(bot, "system", bot.getGameProfile().getName() + " 正在思考,请稍等。");
-                return false;
+                conversation.busy = false;
+                conversation.generation++;
             }
             conversation.busy = true;
         }
@@ -278,8 +278,19 @@ public final class BrainCoordinator {
     }
 
     public void sendPanelChat(AIPlayerEntity bot, String role, String text) {
+        // BUGFIX: anti-spam — не повторять то же сообщение чаще раза в 30 секунд
+        if ("bot".equals(role)) {
+            var conv = conversations.get(bot.getUuid());
+            if (conv != null) {
+                int tick = bot.getServer() != null ? bot.getServer().getTicks() : 0;
+                if (text.equals(conv.lastBotMessage) && tick - conv.lastBotMessageTick < 600) {
+                    return;
+                }
+                conv.lastBotMessage = text;
+                conv.lastBotMessageTick = tick;
+            }
+        }
         AIBotServerNetworking.INSTANCE.sendBotChat(bot, role, text);
-        // BUGFIX: дублируем ответ LLM в игровой чат, чтобы все видели
         if ("bot".equals(role)) {
             var server = bot.getServer();
             if (server != null) {
@@ -304,7 +315,18 @@ public final class BrainCoordinator {
                 brainConfig.exposesLowLevelTools() || manualMode(bot),
                 BotRuntimeOptions.INSTANCE.memoryToolsEnabled(bot),
                 brainConfig.coordinationToolsEnabled());
-        executor.submit(bot, historySnapshot, toolsSnapshot, this::onResponse, this::onError);
+        int gen = conversation.generation;
+        executor.submit(bot, historySnapshot, toolsSnapshot,
+                (b, r) -> {
+                    BotConversation conv = conversations.get(b.getUuid());
+                    if (conv != conversation || conv.generation != gen) return;
+                    onResponse(b, r);
+                },
+                (b, e) -> {
+                    BotConversation conv = conversations.get(b.getUuid());
+                    if (conv != conversation || conv.generation != gen) return;
+                    onError(b, e);
+                });
     }
 
     private void scheduleContinuation(AIPlayerEntity bot, BotConversation conversation) {
@@ -511,6 +533,10 @@ public final class BrainCoordinator {
         private int lastCompletionTokens;
         private int lastCacheHitTokens;
         private String lastPerceptionDigest = "";
+        // BUGFIX: anti-spam для сообщений LLM
+        private String lastBotMessage = "";
+        private int lastBotMessageTick;
+        private int generation;
     }
 
     public record BrainStatus(boolean busy, int historySize, int promptTokens, int completionTokens, int cacheHitTokens) {

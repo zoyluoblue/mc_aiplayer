@@ -48,6 +48,11 @@ public final class MiningController {
         }
 
         if (!started) {
+            // 防御性二次验证:block 可能在 lookAtBlock 等步骤中被其它任务/玩家破坏
+            if (world.getBlockState(pos).isAir()) {
+                resetProgress(player);
+                return ActionResult.SUCCESS;
+            }
             ToolSelector.equipBestTool(player, state);
             BotLog.action(player, "mine_start", "pos", LogFields.pos(pos), "face", face);
             player.interactionManager.processBlockBreakingAction(

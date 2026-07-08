@@ -98,6 +98,8 @@ public final class GatherQuotaTask extends AbstractTask {
     private BlockPos exploreTarget;
     private int exploreHopStartTick;
     private BlockPos exploreHint;
+    private BlockPos lastExploreHopPos;
+    private int exploreStuckHops;
     private boolean exploredSinceFind;
     private int lastExploreScanTick = -100;
     private BlockPos lastGotoTarget;
@@ -165,6 +167,7 @@ public final class GatherQuotaTask extends AbstractTask {
                 selfStuckCount = countSoFar;
                 selfStuckTick = elapsed;
                 exploreHops = 0;          // 采到新东西=这片有产出,探索跳数额度重置
+                exploreStuckHops = 0;     // 同时复位卡步计数
                 exploredSinceFind = true; // 下次"探索后的发现"重新值得入流记忆
             } else if (elapsed - selfStuckTick > SELF_STUCK_LIMIT && escapeBarrenArea(bot)) {
                 return; // 两者内部已设 phase=ROAM/EXPLORE(走过去换片/定向外探),移动中不再自检
@@ -439,6 +442,23 @@ public final class GatherQuotaTask extends AbstractTask {
         exploreTarget = picked;
         exploreHopStartTick = elapsed;
         exploredSinceFind = true;
+        // Track bot position progress across hops: if position hasn't moved
+        // for 3 consecutive hops, fall back to direct GOTO
+        BlockPos currentPos = bot.getBlockPos();
+        if (currentPos.equals(lastExploreHopPos)) {
+            exploreStuckHops++;
+        } else {
+            exploreStuckHops = 0;
+            lastExploreHopPos = currentPos.toImmutable();
+        }
+        if (exploreStuckHops >= 3) {
+            phase = Phase.GOTO;
+            bot.getActionPack().startPathTo(picked);
+            BotLog.action(bot, "gather_explore_stuck_goto",
+                    "to", picked.getX() + "," + picked.getY() + "," + picked.getZ(),
+                    "hops", exploreHops);
+            return true;
+        }
         phase = Phase.EXPLORE;
         BotLog.action(bot, "gather_explore_hop",
                 "hop", exploreHops,
@@ -730,6 +750,15 @@ public final class GatherQuotaTask extends AbstractTask {
 
     private void harvest(AIPlayerEntity bot) {
         if (targetPos == null || !isHarvestBlock(bot, targetPos)) {
+            // 砍树自动上向连锁:原木破碎后检查上方是否还有同类原木(树从上往下砍),若有则上移继续挖
+            if (targetPos != null) {
+                BlockPos above = targetPos.up();
+                if (isHarvestBlock(bot, above)) {
+                    targetPos = above;
+                    startHarvest(bot);
+                    return;
+                }
+            }
             bot.getActionPack().stopAll(); // 砍倒后停稳,别带移动惯性漂离掉落物(实测砍完从树位漂走→捡不到)
             pickupTicks = probabilisticDrop ? 30 : 120; // 概率掉落资源(种子/浆果)掉脚边、捡得快,少等
             phase = Phase.PICKUP;

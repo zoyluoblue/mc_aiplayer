@@ -31,12 +31,14 @@ public final class MiningController {
         AIPlayerEntity player = pack.player();
         var world = player.getServerWorld();
         BlockState state = world.getBlockState(pos);
+
+        // BUGFIX: ванильный подход — START каждый тик, ждём когда сервер сломает блок
         if (state.isAir()) {
-            resetProgress(player);
+            started = false;
             return ActionResult.SUCCESS;
         }
         if (targetState != null && !state.equals(targetState)) {
-            resetProgress(player);
+            started = false;
             return ActionResult.SUCCESS;
         }
 
@@ -47,41 +49,29 @@ public final class MiningController {
             return ActionResult.failed("out_of_reach");
         }
 
+        // START_DESTROY_BLOCK каждый тик (как ванильный клиент)
         if (!started) {
-            // 防御性二次验证:block 可能在 lookAtBlock 等步骤中被其它任务/玩家破坏
             if (world.getBlockState(pos).isAir()) {
-                resetProgress(player);
+                started = false;
                 return ActionResult.SUCCESS;
             }
             ToolSelector.equipBestTool(player, state);
             BotLog.action(player, "mine_start", "pos", LogFields.pos(pos), "face", face);
-            player.interactionManager.processBlockBreakingAction(
-                    pos,
-                    PlayerActionC2SPacket.Action.START_DESTROY_BLOCK,
-                    face,
-                    World.MAX_Y,
-                    -1);
-            state.onBlockBreakStart(world, pos, player);
-            started = true;
             targetState = state;
+            started = true;
         }
 
-        progress += state.calcBlockBreakingDelta(player, world, pos);
-        world.setBlockBreakingInfo(player.getId(), pos, Math.min(9, (int) (progress * 10.0F)));
+        player.interactionManager.processBlockBreakingAction(
+                pos,
+                PlayerActionC2SPacket.Action.START_DESTROY_BLOCK,
+                face,
+                World.MAX_Y,
+                -1);
+        state.onBlockBreakStart(world, pos, player);
+        world.setBlockBreakingInfo(player.getId(), pos,
+                Math.min(9, (int) (world.getBlockState(pos).calcBlockBreakingDelta(player, world, pos) * 10.0F)));
         player.swingHand(Hand.MAIN_HAND);
         player.updateLastActionTime();
-
-        if (progress >= 1.0F) {
-            player.interactionManager.processBlockBreakingAction(
-                    pos,
-                    PlayerActionC2SPacket.Action.STOP_DESTROY_BLOCK,
-                    face,
-                    World.MAX_Y,
-                    -1);
-            world.setBlockBreakingInfo(player.getId(), pos, -1);
-            AStarPathfinder.invalidateCache("block_break");
-            return ActionResult.SUCCESS;
-        }
 
         elapsed++;
         if (elapsed > MAX_TICKS) {

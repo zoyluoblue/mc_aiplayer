@@ -19,7 +19,6 @@ public final class MiningController {
     private final Direction face;
     private boolean started;
     private BlockState targetState;
-    private float progress;
     private int elapsed;
 
     public MiningController(BlockPos pos, Direction face) {
@@ -32,12 +31,18 @@ public final class MiningController {
         var world = player.getServerWorld();
         BlockState state = world.getBlockState(pos);
 
-        // BUGFIX: ванильный подход — START каждый тик, ждём когда сервер сломает блок
-        if (state.isAir()) {
-            started = false;
-            return ActionResult.SUCCESS;
-        }
-        if (targetState != null && !state.equals(targetState)) {
+        // BUGFIX: блок стал air — abort серверный трекинг, return SUCCESS
+        if (state.isAir() || (targetState != null && !state.equals(targetState))) {
+            if (started) {
+                abortInternal(player);
+            } else {
+                // Принудительно сбрасываем серверный трекинг
+                player.interactionManager.processBlockBreakingAction(
+                        pos, PlayerActionC2SPacket.Action.ABORT_DESTROY_BLOCK,
+                        face, World.MAX_Y, -1);
+            }
+            world.setBlockBreakingInfo(player.getId(), pos, -1);
+            AStarPathfinder.invalidateCache("block_break_or_change");
             started = false;
             return ActionResult.SUCCESS;
         }
@@ -45,16 +50,12 @@ public final class MiningController {
         LookAction.lookAtBlock(player, pos, face);
         double reach = player.getAttributeValue(EntityAttributes.BLOCK_INTERACTION_RANGE);
         if (player.getEyePos().distanceTo(pos.toCenterPos()) > reach + 0.5D) {
-            abort(player);
+            abortInternal(player);
             return ActionResult.failed("out_of_reach");
         }
 
         // START_DESTROY_BLOCK каждый тик (как ванильный клиент)
         if (!started) {
-            if (world.getBlockState(pos).isAir()) {
-                started = false;
-                return ActionResult.SUCCESS;
-            }
             ToolSelector.equipBestTool(player, state);
             BotLog.action(player, "mine_start", "pos", LogFields.pos(pos), "face", face);
             targetState = state;
@@ -62,11 +63,8 @@ public final class MiningController {
         }
 
         player.interactionManager.processBlockBreakingAction(
-                pos,
-                PlayerActionC2SPacket.Action.START_DESTROY_BLOCK,
-                face,
-                World.MAX_Y,
-                -1);
+                pos, PlayerActionC2SPacket.Action.START_DESTROY_BLOCK,
+                face, World.MAX_Y, -1);
         state.onBlockBreakStart(world, pos, player);
         world.setBlockBreakingInfo(player.getId(), pos,
                 Math.min(9, (int) (world.getBlockState(pos).calcBlockBreakingDelta(player, world, pos) * 10.0F)));
@@ -75,30 +73,18 @@ public final class MiningController {
 
         elapsed++;
         if (elapsed > MAX_TICKS) {
-            abort(player);
+            abortInternal(player);
             return ActionResult.failed("timeout");
         }
         return ActionResult.IN_PROGRESS;
     }
 
     public void abort(AIPlayerEntity player) {
-        if (!started) {
-            return;
-        }
-        player.interactionManager.processBlockBreakingAction(
-                pos,
-                PlayerActionC2SPacket.Action.ABORT_DESTROY_BLOCK,
-                face,
-                World.MAX_Y,
-                -1);
+        abortInternal(player);
         player.getServerWorld().setBlockBreakingInfo(player.getId(), pos, -1);
-        started = false;
-        targetState = null;
-        progress = 0.0F;
-        elapsed = 0;
     }
 
-    private void resetProgress(AIPlayerEntity player) {
+    private void abortInternal(AIPlayerEntity player) {
         if (started) {
             player.interactionManager.processBlockBreakingAction(
                     pos,
@@ -107,10 +93,8 @@ public final class MiningController {
                     World.MAX_Y,
                     -1);
         }
-        player.getServerWorld().setBlockBreakingInfo(player.getId(), pos, -1);
         started = false;
         targetState = null;
-        progress = 0.0F;
         elapsed = 0;
     }
 }

@@ -70,6 +70,11 @@ public final class CombatTask extends AbstractTask {
     }
 
     @Override
+    public boolean isWaiting() {
+        return phase == Phase.RANGED || phase == Phase.BLOCK || (phase == Phase.HEAL && eating);
+    }
+
+    @Override
     protected void onStart(AIPlayerEntity bot) {
         CombatCore.equipMelee(bot);
         EquipAction.equipBestOffhand(bot);

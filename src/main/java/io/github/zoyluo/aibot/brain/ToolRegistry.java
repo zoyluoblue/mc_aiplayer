@@ -141,7 +141,7 @@ public final class ToolRegistry {
             return ok("started");
         });
 
-        register("place_block", "Place the held block at given coordinates. Automatically selects the right block from inventory.", xyzSchema(), (bot, args) -> {
+        register("place_block", "Place a block at given coordinates. If the held item is already a usable BlockItem (e.g. set via select_item), that block is placed. Otherwise auto-selects the first BlockItem from inventory.", xyzSchema(), (bot, args) -> {
             return result(BuildAction.placeBlockAt(bot, blockPos(args)));
         });
 
@@ -327,9 +327,10 @@ public final class ToolRegistry {
             return started ? ok("goal_assigned: provision_food") : fail("goal_plan_failed");
         });
 
-        register("forage", "Forage SPECIFIC wild berries/melon nearby. ONLY when the user EXPLICITLY asks for berries/wild fruit, NOT for general food. "
-                + "Use for 采点野果/采点浆果/摘浆果/采甜浆果/摘西瓜/想吃浆果; needs berry bushes or melons around. "
-                + "For ANY general 找吃的/搞点吃的 request use provision_food instead (it auto-picks hunt or farm). count = how many (default 4).", objectSchema()
+        register("forage", "Forage wild sweet berries nearby. ONLY when the user EXPLICITLY asks for berries/wild fruit, NOT for general food. "
+                + "Use for wild berries request; needs sweet berry bushes around. "
+                + "For ANY general food request use provision_food instead (it auto-picks hunt or farm).",
+                objectSchema()
                 .property("count", integerSchema("how many wild food to gather (default 4)"))
                 .build(), (bot, args) -> {
             boolean started = GoalExecutor.INSTANCE.submit(bot,
@@ -1203,4 +1204,5 @@ public final class ToolRegistry {
         }
     }
 }
+
 

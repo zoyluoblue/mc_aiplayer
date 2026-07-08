@@ -54,7 +54,8 @@ public final class BuildAction {
     }
 
     public static ActionResult placeBlockAt(AIPlayerEntity player, BlockPos pos) {
-        // BUGFIX: если рука пуста — найти BlockItem в инвентаре
+        // If hand already holds a BlockItem (e.g. from select_item), use it.
+        // Only auto-equip when hand is empty or holds a non-BlockItem.
         ItemStack inHand = player.getStackInHand(Hand.MAIN_HAND);
         if (inHand.isEmpty() || !(inHand.getItem() instanceof BlockItem)) {
             if (!equipBlockItem(player)) {

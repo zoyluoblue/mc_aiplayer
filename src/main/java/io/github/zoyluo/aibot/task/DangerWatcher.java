@@ -283,7 +283,7 @@ public final class DangerWatcher {
         if (canFight(bot, threat, combat) && !combatStuck(bot)) {
             return new CombatTask(threat.entity().getType(), 1, combat.retreatHp());
         }
-        // Night shelter removed � bot fights instead (PVP path)
+        // Night shelter removed - bot fights instead
         return new EvadeTask(threat);
     }
 
@@ -539,6 +539,11 @@ public final class DangerWatcher {
 
     private static Optional<Threat> collectTopThreat(AIPlayerEntity bot) {
         if (bot.getHealth() < 6.0F) {
+            // BUGFIX: before short-circuiting to LOW_HP, check for player attacker
+            var src = bot.getRecentDamageSource();
+            if (src != null && src.getAttacker() instanceof net.minecraft.entity.player.PlayerEntity playerAttacker) {
+                return Optional.of(new Threat(Threat.Type.HOSTILE, Threat.Severity.HIGH, playerAttacker, playerAttacker.getBlockPos()));
+            }
             return Optional.of(new Threat(Threat.Type.LOW_HP, Threat.Severity.HIGH, null, bot.getBlockPos()));
         }
         // 规避加固:检测半径 10,但只把"能真正威胁到 bot"的敌对怪算进来——bot 眼睛到怪眼睛之间若被实心
@@ -601,6 +606,8 @@ public final class DangerWatcher {
         return false;
     }
 }
+
+
 
 
 

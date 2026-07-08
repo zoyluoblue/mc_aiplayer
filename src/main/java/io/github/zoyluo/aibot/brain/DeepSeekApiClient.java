@@ -76,7 +76,7 @@ public final class DeepSeekApiClient {
             try {
                 HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
                 int status = response.statusCode();
-                if ((status == 429 || status >= 500) && attempt < attempts) {
+                if ((status == 429 || status == 408 || status >= 500) && attempt < attempts) {
                     BotLog.warn(LogCategory.API, null, "api_retry", "attempt", attempt, "reason", status, "backoff_ms", backoffMs);
                     sleep(backoffMs);
                     backoffMs *= 2;
@@ -140,6 +140,9 @@ public final class DeepSeekApiClient {
         }
         if (status == 401 || status == 403) {
             return "auth_error: status=" + status + " body=" + excerpt;
+        }
+        if (status >= 400 && status < 500) {
+            return "bad_request: status=" + status + " body=" + excerpt;
         }
         return "http_error: status=" + status + " body=" + excerpt;
     }

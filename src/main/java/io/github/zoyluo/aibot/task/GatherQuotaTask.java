@@ -759,8 +759,11 @@ public final class GatherQuotaTask extends AbstractTask {
                     return;
                 }
             }
-            bot.getActionPack().stopAll(); // 砍倒后停稳,别带移动惯性漂离掉落物(实测砍完从树位漂走→捡不到)
-            pickupTicks = probabilisticDrop ? 30 : 120; // 概率掉落资源(种子/浆果)掉脚边、捡得快,少等
+            bot.getActionPack().stopAll();
+            pickupTicks = probabilisticDrop ? 30 : 120;
+            // BUGFIX: при входе в PICKUP сразу sweep на 16 блоков, собрать разлетевшиеся дропы
+            HarvestCore.sweepPickupAnyOf(bot, acceptItems, 16);
+            countSoFar = countAccepted(bot);
             phase = Phase.PICKUP;
             return;
         }

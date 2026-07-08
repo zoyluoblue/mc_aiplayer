@@ -39,7 +39,7 @@ public final class MiningController {
                 // Принудительно сбрасываем серверный трекинг
                 player.interactionManager.processBlockBreakingAction(
                         pos, PlayerActionC2SPacket.Action.ABORT_DESTROY_BLOCK,
-                        face, World.MAX_Y, -1);
+                        face, World.MAX_Y, player.server.getTicks());
             }
             world.setBlockBreakingInfo(player.getId(), pos, -1);
             AStarPathfinder.invalidateCache("block_break_or_change");
@@ -64,7 +64,7 @@ public final class MiningController {
 
         player.interactionManager.processBlockBreakingAction(
                 pos, PlayerActionC2SPacket.Action.START_DESTROY_BLOCK,
-                face, World.MAX_Y, -1);
+                face, World.MAX_Y, player.server.getTicks());
         state.onBlockBreakStart(world, pos, player);
         world.setBlockBreakingInfo(player.getId(), pos,
                 Math.min(9, (int) (world.getBlockState(pos).calcBlockBreakingDelta(player, world, pos) * 10.0F)));
@@ -91,7 +91,7 @@ public final class MiningController {
                     PlayerActionC2SPacket.Action.ABORT_DESTROY_BLOCK,
                     face,
                     World.MAX_Y,
-                    -1);
+                    player.server.getTicks());
         }
         started = false;
         targetState = null;

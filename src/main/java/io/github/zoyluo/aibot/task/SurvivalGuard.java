@@ -58,7 +58,11 @@ public final class SurvivalGuard {
         if (bot.isOnFire() && bot.getHealth() < 10.0F) {
             return "guard_on_fire";
         }
-        // ④ 垂死挨打:hp≤3 心且正被攻击——恋战作业等于送死,DangerWatcher 接管(逃/绝境反击)。
+        // ④ 挨打自保:hp≤50% 且正在被攻击 → прерываем, DangerWatcher разберётся
+        if (bot.getHealth() <= 10.0F && bot.hurtTime > 0) {
+            return "guard_under_attack";
+        }
+        // ⑤ 垂死挨打:hp≤3 心且正被攻击——恋战作业等于送死,DangerWatcher 接管(逃/绝境反击)。
         if (bot.getHealth() <= 6.0F && bot.hurtTime > 0) {
             return "guard_low_hp_under_attack";
         }

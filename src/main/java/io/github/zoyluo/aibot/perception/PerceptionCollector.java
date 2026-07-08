@@ -45,7 +45,8 @@ public final class PerceptionCollector {
                 Registries.ITEM.getId(bot.getMainHandStack().getItem()).toString(),
                 InventoryAction.summarize(bot));
 
-        BlockScan blockScan = collectBlocks(world, center, Math.min(config.radius(), 8), config.maxBlocks());
+        int effectiveRadius = Math.min(config.radius(), 16);
+        BlockScan blockScan = collectBlocks(world, center, effectiveRadius, config.maxBlocks());
         List<PerceptionSnapshot.NearbyEntity> entities = collectEntities(bot, world, config.radius(), config.maxEntities());
         List<PerceptionSnapshot.NearbyItem> items = collectItems(bot, world, config.radius(), config.maxItems());
         PerceptionSnapshot.Highlights highlights = buildHighlights(blockScan.highlights(), entities);

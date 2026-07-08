@@ -190,19 +190,23 @@ public final class InventoryAction {
         boolean droppedAny = false;
         for (net.minecraft.item.Item junk : JUNK_ITEMS) {
             int have = countItem(player, junk);
-            if (have > keepEach && removeItems(player, junk, have - keepEach)) {
-                // 必须按最大堆叠分堆扔:单个 ItemStack/ItemEntity 的 count 上限 99,
-                // 一次性扔 2232 个 → 存档 ItemStack.toNbt 抛 "range [1;99]" → server 崩(实测 geo_flow 崩服根因)。
-                int toDrop = have - keepEach;
-                int max = Math.max(1, new ItemStack(junk).getMaxCount());
-                while (toDrop > 0) {
-                    int chunk = Math.min(toDrop, max);
-                    player.dropItem(new ItemStack(junk, chunk), false, true);
-                    toDrop -= chunk;
-                }
-                BotLog.action(player, "drop_junk", "item", junk, "count", have - keepEach);
-                droppedAny = true;
+            if (have <= keepEach) continue;
+            int toDrop = have - keepEach;
+            int max = Math.max(1, new ItemStack(junk).getMaxCount());
+            var inventory = player.getInventory();
+            // Извлекаем реальные стаки из инвентаря, чтобы сохранить NBT/чары
+            while (toDrop > 0) {
+                var optSlot = findItem(player, junk);
+                if (optSlot.isEmpty()) break;
+                int slot = optSlot.getAsInt();
+                ItemStack stack = inventory.getStack(slot);
+                int chunk = Math.min(toDrop, Math.min(max, stack.getCount()));
+                ItemStack drop = stack.split(chunk);
+                player.dropItem(drop, false, true);
+                toDrop -= chunk;
             }
+            BotLog.action(player, "drop_junk", "item", junk, "count", have - keepEach);
+            droppedAny = true;
         }
         return droppedAny;
     }

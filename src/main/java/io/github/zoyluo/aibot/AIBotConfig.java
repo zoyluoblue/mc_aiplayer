@@ -94,7 +94,7 @@ public record AIBotConfig(
         return new AIBotConfig(
                 new DeepSeek("", "https://api.deepseek.com", "deepseek-chat", 2048, 0.3D, 60, 3, 500),
                 new Perception(16, 20, 10, 10, false),
-                new Brain(36, 6, 12, false, true, false, 3, true), // 优化4:maxTurns 24→12——挖矿失败后大脑手动逐格挖会瞬间耗轮,早止损早复位(善后已有 clear+resetIdle)
+                new Brain(36, 6, 25, false, true, false, 3, true), // maxTurns 12→25: bot слишком долго думает
                 new Watchdog(200),
                 new Logging(true, "logs/aibot", true, "daily", 50, 30, true, Map.of(
                         "LIFECYCLE", "INFO",
@@ -113,7 +113,7 @@ public record AIBotConfig(
                 new Mining(2, 0.10D, true),
                 new Goal(24, true, true), // S7:配方补全后链更深(熟食/盾/钻装备等),16→24 留余量
                 new Nav(1.0D, 12, 60, 30, 4, 2, 3.0D, 3),
-                new Pickup(2.75D, 2.5D, 8.0D)); // 实测 1.5/1.0 太小:砍树掉落物垂直差>1 就吸不到→countSoFar=0 死循环
+                new Pickup(4.0D, 4.0D, 8.0D));
     }
 
     public record DeepSeek(

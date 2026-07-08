@@ -167,11 +167,13 @@ public final class TaskManager {
             lastStatus.put(uuid, status);
             BotReporter.INSTANCE.onStatus(server, player, status);
             if (task.state() == TaskState.COMPLETED) {
+                player.getActionPack().stopAll(); // BUGFIX: остановить остаточное движение
                 active.remove(uuid);
                 lastFailure.remove(uuid);
                 pendingFailure.remove(uuid);
                 BotLog.task(player, "task_completed", "name", task.name(), "elapsed_ticks", task.elapsedTicks());
             } else if (task.state() == TaskState.FAILED) {
+                player.getActionPack().stopAll(); // BUGFIX: остановить остаточное движение
                 active.remove(uuid);
                 recordFailure(player, task.name(), task.failureReason(), server.getTicks());
                 BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.TASK, player, "task_failed",

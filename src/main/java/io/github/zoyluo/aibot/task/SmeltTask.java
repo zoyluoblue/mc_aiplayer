@@ -36,7 +36,8 @@ public final class SmeltTask extends AbstractTask {
         PLACING_FURNACE,
         LOADING,
         SMELTING,
-        COLLECTING
+        COLLECTING,
+        FETCHING_FUEL
     }
 
     private static final Map<Item, Integer> FUEL_TICKS = new LinkedHashMap<>();
@@ -76,6 +77,9 @@ public final class SmeltTask extends AbstractTask {
     private final BlockMiner clearMiner = new BlockMiner(); // 被围放不下熔炉时,挖一格相邻方块腾位
     private boolean walkDigging; // 纯寻路到不了现有熔炉时,降级挖掘式朝熔炉挖过去(复用 clearMiner)
     private CraftTask furnaceCraftSub; // 走炉卡死且无备炉时,就地合成一座新炉(复用 CraftTask,不重复扣料逻辑)
+    private Item fetchFuelItem;               // 取燃料阶段:当前追的燃料类型
+    private int fetchFuelSmeltCount;           // 取燃料阶段:需补充的烧炼份数
+    private BlockPos fetchFuelContainer;       // 取燃料阶段:目标容器位置(null=扫描中)
 
     public SmeltTask(Item input, Item output, int targetCount) {
         this.input = input;
@@ -146,6 +150,7 @@ public final class SmeltTask extends AbstractTask {
             case LOADING -> loadFurnace(bot);
             case SMELTING -> waitForOutput(bot);
             case COLLECTING -> collectOutput(bot);
+            case FETCHING_FUEL -> fetchFuelTick(bot);
         }
     }
 
@@ -350,6 +355,21 @@ public final class SmeltTask extends AbstractTask {
             phase = Phase.FINDING_FURNACE;
             return;
         }
+        // 离炉太远(取燃料返回后)→先走回炉边再装填(防服务端静默拒绝变异)
+        if (furnacePos != null && bot.getEyePos().squaredDistanceTo(furnacePos.toCenterPos()) > 20.25D) {
+            BlockPos stand = adjacentStand(bot, furnacePos);
+            if (stand != null) {
+                walkBestDist2 = Double.MAX_VALUE;
+                walkStallSince = elapsed;
+                walkDigging = false;
+                ActionResult result = bot.getActionPack().startPathTo(stand);
+                if (result.isFailed()) {
+                    walkDigging = true;
+                }
+                phase = Phase.WALKING_TO_FURNACE;
+            }
+            return;
+        }
         ItemStack inputSlot = furnace.getStack(0);
         if (!inputSlot.isEmpty() && !inputSlot.isOf(input)) {
             fail("furnace_input_occupied: " + Registries.ITEM.getId(inputSlot.getItem()));
@@ -376,11 +396,15 @@ public final class SmeltTask extends AbstractTask {
             int smeltsNeedingFuel = Math.max(1, inputQueued + Math.max(inputToLoad, 0));
             fuel = chooseFuel(bot, smeltsNeedingFuel);
             if (fuel == null) {
-                fetchFuelFromBase(bot, smeltsNeedingFuel);
-                fuel = chooseFuel(bot, smeltsNeedingFuel);
-            }
-            if (fuel == null) {
-                fail("out_of_fuel");
+                Item candidate = findFuelInContainers(bot, smeltsNeedingFuel);
+                if (candidate == null) {
+                    fail("out_of_fuel");
+                    return;
+                }
+                fetchFuelItem = candidate;
+                fetchFuelSmeltCount = smeltsNeedingFuel;
+                fetchFuelContainer = null;
+                phase = Phase.FETCHING_FUEL;
                 return;
             }
         }
@@ -540,38 +564,113 @@ public final class SmeltTask extends AbstractTask {
         return partial; // 全部装入部分燃料;彻底没任何燃料才 null
     }
 
-    private static void fetchFuelFromBase(AIPlayerEntity bot, int smeltCount) {
+    // 扫描容器找到一种可取的燃料(附近优先,其次基地)→返回燃料类型或 null(彻底无燃料)
+    private static Item findFuelInContainers(AIPlayerEntity bot, int smeltCount) {
         BlockPos base = BotMemoryStore.INSTANCE.of(bot.getUuid())
                 .placeIn(bot.getServerWorld(), "base")
                 .orElse(null);
-        if (base == null) {
-            return;
-        }
         for (Map.Entry<Item, Integer> entry : FUEL_TICKS.entrySet()) {
             Item fuel = entry.getKey();
             int needed = divideRoundUp(smeltCount * 200, entry.getValue());
             if (InventoryAction.countItem(bot, fuel) >= needed) {
-                return;
+                return null; // 背包已有足量→无需取
             }
-            for (BlockPos pos : fuelContainers(bot, base, fuel)) {
-                Inventory container = ContainerAction.resolve(bot, pos).orElse(null);
-                if (container == null) {
-                    continue;
-                }
-                int missing = needed - InventoryAction.countItem(bot, fuel);
-                if (missing <= 0) {
-                    return;
-                }
-                ContainerAction.TransferResult result = ContainerAction.withdrawOne(container, bot, fuel, missing);
-                if (result.movedAny() && InventoryAction.countItem(bot, fuel) >= needed) {
-                    return;
-                }
+            // 附近容器先
+            if (!nearbyFuelContainers(bot, fuel).isEmpty()) {
+                return fuel;
+            }
+            // 基地容器其次
+            if (base != null && !fuelContainersAt(bot, base, fuel).isEmpty()) {
+                return fuel;
             }
         }
+        return null;
     }
 
-    private static java.util.List<BlockPos> fuelContainers(AIPlayerEntity bot, BlockPos base, Item fuel) {
-        return BlockPos.stream(base.add(-BASE_FUEL_RADIUS, -3, -BASE_FUEL_RADIUS), base.add(BASE_FUEL_RADIUS, 4, BASE_FUEL_RADIUS))
+    // 多 tick 取燃料阶段:走近容器→交互→回 LOADING
+    private void fetchFuelTick(AIPlayerEntity bot) {
+        // 已够量→回炉装填
+        int need = divideRoundUp(fetchFuelSmeltCount * 200, FUEL_TICKS.get(fetchFuelItem));
+        if (InventoryAction.countItem(bot, fetchFuelItem) >= need) {
+            fetchFuelContainer = null;
+            phase = Phase.LOADING;
+            return;
+        }
+        int missing = need - InventoryAction.countItem(bot, fetchFuelItem);
+        // 已有目标容器?
+        if (fetchFuelContainer != null) {
+            double dist2 = bot.getEyePos().squaredDistanceTo(fetchFuelContainer.toCenterPos());
+            if (dist2 <= 36.0D) { // 交互范围 6 格内→直接交互
+                Inventory container = ContainerAction.resolve(bot, fetchFuelContainer).orElse(null);
+                if (container != null) {
+                    ContainerAction.withdrawOne(container, bot, fetchFuelItem, missing);
+                }
+                // 交互后重新检查
+                if (InventoryAction.countItem(bot, fetchFuelItem) >= need) {
+                    bot.getActionPack().stopAll();
+                    fetchFuelContainer = null;
+                    phase = Phase.LOADING;
+                    return;
+                }
+                // 该容器不够→清目标,下 tick 重扫
+                fetchFuelContainer = null;
+            } else {
+                // 距容器>6 格→寻路走过去
+                if (bot.getActionPack().isPathExecutorIdle()) {
+                    BlockPos stand = adjacentStand(bot, fetchFuelContainer);
+                    if (stand == null) {
+                        fetchFuelContainer = null; // 够不到该容器→换一个
+                    } else {
+                        bot.getActionPack().startPathTo(stand);
+                    }
+                }
+                return; // 走步中,等下 tick
+            }
+        }
+        // 无目标→扫附近容器(6 格内),再扫基地
+        for (BlockPos pos : nearbyFuelContainers(bot, fetchFuelItem)) {
+            fetchFuelContainer = pos;
+            double dist2 = bot.getEyePos().squaredDistanceTo(pos.toCenterPos());
+            if (dist2 <= 36.0D) {
+                // 已在范围→本 tick 直接交互
+                return;
+            }
+            // 走一步
+            BlockPos stand = adjacentStand(bot, pos);
+            if (stand != null) {
+                bot.getActionPack().startPathTo(stand);
+            }
+            return;
+        }
+        BlockPos base = BotMemoryStore.INSTANCE.of(bot.getUuid())
+                .placeIn(bot.getServerWorld(), "base")
+                .orElse(null);
+        if (base != null) {
+            for (BlockPos pos : fuelContainersAt(bot, base, fetchFuelItem)) {
+                fetchFuelContainer = pos;
+                BlockPos stand = adjacentStand(bot, pos);
+                if (stand != null) {
+                    bot.getActionPack().startPathTo(stand);
+                }
+                return;
+            }
+        }
+        // 燃料容器全空→失败
+        fail("out_of_fuel");
+    }
+
+    private static java.util.List<BlockPos> nearbyFuelContainers(AIPlayerEntity bot, Item fuel) {
+        BlockPos origin = bot.getBlockPos();
+        int r = 6;
+        return BlockPos.stream(origin.add(-r, -3, -r), origin.add(r, 4, r))
+                .map(BlockPos::toImmutable)
+                .filter(pos -> containsItem(bot, pos, fuel))
+                .sorted(Comparator.comparingDouble(pos -> pos.getSquaredDistance(origin)))
+                .toList();
+    }
+
+    private static java.util.List<BlockPos> fuelContainersAt(AIPlayerEntity bot, BlockPos center, Item fuel) {
+        return BlockPos.stream(center.add(-BASE_FUEL_RADIUS, -3, -BASE_FUEL_RADIUS), center.add(BASE_FUEL_RADIUS, 4, BASE_FUEL_RADIUS))
                 .map(BlockPos::toImmutable)
                 .filter(pos -> containsItem(bot, pos, fuel))
                 .sorted(Comparator.comparingDouble(pos -> pos.getSquaredDistance(bot.getBlockPos())))

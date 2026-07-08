@@ -90,14 +90,19 @@ public final class CraftTask extends AbstractTask {
             return;
         }
         if (plan.needsCraftingTable() && nearbyCraftingTable(bot) == null && InventoryAction.findItem(bot, Items.CRAFTING_TABLE).isEmpty()) {
-            CraftingHelper.CraftPlan tablePlan = CraftingHelper.plan(bot, Items.CRAFTING_TABLE, 1);
-            if (!tablePlan.success()) {
-                fail("need: minecraft:crafting_table x1 (" + tablePlan.missingDescription() + ")");
-                return;
+            // BUGFIX: проверяем, что план ещё не содержит шаг крафта верстака
+            boolean alreadyHasTable = plan.steps().stream()
+                    .anyMatch(s -> s.recipe().output() == Items.CRAFTING_TABLE);
+            if (!alreadyHasTable) {
+                CraftingHelper.CraftPlan tablePlan = CraftingHelper.plan(bot, Items.CRAFTING_TABLE, 1);
+                if (!tablePlan.success()) {
+                    fail("need: minecraft:crafting_table x1 (" + tablePlan.missingDescription() + ")");
+                    return;
+                }
+                List<CraftingHelper.CraftStep> steps = new ArrayList<>(tablePlan.steps());
+                steps.addAll(plan.steps());
+                plan = new CraftingHelper.CraftPlan(target, targetCount, List.copyOf(steps), plan.missing(), true);
             }
-            List<CraftingHelper.CraftStep> steps = new ArrayList<>(tablePlan.steps());
-            steps.addAll(plan.steps());
-            plan = new CraftingHelper.CraftPlan(target, targetCount, List.copyOf(steps), plan.missing(), true);
         }
         if (plan.steps().isEmpty()) {
             complete();

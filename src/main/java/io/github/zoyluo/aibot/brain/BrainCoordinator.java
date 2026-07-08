@@ -62,10 +62,16 @@ public final class BrainCoordinator {
             }
             BotLog.comm(bot, "goal_kept_on_user_message");
         }
+        // BUGFIX: прерываем текущую задачу, чтобы бот мог переключиться
+        var activeTask = TaskManager.INSTANCE.getActive(bot);
+        if (activeTask.isPresent() && !(activeTask.get() instanceof io.github.zoyluo.aibot.task.CombatTask)) {
+            TaskManager.INSTANCE.resetToIdle(bot);
+            bot.getActionPack().stopAll();
+        }
         synchronized (conversation) {
             if (conversation.busy) {
-                sendPanelChat(bot, "system", bot.getGameProfile().getName() + " 正在思考,请稍等。");
-                return false;
+                conversation.busy = false;
+                conversation.generation++;
             }
             conversation.busy = true;
         }
@@ -272,7 +278,26 @@ public final class BrainCoordinator {
     }
 
     public void sendPanelChat(AIPlayerEntity bot, String role, String text) {
+        // BUGFIX: anti-spam — не повторять то же сообщение чаще раза в 30 секунд
+        if ("bot".equals(role)) {
+            var conv = conversations.get(bot.getUuid());
+            if (conv != null) {
+                int tick = bot.getServer() != null ? bot.getServer().getTicks() : 0;
+                if (text.equals(conv.lastBotMessage) && tick - conv.lastBotMessageTick < 600) {
+                    return;
+                }
+                conv.lastBotMessage = text;
+                conv.lastBotMessageTick = tick;
+            }
+        }
         AIBotServerNetworking.INSTANCE.sendBotChat(bot, role, text);
+        if ("bot".equals(role)) {
+            var server = bot.getServer();
+            if (server != null) {
+                server.getPlayerManager().broadcast(net.minecraft.text.Text.literal(
+                        "<" + bot.getGameProfile().getName() + "> " + text), false);
+            }
+        }
     }
 
     public int conversationCount() {
@@ -280,19 +305,34 @@ public final class BrainCoordinator {
     }
 
     private void submit(AIPlayerEntity bot, BotConversation conversation) {
-        List<ChatMessage> historySnapshot = MemoryStore.INSTANCE.prepareHistory(bot, List.copyOf(conversation.history));
+        List<ChatMessage> historySnapshot;
+        synchronized (conversation) {
+            historySnapshot = MemoryStore.INSTANCE.prepareHistory(bot, List.copyOf(conversation.history));
+        }
         AIBotConfig.Brain brainConfig = AIBotConfig.get().brain();
         List<ToolDefinition> toolsSnapshot = toolRegistry.tools(
                 brainConfig,
                 brainConfig.exposesLowLevelTools() || manualMode(bot),
                 BotRuntimeOptions.INSTANCE.memoryToolsEnabled(bot),
                 brainConfig.coordinationToolsEnabled());
-        executor.submit(bot, historySnapshot, toolsSnapshot, this::onResponse, this::onError);
+        int gen = conversation.generation;
+        executor.submit(bot, historySnapshot, toolsSnapshot,
+                (b, r) -> {
+                    BotConversation conv = conversations.get(b.getUuid());
+                    if (conv != conversation || conv.generation != gen) return;
+                    onResponse(b, r);
+                },
+                (b, e) -> {
+                    BotConversation conv = conversations.get(b.getUuid());
+                    if (conv != conversation || conv.generation != gen) return;
+                    onError(b, e);
+                });
     }
 
     private void scheduleContinuation(AIPlayerEntity bot, BotConversation conversation) {
         CompletableFuture.delayedExecutor(TpsGuard.INSTANCE.continuationDelaySeconds(), TimeUnit.SECONDS).execute(() ->
                 bot.getServer().execute(() -> {
+                synchronized (conversation) {
                     if (conversations.get(bot.getUuid()) != conversation || !conversation.busy) {
                         return;
                     }
@@ -335,6 +375,7 @@ public final class BrainCoordinator {
                     conversation.history.add(ChatMessage.user("Updated state after tool calls:\n" + snapshot.toJson()));
                     trimHistory(conversation);
                     submit(bot, conversation);
+                    }
                 }));
     }
 
@@ -468,12 +509,12 @@ public final class BrainCoordinator {
                 1. Understand the human's intent first, then break it into tool calls.
                 2. Coordinates are integers (block positions).
                 3. Prefer high-level deterministic tasks for survival work. For ores or raw ore materials, use mine_ore; it automatically prepares the required pickaxe before mining. For an item/tool goal such as iron_pickaxe or iron_ingot, use achieve_goal. Do not manually decompose these into gather/craft/mine steps unless the goal tool fails.
-                4. Low-level tools such as move_to, mine_block, select_hotbar, and place_block are for one-off manual actions only. Do not use them for gathering materials or placing a crafting table for recipes unless the human explicitly asks for manual control.
-                5. High-level tasks such as craft, smelt, eat, or assign_task run over multiple ticks. Start only one such task at a time, then use get_task_status or the Current state task field on later turns until it is COMPLETED or FAILED before assigning the next task. EXCEPTION: goal tools (achieve_goal, mine_ore, harvest_crop, provision_food, set_goal) support QUEUEING — if a goal is already running, a new goal call is queued and starts automatically when the current one finishes (the system announces each transition). So for a compound request like "先搞点吃的,然后挖些铁" call provision_food then mine_ore back-to-back in the same turn, then STOP. While a goal is running, ADDING work ("顺便/然后/再做X") = just call the goal tool (it queues); REPLACING ("别挖了/先停下,改做X") = call stop first, then the new goal tool; a pure question ("干得怎么样") = goal_status or say only — never call stop for questions or additions.
-                6. Always reply to humans in Simplified Chinese. Use the say tool to reply to humans. Keep replies short (one sentence).
+                4. Low-level tools such as move_to, mine_block, select_hotbar, select_item, and place_block are for one-off manual actions only. Do not use them for gathering materials or placing a crafting table for recipes unless the human explicitly asks for manual control.
+                5. High-level tasks such as craft, smelt, eat, or assign_task run over multiple ticks. Start only one such task at a time, then use get_task_status or the Current state task field on later turns until it is COMPLETED or FAILED before assigning the next task. EXCEPTION: goal tools (achieve_goal, mine_ore, harvest_crop, provision_food, set_goal) support QUEUEING — if a goal is already running, a new goal call is queued and starts automatically when the current one finishes (the system announces each transition). So for a compound request like "get some food first, then mine some iron" call provision_food then mine_ore back-to-back in the same turn, then STOP. While a goal is running, ADDING work ("also/then/do X too") = just call the goal tool (it queues); REPLACING ("stop mining / stop first, switch to do X") = call stop first, then the new goal tool; a pure question ("how is it going") = goal_status or say only — never call stop for questions or additions.
+                6. Always reply to humans in Russian. Use the say tool to reply to humans. Keep replies short (one sentence).
                 7. For survival crafting, call plan_craft first when materials may be missing. Use missing[].source to choose assign_task mine, smelt, craft, or forage before retrying craft for the intended target. CraftTask expands recipe-table intermediates such as planks and sticks, so do not craft planks or sticks as standalone steps unless the human asks for those items.
                 8. For 3x3 recipes, do not manually select or place a crafting table. If a crafting table is nearby or in inventory, the craft task can use or place it.
-                9. For "挖铁矿", call mine_ore with ore=minecraft:iron_ore. For "做一把铁镐" or "给我铁锭", call achieve_goal with item=minecraft:iron_pickaxe or minecraft:iron_ingot. The deterministic goal executor will plan gathering, crafting, mining, and smelting. CRITICAL: a single mine_ore/achieve_goal call runs the ENTIRE multi-step plan autonomously (gather wood, craft tools, mine stone, mine ore). After you call it, STOP immediately — do NOT call any other tool (no say, no inventory, no assign_task, no mine, no strip_mine) and do NOT narrate intermediate steps. The system executes every step itself and will notify you only when the whole goal is finished or has truly failed. Calling other tools meanwhile will abort the goal and break it. For "种小麦/收点小麦/给我小麦" (or carrot/potato), call harvest_crop with crop=wheat/carrot/potato — it auto-prepares a hoe, tills, plants, waits, and harvests; same rule: call once then STOP. For "盖房子/建个房/造个家", call build_house (blueprint optional) — it auto-gathers all materials then builds; same rule: call once then STOP.
+                9. For "mine iron ore", call mine_ore with ore=minecraft:iron_ore. For "craft an iron pickaxe" or "give me iron ingots", call achieve_goal with item=minecraft:iron_pickaxe or minecraft:iron_ingot. The deterministic goal executor will plan gathering, crafting, mining, and smelting. CRITICAL: a single mine_ore/achieve_goal call runs the ENTIRE multi-step plan autonomously (gather wood, craft tools, mine stone, mine ore). After you call it, STOP immediately — do NOT call any other tool (no say, no inventory, no assign_task, no mine, no strip_mine) and do NOT narrate intermediate steps. The system executes every step itself and will notify you only when the whole goal is finished or has truly failed. Calling other tools meanwhile will abort the goal and break it. For "plant wheat / harvest wheat / get me wheat" (or carrot/potato), call harvest_crop with crop=wheat/carrot/potato — it auto-prepares a hoe, tills, plants, waits, and harvests; same rule: call once then STOP. For "build a house / construct a home / build a base", call build_house (blueprint optional) — it auto-gathers all materials then builds; same rule: call once then STOP.
                 10. After each action, look at the next world state (passed in user messages) and decide the next step.
                 11. When the task is complete or impossible, say so and stop calling tools.
                 12. You are fully autonomous and self-reliant. NEVER ask the human for help, for resources, or to move/carry you — the human will not help. NEVER mine ore with bare hands and NEVER use strip_mine or assign_task mine to dig without a proper pickaxe (that wastes blocks and drops nothing). To get ore always use mine_ore, and to get an item/tool use achieve_goal — these automatically walk to find wood, craft the needed pickaxe, then mine. If mine_ore/achieve_goal reports it cannot proceed, just retry the SAME mine_ore once (do NOT switch to an easier or different goal such as achieve_goal a pickaxe — mine_ore already auto-prepares the pickaxe, so switching only loses the real goal); if it still cannot, state the situation in one short sentence and stop — do not flail with move/strip_mine and do not beg.
@@ -492,8 +533,13 @@ public final class BrainCoordinator {
         private int lastCompletionTokens;
         private int lastCacheHitTokens;
         private String lastPerceptionDigest = "";
+        // BUGFIX: anti-spam для сообщений LLM
+        private String lastBotMessage = "";
+        private int lastBotMessageTick;
+        private int generation;
     }
 
     public record BrainStatus(boolean busy, int historySize, int promptTokens, int completionTokens, int cacheHitTokens) {
     }
 }
+

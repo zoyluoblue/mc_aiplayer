@@ -16,10 +16,21 @@ public final class BuildAction {
     private BuildAction() {
     }
 
+    /** Найти в инвентаре BlockItem и экипировать его */
+    public static boolean equipBlockItem(AIPlayerEntity player) {
+        var inventory = player.getInventory();
+        for (int slot = 0; slot < inventory.main.size(); slot++) {
+            ItemStack stack = inventory.main.get(slot);
+            if (stack.getItem() instanceof BlockItem) {
+                return InventoryAction.equipFromSlot(player, slot) >= 0;
+            }
+        }
+        return false;
+    }
+
     public static ActionResult placeBlock(AIPlayerEntity player, BlockPos against, Direction face, Hand hand) {
         ItemStack stack = player.getStackInHand(hand);
         if (stack.isEmpty()) {
-            BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.ERROR, player, "place_failed", "reason", "empty_hand");
             return ActionResult.failed("empty_hand");
         }
         var item = stack.getItem();
@@ -31,11 +42,7 @@ public final class BuildAction {
                 face.getOffsetZ() * 0.5D);
         BlockHitResult hit = new BlockHitResult(hitPos, face, against, false);
         net.minecraft.util.ActionResult result = player.interactionManager.interactBlock(
-                player,
-                player.getServerWorld(),
-                stack,
-                hand,
-                hit);
+                player, player.getServerWorld(), stack, hand, hit);
         if (result.isAccepted()) {
             player.swingHand(hand);
             player.updateLastActionTime();
@@ -43,11 +50,18 @@ public final class BuildAction {
             BotLog.action(player, "place", "pos", LogFields.pos(against.offset(face)), "face", face, "item", item);
             return ActionResult.SUCCESS;
         }
-        BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.ERROR, player, "place_failed", "pos", LogFields.pos(against.offset(face)), "reason", result.getClass().getSimpleName());
         return ActionResult.failed("interact_block_" + result.getClass().getSimpleName());
     }
 
     public static ActionResult placeBlockAt(AIPlayerEntity player, BlockPos pos) {
+        // If hand already holds a BlockItem (e.g. from select_item), use it.
+        // Only auto-equip when hand is empty or holds a non-BlockItem.
+        ItemStack inHand = player.getStackInHand(Hand.MAIN_HAND);
+        if (inHand.isEmpty() || !(inHand.getItem() instanceof BlockItem)) {
+            if (!equipBlockItem(player)) {
+                return ActionResult.failed("no_block_item_in_inventory");
+            }
+        }
         ActionResult lastFailure = ActionResult.failed("no_adjacent_block");
         BlockPos below = pos.down();
         if (!player.getServerWorld().getBlockState(below).isAir()) {
@@ -57,7 +71,6 @@ public final class BuildAction {
             }
             lastFailure = result;
         }
-
         for (Direction direction : Direction.values()) {
             BlockPos against = pos.offset(direction.getOpposite());
             if (!player.getServerWorld().getBlockState(against).isAir()) {
@@ -82,7 +95,6 @@ public final class BuildAction {
         }
         var item = stack.getItem();
         var existing = player.getServerWorld().getBlockState(pos);
-        // 可替换格(流体源/草丛等)放行:封岩浆就是对浆格直接放块,原版玩家合法操作。
         if (!existing.isAir() && !existing.isReplaceable()) {
             return ActionResult.failed("target_not_air");
         }
@@ -95,5 +107,22 @@ public final class BuildAction {
         AStarPathfinder.invalidateCache("block_place_fallback");
         BotLog.action(player, "place_fallback", "pos", LogFields.pos(pos), "item", item);
         return ActionResult.SUCCESS;
+    }
+
+    /** Экипировать конкретный предмет по ID */
+    public static boolean equipItem(AIPlayerEntity player, String itemId) {
+        try {
+            var id = net.minecraft.util.Identifier.of(itemId);
+            var registry = net.minecraft.registry.Registries.ITEM;
+            var opt = registry.getOptionalValue(id);
+            if (opt.isEmpty()) return false;
+            var item = opt.get();
+            var optSlot = InventoryAction.findItem(player, item);
+            if (optSlot.isEmpty()) return false;
+            InventoryAction.equipFromSlot(player, optSlot.getAsInt());
+            return true;
+        } catch (RuntimeException e) {
+            return false;
+        }
     }
 }

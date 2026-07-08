@@ -105,7 +105,11 @@ public final class Standability {
         BlockState feet = world.getBlockState(pos);
         BlockState head = world.getBlockState(pos.up());
         BlockState below = world.getBlockState(pos.down());
-        if (!feet.getCollisionShape(world, pos).isEmpty()) {
+        // NAV-10: проверяем, что блок не ЗАНИМАЕТ всё пространство.
+        // Плиты (maxY=0.5), ступени, люки — игрок стоит НА них, не внутри.
+        // full block (maxY≈1.0) — нельзя стоять внутри.
+        var feetShape = feet.getCollisionShape(world, pos);
+        if (!feetShape.isEmpty() && feetShape.getMax(Direction.Axis.Y) > 0.99D) {
             return false;
         }
         if (!head.getCollisionShape(world, pos.up()).isEmpty()) {
@@ -114,10 +118,14 @@ public final class Standability {
         if (isDangerous(feet) || isDangerous(head) || isDangerous(below)) {
             return false;
         }
-        // NAV-11:梯子/藤蔓等可攀爬方块,站在其中即可,无需下方支撑。
+        // BUGFIX: лестница/лиана — стоим в них, но только если снизу не опасно
         if (feet.isIn(BlockTags.CLIMBABLE)) {
+            if (isDangerous(below)) {
+                return false;
+            }
             return true;
         }
+        // Блок опоры снизу: partial-блоки (плиты) дают опору
         if (below.isAir()) {
             return false;
         }
@@ -145,3 +153,4 @@ public final class Standability {
         }
     }
 }
+

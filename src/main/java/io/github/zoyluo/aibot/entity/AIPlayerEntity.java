@@ -31,6 +31,8 @@ public class AIPlayerEntity extends ServerPlayerEntity {
             this.actionPack.onUpdate();
         } catch (NullPointerException exception) {
             BotLog.error(this, "tick_npe_swallowed", exception);
+            // Re-throw as runtime to prevent silent corruption
+            throw new RuntimeException("NPE in bot tick - see stack trace above", exception);
         }
     }
 

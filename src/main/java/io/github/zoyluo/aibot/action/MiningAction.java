@@ -26,6 +26,13 @@ public final class MiningAction {
                 face,
                 World.MAX_Y,
                 -1);
+        // BUGFIX: survival mode requires STOP to trigger block break
+        player.interactionManager.processBlockBreakingAction(
+                pos,
+                PlayerActionC2SPacket.Action.STOP_DESTROY_BLOCK,
+                face,
+                World.MAX_Y,
+                -1);
         return ActionResult.SUCCESS;
     }
 }

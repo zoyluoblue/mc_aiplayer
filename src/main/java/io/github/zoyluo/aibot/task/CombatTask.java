@@ -44,6 +44,9 @@ public final class CombatTask extends AbstractTask {
     private int healTicks;
     private boolean eating;
     private int lostSightTicks; // 目标连续无视线(被墙挡)的 tick 数
+    private int noFoodWaitTicks;
+    private boolean noFoodSeen;
+    private int noFoodCycleCount;
 
     public CombatTask(EntityType<?> targetType, int targetKills, float retreatHpThreshold) {
         this.targetType = targetType;
@@ -67,9 +70,14 @@ public final class CombatTask extends AbstractTask {
     }
 
     @Override
+    public boolean isWaiting() {
+        return phase == Phase.RANGED || phase == Phase.BLOCK || (phase == Phase.HEAL && eating);
+    }
+
+    @Override
     protected void onStart(AIPlayerEntity bot) {
         CombatCore.equipMelee(bot);
-        EquipAction.equipShieldOffhand(bot);
+        EquipAction.equipBestOffhand(bot);
         phase = Phase.ACQUIRE;
     }
 
@@ -226,13 +234,34 @@ public final class CombatTask extends AbstractTask {
     }
 
     private void retreat(AIPlayerEntity bot) {
-        if (target != null && target.isAlive()) {
-            Vec3d away = bot.getPos().subtract(target.getPos());
-            if (away.lengthSquared() < 0.01D) {
-                away = new Vec3d(1.0D, 0.0D, 0.0D);
+        if (noFoodSeen) {
+            noFoodWaitTicks++;
+            if (noFoodWaitTicks < 20) {
+                bot.getActionPack().stopMovement();
+                return;
             }
-            Vec3d retreatTo = bot.getPos().add(away.normalize().multiply(8.0D));
-            bot.getActionPack().startWalkTo(retreatTo);
+            noFoodWaitTicks = 0;
+            noFoodCycleCount++;
+            if (noFoodCycleCount >= 3) {
+                fail("no_food_for_heal");
+                return;
+            }
+            noFoodSeen = false;
+        } else {
+            noFoodCycleCount = 0;
+        }
+        if (target != null && target.isAlive()) {
+            // BUGFIX: не переключаться в HEAL пока не отойдём на 6+ блоков
+            double dist = bot.distanceTo(target);
+            if (dist < 6.0D) {
+                Vec3d away = bot.getPos().subtract(target.getPos());
+                if (away.lengthSquared() < 0.01D) {
+                    away = new Vec3d(1.0D, 0.0D, 0.0D);
+                }
+                Vec3d retreatTo = bot.getPos().add(away.normalize().multiply(12.0D));
+                bot.getActionPack().startWalkTo(retreatTo);
+                return; // остаёмся в RETREAT пока не отойдём
+            }
         } else {
             bot.getActionPack().stopMovement();
         }
@@ -249,7 +278,13 @@ public final class CombatTask extends AbstractTask {
             phase = Phase.ACQUIRE;
             return;
         }
-        if (!eating && InventoryAction.findFoodSlot(bot) >= 0) {
+        if (!eating && InventoryAction.findFoodSlot(bot) < 0) {
+            noFoodSeen = true;
+            bot.getActionPack().stopMovement();
+            phase = Phase.RETREAT;
+            return;
+        }
+        if (!eating) {
             bot.getActionPack().stopMovement();
             ActionResult result = EatAction.startEating(bot);
             eating = !result.isFailed();

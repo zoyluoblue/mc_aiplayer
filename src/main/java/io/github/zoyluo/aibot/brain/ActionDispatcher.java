@@ -28,6 +28,9 @@ public final class ActionDispatcher {
     public List<ChatMessage> dispatch(AIPlayerEntity bot, List<ChatToolCall> calls) {
         int maxCalls = AIBotConfig.get().brain().maxToolCallsPerTurn();
         List<ChatMessage> results = new ArrayList<>();
+        if (calls == null || calls.isEmpty()) {
+            return results;
+        }
         for (int index = 0; index < calls.size(); index++) {
             ChatToolCall call = calls.get(index);
             ToolDefinition.ToolResult result;

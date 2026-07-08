@@ -32,6 +32,7 @@ import io.github.zoyluo.aibot.task.FishTask;
 import io.github.zoyluo.aibot.task.FarmTask;
 import io.github.zoyluo.aibot.task.GatherQuotaTask;
 import io.github.zoyluo.aibot.task.FollowTask;
+import io.github.zoyluo.aibot.task.PvPTask;
 import io.github.zoyluo.aibot.task.GuardTask;
 import io.github.zoyluo.aibot.task.HoldTask;
 import io.github.zoyluo.aibot.task.LightAreaTask;
@@ -103,7 +104,7 @@ public final class ToolRegistry {
     }
 
     private void registerDefaults() {
-        register("say", "Reply to the human in Simplified Chinese. The reply is shown in the AIBot panel.", objectSchema()
+        register("say", "Reply to the human in Russian. The reply is shown in the AIBot panel.", objectSchema()
                 .property("message", stringSchema("the text to say"))
                 .required("message")
                 .build(), (bot, args) -> {
@@ -119,6 +120,10 @@ public final class ToolRegistry {
 
         register("move_to", "Pathfind to a coordinate. Falls back to straight-line walking if pathfinding fails.", xyzSchema(), ToolDefinition.Group.LOW_LEVEL, (bot, args) -> {
             BlockPos goal = blockPos(args);
+            // BUGFIX: anti-spam — не двигаться если уже рядом
+            if (bot.getBlockPos().getSquaredDistance(goal) <= 4.0D) {
+                return ok("already_at_destination");
+            }
             io.github.zoyluo.aibot.action.ActionResult pathResult = MovementAction.startPathTo(bot, goal);
             if (pathResult.isInProgress() || pathResult.isSuccess()) {
                 return ok("pathfinding_started");
@@ -136,7 +141,7 @@ public final class ToolRegistry {
             return ok("started");
         });
 
-        register("place_block", "Low-level manual placement of the currently held block at given coords. For crafting table placement during recipes, prefer craft because it can place a held crafting table automatically.", xyzSchema(), ToolDefinition.Group.LOW_LEVEL, (bot, args) -> {
+        register("place_block", "Place a block at given coordinates. If the held item is already a usable BlockItem (e.g. set via select_item), that block is placed. Otherwise auto-selects the first BlockItem from inventory.", xyzSchema(), (bot, args) -> {
             return result(BuildAction.placeBlockAt(bot, blockPos(args)));
         });
 
@@ -144,6 +149,17 @@ public final class ToolRegistry {
                 .property("slot", integerSchema("hotbar slot", 0, 8))
                 .required("slot")
                 .build(), ToolDefinition.Group.LOW_LEVEL, (bot, args) -> result(InventoryAction.selectHotbar(bot, requiredInt(args, "slot"))));
+
+        register("select_item", "Equip an item from inventory to the main hand by its item id. For example: minecraft:chest, minecraft:crafting_table, minecraft:dirt. Use this BEFORE place_block if you need a specific item placed.", objectSchema()
+                .property("item", stringSchema("item id, for example minecraft:chest"))
+                .required("item")
+                .build(), (bot, args) -> {
+            if (io.github.zoyluo.aibot.action.BuildAction.equipItem(bot, requiredString(args, "item"))) {
+                return ok("equipped");
+            }
+            return fail("item_not_found_in_inventory");
+        });
+
 
         register("inventory", "Get the bot's current inventory", objectSchema().build(), (bot, args) ->
                 ok(InventoryAction.summarize(bot).toString()));
@@ -311,9 +327,10 @@ public final class ToolRegistry {
             return started ? ok("goal_assigned: provision_food") : fail("goal_plan_failed");
         });
 
-        register("forage", "Forage SPECIFIC wild berries/melon nearby. ONLY when the user EXPLICITLY asks for berries/wild fruit, NOT for general food. "
-                + "Use for 采点野果/采点浆果/摘浆果/采甜浆果/摘西瓜/想吃浆果; needs berry bushes or melons around. "
-                + "For ANY general 找吃的/搞点吃的 request use provision_food instead (it auto-picks hunt or farm). count = how many (default 4).", objectSchema()
+        register("forage", "Forage wild sweet berries nearby. ONLY when the user EXPLICITLY asks for berries/wild fruit, NOT for general food. "
+                + "Use for wild berries request; needs sweet berry bushes around. "
+                + "For ANY general food request use provision_food instead (it auto-picks hunt or farm).",
+                objectSchema()
                 .property("count", integerSchema("how many wild food to gather (default 4)"))
                 .build(), (bot, args) -> {
             boolean started = GoalExecutor.INSTANCE.submit(bot,
@@ -466,6 +483,14 @@ public final class ToolRegistry {
                     : GuardTask.player(playerName);
             TaskManager.INSTANCE.assign(bot, task);
             return ok("assigned: " + task.name());
+        });
+
+        register("kill_player", "Attack and kill a specific player by name. The bot will track, pursue, and fight the target player.", objectSchema()
+                .property("player_name", stringSchema("the name of the player to kill"))
+                .required("player_name")
+                .build(), (bot, args) -> {
+            TaskManager.INSTANCE.assign(bot, new PvPTask(requiredString(args, "player_name")));
+            return ok("pvp_task_assigned: hunting " + requiredString(args, "player_name"));
         });
 
         register("farm", "Till soil, plant crops, harvest mature crops, and optionally keep tending the area. Supported crops: wheat, carrot, potato.", objectSchema()
@@ -722,6 +747,9 @@ public final class ToolRegistry {
                 .build(), (bot, args) -> {
             String taskType = requiredString(args, "task_type");
             JsonObject params = args.getAsJsonObject("params");
+            if (params == null) {
+                throw new IllegalArgumentException("missing_params");
+            }
             if ("mine_ore".equals(taskType)) {
                 if (!AIBotConfig.get().goal().autoToolFillEnabled()) {
                     Task task = new OreDigTask(oreTargetsFrom(requiredString(params, "ore")), optionalInt(params, "count", 1));
@@ -1176,3 +1204,5 @@ public final class ToolRegistry {
         }
     }
 }
+
+

@@ -26,7 +26,7 @@ public final class MiningChain {
             new OreEntry(Blocks.COAL_ORE,     Blocks.DEEPSLATE_COAL_ORE,     Items.COAL,         Items.COAL,        ToolTier.WOOD,  Integer.MAX_VALUE),
             new OreEntry(Blocks.COPPER_ORE,   Blocks.DEEPSLATE_COPPER_ORE,   Items.RAW_COPPER,   Items.COPPER_INGOT, ToolTier.STONE, 48),
             new OreEntry(Blocks.IRON_ORE,     Blocks.DEEPSLATE_IRON_ORE,     Items.RAW_IRON,     Items.IRON_INGOT,  ToolTier.STONE, 16),
-            new OreEntry(Blocks.LAPIS_ORE,    Blocks.DEEPSLATE_LAPIS_ORE,    Items.LAPIS_LAZULI, Items.LAPIS_LAZULI, ToolTier.STONE, -1),
+            new OreEntry(Blocks.LAPIS_ORE,    Blocks.DEEPSLATE_LAPIS_ORE,    Items.LAPIS_LAZULI, Items.LAPIS_LAZULI, ToolTier.STONE, Integer.MAX_VALUE),
             new OreEntry(Blocks.GOLD_ORE,     Blocks.DEEPSLATE_GOLD_ORE,     Items.RAW_GOLD,     Items.GOLD_INGOT,  ToolTier.IRON,  -16),
             new OreEntry(Blocks.REDSTONE_ORE, Blocks.DEEPSLATE_REDSTONE_ORE, Items.REDSTONE,     Items.REDSTONE,    ToolTier.IRON,  -59),
             new OreEntry(Blocks.EMERALD_ORE,  Blocks.DEEPSLATE_EMERALD_ORE,  Items.EMERALD,      Items.EMERALD,     ToolTier.IRON,  -16),

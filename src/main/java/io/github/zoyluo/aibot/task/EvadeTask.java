@@ -55,6 +55,13 @@ public final class EvadeTask extends AbstractTask {
         if (bot.getActionPack().isPathExecutorIdle() && elapsed > 10) {
             escapeGoal = chooseGoal(bot);
             if (escapeGoal == null) {
+                // BUGFIX: если нет пути — телепорт вверх на 10 блоков (аварийное спасение)
+                BlockPos up = bot.getBlockPos().up(10);
+                if (bot.getServerWorld().getBlockState(up).isAir() && bot.getServerWorld().getBlockState(up.up()).isAir()) {
+                    bot.teleport(bot.getServerWorld(), up.getX() + 0.5D, up.getY(), up.getZ() + 0.5D, java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+                    complete();
+                    return;
+                }
                 fail("no_valid_escape_route");
                 return;
             }

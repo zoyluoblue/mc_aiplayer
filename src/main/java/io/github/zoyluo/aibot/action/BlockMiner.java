@@ -39,12 +39,17 @@ public final class BlockMiner {
 
     /** 开始挖一个新目标块(若与当前目标相同且在挖,则不打断、不清零进度)。 */
     public void begin(AIPlayerEntity bot, BlockPos pos) {
-        if (pos != null && pos.equals(target) && started) {
+        if (pos == null) {
+            io.github.zoyluo.aibot.log.BotLog.action(bot, "miner_begin_null",
+                    "target", "null");
+            return;
+        }
+        if (pos.equals(target) && started) {
             return; // 同一块继续挖,绝不重置(这正是 #9 卡死的根因)
         }
         // 切换目标:先停掉旧的挖掘,再锁定新目标。
         bot.getActionPack().stopMining();
-        this.target = pos == null ? null : pos.toImmutable();
+        this.target = pos.toImmutable();
         this.sinceTick = 0;
         this.started = false;
         this.failureReason = "";
@@ -65,6 +70,11 @@ public final class BlockMiner {
     /** 推进挖掘一 tick,返回状态。DONE/FAILED 后 target 置空,调用方应 begin 下一块。 */
     public Status tick(AIPlayerEntity bot) {
         if (target == null) {
+            return Status.IDLE;
+        }
+        if (target.equals(BlockPos.ORIGIN)) {
+            bot.getActionPack().stopMining();
+            target = null;
             return Status.IDLE;
         }
         ServerWorld world = bot.getServerWorld();
@@ -104,6 +114,12 @@ public final class BlockMiner {
         // 只在挖掘空闲(尚未对本块发起 / 上一块已结束)时发起一次;之后交给 MiningController 累加进度。
         // 绝不每 tick 重发 startMining —— 那会把 progress 清零,永远破不了块。
         if (bot.getActionPack().isMiningIdle()) {
+            // 二次验证:刚结束的 MiningController 可能已设 idle 但世界方块尚未更新为空气,
+            // 此时若不做 isAir 检查,会重新装备、创建 MiningController 挖空气浪费一次 tick。
+            if (world.getBlockState(target).isAir()) {
+                target = null;
+                return Status.DONE;
+            }
             BlockState equipTarget = world.getBlockState(target);
             ToolSelector.equipBestTool(bot, equipTarget);
             Direction face = faceToward(bot, target);

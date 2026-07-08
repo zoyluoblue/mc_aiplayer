@@ -218,6 +218,10 @@ public final class ActionPack {
     }
 
     public ActionResult startMining(BlockPos pos, Direction face) {
+        // BUGFIX: остановить старый MiningController перед новым
+        if (this.mining != null) {
+            this.mining.abort(player);
+        }
         this.mining = new MiningController(pos, face);
         this.pathExecutor = null;
         this.forward = 0.0F;
@@ -266,17 +270,19 @@ public final class ActionPack {
     }
 
     public void onUpdate() {
+        // BUGFIX: автоподбор дропа в радиусе 6 блоков, всегда, без ходьбы
+        io.github.zoyluo.aibot.action.HarvestCore.forcePickupNearbyAnyOf(player, null, 6.0D, 6.0D);
         tickPathExecutor();
         tickWalkTo();
         tickMining();
-
+        // BUGFIX: повторный автоподбор после майнинга (дроп мог появиться в этом тике)
+        io.github.zoyluo.aibot.action.HarvestCore.forcePickupNearbyAnyOf(player, null, 6.0D, 6.0D);
         if (itemUseCooldown > 0) {
             itemUseCooldown--;
         }
         if (blockHitDelay > 0) {
             blockHitDelay--;
         }
-
         float velocity = sneaking ? 0.3F : 1.0F;
         player.forwardSpeed = forward * velocity;
         player.sidewaysSpeed = strafing * velocity;

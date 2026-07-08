@@ -665,7 +665,9 @@ public final class GoalPlanner {
             if (available >= desiredCount) {
                 return true;
             }
-            String key = id(item) + ":" + desiredCount;
+            // BUGFIX: ключ только по item, без desiredCount —
+            // иначе цикл с разным count на разных уровнях не детектится → StackOverflowError
+            String key = id(item);
             if (!visiting.add(key)) {
                 unresolved.add("cycle:" + id(item));
                 return false;

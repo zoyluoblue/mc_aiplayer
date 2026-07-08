@@ -1,6 +1,7 @@
 package io.github.zoyluo.aibot.task;
 
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
+import net.minecraft.util.math.Vec3d;
 
 /**
  * 统一生存层(二期 V1):生存熔断从各任务收编至此,每个任务 tick 前无差别执行。
@@ -43,7 +44,11 @@ public final class SurvivalGuard {
             if (task instanceof OreDigTask) {
                 return null;
             }
-            return "guard_drowning";
+            // Active emergency: abort, force upward velocity, set swimming so bot surfaces immediately
+            bot.getActionPack().stopAll();
+            bot.setVelocity(bot.getVelocity().x, 0.3D, bot.getVelocity().z);
+            bot.setSwimming(true);
+            return "guard_drowning_emergency";
         }
         // ② 身陷岩浆:每 tick 都在烧,任何作业立刻停,让位 DangerWatcher 的脱困/灭火。
         if (bot.isInLava()) {
@@ -53,7 +58,11 @@ public final class SurvivalGuard {
         if (bot.isOnFire() && bot.getHealth() < 10.0F) {
             return "guard_on_fire";
         }
-        // ④ 垂死挨打:hp≤3 心且正被攻击——恋战作业等于送死,DangerWatcher 接管(逃/绝境反击)。
+        // ④ 挨打自保:hp≤50% 且正在被攻击 → прерываем, DangerWatcher разберётся
+        if (bot.getHealth() <= 10.0F && bot.hurtTime > 0) {
+            return "guard_under_attack";
+        }
+        // ⑤ 垂死挨打:hp≤3 心且正被攻击——恋战作业等于送死,DangerWatcher 接管(逃/绝境反击)。
         if (bot.getHealth() <= 6.0F && bot.hurtTime > 0) {
             return "guard_low_hp_under_attack";
         }

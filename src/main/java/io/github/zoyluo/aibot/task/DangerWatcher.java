@@ -43,7 +43,7 @@ public final class DangerWatcher {
     private static final int TRAP_HELP_INTERVAL = 1200;  // 求助消息最短间隔 60s(防刷屏)
     private static final int HUNT_FOOD_TARGET = 3;       // 第2层 饥饿链:没食物时主动猎取的生肉数量
     private static final int DARK_STUCK_TICKS = 160;     // 规避:地下黑暗处静止 8s 判"困死陷阱",撤回地面
-    private static final float EMERGENCY_SHELTER_HP = 8.0F; // 夜间怪海:≤4 心+有敌 → 无视冷却立即筑墙保命
+    private static final float EMERGENCY_SHELTER_HP = 4.0F; // 夜间怪海:≤4 心+有敌 → 无视冷却立即筑墙保命
 
     private DangerWatcher() {
     }
@@ -283,12 +283,7 @@ public final class DangerWatcher {
         if (canFight(bot, threat, combat) && !combatStuck(bot)) {
             return new CombatTask(threat.entity().getType(), 1, combat.retreatHp());
         }
-        if (!bot.getServerWorld().isDay()
-                && threat.type() == Threat.Type.HOSTILE
-                && !SleepTask.hasBedAccess(bot)
-                && EmergencyShelterTask.hasShelterBlock(bot)) {
-            return new EmergencyShelterTask();
-        }
+        // Night shelter removed - bot fights instead
         return new EvadeTask(threat);
     }
 
@@ -544,6 +539,11 @@ public final class DangerWatcher {
 
     private static Optional<Threat> collectTopThreat(AIPlayerEntity bot) {
         if (bot.getHealth() < 6.0F) {
+            // BUGFIX: before short-circuiting to LOW_HP, check for player attacker
+            var src = bot.getRecentDamageSource();
+            if (src != null && src.getAttacker() instanceof net.minecraft.entity.player.PlayerEntity playerAttacker) {
+                return Optional.of(new Threat(Threat.Type.HOSTILE, Threat.Severity.HIGH, playerAttacker, playerAttacker.getBlockPos()));
+            }
             return Optional.of(new Threat(Threat.Type.LOW_HP, Threat.Severity.HIGH, null, bot.getBlockPos()));
         }
         // 规避加固:检测半径 10,但只把"能真正威胁到 bot"的敌对怪算进来——bot 眼睛到怪眼睛之间若被实心
@@ -560,6 +560,13 @@ public final class DangerWatcher {
             Threat.Severity severity = mob instanceof CreeperEntity
                     ? Threat.Severity.HIGH : Threat.Severity.MEDIUM;
             return Optional.of(new Threat(Threat.Type.HOSTILE, severity, mob, mob.getBlockPos()));
+        }
+        // BUGFIX: игрок бьёт бота — тоже угроза
+        if (bot.hurtTime > 0) {
+            var src = bot.getRecentDamageSource();
+            if (src != null && src.getAttacker() instanceof net.minecraft.entity.player.PlayerEntity attacker) {
+                return Optional.of(new Threat(Threat.Type.HOSTILE, Threat.Severity.HIGH, attacker, attacker.getBlockPos()));
+            }
         }
         if (bot.isSubmergedInWater() && bot.getAir() < 50) {
             return Optional.of(new Threat(Threat.Type.DROWNING, Threat.Severity.MEDIUM, null, bot.getBlockPos()));
@@ -580,12 +587,10 @@ public final class DangerWatcher {
         return Optional.empty();
     }
 
-    // 怪物能否真正威胁到 bot:bot 眼睛 → 怪眼睛之间做一次方块 raycast,中间被实心方块挡住(非 MISS)即
-    // 视为够不到(隔墙/隔隧道)。raycast 只检测方块、不含实体,正好判断"有没有墙挡着"。近战怪没视线打不到、
-    // 远程怪没视线射不到、苦力怕没视线也炸不到——一律不算当前威胁(它们绕过来/露头后会被重新检测到)。
     private static boolean canReachThreat(AIPlayerEntity bot, LivingEntity mob) {
         return CombatCore.hasLineOfSight(bot, mob);
     }
+
 
     // 近处(8 格)是否有可达(有视线)的敌对怪。用于濒死封墙闸在 LOW_HP 抢占下补判——血<6 时 collectTopThreat
     // 已把 top 改写成 LOW_HP/entity=null,丢了 hostile 信息,这里独立扫一次还原"是否真被怪围"。复用同款视线判定。
@@ -601,3 +606,8 @@ public final class DangerWatcher {
         return false;
     }
 }
+
+
+
+
+

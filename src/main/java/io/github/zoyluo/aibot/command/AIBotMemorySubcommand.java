@@ -5,6 +5,7 @@ import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
 import io.github.zoyluo.aibot.memory.BotMemory;
+import io.github.zoyluo.aibot.goal.GoalExecutor;
 import io.github.zoyluo.aibot.memory.BotMemoryStore;
 import io.github.zoyluo.aibot.task.MoveTask;
 import io.github.zoyluo.aibot.task.TaskManager;
@@ -128,6 +129,10 @@ public final class AIBotMemorySubcommand {
         }
         if (!bot.get().getServerWorld().getRegistryKey().getValue().toString().equals(target.get().dimension())) {
             source.sendError(Text.literal("[AIBot] place is in another dimension: " + target.get().dimension()));
+            return 0;
+        }
+        if (GoalExecutor.INSTANCE.hasActivePlan(bot.get())) {
+            source.sendError(Text.literal("[AIBot] bot " + name + " has an active goal, stop it first or wait for it to complete"));
             return 0;
         }
         TaskManager.INSTANCE.assign(bot.get(), new MoveTask(bot.get(), target.get().pos()));

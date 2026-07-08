@@ -17,17 +17,18 @@ import java.util.PriorityQueue;
 import java.util.Set;
 
 public final class AStarPathfinder {
-    private static final int DEFAULT_MAX_NODES = 10_000;
-    private static final long DEFAULT_MAX_MILLIS = 50L;
-    private static final int MAX_CACHE_ENTRIES = 256;
-    private static final long SUCCESS_CACHE_MILLIS = 2_000L;
-    private static final long FAILURE_CACHE_MILLIS = 5_000L;
+    private static final int DEFAULT_MAX_NODES = 2_000;
+    private static final long DEFAULT_MAX_MILLIS = 200L;
+    private static final int MAX_CACHE_ENTRIES = 512;
+    private static final long SUCCESS_CACHE_MILLIS = 5_000L;
+    private static final long FAILURE_CACHE_MILLIS = 10_000L;
     private static final Map<CacheKey, CachedResult> RESULT_CACHE = new LinkedHashMap<>(MAX_CACHE_ENTRIES, 0.75F, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<CacheKey, CachedResult> eldest) {
             return size() > MAX_CACHE_ENTRIES;
         }
     };
+
 
     private final ServerWorld world;
     private final BlockPos start;
@@ -58,8 +59,6 @@ public final class AStarPathfinder {
     public AStarPathfinder(ServerWorld world, BlockPos start, BlockPos goal, int maxNodes, long maxMillis, boolean canPillar) {
         this(world, start, goal, maxNodes, maxMillis, canPillar, true);
     }
-
-    // NAV-OPT:allowDig 区分"纯步行"与"允许挖穿"两种搜索模式,支撑两阶段寻路(纯步行优先、挖穿兜底)。
     public AStarPathfinder(ServerWorld world, BlockPos start, BlockPos goal, int maxNodes, long maxMillis, boolean canPillar, boolean allowDig) {
         this(world, start, goal, maxNodes, maxMillis, canPillar, allowDig, 1.0D);
     }

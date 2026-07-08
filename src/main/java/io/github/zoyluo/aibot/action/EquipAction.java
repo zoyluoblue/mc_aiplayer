@@ -118,6 +118,33 @@ public final class EquipAction {
         return false;
     }
 
+    public static boolean equipTotemOffhand(AIPlayerEntity bot) {
+        if (bot.getOffHandStack().isOf(Items.TOTEM_OF_UNDYING)) {
+            return true;
+        }
+        PlayerInventory inventory = bot.getInventory();
+        for (int slot = 0; slot < inventory.main.size(); slot++) {
+            ItemStack stack = inventory.main.get(slot);
+            if (!stack.isOf(Items.TOTEM_OF_UNDYING)) {
+                continue;
+            }
+            ItemStack oldOffhand = bot.getOffHandStack().copy();
+            bot.equipStack(EquipmentSlot.OFFHAND, stack.copy());
+            inventory.main.set(slot, oldOffhand);
+            inventory.markDirty();
+            BotLog.action(bot, "equip_totem_offhand", "source_slot", slot);
+            return true;
+        }
+        return false;
+    }
+
+    /** Экипировать лучший оффхенд: тотем > щит */
+    public static boolean equipBestOffhand(AIPlayerEntity bot) {
+        if (equipTotemOffhand(bot)) return true;
+        return equipShieldOffhand(bot);
+    }
+
+
     public static double attackDamage(ItemStack stack) {
         return attributeValue(stack, EquipmentSlot.MAINHAND, EntityAttributes.ATTACK_DAMAGE);
     }
@@ -159,3 +186,4 @@ public final class EquipAction {
     private record Candidate(int sourceSlot, ItemStack stack, double score) {
     }
 }
+

@@ -13,6 +13,7 @@ import net.minecraft.util.math.Vec3d;
 
 public final class WalkToController {
     private static final double ARRIVAL_THRESHOLD = 0.6D;
+    private static final double VERTICAL_THRESHOLD = 1.0D;
     private static final double PROGRESS_EPSILON = 0.04D;
     private static final double HARD_PROGRESS_EPSILON = 0.005D;
     private static final int MAX_TICKS = 160;
@@ -42,8 +43,12 @@ public final class WalkToController {
         Vec3d current = player.getPos();
         double dx = target.x - current.x;
         double dz = target.z - current.z;
+        double dy = target.y - current.y;
         double horizontalDistance = Math.sqrt(dx * dx + dz * dz);
         if (horizontalDistance <= ARRIVAL_THRESHOLD) {
+            if (Math.abs(dy) > VERTICAL_THRESHOLD) {
+                return ActionResult.IN_PROGRESS;
+            }
             pack.stopMovement();
             return ActionResult.SUCCESS;
         }

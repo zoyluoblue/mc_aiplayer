@@ -65,7 +65,7 @@ These are different bets, not better-or-worse. Voyager pioneered open-ended **sk
 ## 🎬 See it in action
 
 ```
-/aibot brain say Bob mine 3 diamonds
+say in chat Bob mine 3 diamonds
 ```
 
 AIBot back-chains the goal into a full plan and executes it step by step:

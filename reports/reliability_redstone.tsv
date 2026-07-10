@@ -1,5 +1,0 @@
-feature	seed	run	result	reason	stage	summary
-real_redstone	3000	1	PASS	PASS	pass	1/1 PASS: {real_redstone=PASS}
-real_redstone	105441651	1	FAIL	no_stand_position_for_furnace	other	0/1 PASS: {real_redstone=FAIL:no_stand_position_for_furnace}
-real_redstone	12345	1	FAIL	no_resource_nearby	wood_gather	0/1 PASS: {real_redstone=FAIL:no_resource_nearby}
-ALLDONE

@@ -34,6 +34,20 @@ references/
 # headless production test server (installer-generated, 含 56MB server.jar)
 run-prod/
 
+# Local promotional workspaces and generated dependency trees.
+/aibot-tiktok-promo/
+/promo/tiktok/
+node_modules/
+
+# Runtime logs and disposable server snapshots.
+/logs/
+/tmp/
+
+# Ad-hoc reliability run output stays local. Keep the repository's existing
+# runner state file tracked for backward compatibility.
+/reports/reliability_*.tsv
+!/reports/reliability_state.tsv
+
 # Immutable harness output is local until a VERIFIED run is explicitly pinned.
 artifacts/evidence/
 artifacts/evidence-batches/

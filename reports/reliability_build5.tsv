@@ -1,3 +1,0 @@
-feature	seed	run	result	reason	stage	summary
-real_build	105441651	1	FAIL	build_timeout	timeout	0/1 PASS: {real_build=FAIL:build_timeout}
-real_build	1061665215	1	FAIL	build_timeout	timeout	0/1 PASS: {real_build=FAIL:build_timeout}

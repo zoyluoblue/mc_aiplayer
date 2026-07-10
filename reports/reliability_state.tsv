@@ -1,8 +1,14 @@
 feature	seed	run	result	reason	stage	summary
-real_armor	20260610	1	FAIL	dig_down_no_progress collected=0	ore_dig	0/1 PASS: {real_armor=FAIL:dig_down_no_progress collected=0}
-real_armor	20260610	2	FAIL	no_resource_nearby	wood_gather	0/1 PASS: {real_armor=FAIL:no_resource_nearby}
-real_armor	3000	1	FAIL	no_stand_position_for_furnace	other	0/1 PASS: {real_armor=FAIL:no_stand_position_for_furnace}
-real_armor	3000	2	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
-real_armor	777	1	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
-real_armor	777	2	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_wood	20260610	1	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	20260610	2	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	20260610	3	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	20260610	4	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	3000	1	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	3000	2	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	3000	3	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	3000	4	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	777	1	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	777	2	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	777	3	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	777	4	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
 ALLDONE

@@ -1,4 +1,0 @@
-feature	seed	run	result	reason	stage	summary
-real_armor	1061665215	1	FAIL	need: minecraft:oak_planks x2	other	0/1 PASS: {real_armor=FAIL:need: minecraft:oak_planks x2}
-real_armor	715809951	1	FAIL	no_resource_nearby	wood_gather	0/1 PASS: {real_armor=FAIL:no_resource_nearby}
-ALLDONE

@@ -1,8 +1,0 @@
-feature	seed	run	result	reason	stage	summary
-real_armor	105441651	1	FAIL	assertion_failed status=shelter Emergency shelter placed=1 remaining=0	other	0/1 PASS: {real_armor=FAIL:assertion_failed status=shelter Emergency shelter placed=1 remaining=0}
-real_armor	155361719	1	FAIL	aborted	aborted	0/1 PASS: {real_armor=FAIL:aborted}
-real_armor	456718736	1	FAIL	guard_low_hp_under_attack	other	0/1 PASS: {real_armor=FAIL:guard_low_hp_under_attack}
-real_armor	206232996	1	FAIL	no_resource_nearby	wood_gather	0/1 PASS: {real_armor=FAIL:no_resource_nearby}
-real_armor	632510390	1	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
-real_armor	633819475	1	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
-ALLDONE

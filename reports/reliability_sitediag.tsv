@@ -1,5 +1,0 @@
-feature	seed	run	result	reason	stage	summary
-real_build	8888	1	FAIL	no_flat_site	other	0/1 PASS: {real_build=FAIL:no_flat_site}
-real_build	31337	1	FAIL	no_flat_site	other	0/1 PASS: {real_build=FAIL:no_flat_site}
-real_build	7777777	1	FAIL	no_flat_site	other	0/1 PASS: {real_build=FAIL:no_flat_site}
-ALLDONE

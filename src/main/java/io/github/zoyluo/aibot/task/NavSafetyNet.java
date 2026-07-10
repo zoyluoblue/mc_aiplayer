@@ -49,6 +49,19 @@ public final class NavSafetyNet {
     private NavSafetyNet() {
     }
 
+    public void clear(AIPlayerEntity bot) {
+        UUID id = bot.getUuid();
+        nextLogTick.remove(id);
+        waterRescueShore.remove(id);
+        waterRescueSince.remove(id);
+    }
+
+    public void clearAll() {
+        nextLogTick.clear();
+        waterRescueShore.clear();
+        waterRescueSince.clear();
+    }
+
     public boolean tickBot(MinecraftServer server, AIPlayerEntity bot) {
         if (!bot.isAlive()) {
             return false;
@@ -136,11 +149,17 @@ public final class NavSafetyNet {
         for (int dy = 1; dy <= SUFFOCATION_CLIMB_UP && feet.getY() + dy < top - 1; dy++) {
             BlockPos candidate = feet.up(dy);
             if (Standability.isStandable(world, candidate)) {
-                bot.getActionPack().stopAll();
-                bot.teleport(world, candidate.getX() + 0.5D, candidate.getY(), candidate.getZ() + 0.5D,
-                        Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
-                Standability.clearCache();
-                return true;
+                boolean moved = io.github.zoyluo.aibot.mode.CapabilityRuntime.run(
+                        bot, io.github.zoyluo.aibot.mode.PrivilegedCapability.EMERGENCY_TELEPORT,
+                        "navsafe_suffocation", () -> {
+                            bot.getActionPack().stopAll();
+                            bot.teleport(world, candidate.getX() + 0.5D, candidate.getY(), candidate.getZ() + 0.5D,
+                                    Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+                        });
+                if (moved) {
+                    Standability.clearCache();
+                }
+                return moved;
             }
         }
         // 向上无解(深埋/封顶)→ 回退原逻辑:全向最近可站点。
@@ -170,11 +189,17 @@ public final class NavSafetyNet {
             return false;
         }
         BlockPos to = safe.get();
-        bot.getActionPack().stopAll();
-        bot.teleport(world, to.getX() + 0.5D, to.getY(), to.getZ() + 0.5D,
-                Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
-        Standability.clearCache();
-        return true;
+        boolean moved = io.github.zoyluo.aibot.mode.CapabilityRuntime.run(
+                bot, io.github.zoyluo.aibot.mode.PrivilegedCapability.EMERGENCY_TELEPORT,
+                "navsafe_drowning", () -> {
+                    bot.getActionPack().stopAll();
+                    bot.teleport(world, to.getX() + 0.5D, to.getY(), to.getZ() + 0.5D,
+                            Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+                });
+        if (moved) {
+            Standability.clearCache();
+        }
+        return moved;
     }
 
     // 最近的"可站 + 脚位与头位都是空气(可呼吸,不是水)"落点

@@ -6,9 +6,13 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
+import io.github.zoyluo.aibot.auth.BotAuthorizationGate;
+import io.github.zoyluo.aibot.auth.BotAuthorizationPolicy;
+import io.github.zoyluo.aibot.runtime.TaskOrigin;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
 import io.github.zoyluo.aibot.mining.OreScan;
+import io.github.zoyluo.aibot.runtime.IntentController;
 import io.github.zoyluo.aibot.task.BlueprintLoader;
 import io.github.zoyluo.aibot.action.FarmAction;
 import io.github.zoyluo.aibot.task.BreedTask;
@@ -193,6 +197,12 @@ public final class AIBotTaskSubcommand {
                 .then(literal("status")
                         .then(botName()
                                 .executes(AIBotTaskSubcommand::status)))
+                .then(literal("pause")
+                        .then(botName()
+                                .executes(AIBotTaskSubcommand::pause)))
+                .then(literal("resume")
+                        .then(botName()
+                                .executes(AIBotTaskSubcommand::resume)))
                 .then(literal("abort")
                         .then(botName()
                                 .executes(AIBotTaskSubcommand::abort)));
@@ -323,7 +333,7 @@ public final class AIBotTaskSubcommand {
     }
 
     private static int status(CommandContext<ServerCommandSource> context) {
-        Optional<AIPlayerEntity> bot = getBot(context);
+        Optional<AIPlayerEntity> bot = getBot(context, BotAuthorizationPolicy.Operation.VIEW, "status");
         if (bot.isEmpty()) {
             return 0;
         }
@@ -339,23 +349,52 @@ public final class AIBotTaskSubcommand {
     }
 
     private static int abort(CommandContext<ServerCommandSource> context) {
-        Optional<AIPlayerEntity> bot = getBot(context);
+        Optional<AIPlayerEntity> bot = getBot(context, BotAuthorizationPolicy.Operation.COMMAND, "abort");
         if (bot.isEmpty()) {
             return 0;
         }
-        TaskManager.INSTANCE.abort(bot.get());
+        IntentController.INSTANCE.cancelAll(
+                bot.get(), IntentController.ControlOrigin.PLAYER_COMMAND, "command_task_abort");
         context.getSource().sendFeedback(() -> Text.literal("[AIBot] task aborted"), false);
         return 1;
     }
 
+    private static int pause(CommandContext<ServerCommandSource> context) {
+        Optional<AIPlayerEntity> bot = getBot(context, BotAuthorizationPolicy.Operation.COMMAND, "pause");
+        if (bot.isEmpty()) {
+            return 0;
+        }
+        IntentController.INSTANCE.pause(
+                bot.get(), IntentController.ControlOrigin.PLAYER_COMMAND, "command_task_pause");
+        return 1;
+    }
+
+    private static int resume(CommandContext<ServerCommandSource> context) {
+        Optional<AIPlayerEntity> bot = getBot(context, BotAuthorizationPolicy.Operation.COMMAND, "resume");
+        if (bot.isEmpty()) {
+            return 0;
+        }
+        IntentController.INSTANCE.resume(
+                bot.get(), IntentController.ControlOrigin.PLAYER_COMMAND, "command_task_resume");
+        return 1;
+    }
+
     private static int assign(CommandContext<ServerCommandSource> context, TaskFactory factory) {
-        Optional<AIPlayerEntity> bot = getBot(context);
+        Optional<AIPlayerEntity> bot = getBot(context, BotAuthorizationPolicy.Operation.COMMAND, "assign");
         if (bot.isEmpty()) {
             return 0;
         }
         try {
             Task task = factory.create(bot.get());
-            TaskManager.INSTANCE.assign(bot.get(), task);
+            IntentController.INSTANCE.replace(
+                    bot.get(),
+                    IntentController.ControlOrigin.PLAYER_COMMAND,
+                    "command_task_assign:" + task.name(),
+                    () -> {
+                        TaskManager.INSTANCE.assign(bot.get(), task,
+                                TaskOrigin.of(TaskOrigin.Kind.PLAYER_COMMAND, "command_task_assign"));
+                        return true;
+                    });
             context.getSource().sendFeedback(() -> Text.literal("[AIBot] task assigned: " + task.name()), false);
             return 1;
         } catch (RuntimeException exception) {
@@ -364,13 +403,12 @@ public final class AIBotTaskSubcommand {
         }
     }
 
-    private static Optional<AIPlayerEntity> getBot(CommandContext<ServerCommandSource> context) {
+    private static Optional<AIPlayerEntity> getBot(CommandContext<ServerCommandSource> context,
+                                                   BotAuthorizationPolicy.Operation operation,
+                                                   String action) {
         String name = StringArgumentType.getString(context, "name");
-        Optional<AIPlayerEntity> bot = AIPlayerManager.INSTANCE.getByName(name);
-        if (bot.isEmpty()) {
-            context.getSource().sendError(Text.literal("[AIBot] No such bot: " + name));
-        }
-        return bot;
+        return BotAuthorizationGate.INSTANCE.resolveAuthorized(
+                context.getSource(), name, operation, "command:task_" + action);
     }
 
     private static BlockPos getBlockPos(CommandContext<ServerCommandSource> context) {

@@ -1,0 +1,14 @@
+feature	seed	run	result	reason	stage	summary
+real_armor	3000	1	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	3000	2	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	155361719	1	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	155361719	2	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	632510390	1	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	632510390	2	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	111	1	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	111	2	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	700	1	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	700	2	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	4040404	1	FAIL	verify_timeout status=mine_ore OreDig 0/13 ->144	timeout	0/1 PASS: {real_armor=FAIL:verify_timeout status=mine_ore OreDig 0/13 ->144,40,106}
+real_armor	4040404	2	FAIL	verify_timeout status=mine_ore OreDig 0/13 ->144	timeout	0/1 PASS: {real_armor=FAIL:verify_timeout status=mine_ore OreDig 0/13 ->144,40,106}
+ALLDONE

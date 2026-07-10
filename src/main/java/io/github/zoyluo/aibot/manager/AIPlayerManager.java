@@ -1,16 +1,17 @@
 package io.github.zoyluo.aibot.manager;
 
 import com.mojang.authlib.GameProfile;
-import io.github.zoyluo.aibot.brain.BrainCoordinator;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.log.LogFields;
 import io.github.zoyluo.aibot.memory.BotMemoryStore;
 import io.github.zoyluo.aibot.network.FakeClientConnection;
+import io.github.zoyluo.aibot.mode.CapabilityRuntime;
+import io.github.zoyluo.aibot.mode.PrivilegedCapability;
 import io.github.zoyluo.aibot.pathfinding.Standability;
 import io.github.zoyluo.aibot.persist.BotPersistence;
 import io.github.zoyluo.aibot.persist.BotRecord;
-import io.github.zoyluo.aibot.task.TaskManager;
+import io.github.zoyluo.aibot.runtime.RuntimeLifecycleCoordinator;
 import io.github.zoyluo.aibot.util.OfflineProfileFactory;
 import net.minecraft.entity.attribute.EntityAttributeInstance;
 import net.minecraft.entity.attribute.EntityAttributes;
@@ -61,14 +62,36 @@ public final class AIPlayerManager {
         io.github.zoyluo.aibot.memory.EpisodeLog.INSTANCE.record(bot,
                 io.github.zoyluo.aibot.memory.EpisodeLog.Type.DEATH, bot.getBlockPos(),
                 bot.getRecentDamageSource() == null ? "unknown" : bot.getRecentDamageSource().getName());
-        BlockPos surface = world.getTopPosition(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, bot.getBlockPos());
+        RuntimeLifecycleCoordinator.INSTANCE.onBotDeath(bot);
+        boolean enhancedRespawn = CapabilityRuntime.decide(
+                bot, PrivilegedCapability.EMERGENCY_TELEPORT, "death_surface_respawn").allowed();
+        ServerWorld respawnWorld;
+        Vec3d respawnPos;
+        String respawnStrategy;
+        if (enhancedRespawn) {
+            BlockPos surface = world.getTopPosition(
+                    Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, bot.getBlockPos());
+            respawnWorld = world;
+            respawnPos = Vec3d.ofBottomCenter(surface);
+            respawnStrategy = "operator_death_column_surface";
+        } else {
+            // Fake players cannot send the vanilla respawn packet. In strict mode this adapter uses
+            // the world's normal spawn area instead of teleporting to the death column's surface.
+            respawnWorld = bot.getServer().getOverworld();
+            respawnPos = safeSpawnPosition(
+                    respawnWorld, Vec3d.ofBottomCenter(respawnWorld.getSpawnPos()),
+                    bot.getGameProfile().getName());
+            respawnStrategy = "strict_world_spawn";
+        }
         bot.setHealth(20.0F);
         bot.deathTime = 0;
         bot.getHungerManager().setFoodLevel(20);
-        bot.teleport(world, surface.getX() + 0.5D, surface.getY(), surface.getZ() + 0.5D,
+        bot.teleport(respawnWorld, respawnPos.x, respawnPos.y, respawnPos.z,
                 Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
         bot.extinguish();
-        BotLog.danger(bot, "bot_respawned_after_death", "pos", LogFields.pos(surface));
+        BotLog.danger(bot, "bot_respawned_after_death",
+                "pos", LogFields.pos(bot.getBlockPos()),
+                "strategy", respawnStrategy);
         return true;
     }
 
@@ -126,6 +149,7 @@ public final class AIPlayerManager {
             botOwners.put(player.getUuid(), ownerUuid);
         }
         BotLog.lifecycle(player, "bot_spawned", "pos", LogFields.pos(player.getBlockPos()), "mode", effectiveMode.getName());
+        BotPersistence.INSTANCE.markDirty(server);
         return Optional.of(player);
     }
 
@@ -163,20 +187,14 @@ public final class AIPlayerManager {
         }
 
         AIPlayerEntity entity = player.get();
-        entity.getActionPack().stopAll();
-        BrainCoordinator.INSTANCE.reset(entity);
-        TaskManager.INSTANCE.onBotDespawn(entity);
-        io.github.zoyluo.aibot.coordination.IdleCoordinator.INSTANCE.onBotRemoved(entity);
+        RuntimeLifecycleCoordinator.INSTANCE.deleteBot(entity);
         players.remove(entity.getUuid());
         nameIndex.remove(normalizeName(name));
         roles.remove(entity.getUuid());
         clearOwner(entity.getUuid());
-        if (entity.networkHandler != null) {
-            entity.networkHandler.onDisconnected(new DisconnectionInfo(Text.literal("AIBot despawn")));
-        } else {
-            server.getPlayerManager().remove(entity);
-        }
+        disconnect(server, entity, "AIBot despawn");
         BotLog.lifecycle(entity, "bot_despawned", "reason", "command_or_shutdown");
+        BotPersistence.INSTANCE.markDirty(server);
         return true;
     }
 
@@ -230,10 +248,12 @@ public final class AIPlayerManager {
     public void onServerStopping(MinecraftServer server) {
         int count = players.size();
         for (AIPlayerEntity player : players.values().toArray(AIPlayerEntity[]::new)) {
-            despawn(server, player.getGameProfile().getName());
+            RuntimeLifecycleCoordinator.INSTANCE.unloadBot(player);
+            disconnect(server, player, "AIBot server unload");
         }
         players.clear();
         nameIndex.clear();
+        roles.clear();
         ownerIndex.clear();
         botOwners.clear();
         BotLog.lifecycle("all_bots_cleared", "count", count);
@@ -243,6 +263,14 @@ public final class AIPlayerManager {
         UUID ownerUuid = botOwners.remove(botUuid);
         if (ownerUuid != null) {
             ownerIndex.remove(ownerUuid, botUuid);
+        }
+    }
+
+    private static void disconnect(MinecraftServer server, AIPlayerEntity entity, String reason) {
+        if (entity.networkHandler != null) {
+            entity.networkHandler.onDisconnected(new DisconnectionInfo(Text.literal(reason)));
+        } else {
+            server.getPlayerManager().remove(entity);
         }
     }
 

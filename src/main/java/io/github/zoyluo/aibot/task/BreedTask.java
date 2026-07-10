@@ -92,6 +92,7 @@ public final class BreedTask extends AbstractTask {
                                 && animal.getBreedingAge() == 0
                                 && animal.canEat())
                 .stream()
+                .filter(animal -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveEntity(bot, animal))
                 .sorted(Comparator.comparingDouble(bot::distanceTo))
                 .toList();
         if (candidates.size() < 2) {

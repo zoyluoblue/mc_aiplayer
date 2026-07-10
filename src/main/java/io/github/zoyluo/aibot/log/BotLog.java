@@ -22,6 +22,10 @@ public final class BotLog {
         submit(LogCategory.COMM, Level.INFO, bot, event, null, null, kv);
     }
 
+    public static void commSystem(String event, Object... kv) {
+        submit(LogCategory.COMM, Level.INFO, "-", event, null, null, kv);
+    }
+
     public static void api(AIPlayerEntity bot, String event, Object... kv) {
         submit(LogCategory.API, Level.INFO, bot, event, null, null, kv);
     }
@@ -56,6 +60,10 @@ public final class BotLog {
 
     public static void config(String event, Object... kv) {
         submit(LogCategory.CONFIG, Level.INFO, "-", event, null, null, kv);
+    }
+
+    public static void security(String event, Object... kv) {
+        submit(LogCategory.SECURITY, Level.WARN, "-", event, null, null, kv);
     }
 
     public static void warn(LogCategory category, AIPlayerEntity bot, String event, Object... kv) {

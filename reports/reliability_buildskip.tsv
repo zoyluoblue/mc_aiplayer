@@ -1,0 +1,5 @@
+feature	seed	run	result	reason	stage	summary
+real_build	105441651	1	PASS	PASS	pass	1/1 PASS: {real_build=PASS}
+real_build	155361719	1	PASS	PASS	pass	1/1 PASS: {real_build=PASS}
+real_build	1061665215	1	FAIL	assertion_failed status=build Building small_hut at 265	other	0/1 PASS: {real_build=FAIL:assertion_failed status=build Building small_hut at 265,63,587 116/116 phase=BUILD note=build_skip=68@752}
+ALLDONE

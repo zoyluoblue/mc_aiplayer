@@ -5,6 +5,9 @@ import io.github.zoyluo.aibot.action.InventoryAction;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.log.LogFields;
+import io.github.zoyluo.aibot.mode.CapabilityRuntime;
+import io.github.zoyluo.aibot.mode.ObservableWorldQuery;
+import io.github.zoyluo.aibot.mode.PrivilegedCapability;
 import io.github.zoyluo.aibot.task.TaskManager;
 import io.github.zoyluo.aibot.task.TaskStatus;
 import net.minecraft.block.Blocks;
@@ -45,7 +48,8 @@ public final class PerceptionCollector {
                 Registries.ITEM.getId(bot.getMainHandStack().getItem()).toString(),
                 InventoryAction.summarize(bot));
 
-        BlockScan blockScan = collectBlocks(world, center, Math.min(config.radius(), 8), config.maxBlocks());
+        CapabilityRuntime.decide(bot, PrivilegedCapability.HIDDEN_BLOCK_SCAN, "perception_snapshot");
+        BlockScan blockScan = collectBlocks(bot, world, center, Math.min(config.radius(), 8), config.maxBlocks());
         List<PerceptionSnapshot.NearbyEntity> entities = collectEntities(bot, world, config.radius(), config.maxEntities());
         List<PerceptionSnapshot.NearbyItem> items = collectItems(bot, world, config.radius(), config.maxItems());
         PerceptionSnapshot.Highlights highlights = buildHighlights(blockScan.highlights(), entities);
@@ -83,7 +87,7 @@ public final class PerceptionCollector {
                 new PerceptionSnapshot.TimeInfo(world.getTimeOfDay() % 24000L, world.isDay(), world.getLightLevel(center)));
     }
 
-    private static BlockScan collectBlocks(ServerWorld world, BlockPos center, int radius, int limit) {
+    private static BlockScan collectBlocks(AIPlayerEntity bot, ServerWorld world, BlockPos center, int radius, int limit) {
         List<PerceptionSnapshot.NearbyBlock> blocks = new ArrayList<>();
         Map<String, List<PerceptionSnapshot.NearbyBlock>> highlights = new HashMap<>();
         for (int dx = -radius; dx <= radius; dx++) {
@@ -93,6 +97,9 @@ public final class PerceptionCollector {
                     BlockState state = world.getBlockState(pos);
                     boolean water = state.getFluidState().isIn(FluidTags.WATER);
                     if (state.isAir() && !water) {
+                        continue;
+                    }
+                    if (!ObservableWorldQuery.canObserveBlock(bot, pos)) {
                         continue;
                     }
                     double distance = Math.sqrt(center.getSquaredDistance(pos));
@@ -117,6 +124,7 @@ public final class PerceptionCollector {
     private static List<PerceptionSnapshot.NearbyEntity> collectEntities(AIPlayerEntity bot, ServerWorld world, int radius, int limit) {
         return world.getOtherEntities(bot, bot.getBoundingBox().expand(radius), entity -> entity instanceof LivingEntity)
                 .stream()
+                .filter(entity -> ObservableWorldQuery.canObserveEntity(bot, entity))
                 .sorted(Comparator.comparingDouble(bot::distanceTo))
                 .limit(limit)
                 .map(entity -> toNearbyEntity(bot, entity))
@@ -138,6 +146,7 @@ public final class PerceptionCollector {
     private static List<PerceptionSnapshot.NearbyItem> collectItems(AIPlayerEntity bot, ServerWorld world, int radius, int limit) {
         return world.getOtherEntities(bot, bot.getBoundingBox().expand(radius), entity -> entity instanceof ItemEntity)
                 .stream()
+                .filter(entity -> ObservableWorldQuery.canObserveEntity(bot, entity))
                 .sorted(Comparator.comparingDouble(bot::distanceTo))
                 .limit(limit)
                 .map(entity -> {

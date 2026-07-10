@@ -21,6 +21,8 @@ public interface Task {
 
     void abort(AIPlayerEntity bot);
 
+    void cancel(AIPlayerEntity bot, String reason);
+
     double progress();
 
     int elapsedTicks();

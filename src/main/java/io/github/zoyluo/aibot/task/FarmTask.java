@@ -149,6 +149,8 @@ public final class FarmTask extends AbstractTask {
         boolean hasSeeds = !harvestOnly && InventoryAction.countItem(bot, seed) > 0;
         BlockPos.stream(areaCenter.add(-radius, -1, -radius), areaCenter.add(radius, 1, radius))
                 .map(BlockPos::toImmutable)
+                .filter(pos -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, pos)
+                        || io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, pos.up()))
                 .forEach(pos -> addTargetIfUseful(world, pos, hasSeeds));
         targets.sort(Comparator.comparingDouble(pos -> pos.ground().getSquaredDistance(bot.getBlockPos())));
         if (targets.isEmpty()) {
@@ -162,7 +164,7 @@ public final class FarmTask extends AbstractTask {
             // lab food_farm 靠 perTick 强制催熟才过。超时由上面 12000t 配额兜底,熟不了也不会无限等。
             boolean needMore = produceItem != null
                     && InventoryAction.countItem(bot, produceItem) - produceBaseline < targetHarvest;
-            if (!harvestOnly && needMore && hasImmatureCrops(world)) {
+            if (!harvestOnly && needMore && hasImmatureCrops(bot, world)) {
                 waitingForMaturity = true;
                 return; // 留在 SURVEY,下 tick 继续等熟(不切 DONE);isWaiting() 期间豁免 StuckWatcher
             }
@@ -287,6 +289,7 @@ public final class FarmTask extends AbstractTask {
         depositContainers.clear();
         BlockPos.stream(basePos.add(-DEPOSIT_RADIUS, -3, -DEPOSIT_RADIUS), basePos.add(DEPOSIT_RADIUS, 4, DEPOSIT_RADIUS))
                 .map(BlockPos::toImmutable)
+                .filter(pos -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, pos))
                 .filter(pos -> ContainerAction.resolve(bot, pos).isPresent())
                 .forEach(depositContainers::add);
         depositContainers.sort(Comparator
@@ -341,6 +344,12 @@ public final class FarmTask extends AbstractTask {
     }
 
     private void depositTransfer(AIPlayerEntity bot) {
+        if (depositContainerPos == null
+                || bot.getEyePos().squaredDistanceTo(depositContainerPos.toCenterPos()) > REACH_SQUARED
+                || !io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, depositContainerPos)) {
+            phase = Phase.DEPOSIT;
+            return;
+        }
         Inventory container = ContainerAction.resolve(bot, depositContainerPos).orElse(null);
         if (container == null) {
             selectDepositContainer(bot);
@@ -407,8 +416,10 @@ public final class FarmTask extends AbstractTask {
     }
 
     // 区内是否有"已种但还没熟"的本作物——有就值得留下等熟,别种完就走(治 real_wheat harvest=0)。
-    private boolean hasImmatureCrops(ServerWorld world) {
+    private boolean hasImmatureCrops(AIPlayerEntity bot, ServerWorld world) {
         return BlockPos.stream(areaCenter.add(-radius, -1, -radius), areaCenter.add(radius, 1, radius))
+                .filter(ground -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, ground)
+                        || io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, ground.up()))
                 .anyMatch(ground -> {
                     BlockPos cropPos = ground.up();
                     return world.getBlockState(cropPos).isOf(crop) && !FarmAction.isMature(world, cropPos);

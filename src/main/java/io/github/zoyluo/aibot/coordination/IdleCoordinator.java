@@ -15,6 +15,7 @@ import io.github.zoyluo.aibot.task.Task;
 import io.github.zoyluo.aibot.task.TaskManager;
 import io.github.zoyluo.aibot.task.TaskState;
 import io.github.zoyluo.aibot.task.TaskStatus;
+import io.github.zoyluo.aibot.runtime.TaskOrigin;
 import net.minecraft.block.Block;
 import net.minecraft.item.Item;
 import net.minecraft.registry.Registries;
@@ -44,11 +45,22 @@ public final class IdleCoordinator {
     }
 
     public boolean tickBot(AIPlayerEntity bot) {
+        if (TaskManager.INSTANCE.isUserPaused(bot)) {
+            return false;
+        }
         if (TaskManager.INSTANCE.getActive(bot).isPresent()) {
+            return false;
+        }
+        if (TaskManager.INSTANCE.hasPaused(bot)) {
             return false;
         }
         // GOALFIX-GF1 P0-A:bot 有活跃目标计划时,空闲分配让位给 GoalExecutor(防步骤间隙抢任务板作业)。
         if (io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.hasActivePlan(bot)) {
+            return false;
+        }
+        // Low-level action-only work (for example move_to) has no Task object but still owns the
+        // bot until ActionPack settles. Do not wake Brain, resume paused work, or claim a Job over it.
+        if (bot.getActionPack().hasActiveActions()) {
             return false;
         }
         UUID currentJob = claimedJobs.remove(bot.getUuid());
@@ -60,6 +72,9 @@ public final class IdleCoordinator {
         }
         Optional<Job> job = TaskBoard.INSTANCE.claimNext(bot, AIPlayerManager.INSTANCE.roles(bot));
         job.ifPresent(next -> assignJob(bot, next));
+        if (job.isPresent()) {
+            markDirty(bot);
+        }
         return job.isPresent();
     }
 
@@ -67,26 +82,52 @@ public final class IdleCoordinator {
         UUID jobId = claimedJobs.remove(bot.getUuid());
         if (jobId != null) {
             TaskBoard.INSTANCE.markFailed(jobId, "bot_removed");
+            markDirty(bot);
         }
+    }
+
+    /** Server unload keeps the persisted lease; the next runtime session will reopen it as stale. */
+    public void onBotUnloaded(AIPlayerEntity bot) {
+        claimedJobs.remove(bot.getUuid());
+    }
+
+    public void clearAllRuntime() {
+        claimedJobs.clear();
+    }
+
+    public boolean cancelClaimedJob(AIPlayerEntity bot, String reason) {
+        UUID jobId = claimedJobs.remove(bot.getUuid());
+        if (jobId == null) {
+            return false;
+        }
+        TaskBoard.INSTANCE.markFailed(jobId, "cancelled: " + reason);
+        markDirty(bot);
+        return true;
     }
 
     private void finishClaimedJob(AIPlayerEntity bot, UUID jobId) {
         TaskStatus status = TaskManager.INSTANCE.status(bot);
-        if (status.state() == TaskState.FAILED) {
+        if (status.state() == TaskState.FAILED || status.state() == TaskState.CANCELLED) {
             TaskBoard.INSTANCE.markFailed(jobId, status.failureReason().isBlank() ? "task_failed" : status.failureReason());
         } else {
             TaskBoard.INSTANCE.markDone(jobId);
         }
+        markDirty(bot);
     }
 
     private void assignJob(AIPlayerEntity bot, Job job) {
         Optional<Task> task = jobToTask(bot, job);
         if (task.isEmpty()) {
             TaskBoard.INSTANCE.markFailed(job.id(), "unknown_or_bad_job: " + job.kind());
+            markDirty(bot);
             return;
         }
         claimedJobs.put(bot.getUuid(), job.id());
-        TaskManager.INSTANCE.assign(bot, task.get());
+        TaskManager.INSTANCE.assign(bot, task.get(), TaskOrigin.job(job.id(), "task_board"));
+    }
+
+    private static void markDirty(AIPlayerEntity bot) {
+        io.github.zoyluo.aibot.persist.BotPersistence.INSTANCE.markDirty(bot.getServer());
     }
 
     public static Optional<Task> jobToTask(AIPlayerEntity bot, Job job) {

@@ -28,6 +28,15 @@ public record BotSnapshotS2C(
         int goalCurrentStepIndex,
         int goalTotalSteps,
         List<String> goalSteps,
+        long goalResultSequence,
+        String goalResultStatus,
+        String goalResultSummary,
+        int goalResultMatched,
+        int goalResultRequired,
+        boolean missionPaused,
+        int executionStackDepth,
+        String operatingProfile,
+        List<String> effectiveCapabilities,
         boolean manualMode,
         boolean memoryToolsEnabled,
         boolean verboseReportsEnabled,
@@ -57,6 +66,15 @@ public record BotSnapshotS2C(
                 buf.readInt(),
                 buf.readInt(),
                 readStrings(buf),
+                buf.readLong(),
+                buf.readString(),
+                buf.readString(),
+                buf.readInt(),
+                buf.readInt(),
+                buf.readBoolean(),
+                buf.readInt(),
+                buf.readString(),
+                readStrings(buf),
                 buf.readBoolean(),
                 buf.readBoolean(),
                 buf.readBoolean(),
@@ -85,6 +103,18 @@ public record BotSnapshotS2C(
         buf.writeInt(goalSteps.size());
         for (String step : goalSteps) {
             buf.writeString(step);
+        }
+        buf.writeLong(goalResultSequence);
+        buf.writeString(goalResultStatus);
+        buf.writeString(goalResultSummary);
+        buf.writeInt(goalResultMatched);
+        buf.writeInt(goalResultRequired);
+        buf.writeBoolean(missionPaused);
+        buf.writeInt(executionStackDepth);
+        buf.writeString(operatingProfile);
+        buf.writeInt(effectiveCapabilities.size());
+        for (String capability : effectiveCapabilities) {
+            buf.writeString(capability);
         }
         buf.writeBoolean(manualMode);
         buf.writeBoolean(memoryToolsEnabled);

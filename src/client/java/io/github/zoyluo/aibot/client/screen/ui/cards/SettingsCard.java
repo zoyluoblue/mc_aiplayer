@@ -73,6 +73,11 @@ public final class SettingsCard extends PanelCard {
         context.drawTextWithShadow(renderer, Theme.tr("settings.aibot.target", bot), bx, by, Theme.TEXT_DIM);
         if (snapshot == null) {
             context.drawTextWithShadow(renderer, Theme.tr("status.aibot.waiting"), bx, by + 14, Theme.TEXT_DIM);
+        } else {
+            String key = "strict_survival".equals(snapshot.operatingProfile())
+                    ? "settings.aibot.profile.strict" : "settings.aibot.profile.operator";
+            context.drawTextWithShadow(renderer, Theme.tr("settings.aibot.profile", Theme.tr(key)),
+                    bx, by + 14, "strict_survival".equals(snapshot.operatingProfile()) ? 0xFF65C18C : 0xFFE4A853);
         }
     }
 
@@ -114,6 +119,9 @@ public final class SettingsCard extends PanelCard {
         manualButton.setMessage(label("settings.aibot.manual", snapshot != null && snapshot.manualMode()));
         memoryButton.setMessage(label("settings.aibot.memory", snapshot == null || snapshot.memoryToolsEnabled()));
         reportsButton.setMessage(label("settings.aibot.reports", snapshot == null || snapshot.verboseReportsEnabled()));
+        boolean teleportEnabled = snapshot != null && snapshot.effectiveCapabilities().contains("MANUAL_TELEPORT");
+        teleportToButton.active = teleportEnabled;
+        recallButton.active = teleportEnabled;
     }
 
     private static Text label(String key, boolean enabled) {

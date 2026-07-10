@@ -222,7 +222,7 @@ public final class DeepSeekApiClient {
             int promptTokens = intField(usage, "prompt_tokens");
             int completionTokens = intField(usage, "completion_tokens");
             int cacheHitTokens = intField(usage, "prompt_cache_hit_tokens");
-            BotLog.api(null, "api_response",
+            BotLog.api(null, "api_response_received",
                     "tokens_in", promptTokens,
                     "tokens_out", completionTokens,
                     "cache_hit", cacheHitTokens,

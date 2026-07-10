@@ -1,0 +1,12 @@
+feature	seed	run	result	reason	stage	summary
+real_armor	633819475	1	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	586434987	1	FAIL	gather_timeout	wood_gather	0/1 PASS: {real_armor=FAIL:gather_timeout}
+real_armor	105441651	1	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	206232996	1	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	632510390	1	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	42414950	1	FAIL	verify_timeout status=mine_ore OreDig 0/16 ->38	timeout	0/1 PASS: {real_armor=FAIL:verify_timeout status=mine_ore OreDig 0/16 ->38,44,-22}
+real_armor	1061665215	1	FAIL	guard_drowning	other	0/1 PASS: {real_armor=FAIL:guard_drowning}
+real_armor	715809951	1	FAIL	dig_down_no_progress collected=0	ore_dig	0/1 PASS: {real_armor=FAIL:dig_down_no_progress collected=0}
+real_armor	456718736	1	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	155361719	1	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+ALLDONE

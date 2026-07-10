@@ -47,11 +47,21 @@ public abstract class AbstractTask implements Task {
 
     @Override
     public final void abort(AIPlayerEntity bot) {
-        if (state == TaskState.COMPLETED || state == TaskState.FAILED) {
+        if (state == TaskState.COMPLETED || state == TaskState.FAILED || state == TaskState.CANCELLED) {
             return;
         }
         state = TaskState.FAILED;
         failureReason = "aborted";
+        onAbort(bot);
+    }
+
+    @Override
+    public final void cancel(AIPlayerEntity bot, String reason) {
+        if (state == TaskState.COMPLETED || state == TaskState.FAILED || state == TaskState.CANCELLED) {
+            return;
+        }
+        state = TaskState.CANCELLED;
+        failureReason = reason == null ? "" : reason;
         onAbort(bot);
     }
 

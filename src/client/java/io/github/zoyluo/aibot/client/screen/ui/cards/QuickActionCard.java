@@ -2,6 +2,8 @@ package io.github.zoyluo.aibot.client.screen.ui.cards;
 
 import io.github.zoyluo.aibot.client.BotCommandBridge;
 import io.github.zoyluo.aibot.client.screen.ui.Theme;
+import io.github.zoyluo.aibot.client.BotClientState;
+import io.github.zoyluo.aibot.network.payload.BotSnapshotS2C;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.gui.DrawContext;
@@ -11,6 +13,7 @@ import net.minecraft.client.gui.widget.TextFieldWidget;
 import net.minecraft.text.Text;
 
 import java.util.function.Consumer;
+import java.util.List;
 
 public final class QuickActionCard extends PanelCard {
     private static final int INPUT_H = 18;
@@ -19,6 +22,7 @@ public final class QuickActionCard extends PanelCard {
     private TextFieldWidget idField;
     private TextFieldWidget countField;
     private ButtonWidget comeButton;
+    private ButtonWidget pauseButton;
     private ButtonWidget stopButton;
     private ButtonWidget eatButton;
     private ButtonWidget sleepButton;
@@ -64,6 +68,8 @@ public final class QuickActionCard extends PanelCard {
                 BotCommandBridge.command(target, "move", client.player.getBlockPos().toShortString().replace(",", ""), "", 1);
             }
         });
+        pauseButton = button("btn.aibot.pause", () -> BotCommandBridge.command(
+                target, snapshot != null && snapshot.missionPaused() ? "resume" : "pause", "", "", 1));
         stopButton = button("btn.aibot.stop", () -> BotCommandBridge.command(target, "abort", "", "", 1));
         eatButton = button("btn.aibot.eat", () -> BotCommandBridge.command(target, "eat", "", "", 1));
         sleepButton = button("btn.aibot.sleep", () -> BotCommandBridge.command(target, "sleep", "", "", 1));
@@ -75,12 +81,22 @@ public final class QuickActionCard extends PanelCard {
         sink.accept(idField);
         sink.accept(countField);
         sink.accept(comeButton);
+        sink.accept(pauseButton);
         sink.accept(stopButton);
         sink.accept(eatButton);
         sink.accept(sleepButton);
         sink.accept(mineButton);
         sink.accept(craftButton);
         sink.accept(smeltButton);
+    }
+
+    @Override
+    public void refresh(BotSnapshotS2C snapshot, List<BotClientState.ChatLine> chat) {
+        super.refresh(snapshot, chat);
+        if (pauseButton != null) {
+            pauseButton.setMessage(Text.translatable(snapshot != null && snapshot.missionPaused()
+                    ? "btn.aibot.resume" : "btn.aibot.pause"));
+        }
     }
 
     @Override
@@ -99,15 +115,17 @@ public final class QuickActionCard extends PanelCard {
         int bx = x + Theme.PAD;
         int by = y + 40;
         int bw = w - Theme.PAD * 2;
-        int quarter = Math.max(28, (bw - 9) / 4);
+        int fifth = Math.max(24, (bw - 12) / 5);
         comeButton.setPosition(bx, by);
-        comeButton.setDimensions(quarter, INPUT_H);
-        stopButton.setPosition(bx + quarter + 3, by);
-        stopButton.setDimensions(quarter, INPUT_H);
-        eatButton.setPosition(bx + quarter * 2 + 6, by);
-        eatButton.setDimensions(quarter, INPUT_H);
-        sleepButton.setPosition(bx + quarter * 3 + 9, by);
-        sleepButton.setDimensions(Math.max(28, bw - quarter * 3 - 9), INPUT_H);
+        comeButton.setDimensions(fifth, INPUT_H);
+        pauseButton.setPosition(bx + fifth + 3, by);
+        pauseButton.setDimensions(fifth, INPUT_H);
+        stopButton.setPosition(bx + fifth * 2 + 6, by);
+        stopButton.setDimensions(fifth, INPUT_H);
+        eatButton.setPosition(bx + fifth * 3 + 9, by);
+        eatButton.setDimensions(fifth, INPUT_H);
+        sleepButton.setPosition(bx + fifth * 4 + 12, by);
+        sleepButton.setDimensions(Math.max(24, bw - fifth * 4 - 12), INPUT_H);
         idField.setPosition(bx, by + 22);
         idField.setDimensions(Math.max(76, bw - 42), INPUT_H);
         countField.setPosition(bx + bw - 36, by + 22);

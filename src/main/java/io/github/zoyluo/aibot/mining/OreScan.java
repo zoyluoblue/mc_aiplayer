@@ -1,5 +1,7 @@
 package io.github.zoyluo.aibot.mining;
 
+import io.github.zoyluo.aibot.entity.AIPlayerEntity;
+import io.github.zoyluo.aibot.mode.ObservableWorldQuery;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
@@ -39,7 +41,15 @@ public final class OreScan {
     private OreScan() {
     }
 
-    public static List<BlockPos> veinFrom(World world, BlockPos seed, Set<Block> ores, int cap) {
+    /**
+     * Expands a vein through positions the bot is allowed to perceive. The bot parameter is
+     * intentional: production callers cannot accidentally invoke a raw server-world ore flood.
+     */
+    public static List<BlockPos> veinFrom(AIPlayerEntity bot, BlockPos seed, Set<Block> ores, int cap) {
+        var world = bot.getServerWorld();
+        if (!ObservableWorldQuery.canObserveBlock(bot, seed)) {
+            return List.of();
+        }
         BlockState seedState = world.getBlockState(seed);
         if (!isOre(seedState, ores)) {
             return List.of();
@@ -52,6 +62,9 @@ public final class OreScan {
         seen.add(seed.toImmutable());
         while (!open.isEmpty() && result.size() < cap) {
             BlockPos current = open.removeFirst();
+            if (!ObservableWorldQuery.canObserveBlock(bot, current)) {
+                continue;
+            }
             if (!world.getBlockState(current).isOf(seedBlock)) {
                 continue;
             }
@@ -65,6 +78,9 @@ public final class OreScan {
                         }
                         BlockPos next = current.add(dx, dy, dz).toImmutable();
                         if (!seen.add(next)) {
+                            continue;
+                        }
+                        if (!ObservableWorldQuery.canObserveBlock(bot, next)) {
                             continue;
                         }
                         if (world.getBlockState(next).isOf(seedBlock)) {

@@ -41,6 +41,7 @@ public final class BrainCoordinator {
     }
 
     public void configure(AIBotConfig config) {
+        conversations.values().forEach(conversation -> conversation.decision.invalidate());
         if (executor != null) {
             executor.shutdown();
         }
@@ -51,23 +52,21 @@ public final class BrainCoordinator {
 
     public boolean handleMessage(AIPlayerEntity bot, String senderName, String text) {
         ensureConfigured();
-        BotConversation conversation = conversations.computeIfAbsent(bot.getUuid(), ignored -> new BotConversation());
+        BotConversation conversation = conversations.computeIfAbsent(bot.getUuid(), BotConversation::new);
+        boolean supersededDecision = conversation.decision.busy();
+        DecisionLease lease = conversation.decision.beginEpoch();
         // P2 打断语义(对话式助手):玩家新消息**不再无脑清掉进行中的目标**——原 GOALFIX-CONT 的
         // "新消息=重定向,清目标"会把"顺便再搞点吃的"当成叫停,把正在挖的铁直接杀掉,与目标队列(P0)
         // 语义相反。现在保留目标,由大脑按语义决策:追加(goal 工具自动入队)/立刻改令(先 stop 再下新目标)/
-        // 闲聊(say)。仅解除 busy,防 goal 期间"正在思考"挡住对话(叫停能力由 stop 工具保留)。
+        // 闲聊(say)。新消息采用 latest-wins decision epoch；旧 API 响应会被 lease 拒绝，但当前 Goal
+        // 仍保留，是否追加或替换由这次新决策决定。
         if (io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.hasActivePlan(bot)) {
-            synchronized (conversation) {
-                conversation.busy = false;
-            }
             BotLog.comm(bot, "goal_kept_on_user_message");
         }
-        synchronized (conversation) {
-            if (conversation.busy) {
-                sendPanelChat(bot, "system", bot.getGameProfile().getName() + " 正在思考,请稍等。");
-                return false;
-            }
-            conversation.busy = true;
+        if (supersededDecision) {
+            BotLog.comm(bot, "decision_superseded",
+                    "epoch", lease.epoch(),
+                    "request_sequence", lease.requestSequence());
         }
 
         if (conversation.history.isEmpty()) {
@@ -81,13 +80,14 @@ public final class BrainCoordinator {
         conversation.continuationTaskPolls = 0;
         conversation.maxTurnsHintInjected = false;
         io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.clearUserGoal(bot); // B:用户发来新消息→清空原始目标记忆,本条消息触发的首个目标将成为新"用户原始目标"
-        submit(bot, conversation);
+        submit(bot, conversation, lease);
         return true;
     }
 
-    public void onResponse(AIPlayerEntity bot, ChatResponse response) {
-        BotConversation conversation = conversations.get(bot.getUuid());
-        if (conversation == null) {
+    private void onResponse(AIPlayerEntity bot, DecisionLease lease, ChatResponse response) {
+        BotConversation conversation = conversations.get(lease.botId());
+        if (conversation == null || !conversation.decision.tryAcceptResponse(lease)) {
+            logStaleDecision(lease, "response");
             return;
         }
 
@@ -106,19 +106,51 @@ public final class BrainCoordinator {
         conversation.history.add(ChatMessage.assistant(response.content(), response.toolCalls()));
 
         if (response.wantsToolCalls()) {
-            List<ChatMessage> toolResults = dispatcher.dispatch(bot, response.toolCalls());
+            ActionDispatcher.DispatchBatch dispatchBatch = dispatcher.dispatchBatch(
+                    bot,
+                    response.toolCalls(),
+                    () -> conversation.decision.isApplying(lease));
+            if (!conversation.decision.isApplying(lease)) {
+                logStaleDecision(lease, "tool_batch");
+                return;
+            }
+            List<ChatMessage> toolResults = dispatchBatch.messages();
             ReplayRecorder.INSTANCE.onDecision(bot, conversation.lastPerceptionDigest, response.toolCalls(), replayResult(toolResults));
             conversation.history.addAll(toolResults);
+            if (dispatchBatch.controlEffect() != ActionDispatcher.ControlEffect.NONE) {
+                boolean replacementWorkActive = shouldContinueAfterControl(
+                        dispatchBatch.controlEffect(),
+                        TaskManager.INSTANCE.getActive(bot).isPresent(),
+                        io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.hasActivePlan(bot),
+                        io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.queuedGoalCount(bot),
+                        bot.getActionPack().hasActiveActions());
+                if (!replacementWorkActive) {
+                    if (!conversation.decision.complete(lease)) {
+                        logStaleDecision(lease, "control_completion");
+                        return;
+                    }
+                    trimHistory(conversation);
+                    BotLog.comm(bot, "conversation_controlled", "effect", dispatchBatch.controlEffect());
+                    return;
+                }
+                BotLog.comm(bot, "conversation_control_replaced", "effect", dispatchBatch.controlEffect());
+            }
             conversation.turnsInCurrentRequest++;
             maybeInjectMaxTurnsHint(conversation);
             if (conversation.turnsInCurrentRequest >= AIBotConfig.get().brain().maxTurnsPerRequest()) {
                 BotLog.warn(LogCategory.COMM, bot, "max_turns_reached", "turns", conversation.turnsInCurrentRequest, "last_response", response.finishReason());
-                conversation.busy = false;
+                if (!conversation.decision.complete(lease)) {
+                    logStaleDecision(lease, "max_turns_completion");
+                    return;
+                }
                 // P1 善后(实测:max_turns 后 bot 卡 FAILED 发呆 13 分钟)。
                 // 仅当此刻没有正常运行中的任务/计划(即确实是反复失败耗尽轮次)才复位,避免误杀
                 // 第 N 轮刚合法分配、仍在跑的长任务。
-                boolean hasRunningWork = TaskManager.INSTANCE.getActive(bot).isPresent()
-                        || io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.hasActivePlan(bot);
+                boolean hasRunningWork = hasRuntimeWork(
+                        TaskManager.INSTANCE.getActive(bot).isPresent(),
+                        io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.hasActivePlan(bot),
+                        io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.queuedGoalCount(bot),
+                        bot.getActionPack().hasActiveActions());
                 if (hasRunningWork) {
                     // 有任务在跑:标记等待,任务结束后由 idle-watcher 唤醒大脑接续,不至于无人接手。
                     awaitingTask.put(bot.getUuid(), true);
@@ -136,12 +168,19 @@ public final class BrainCoordinator {
                 return;
             }
             trimHistory(conversation);
-            scheduleContinuation(bot, conversation);
+            if (!conversation.decision.awaitContinuation(lease)) {
+                logStaleDecision(lease, "continuation_wait");
+                return;
+            }
+            scheduleContinuation(bot, conversation, lease);
             return;
         }
 
+        if (!conversation.decision.complete(lease)) {
+            logStaleDecision(lease, "response_completion");
+            return;
+        }
         ReplayRecorder.INSTANCE.onDecision(bot, conversation.lastPerceptionDigest, List.of(), response.content());
-        conversation.busy = false;
         // FLOW-2:大脑收尾时若仍有活跃任务(这轮是"分配长任务后停下"),标记等待任务完成;
         // 任务结束后由 idle-watcher 自动唤醒大脑决定下一步,无需人催。
         if (TaskManager.INSTANCE.getActive(bot).isPresent()) {
@@ -151,10 +190,27 @@ public final class BrainCoordinator {
         BotLog.comm(bot, "conversation_done", "finish_reason", response.finishReason());
     }
 
-    public void onError(AIPlayerEntity bot, Throwable throwable) {
-        BotConversation conversation = conversations.get(bot.getUuid());
-        if (conversation != null) {
-            conversation.busy = false;
+    static boolean shouldContinueAfterControl(ActionDispatcher.ControlEffect effect,
+                                              boolean activeTask,
+                                              boolean activeGoal,
+                                              int queuedGoals,
+                                              boolean activeAction) {
+        return effect != ActionDispatcher.ControlEffect.NONE
+                && hasRuntimeWork(activeTask, activeGoal, queuedGoals, activeAction);
+    }
+
+    static boolean hasRuntimeWork(boolean activeTask,
+                                  boolean activeGoal,
+                                  int queuedGoals,
+                                  boolean activeAction) {
+        return activeTask || activeGoal || queuedGoals > 0 || activeAction;
+    }
+
+    private void onError(AIPlayerEntity bot, DecisionLease lease, Throwable throwable) {
+        BotConversation conversation = conversations.get(lease.botId());
+        if (conversation == null || !conversation.decision.tryAcceptError(lease)) {
+            logStaleDecision(lease, "error");
+            return;
         }
         String message = throwable.getMessage() == null ? throwable.getClass().getSimpleName() : throwable.getMessage();
         BotLog.error(bot, "brain_hiccup", throwable, "message", message);
@@ -162,11 +218,31 @@ public final class BrainCoordinator {
     }
 
     public void reset(AIPlayerEntity bot) {
-        conversations.remove(bot.getUuid());
+        BotConversation conversation = conversations.remove(bot.getUuid());
+        if (conversation != null) {
+            conversation.decision.invalidate();
+        }
         manualModes.remove(bot.getUuid());
         awaitingTask.remove(bot.getUuid());
+        nextGoalWakeTick.remove(bot.getUuid());
         BotRuntimeOptions.INSTANCE.clear(bot);
         BotLog.comm(bot, "conversation_reset");
+    }
+
+    /** Invalidates only the asynchronous decision; P0-02 owns full Mission/Task cancellation. */
+    public boolean invalidateDecision(AIPlayerEntity bot, String reason) {
+        BotConversation conversation = conversations.get(bot.getUuid());
+        if (conversation == null || !conversation.decision.invalidateIfBusy()) {
+            return false;
+        }
+        BotLog.comm(bot, "decision_invalidated", "reason", reason);
+        return true;
+    }
+
+    public boolean clearIntentWakeSources(AIPlayerEntity bot) {
+        boolean awaitingCleared = awaitingTask.remove(bot.getUuid()) != null;
+        boolean wakeTickCleared = nextGoalWakeTick.remove(bot.getUuid()) != null;
+        return awaitingCleared || wakeTickCleared;
     }
 
     public void setManualMode(AIPlayerEntity bot, boolean enabled) {
@@ -201,12 +277,9 @@ public final class BrainCoordinator {
             return false;
         }
         ensureConfigured();
-        BotConversation conversation = conversations.computeIfAbsent(bot.getUuid(), ignored -> new BotConversation());
-        synchronized (conversation) {
-            if (conversation.busy) {
-                return false;
-            }
-            conversation.busy = true;
+        BotConversation conversation = conversations.computeIfAbsent(bot.getUuid(), BotConversation::new);
+        if (conversation.decision.busy()) {
+            return false;
         }
         if (conversation.history.isEmpty()) {
             conversation.history.add(ChatMessage.system(systemPrompt(bot.getGameProfile().getName())));
@@ -217,14 +290,14 @@ public final class BrainCoordinator {
         if (hasFailure && maybeInjectFailure(bot, conversation)) {
             awaitingTask.remove(bot.getUuid());
             trimHistory(conversation);
-            submit(bot, conversation);
+            submit(bot, conversation, conversation.decision.beginEpoch());
             return true;
         }
         if (hasGoal && maybeInjectGoalContinuation(bot, conversation, "当前没有正在执行的任务,但还有长期目标未完成。请继续推进当前步骤;需要时先分配一个高层任务。")) {
             awaitingTask.remove(bot.getUuid());
             nextGoalWakeTick.put(bot.getUuid(), bot.getServer().getTicks() + 200);
             trimHistory(conversation);
-            submit(bot, conversation);
+            submit(bot, conversation, conversation.decision.beginEpoch());
             return true;
         }
         // FLOW-2:大脑分配的任务已结束、且无失败无长期目标 → 自动唤醒大脑决定下一步,无需人催。
@@ -239,16 +312,14 @@ public final class BrainCoordinator {
                     + "否则继续执行下一步(分配下一个高层任务)。\n\nCurrent state:\n" + snapshot.toJson()));
             BotLog.comm(bot, "task_done_wake", "name", status.name(), "state", String.valueOf(status.state()));
             trimHistory(conversation);
-            submit(bot, conversation);
+            submit(bot, conversation, conversation.decision.beginEpoch());
             return true;
-        }
-        synchronized (conversation) {
-            conversation.busy = false;
         }
         return false;
     }
 
     public void shutdown() {
+        conversations.values().forEach(conversation -> conversation.decision.invalidate());
         if (executor != null) {
             executor.shutdown();
             executor = null;
@@ -256,6 +327,7 @@ public final class BrainCoordinator {
         conversations.clear();
         manualModes.clear();
         nextGoalWakeTick.clear();
+        awaitingTask.clear();
     }
 
     public BrainStatus status(AIPlayerEntity bot) {
@@ -264,7 +336,7 @@ public final class BrainCoordinator {
             return new BrainStatus(false, 0, 0, 0, 0);
         }
         return new BrainStatus(
-                conversation.busy,
+                conversation.decision.busy(),
                 conversation.history.size(),
                 conversation.lastPromptTokens,
                 conversation.lastCompletionTokens,
@@ -279,21 +351,40 @@ public final class BrainCoordinator {
         return conversations.size();
     }
 
-    private void submit(AIPlayerEntity bot, BotConversation conversation) {
-        List<ChatMessage> historySnapshot = MemoryStore.INSTANCE.prepareHistory(bot, List.copyOf(conversation.history));
-        AIBotConfig.Brain brainConfig = AIBotConfig.get().brain();
-        List<ToolDefinition> toolsSnapshot = toolRegistry.tools(
-                brainConfig,
-                brainConfig.exposesLowLevelTools() || manualMode(bot),
-                BotRuntimeOptions.INSTANCE.memoryToolsEnabled(bot),
-                brainConfig.coordinationToolsEnabled());
-        executor.submit(bot, historySnapshot, toolsSnapshot, this::onResponse, this::onError);
+    private void submit(AIPlayerEntity bot, BotConversation conversation, DecisionLease lease) {
+        try {
+            List<ChatMessage> historySnapshot = MemoryStore.INSTANCE.prepareHistory(bot, List.copyOf(conversation.history));
+            AIBotConfig.Brain brainConfig = AIBotConfig.get().brain();
+            List<ToolDefinition> toolsSnapshot = toolRegistry.tools(
+                    brainConfig,
+                    brainConfig.exposesLowLevelTools() || manualMode(bot),
+                    BotRuntimeOptions.INSTANCE.memoryToolsEnabled(bot),
+                    brainConfig.coordinationToolsEnabled());
+            executor.submit(
+                    bot,
+                    lease,
+                    historySnapshot,
+                    toolsSnapshot,
+                    (responseLease, response) -> onResponse(bot, responseLease, response),
+                    (errorLease, throwable) -> onError(bot, errorLease, throwable));
+        } catch (RuntimeException exception) {
+            if (!conversation.decision.failSubmission(lease)) {
+                logStaleDecision(lease, "submission_error");
+                return;
+            }
+            String message = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
+            BotLog.error(bot, "decision_submit_failed", exception, "message", message);
+            sendPanelChat(bot, "system", "大脑请求未能提交: " + message);
+        }
     }
 
-    private void scheduleContinuation(AIPlayerEntity bot, BotConversation conversation) {
+    private void scheduleContinuation(AIPlayerEntity bot, BotConversation conversation, DecisionLease waitingLease) {
+        var server = bot.getServer();
         CompletableFuture.delayedExecutor(TpsGuard.INSTANCE.continuationDelaySeconds(), TimeUnit.SECONDS).execute(() ->
-                bot.getServer().execute(() -> {
-                    if (conversations.get(bot.getUuid()) != conversation || !conversation.busy) {
+                server.execute(() -> {
+                    if (conversations.get(waitingLease.botId()) != conversation
+                            || !conversation.decision.isWaiting(waitingLease)) {
+                        logStaleDecision(waitingLease, "continuation_timer");
                         return;
                     }
                     // GOALFIX-CONT:确定性目标计划运行期间,绝不重新唤醒大脑——即便在两个 step 之间
@@ -301,41 +392,82 @@ public final class BrainCoordinator {
                     // abort 掉,正是实测#6的真凶)。纯等待轮询,不计入上限、不强制唤醒;goal 结束后
                     // hasActivePlan 转 false,下一轮续航自然把结果交还大脑汇报。
                     if (io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.hasActivePlan(bot)) {
-                        scheduleContinuation(bot, conversation);
+                        scheduleContinuation(bot, conversation, waitingLease);
                         return;
                     }
-                    if (TaskManager.INSTANCE.getActive(bot).isPresent()) {
+                    if (TaskManager.INSTANCE.getActive(bot).isPresent()
+                            || bot.getActionPack().hasActiveActions()) {
                         conversation.continuationTaskPolls++;
                         if (conversation.continuationTaskPolls >= MAX_CONTINUATION_TASK_POLLS) {
-                            PerceptionSnapshot snapshot = PerceptionCollector.collect(bot);
-                            conversation.history.add(ChatMessage.user("Task is still active after waiting for continuation. Current state:\n" + snapshot.toJson()));
-                            trimHistory(conversation);
-                            BotLog.warn(LogCategory.COMM, bot, "continuation_wait_limit_reached", "polls", conversation.continuationTaskPolls);
-                            submit(bot, conversation);
+                            DecisionLease nextLease = conversation.decision.advanceContinuation(waitingLease).orElse(null);
+                            if (nextLease == null) {
+                                logStaleDecision(waitingLease, "continuation_advance");
+                                return;
+                            }
+                            try {
+                                PerceptionSnapshot snapshot = PerceptionCollector.collect(bot);
+                                conversation.history.add(ChatMessage.user("Task or action is still active after waiting for continuation. Current state:\n" + snapshot.toJson()));
+                                trimHistory(conversation);
+                                BotLog.warn(LogCategory.COMM, bot, "continuation_wait_limit_reached", "polls", conversation.continuationTaskPolls);
+                                submit(bot, conversation, nextLease);
+                            } catch (RuntimeException exception) {
+                                failContinuationPreparation(bot, conversation, nextLease, exception);
+                            }
                             return;
                         }
-                        scheduleContinuation(bot, conversation);
+                        scheduleContinuation(bot, conversation, waitingLease);
                         return;
                     }
-                    conversation.continuationTaskPolls = 0;
-                    if (maybeInjectFailure(bot, conversation)) {
+                    DecisionLease nextLease = conversation.decision.advanceContinuation(waitingLease).orElse(null);
+                    if (nextLease == null) {
+                        logStaleDecision(waitingLease, "continuation_advance");
+                        return;
+                    }
+                    try {
+                        conversation.continuationTaskPolls = 0;
+                        if (maybeInjectGoalResult(bot, conversation)) {
+                            trimHistory(conversation);
+                            submit(bot, conversation, nextLease);
+                            return;
+                        }
+                        if (maybeInjectFailure(bot, conversation)) {
+                            trimHistory(conversation);
+                            submit(bot, conversation, nextLease);
+                            return;
+                        }
+                        TaskStatus status = TaskManager.INSTANCE.status(bot);
+                        if (status.state() == io.github.zoyluo.aibot.task.TaskState.COMPLETED
+                                && maybeInjectGoalContinuation(bot, conversation, "上一步任务已完成:" + status.description() + "。请根据长期目标推进下一步;如果该步骤已完成,先调用 advance_goal。")) {
+                            trimHistory(conversation);
+                            submit(bot, conversation, nextLease);
+                            return;
+                        }
+                        PerceptionSnapshot snapshot = PerceptionCollector.collect(bot);
+                        conversation.lastPerceptionDigest = perceptionDigest(snapshot);
+                        conversation.history.add(ChatMessage.user("Updated state after tool calls:\n" + snapshot.toJson()));
                         trimHistory(conversation);
-                        submit(bot, conversation);
-                        return;
+                        submit(bot, conversation, nextLease);
+                    } catch (RuntimeException exception) {
+                        failContinuationPreparation(bot, conversation, nextLease, exception);
                     }
-                    TaskStatus status = TaskManager.INSTANCE.status(bot);
-                    if (status.state() == io.github.zoyluo.aibot.task.TaskState.COMPLETED
-                            && maybeInjectGoalContinuation(bot, conversation, "上一步任务已完成:" + status.description() + "。请根据长期目标推进下一步;如果该步骤已完成,先调用 advance_goal。")) {
-                        trimHistory(conversation);
-                        submit(bot, conversation);
-                        return;
-                    }
-                    PerceptionSnapshot snapshot = PerceptionCollector.collect(bot);
-                    conversation.lastPerceptionDigest = perceptionDigest(snapshot);
-                    conversation.history.add(ChatMessage.user("Updated state after tool calls:\n" + snapshot.toJson()));
-                    trimHistory(conversation);
-                    submit(bot, conversation);
                 }));
+    }
+
+    private void failContinuationPreparation(AIPlayerEntity bot,
+                                             BotConversation conversation,
+                                             DecisionLease lease,
+                                             RuntimeException exception) {
+        if (!conversation.decision.failSubmission(lease)) {
+            logStaleDecision(lease, "continuation_preparation_error");
+            return;
+        }
+        String message = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
+        BotLog.error(bot, "continuation_preparation_failed", exception, "message", message);
+        try {
+            sendPanelChat(bot, "system", "大脑续航准备失败，已安全停止本轮思考: " + message);
+        } catch (RuntimeException notificationException) {
+            BotLog.error(bot, "continuation_failure_notification_failed", notificationException);
+        }
     }
 
     private void ensureConfigured() {
@@ -407,6 +539,28 @@ public final class BrainCoordinator {
                 .orElse(false);
     }
 
+    private boolean maybeInjectGoalResult(AIPlayerEntity bot, BotConversation conversation) {
+        return io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE
+                .resultAfter(bot, conversation.lastGoalResultSequence)
+                .map(result -> {
+                    conversation.lastGoalResultSequence = result.sequence();
+                    conversation.history.add(ChatMessage.user(
+                            "Goal terminal result (authoritative): status=" + result.status()
+                                    + ", matched=" + result.evaluation().matched()
+                                    + "/" + result.evaluation().required()
+                                    + ", reason=" + result.reason()
+                                    + ", unmet=" + result.evaluation().unmet()
+                                    + ". Only COMPLETED may be described as complete; PARTIAL, FAILED, or CANCELLED must be reported truthfully."));
+                    BotLog.comm(bot, "goal_result_injected",
+                            "sequence", result.sequence(),
+                            "status", result.status(),
+                            "matched", result.evaluation().matched(),
+                            "required", result.evaluation().required());
+                    return true;
+                })
+                .orElse(false);
+    }
+
     private static String executableFailureHint(TaskManager.FailureRecord failure) {
         String reason = failure.reason() == null ? "" : failure.reason();
         if (reason.startsWith("no_exposed_ore:use_strip_mine")) {
@@ -460,6 +614,15 @@ public final class BrainCoordinator {
         return builder.toString();
     }
 
+    private static void logStaleDecision(DecisionLease lease, String callback) {
+        BotLog.commSystem("stale_decision_dropped",
+                "bot_uuid", lease.botId(),
+                "session_id", lease.sessionId(),
+                "epoch", lease.epoch(),
+                "request_sequence", lease.requestSequence(),
+                "callback", callback);
+    }
+
     private static String systemPrompt(String botName) {
         return """
                 You are a player in Minecraft named %s. You exist as a real player in the world and can interact with it using the tools provided.
@@ -469,7 +632,7 @@ public final class BrainCoordinator {
                 2. Coordinates are integers (block positions).
                 3. Prefer high-level deterministic tasks for survival work. For ores or raw ore materials, use mine_ore; it automatically prepares the required pickaxe before mining. For an item/tool goal such as iron_pickaxe or iron_ingot, use achieve_goal. Do not manually decompose these into gather/craft/mine steps unless the goal tool fails.
                 4. Low-level tools such as move_to, mine_block, select_hotbar, and place_block are for one-off manual actions only. Do not use them for gathering materials or placing a crafting table for recipes unless the human explicitly asks for manual control.
-                5. High-level tasks such as craft, smelt, eat, or assign_task run over multiple ticks. Start only one such task at a time, then use get_task_status or the Current state task field on later turns until it is COMPLETED or FAILED before assigning the next task. EXCEPTION: goal tools (achieve_goal, mine_ore, harvest_crop, provision_food, set_goal) support QUEUEING — if a goal is already running, a new goal call is queued and starts automatically when the current one finishes (the system announces each transition). So for a compound request like "先搞点吃的,然后挖些铁" call provision_food then mine_ore back-to-back in the same turn, then STOP. While a goal is running, ADDING work ("顺便/然后/再做X") = just call the goal tool (it queues); REPLACING ("别挖了/先停下,改做X") = call stop first, then the new goal tool; a pure question ("干得怎么样") = goal_status or say only — never call stop for questions or additions.
+                5. High-level tasks such as craft, smelt, eat, or assign_task run over multiple ticks. Start only one such task at a time, then use get_task_status or the Current state task field on later turns until it is COMPLETED or FAILED before assigning the next task. EXCEPTION: goal tools (achieve_goal, mine_ore, harvest_crop, provision_food, set_goal) support QUEUEING — if a goal is already running, a new goal call is queued and starts automatically when the current one finishes (the system announces each transition). So for a compound request like "先搞点吃的,然后挖些铁" call provision_food then mine_ore back-to-back in the same turn, then STOP. While a goal is running, ADDING work ("顺便/然后/再做X") = just call the goal tool (it queues); REPLACING ("别挖了/先停下,改做X") = call stop first, then the new goal tool; CANCELLING EVERYTHING including queued goals = call cancel_all; a pure question ("干得怎么样") = goal_status or say only — never call stop for questions or additions.
                 6. Always reply to humans in Simplified Chinese. Use the say tool to reply to humans. Keep replies short (one sentence).
                 7. For survival crafting, call plan_craft first when materials may be missing. Use missing[].source to choose assign_task mine, smelt, craft, or forage before retrying craft for the intended target. CraftTask expands recipe-table intermediates such as planks and sticks, so do not craft planks or sticks as standalone steps unless the human asks for those items.
                 8. For 3x3 recipes, do not manually select or place a crafting table. If a crafting table is nearby or in inventory, the craft task can use or place it.
@@ -483,15 +646,20 @@ public final class BrainCoordinator {
     }
 
     private static final class BotConversation {
+        private final DecisionSession decision;
         private final Deque<ChatMessage> history = new ArrayDeque<>();
         private int turnsInCurrentRequest;
         private int continuationTaskPolls;
         private boolean maxTurnsHintInjected;
-        private boolean busy;
         private int lastPromptTokens;
         private int lastCompletionTokens;
         private int lastCacheHitTokens;
+        private long lastGoalResultSequence;
         private String lastPerceptionDigest = "";
+
+        private BotConversation(UUID botId) {
+            decision = new DecisionSession(botId);
+        }
     }
 
     public record BrainStatus(boolean busy, int historySize, int promptTokens, int completionTokens, int cacheHitTokens) {

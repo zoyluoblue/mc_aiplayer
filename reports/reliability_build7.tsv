@@ -1,0 +1,4 @@
+feature	seed	run	result	reason	stage	summary
+real_build	105441651	1	FAIL	guard_low_hp_under_attack	other	0/1 PASS: {real_build=FAIL:guard_low_hp_under_attack}
+real_build	1061665215	1	FAIL	verify_timeout status=build Building small_hut at 249	timeout	0/1 PASS: {real_build=FAIL:verify_timeout status=build Building small_hut at 249,64,611 95/116 phase=BUILD note=auto_site=249,64,611}
+real_build	155361719	1	FAIL	guard_low_hp_under_attack	other	0/1 PASS: {real_build=FAIL:guard_low_hp_under_attack}

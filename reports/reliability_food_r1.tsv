@@ -1,0 +1,12 @@
+feature	seed	run	result	reason	stage	summary
+real_food	633819475	1	FAIL	no_raw_food	other	0/1 PASS: {real_food=FAIL:no_raw_food}
+real_food	586434987	1	PASS	PASS	pass	1/1 PASS: {real_food=PASS}
+real_food	105441651	1	PASS	PASS	pass	1/1 PASS: {real_food=PASS}
+real_food	206232996	1	PASS	PASS	pass	1/1 PASS: {real_food=PASS}
+real_food	632510390	1	FAIL	no_raw_food	other	0/1 PASS: {real_food=FAIL:no_raw_food}
+real_food	42414950	1	PASS	PASS	pass	1/1 PASS: {real_food=PASS}
+real_food	1061665215	1	PASS	PASS	pass	1/1 PASS: {real_food=PASS}
+real_food	715809951	1	PASS	PASS	pass	1/1 PASS: {real_food=PASS}
+real_food	456718736	1	PASS	PASS	pass	1/1 PASS: {real_food=PASS}
+real_food	155361719	1	PASS	PASS	pass	1/1 PASS: {real_food=PASS}
+ALLDONE

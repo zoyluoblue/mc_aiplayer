@@ -1,0 +1,12 @@
+feature	seed	run	result	reason	stage	summary
+real_diamond	3000	1	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	155361719	1	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	632510390	1	FAIL	no_resource_nearby	wood_gather	0/1 PASS: {real_diamond=FAIL:no_resource_nearby}
+real_diamond	111	1	FAIL	no_resource_nearby	wood_gather	0/1 PASS: {real_diamond=FAIL:no_resource_nearby}
+real_diamond	700	1	FAIL	verify_timeout status=mine_ore OreDig 0/3 ->23	timeout	0/1 PASS: {real_diamond=FAIL:verify_timeout status=mine_ore OreDig 0/3 ->23,50,-33}
+real_diamond	4040404	1	FAIL	verify_timeout status=mine_ore OreDig 0/1 ->141	timeout	0/1 PASS: {real_diamond=FAIL:verify_timeout status=mine_ore OreDig 0/1 ->141,51,123}
+real_diamond	12345	1	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	54321	1	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	99999	1	FAIL	assertion_failed status=light_area Lighting radius=8 placed=8/8 phase=PLACE	other	0/1 PASS: {real_diamond=FAIL:assertion_failed status=light_area Lighting radius=8 placed=8/8 phase=PLACE}
+real_diamond	246810	1	FAIL	no_resource_after_explore	other	0/1 PASS: {real_diamond=FAIL:no_resource_after_explore}
+ALLDONE

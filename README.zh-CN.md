@@ -5,9 +5,9 @@
 <h1 align="center">AIBot</h1>
 
 <p align="center">
-  <b>会自己玩的 Minecraft AI 智能体(AI Agent)。</b><br>
-  你对 <b>Bob</b> 说一句大白话——它自己挖矿、盖房、种田、战斗、活下来。<br>
-  <sub><i>一个真正的服务端 Fabric 模组——不是 Python 沙盒,也不是 Mineflayer 机器人账号。</i></sub>
+  <b>LLM 负责规划、确定性引擎负责执行的服务端 Minecraft AI 智能体。</b><br>
+  用中文或英文给 Bob 一个已支持的目标，Goal 引擎会规划步骤，Task 状态机会在游戏中执行。<br>
+  <sub><i>真正的 Fabric 服务端模组与服务端玩家，不是 Mineflayer 账号，也不是 Python 控制沙盒。</i></sub>
 </p>
 
 <p align="center">
@@ -16,7 +16,6 @@
   <img alt="Fabric Loader 0.18.4" src="https://img.shields.io/badge/Fabric-Loader%200.18.4-DBB69B?style=flat-square">
   <img alt="Java 21" src="https://img.shields.io/badge/Java-21-E76F00?style=flat-square">
   <img alt="LLM: DeepSeek" src="https://img.shields.io/badge/LLM-DeepSeek-5A67F2?style=flat-square">
-  <img alt="PRs welcome" src="https://img.shields.io/badge/PRs-welcome-75d9ff?style=flat-square">
 </p>
 
 <p align="center">
@@ -25,103 +24,67 @@
 
 ---
 
-> **LLM 负责规划,Task 负责执行,Bob 负责活下来。**
->
-> AIBot 会在服务端生成一个真实的玩家实体:感知世界、把你的目标倒推成完整计划、再一步步执行——挖矿、战斗、种田、自保,全程自主。
+> **LLM 选择意图，Goal 定义完成条件，确定性 Task 负责执行。**
 
-## 🤖 什么是 AIBot?
+## AIBot 是什么
 
-**AIBot 是一个开源的、会自主玩 Minecraft 的 AI 智能体(AI Agent)。** 它是一个**服务端** [Fabric](https://fabricmc.net/) 模组(**Minecraft 1.21.3**),由**大语言模型(LLM)**——默认 DeepSeek,也兼容任意 OpenAI 接口的模型——驱动一个*真实的游戏内玩家*自己把游戏玩下去。
+AIBot 是一个面向 Minecraft 1.21.3 的开源服务端 [Fabric](https://fabricmc.net/) 模组。它会生成真实的服务端玩家，接收自然语言指令，并把指令映射到挖矿、合成、熔炼、建造、种田、战斗、钓鱼、交易、存储和生存等确定性逻辑。
 
-你只要用**中文或英文**说一句目标——*"挖 3 颗钻石"*、*"盖个房子"*、*"去搞点吃的"*——AIBot 就会感知世界、倒推出依赖正确的步骤、再自主执行:**挖矿、合成、熔炼、建造、种田、养殖、战斗、钓鱼、交易、生存**,在任意随机生成的真实地形世界里完成。
+大模型不能随意生成每 tick 动作，也不能绕过执行层直接改世界。它从 **63 个已注册工具**中选择意图，Goal 引擎与 **34 个具体 Task 状态机**负责执行。目前主代码包含 **9 类带类型的 Goal**、**197 个 Java 类**，约 **32K 行主 Java 代码**。
 
-它不是写死的脚本,也不是客户端外挂:大脑分两半——**LLM 决定"做什么",确定性引擎可靠地负责"怎么做"**;在服务端生成一个合法的假玩家(沿用 Carpet 模组的传统),遵守正常游戏规则。
+这是一个仍在持续加固的工程项目，不代表所有目标在所有地形中都能稳定完成。长距离导航、深层挖矿、大批量囤货和完整结构验收，仍需要更多绑定干净 commit 的多种子证据。
 
-> **关键词:** Minecraft AI · 自主智能体 · LLM 智能体 · 会玩 Minecraft 的 AI · Fabric 模组 · 服务端机器人 · 自然语言游戏 AI · DeepSeek / GPT 式工具调用 Agent。
+## 运行模式
 
-## ✨ 为什么是 AIBot
+新安装默认使用 **`strict_survival`**。模式在启动时解析一次，结构化日志与游戏内控制面板都会显示当前 profile 和最终生效的特权能力。
 
-市面上的"游戏 AI"演示,要么让大模型胡乱操作、要么写死一套僵硬脚本。AIBot 两者都不是——它把"大脑"一分为二:
-
-- 🧠 **大模型负责理解意图。** 你说"挖 3 颗钻石",DeepSeek 理解它,并从 **62 个工具**里自主选择。
-- ⚙️ **确定性引擎负责可靠执行。** 倒推规划器把目标拆成依赖正确的完整计划,**36 个自包含任务状态机**稳稳执行,**五层安全网**保证 bot 不轻易送命。
-
-最终得到一个**既能听懂大白话、又真能把活干完**的智能体。
-
-## 🧭 AIBot 有何不同
-
-"用大模型玩 Minecraft"已有两条广为人知的路线——AIBot 走的是第三条。
-
-| | **技能学习型** *([Voyager](https://github.com/MineDojo/Voyager))* | **Mineflayer 机器人** *([Mindcraft](https://github.com/mindcraft-bots/mindcraft))* | **AIBot** |
-|---|---|---|---|
-| **运行形态** | Python + Mineflayer + 一个 MC 实例 | Node.js + Mineflayer | **即装即用的服务端 Fabric 模组** |
-| **玩家是** | 登录进服的 Mineflayer 客户端 | 登录进服的 Mineflayer 客户端 | **服务端生成的真实玩家**(Carpet 式假玩家) |
-| **大模型…** | 编写并自我调试 JavaScript | 可编写 / 运行 JavaScript | **只负责规划**——发出目标与工具调用,绝不进入执行回路 |
-| **执行方式** | 大模型生成的程序 | 大模型生成的程序 | **确定性任务状态机** |
-| **默认模型** | GPT-4 | 多家可选 | **DeepSeek** · 任意 OpenAI 兼容接口 |
-
-这是不同的技术取舍,无关高下。Voyager 开创了开放式的**技能自学习**,Mindcraft 探索**多智能体**社交玩法——这些 AIBot 刻意不追。AIBot 押的是相反的一注:**听懂一句大白话的目标,然后可靠地把它干完**——因为模型永不碰执行回路,而每个任务都自带看门狗与安全网。
-
-## 🎬 实际效果
-
-```
-/aibot brain say Bob 挖 3 颗钻石
-```
-
-AIBot 把目标倒推成完整计划,逐步执行:
-
-```
-砍橡木 → 工作台 → 木镐 → 挖石头 → 石镐
-→ 下到 Y16 → 挖铁 → 熔炼 → 铁镐 → 补装备
-→ 台阶下到 Y-59 → ⛏  挖到钻石  ✓
-```
-
-你从不需要拆步骤。某步失败会**自动重规划**;溺水或被围攻会**及时脱身保命**。
-
-## 📏 实测,不是营销
-
-多数"AI 玩 Minecraft"的项目,给你看的是一段精选高光。AIBot 自带一套**可靠性测试台**(`/aibot verify`):把每个目标丢进**大量随机生成的生存世界**里跑,报告真实的多种子成功率——能力是**测出来的,不是挑出来的**。
-
-- ✅ **今天就稳的** — 完整食物链(自给自足**实测从 2/10 提升到 8/10**,多种子)、铁装备与熔炼、白天盖房、以及一整套几何压力测试下的挖矿(口袋矿、墙体、悬垂、深脉、涌水竖井)。
-- 🚧 **对难点也诚实** — 任意随机地形上的深层挖钻、100 块级别的量产,还在爬坡。它们写在下面的**路线图**里——不会伪装成已完成。
-
-## 🧩 核心特性
-
-| | |
+| 模式 | 行为 |
 |---|---|
-| 🗣️ **自然语言驱动** | 中文 / 英文直接下命令,DeepSeek 大模型 + 62 工具理解并执行。 |
-| 🎯 **目标倒推规划** | 一句目标 → 依赖正确的多步计划,无需手动拆解。 |
-| 🧩 **LLM + 确定性混合** | 模型负责推理,引擎负责执行。既灵活又可靠。 |
-| 🎒 **9 类一句话目标** | 钻石、全套铁甲+剑、房子、基地(工作台/熔炉/箱子)、熟食、种田做面包、矿石、囤货——各一句话搞定。 |
-| 🍞 **五条食物链** | 打猎→烤肉、种小麦→面包(会等作物长熟)、采浆果、无限水源灌溉、蛋糕、村庄收菜——按周围环境自动择源。 |
-| 🛡️ **统一生存层** | 溺水、岩浆、窒息、卡死、威胁、困死——每 tick 自检自救;下挖竖井会封堵侧向/顶部涌水防淹。 |
-| 🧍 **拟人化行为** | 台阶式斜向下挖(绝不直挖脚下)、不瞬移、不兔子跳。 |
-| ⛏️ **完整生存闭环** | 挖矿、熔炼、合成、战斗、狩猎、种田、养殖、建造、钓鱼、交易、睡觉、备装。 |
-| 🔭 **探矿探树** | palette 级大范围扫描定位资源,自己寻路走过去。 |
-| 🌍 **真实地形验证** | 多种子可靠性测试框架(`/aibot verify`)在随机生成的世界上验证目标——不只是平整测试场。 |
-| 🖥️ **客户端控制面板** | `Alt + 0` 打开 Bob 面板:生命 / 饥饿 / 任务 / token / 背包 / 聊天。 |
+| `strict_survival` | 禁止隐藏方块扫描、紧急传送、强制拾取和手动传送。资源与实体查询先经过近距离可见性过滤；死亡按正常生命周期回到世界出生点；不会强制跳夜或从远处修改世界。 |
+| `operator` | 兼容模式。四项特权能力仍由 `operatorCapabilities` 独立控制；即使处于 operator 模式，显式关闭的能力也会被拒绝。 |
 
-## 🏗️ 架构
+旧版 `aibot.json` 如果完全没有顶层 `profile`，会按一次性兼容策略载入为 `operator`，并输出迁移警告。新安装缺省为 strict。配置文件或 `AIBOT_PROFILE` 中的非法值都会 fail closed 到 `strict_survival`。
 
-> **一条原则:LLM 做高层规划,确定性 Task 做执行。**
+完整规则见[运行模式说明](docs/OPERATING_PROFILES.md)。
+
+## 架构
 
 ```mermaid
 flowchart TB
-    P["🎮 玩家 — 自然语言 · /aibot · Bob 面板"] --> B
-    subgraph COG["认知与决策"]
-      B["🧠 大脑 · DeepSeek LLM<br/>62 工具"] --> G["🎯 GoalPlanner<br/>倒推规划"]
-      G --> E["⚙️ GoalExecutor<br/>步骤状态机"]
-    end
-    E --> T["🔧 Task 状态机 ×36<br/>挖矿 · 熔炼 · 合成 · 战斗 · 种田 · 建造 …"]
-    T --> A["🛠️ Action 原语 + A* 寻路"]
-    A --> W["🌍 Minecraft 世界 · Fabric 1.21.3"]
-    W -->|感知| B
-    S["🛡️ 安全网 · 每 tick<br/>导航 → 卡死 → 危险 → 空闲"] -. 守护 .-> T
+    U["玩家：聊天、命令或 Bob 面板"] --> B["Brain：OpenAI-compatible 工具调用"]
+    B --> G["Typed Goal + GoalPlanner"]
+    G --> E["GoalExecutor + 后置条件"]
+    E --> T["34 个确定性 Task 状态机"]
+    T --> A["动作原语 + A* 导航"]
+    A --> W["Minecraft 服务端世界"]
+    W --> P["可见世界感知"]
+    P --> B
+    S["安全、暂停恢复、权限、生命周期"] -. 守护 .-> E
+    S -. 守护 .-> T
+    R["版本化运行时快照"] -. 恢复 .-> E
 ```
 
-<p align="center"><sub><b>164</b> 个类 · <b>30K</b> 行 · <b>62</b> 工具 · <b>36</b> 任务状态机 · <b>9</b> 类目标 · <b>5</b> 层安全网</sub></p>
+9 类 Goal 覆盖物品获取、镐等级、矿石、作物、护甲、工作站、囤货、食物和蓝图建造。Goal 是否完成由带类型的后置条件判断，Task 结束不会自动等同于任务成功。
 
-## 🚀 快速开始
+运行时支持 cancel/replace 与嵌套 pause/resume。Bot、Mission、checkpoint 和共享 Job 状态通过版本化原子快照写入；进程重启后会重新开放旧进程留下的过期 Job lease，而不是继续信任失效的 claimant。
+
+## 当前验证状态
+
+项目明确区分源码级测试、世界内测试、诊断证据和发布证据：
+
+| 层级 | 当前规模或结果 | 含义 |
+|---|---|---|
+| JUnit | 19 个测试类、68 个测试 | 覆盖纯策略、codec、Goal predicate/result、权限和持久化边界。 |
+| Fabric GameTest | 3 个测试 | 在隔离 source set 中运行的确定性世界内 smoke test。 |
+| 运行时/profile harness | strict 与 operator 本地均为 `7/7` | 覆盖 capability policy 与 cancel/replace/pause-resume。当前留存的本地 run 来自 dirty worktree，因此被正确标为 `UNVERIFIED`。 |
+| 重启探针 | 两个 JVM，本地 `PASS` | 第一进程写入非默认 checkpoint、队列、pause 状态和已认领 Job；第二进程验证精确恢复、stale lease 重开、resume 及最终 `COMPLETED 4/4` 后置条件。 |
+| 真实地形能力报告 | 历史结果不一 | 只有显式 pin 的干净不可变 evidence bundle 才能作为发布证据；旧报告不能证明当前 HEAD。 |
+
+生产 Mod 中**不包含** `/aibot test` 或 `/aibot verify`。这两个命令只存在于 `src/gametest`，并通过 `runHarnessServer` 提供，避免测试控制面泄漏进生产 jar。
+
+更多信息见[测试与证据](docs/TESTING_AND_EVIDENCE.md)和生成的[能力矩阵](docs/CAPABILITY_MATRIX.md)。
+
+## 快速开始
 
 ### 环境要求
 
@@ -139,125 +102,127 @@ flowchart TB
 git clone https://github.com/zoyluoblue/mc_aiplayer.git
 cd mc_aiplayer
 
-./gradlew build        # 构建 Mod
-./gradlew runServer    # 开发服务端
-./gradlew runClient    # 开发客户端
+./gradlew build
+./gradlew runServer
+./gradlew runClient
 ```
 
-### 配置大模型
+### 配置模型与运行模式
 
-推荐通过环境变量提供 DeepSeek API Key:
+推荐通过环境变量提供默认 DeepSeek API Key：
 
 ```bash
 export DEEPSEEK_API_KEY="sk-your-key"
 ```
 
-首次运行时,Mod 会在 Fabric 配置目录写出 `aibot.json`,你也可以在其中设置 key、接口地址与模型:
+首次运行时，AIBot 会在 Fabric 配置目录写出 `aibot.json`。最小化的显式 strict 配置如下：
 
 ```json
 {
-  "deepseek": { "baseUrl": "https://api.deepseek.com", "model": "deepseek-chat" }
+  "profile": "strict_survival",
+  "operatorCapabilities": {
+    "hiddenBlockScan": false,
+    "emergencyTeleport": false,
+    "forcedPickup": false,
+    "manualTeleport": false
+  },
+  "deepseek": {
+    "baseUrl": "https://api.deepseek.com",
+    "model": "deepseek-chat"
+  }
 }
 ```
 
-> 任何 OpenAI 兼容接口都可用——把 `baseUrl` 指向你的服务商即可。
+修改 `baseUrl` 与 `model` 即可连接其他 OpenAI-compatible 对话与工具调用接口。也可以用 `AIBOT_PROFILE=strict_survival` 或 `AIBOT_PROFILE=operator` 为单个进程覆盖配置文件。
 
-## 🎮 常用命令
+## 常用命令
 
 ```mcfunction
-/aibot spawn Bob                              # 生成一个 AI 玩家
-/aibot list                                   # 查看当前 bot
-/aibot brain say Bob 挖 3 颗钻石               # 自然语言目标
+/aibot spawn Bob
+/aibot list
+/aibot brain say Bob 挖 3 颗钻石
 /aibot task assign Bob mine minecraft:stone 16
-/aibot task status Bob                         # 查看 / 中止任务
+/aibot task status Bob
 /aibot brain status Bob
 ```
 
-在游戏中按 **`Alt + 0`** 打开 **Bob 控制面板**——查看生命、饥饿、任务、脑区状态、token 用量与背包,并直接发送自然语言消息。
+在游戏中按 **`Alt + 0`** 打开 Bob 控制面板。面板会展示生命、饥饿、当前任务、模型用量、背包、运行模式和最终生效的特权能力；只有 `MANUAL_TELEPORT` 生效时，手动传送控件才可用。
 
-## 🧠 工作原理
+命令、面板/网络动作、聊天路由、工具和共享 Job 都经过 owner/operator 权限检查。请只在服主已批准当前 profile 与 capabilities 的服务器上使用。
 
-| 层 | 包 | 职责 |
-|---|---|---|
-| **大脑** | `brain` | DeepSeek 工具调用循环;把意图翻译成目标与动作 |
-| **目标引擎** | `goal` | `Goal` → `GoalPlanner`(倒推)→ `GoalExecutor`(状态机) |
-| **任务** | `task` | 36 个自包含状态机,各自带看门狗 |
-| **动作 / 寻路** | `action` · `pathfinding` | `BlockMiner`、`DigNav`、`ActionPack`;带可站性判定的 A* |
-| **领域知识** | `craft` · `mining` | 配方、矿链 / 熔炼链、工具等级、矿物与树木探测器 |
-| **安全网** | `task` · `coordination` | `BotTickCoordinator`:导航 → 卡死 → 危险 → 目标 → 空闲 |
-| **实体** | `entity` | `AIPlayerEntity` —— 真实的服务端假玩家 |
+## 测试与证据
 
-## 📦 项目结构
+```bash
+./gradlew test
+./gradlew runGameTest
+bash scripts/persistence_restart_test.sh
+```
+
+需要 `/aibot test` 或 `/aibot verify` 时，启动仅用于测试的交互服务端：
+
+```bash
+./gradlew runHarnessServer
+```
+
+生成一次隔离的运行时证据：
+
+```bash
+bash scripts/evidence_run.sh \
+  --scenario capability_profile+runtime_control_suite \
+  --profile strict_survival
+```
+
+输出位于不可变目录 `artifacts/evidence/<run-id>/`。dirty worktree、fixture log、运行期间 revision 变化、actual seed 无法核验或其他 provenance 缺口，都会让 bundle 成为 `UNVERIFIED`，即使场景本身通过。
+
+```bash
+bash scripts/evidence_validate.sh artifacts/evidence/<run-id>
+bash scripts/evidence_validate.sh --require-verified artifacts/evidence/<run-id>
+```
+
+`reports/baselines/index.tsv` 是新式 `VERIFIED` 能力基线的唯一选择器。`scripts/pin_baseline.sh` 必须显式指定 capability ID 和 run 目录，不会搜索“最新”或“最好”的报告。旧的 `reports/capability_baseline_manifest.tsv` 继续作为能力注册表与 legacy fallback，其中的旧报告始终保持 `UNVERIFIED`。
+
+## 项目结构
 
 ```text
 src/main/java/io/github/zoyluo/aibot
-├── action/        # 低层动作:移动、挖掘、交互、背包、建造
-├── brain/         # LLM 请求、工具注册、决策协调
-├── command/       # /aibot 命令
-├── coordination/  # 多 bot 任务板与空闲协调
-├── craft/         # 配方与合成辅助
-├── entity/        # AI 玩家实体
-├── goal/          # 声明式目标、规划器、执行器
-├── mining/        # 矿物扫描与大范围探测器
-├── pathfinding/   # A* 寻路与危险检测
-├── task/          # 确定性任务状态机 + 安全网
-└── …              # log · memory · network · observe · persist · mixin
+├── action/        # 移动、挖掘、交互、背包、建造
+├── brain/         # LLM 请求、工具、带权限的调度
+├── command/       # 生产环境 /aibot 命令
+├── coordination/  # 共享 Job 与空闲协调
+├── goal/          # typed Goal、planner、executor、后置条件
+├── mode/          # strict/operator capability policy
+├── persist/       # 版本化运行时快照与原子存储
+├── task/          # 确定性 Task 状态机与安全层
+└── …              # entity · mining · network · observe · pathfinding
+
+src/gametest/      # GameTest 与测试专用 /aibot test、/aibot verify
 ```
 
-## 🛠️ 技术栈
+## 已知边界
 
-**Java 21** · **Fabric**(Loader 0.18.4, API 0.114.1+1.21.3) · **Yarn** 1.21.3+build.2 · **Gradle** · **DeepSeek**(OpenAI 兼容接口)。
+- 能力矩阵里的真实地形成功率目前属于历史 legacy 诊断，只有被新式 `VERIFIED` bundle 替换后才能作为发布证据。
+- strict 模式刻意减少特权兜底：当紧急能力被拒绝时，危险路线可能以明确失败结束，而不是传送脱困。
+- 长距离导航、从零挖钻、百量级挖矿和完整结构验收尚未达到 release-certified。
+- LLM story 测试需要手动触发并产生 API 费用；普通 CI 和 nightly deterministic job 不会获得 `DEEPSEEK_API_KEY`。
 
-## 🗺️ 路线图
+后续规划见[路线图](ROADMAP.md)。
 
-- [x] 从零目标体系 —— 食物(五条途径)、全套铁甲+剑、房子、基地、囤货
-- [x] 真实地形可靠性框架 —— `/aibot verify`,多种子成功率测量
-- [x] 统一生存层 —— 溺水/岩浆/火/威胁 + 尸体找回;下挖竖井封堵涌水
-- [ ] 自然语言指挥加固 —— 意图→工具接线回归(`tool_dispatch`)、长距导航
-- [ ] 随机地形稳定深挖钻石
-- [ ] 水浇岩浆造黑曜石(≥15)
-- [ ] 夜怪环境下建房真完工(工棚优先 / 白天建)
-- [ ] 多 bot 协作 · 长期记忆恢复
+## 参与贡献
 
-## ❓ 常见问题
-
-**AI 能自己玩 Minecraft 吗?**
-能。AIBot 是一个自主 AI 智能体,你给一句自然语言目标,它就在真实地形世界里自己挖矿、盖房、种田、战斗、活下来,无需人工干预。
-
-**大语言模型(LLM)怎么控制 Minecraft 机器人?**
-LLM 只决定*意图*——从 62 个工具的 API 里发出 `mine_ore`、`build_house` 这类工具调用;确定性引擎再把目标倒推成依赖正确的计划,用 36 个自包含任务状态机执行。既灵活听得懂话,又可靠干得完活。
-
-**AIBot 是外挂/作弊/客户端模组吗?**
-不是。AIBot 是**服务端** Fabric 模组,生成一个合法的假玩家(沿用 Carpet 模组传统)、遵守正常游戏规则,没有客户端注入或透视。
-
-**支持哪些大模型?**
-默认 DeepSeek,且兼容**任意 OpenAI 接口**的模型(GPT 式对话 + 工具调用)——在 `aibot.json` 里把 `baseUrl` 指向你的服务商即可。
-
-**需要什么 Minecraft 版本和加载器?**
-Minecraft **1.21.3** + **Fabric**(Loader 0.18.4+,Fabric API 0.114.1+1.21.3),Java 21。
-
-**能用自然语言指挥吗?**
-能——中文或英文,通过聊天、`/aibot brain say` 命令、或游戏内控制面板(`Alt + 0`)。
-
-**是开源的吗?**
-是,采用 MIT 协议。
-
-## 🤝 参与贡献
-
-欢迎提 Issue 和 PR!改动涉及 Minecraft / Fabric API 时请注意版本兼容——本项目锁定 **Yarn 1.21.3+build.2**。修改物品组件、进食、燃料注册、挖掘速度、熔炉库存或客户端网络代码前,先确认当前版本的方法签名。
+提交 Pull Request 前请运行：
 
 ```bash
-./gradlew clean build   # 提 PR 前请确保通过
+./gradlew clean build
+./gradlew runGameTest
+CI_STATIC_CHECK_ARTIFACTS=1 bash scripts/ci_static_check.sh
 ```
 
-## 📜 开源协议
+新增测试控制面时，请继续放在 `src/gametest`。更新能力结论时，请附带显式 evidence bundle；不要把 legacy TSV 或 dirty-worktree PASS 提升成发布证明。
 
-基于 [MIT 协议](LICENSE) 发布。© 2026 zoyluo。
+## 开源协议
 
-## 🙏 致谢
+基于 [MIT License](LICENSE) 发布。© 2026 zoyluo。
 
-基于 [Fabric](https://fabricmc.net/) 构建。自然语言推理由 [DeepSeek](https://www.deepseek.com/) 驱动。灵感来自 Carpet mod 的假玩家传统。
+## 致谢
 
----
-
-<p align="center"><sub><b>LLM plans · Tasks execute · Bob survives</b></sub></p>
+项目基于 [Fabric](https://fabricmc.net/) 构建，自然语言推理可使用 [DeepSeek](https://www.deepseek.com/) 或其他 OpenAI-compatible provider。服务端假玩家形态沿用了 Carpet mod 的传统。

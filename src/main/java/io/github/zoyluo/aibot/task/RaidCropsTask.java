@@ -86,7 +86,7 @@ public final class RaidCropsTask extends AbstractTask {
 
     private void scan(AIPlayerEntity bot) {
         ServerWorld world = bot.getServerWorld();
-        BlockPos found = OreProspector.nearest(world, bot.getBlockPos(), SCAN_RADIUS, RaidCropsTask::isMatureCrop);
+        BlockPos found = OreProspector.nearest(bot, SCAN_RADIUS, RaidCropsTask::isMatureCrop);
         if (found == null) {
             finishOrFail("no_mature_crops");
             return;

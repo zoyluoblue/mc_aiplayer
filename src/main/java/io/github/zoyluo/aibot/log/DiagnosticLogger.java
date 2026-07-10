@@ -3,6 +3,9 @@ package io.github.zoyluo.aibot.log;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.goal.GoalExecutor;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
+import io.github.zoyluo.aibot.mode.CapabilityRuntime;
+import io.github.zoyluo.aibot.mode.ObservableWorldQuery;
+import io.github.zoyluo.aibot.mode.PrivilegedCapability;
 import io.github.zoyluo.aibot.task.TaskManager;
 import io.github.zoyluo.aibot.task.TaskStatus;
 import net.minecraft.entity.LivingEntity;
@@ -39,6 +42,14 @@ public final class DiagnosticLogger {
 
     public void setEnabled(boolean enabled) {
         this.enabled = enabled;
+    }
+
+    public void clear(AIPlayerEntity bot) {
+        last.remove(bot.getUuid());
+    }
+
+    public void clearAll() {
+        last.clear();
     }
 
     public void tick(MinecraftServer server) {
@@ -167,9 +178,11 @@ public final class DiagnosticLogger {
     // 仅在富快照(每 SNAPSHOT_INTERVAL)时扫一次,不进每 tick 的 Sample,避免每刻扫实体拖 TPS。
     private static String scanNearby(AIPlayerEntity bot) {
         try {
+            CapabilityRuntime.decide(bot, PrivilegedCapability.HIDDEN_BLOCK_SCAN, "diagnostic_nearby");
             Box box = bot.getBoundingBox().expand(24.0D);
             List<LivingEntity> ents = bot.getServerWorld().getEntitiesByClass(
-                    LivingEntity.class, box, e -> e.isAlive() && e != bot);
+                    LivingEntity.class, box,
+                    e -> e.isAlive() && e != bot && ObservableWorldQuery.canObserveEntity(bot, e));
             int animals = 0;
             int hostiles = 0;
             LivingEntity nearAnimal = null;

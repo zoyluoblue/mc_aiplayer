@@ -1,0 +1,14 @@
+feature	seed	run	result	reason	stage	summary
+real_armor	3000	1	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	3000	2	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	155361719	1	FAIL	assertion_failed status=combat Attacking minecraft:skeleton 0/1 phase=APPROACH	other	0/1 PASS: {real_armor=FAIL:assertion_failed status=combat Attacking minecraft:skeleton 0/1 phase=APPROACH}
+real_armor	155361719	2	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	632510390	1	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	632510390	2	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	111	1	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	111	2	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	700	1	FAIL	assertion_failed status=hunt Hunting meat 4/3 phase=PICKUP	other	0/1 PASS: {real_armor=FAIL:assertion_failed status=hunt Hunting meat 4/3 phase=PICKUP}
+real_armor	700	2	PASS	PASS	pass	1/1 PASS: {real_armor=PASS}
+real_armor	4040404	1	FAIL	assertion_failed status=shelter Emergency shelter placed=9 remaining=0	other	0/1 PASS: {real_armor=FAIL:assertion_failed status=shelter Emergency shelter placed=9 remaining=0}
+real_armor	4040404	2	FAIL	verify_timeout status=mine_ore OreDig 0/13 ->144	timeout	0/1 PASS: {real_armor=FAIL:verify_timeout status=mine_ore OreDig 0/13 ->144,40,106}
+ALLDONE

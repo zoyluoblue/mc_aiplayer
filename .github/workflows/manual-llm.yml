@@ -1,0 +1,112 @@
+name: Manual billed LLM story
+
+on:
+  workflow_dispatch:
+    inputs:
+      story:
+        description: Billed end-to-end story to execute
+        required: true
+        default: llm_move
+        type: choice
+        options: [llm_move, llm_food, llm_iron, llm_diamond]
+      profile:
+        description: Runtime operating profile
+        required: true
+        default: strict_survival
+        type: choice
+        options: [strict_survival, operator]
+      seed:
+        description: Minecraft world seed
+        required: true
+        default: '3000'
+        type: string
+      maxwait_seconds:
+        description: Maximum scenario wait in seconds
+        required: true
+        default: '3600'
+        type: string
+      confirm_billing:
+        description: I understand this run calls a paid external LLM API
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: manual-llm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  llm-story:
+    name: ${{ inputs.story }} / ${{ inputs.profile }} @ seed ${{ inputs.seed }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out full repository history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Validate explicit billed-run inputs
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          TEST_SEED: ${{ inputs.seed }}
+          MAXWAIT_SECONDS: ${{ inputs.maxwait_seconds }}
+          CONFIRM_BILLING: ${{ inputs.confirm_billing }}
+        run: |
+          set -euo pipefail
+          [[ "$CONFIRM_BILLING" == true ]] || { echo 'confirm_billing must be checked' >&2; exit 2; }
+          [[ -n "$DEEPSEEK_API_KEY" ]] || { echo 'Missing DEEPSEEK_API_KEY GitHub secret' >&2; exit 2; }
+          [[ "$TEST_SEED" =~ ^-?[0-9]+$ ]] || { echo 'seed must be an integer' >&2; exit 2; }
+          [[ "$MAXWAIT_SECONDS" =~ ^[0-9]+$ ]] || { echo 'maxwait_seconds must be a positive integer' >&2; exit 2; }
+          (( MAXWAIT_SECONDS >= 60 && MAXWAIT_SECONDS <= 4800 )) \
+            || { echo 'maxwait_seconds must be between 60 and 4800' >&2; exit 2; }
+
+      - name: Build before billed execution
+        run: ./gradlew --no-daemon --console=plain --stacktrace clean test runGameTest build
+
+      - name: Run selected billed story in isolated evidence harness
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          STORY: ${{ inputs.story }}
+          PROFILE: ${{ inputs.profile }}
+          TEST_SEED: ${{ inputs.seed }}
+          MAXWAIT_SECONDS: ${{ inputs.maxwait_seconds }}
+        run: |
+          set -euo pipefail
+          args=(
+            --scenario "$STORY"
+            --seed "$TEST_SEED"
+            --timeout "$MAXWAIT_SECONDS"
+            --startup-timeout 480
+            --profile "$PROFILE"
+            --mode llm_story
+            --with-llm
+          )
+          [[ "$PROFILE" != operator ]] || args+=(--operator-capabilities all)
+          bash scripts/evidence_run.sh "${args[@]}"
+
+      - name: Upload billed-run diagnostics and evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: manual-llm-${{ inputs.story }}-${{ inputs.profile }}-${{ inputs.seed }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            artifacts/evidence/**
+            build/reports/tests/**
+            build/test-results/**
+            build/run/gameTest/logs/**

@@ -11,6 +11,7 @@ public enum LogCategory {
     DANGER,
     PROFILE,
     REPLAY,
+    SECURITY,
     ERROR,
     CONFIG
 }

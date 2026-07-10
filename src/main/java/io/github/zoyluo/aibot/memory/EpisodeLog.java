@@ -46,12 +46,11 @@ public final class EpisodeLog {
 
     /** 测试隔离:清掉该 bot 的情景流(套件场景互染:残留 RESOURCE_FOUND 让蒸馏去重拦下后续场景的预热点)。 */
     public void clearFor(UUID botId) {
-        Deque<EpisodeEvent> deque = events.get(botId);
-        if (deque != null) {
-            synchronized (deque) {
-                deque.clear();
-            }
-        }
+        events.remove(botId);
+    }
+
+    public void clearAll() {
+        events.clear();
     }
 
     /** 最近 n 条(新→旧)。 */

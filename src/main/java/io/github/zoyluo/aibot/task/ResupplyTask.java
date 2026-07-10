@@ -142,6 +142,7 @@ public final class ResupplyTask extends AbstractTask {
         containers.clear();
         BlockPos.stream(basePos.add(-BASE_RADIUS, -3, -BASE_RADIUS), basePos.add(BASE_RADIUS, 4, BASE_RADIUS))
                 .map(BlockPos::toImmutable)
+                .filter(pos -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, pos))
                 .filter(pos -> ContainerAction.resolve(bot, pos).isPresent())
                 .forEach(containers::add);
         containers.sort(Comparator
@@ -228,6 +229,12 @@ public final class ResupplyTask extends AbstractTask {
     }
 
     private void withdraw(AIPlayerEntity bot) {
+        if (containerPos == null
+                || bot.getEyePos().squaredDistanceTo(containerPos.toCenterPos()) > REACH_SQUARED
+                || !io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, containerPos)) {
+            phase = Phase.FIND_CONTAINER;
+            return;
+        }
         Inventory container = ContainerAction.resolve(bot, containerPos).orElse(null);
         if (container == null) {
             selectNextContainer(bot);

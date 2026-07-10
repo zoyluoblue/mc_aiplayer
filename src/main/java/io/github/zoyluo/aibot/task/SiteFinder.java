@@ -2,6 +2,9 @@ package io.github.zoyluo.aibot.task;
 
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
+import io.github.zoyluo.aibot.mode.CapabilityRuntime;
+import io.github.zoyluo.aibot.mode.ObservableWorldQuery;
+import io.github.zoyluo.aibot.mode.PrivilegedCapability;
 import io.github.zoyluo.aibot.pathfinding.Standability;
 import net.minecraft.fluid.FluidState;
 import net.minecraft.server.world.ServerWorld;
@@ -25,6 +28,14 @@ public final class SiteFinder {
     //(高差≤5、不踩水/虚空、离出生面±8内),交 FLATTEN 阶段挖高填低整平。
     // lenient=false 保持严格(平整画布/无整地时不乱选坡地,零回归)。
     public static Optional<BlockPos> findSite(AIPlayerEntity bot, int footprintX, int footprintZ, int searchRadius, boolean lenient) {
+        if (footprintX <= 0 || footprintZ <= 0 || searchRadius < 0) {
+            return Optional.empty();
+        }
+        boolean hiddenScanAllowed = CapabilityRuntime.decide(
+                bot, PrivilegedCapability.HIDDEN_BLOCK_SCAN, "site_finder").allowed();
+        if (!hiddenScanAllowed) {
+            return findObservableSite(bot, footprintX, footprintZ, searchRadius, lenient);
+        }
         ServerWorld world = bot.getServerWorld();
         BlockPos origin = bot.getBlockPos();
         BlockPos best = null;
@@ -33,14 +44,17 @@ public final class SiteFinder {
         int maxRange = lenient ? 5 : 2;
         double scoreCap = lenient ? Double.MAX_VALUE : MAX_SCORE;
         int originSurface = standableY(world, origin.getX(), origin.getZ(), origin.getY()).orElse(origin.getY());
-        for (int x = origin.getX() - searchRadius; x <= origin.getX() + searchRadius - footprintX; x++) {
-            for (int z = origin.getZ() - searchRadius; z <= origin.getZ() + searchRadius - footprintZ; z++) {
+        for (int x = origin.getX() - searchRadius; x <= origin.getX() + searchRadius - footprintX + 1; x++) {
+            for (int z = origin.getZ() - searchRadius; z <= origin.getZ() + searchRadius - footprintZ + 1; z++) {
                 OptionalInt maybeY = standableY(world, x, z, originSurface);
                 if (maybeY.isEmpty()) {
                     continue;
                 }
                 int y = maybeY.getAsInt();
                 BlockPos anchor = new BlockPos(x, y, z);
+                if (!isObservableFootprint(bot, anchor, footprintX, footprintZ)) {
+                    continue;
+                }
                 if (Math.abs(y - originSurface) > ySpread) {
                     continue;
                 }
@@ -64,13 +78,17 @@ public final class SiteFinder {
             // okFlat=本可接受(平且干净,若>0 说明 best=null 另有缘故)/obstruct=feet或头非空气(草花雪等可清障碍,
             // flatten CLEAR 本就清→可放宽)/fluid=ground或feet带水(水域,更难)/groundAir=悬空。据此定修向。
             int okFlat = 0, obstruct = 0, fluid = 0, groundAir = 0, tooSteep = 0;
-            for (int x = origin.getX() - searchRadius; x <= origin.getX() + searchRadius - footprintX; x++) {
-                for (int z = origin.getZ() - searchRadius; z <= origin.getZ() + searchRadius - footprintZ; z++) {
+            for (int x = origin.getX() - searchRadius; x <= origin.getX() + searchRadius - footprintX + 1; x++) {
+                for (int z = origin.getZ() - searchRadius; z <= origin.getZ() + searchRadius - footprintZ + 1; z++) {
                     OptionalInt my = standableY(world, x, z, originSurface);
                     if (my.isEmpty() || Math.abs(my.getAsInt() - originSurface) > ySpread) {
                         continue;
                     }
-                    switch (footprintReject(world, new BlockPos(x, my.getAsInt(), z), footprintX, footprintZ, maxRange)) {
+                    BlockPos anchor = new BlockPos(x, my.getAsInt(), z);
+                    if (!isObservableFootprint(bot, anchor, footprintX, footprintZ)) {
+                        continue;
+                    }
+                    switch (footprintReject(world, anchor, footprintX, footprintZ, maxRange)) {
                         case 0 -> okFlat++;
                         case 1 -> obstruct++;
                         case 2 -> fluid++;
@@ -86,6 +104,168 @@ public final class SiteFinder {
                     "maxRange", maxRange, "ySpread", ySpread, "searchRadius", searchRadius);
         }
         return Optional.ofNullable(best);
+    }
+
+    /** Strict-survival site selection: visibility is checked before every terrain-state read. */
+    private static Optional<BlockPos> findObservableSite(AIPlayerEntity bot,
+                                                         int footprintX,
+                                                         int footprintZ,
+                                                         int searchRadius,
+                                                         boolean lenient) {
+        BlockPos origin = bot.getBlockPos();
+        int ySpread = lenient ? 8 : 4;
+        int maxRange = lenient ? 5 : 2;
+        double scoreCap = lenient ? Double.MAX_VALUE : MAX_SCORE;
+        BlockPos best = null;
+        double bestScore = Double.MAX_VALUE;
+        int observableSurfaces = 0;
+        int acceptableFootprints = 0;
+        int usableApproaches = 0;
+        for (int x = origin.getX() - searchRadius; x <= origin.getX() + searchRadius - footprintX + 1; x++) {
+            for (int z = origin.getZ() - searchRadius; z <= origin.getZ() + searchRadius - footprintZ + 1; z++) {
+                OptionalInt maybeY = observableStandableY(bot, x, z, origin.getY(), ySpread);
+                if (maybeY.isEmpty()) {
+                    continue;
+                }
+                observableSurfaces++;
+                BlockPos anchor = new BlockPos(x, maybeY.getAsInt(), z);
+                double score = observableFlatnessScore(bot, anchor, footprintX, footprintZ, maxRange);
+                if (score > scoreCap) {
+                    continue;
+                }
+                acceptableFootprints++;
+                if (!hasObservableUsableStand(bot, anchor, footprintX, footprintZ)) {
+                    continue;
+                }
+                usableApproaches++;
+                double total = score + anchor.getSquaredDistance(origin) / 256.0D;
+                if (total < bestScore) {
+                    bestScore = total;
+                    best = anchor.toImmutable();
+                }
+            }
+        }
+        if (best == null) {
+            BotLog.action(bot, "no_flat_site_diag",
+                    "mode", "observable_only",
+                    "observableSurfaces", observableSurfaces,
+                    "acceptableFootprints", acceptableFootprints,
+                    "usableApproaches", usableApproaches,
+                    "footprint", footprintX + "x" + footprintZ,
+                    "maxRange", maxRange,
+                    "ySpread", ySpread,
+                    "searchRadius", searchRadius);
+        }
+        return Optional.ofNullable(best);
+    }
+
+    private static double observableFlatnessScore(AIPlayerEntity bot,
+                                                  BlockPos anchor,
+                                                  int footprintX,
+                                                  int footprintZ,
+                                                  int maxRange) {
+        int[][] surfaces = new int[footprintX][footprintZ];
+        int minY = Integer.MAX_VALUE;
+        int maxY = Integer.MIN_VALUE;
+        double sum = 0.0D;
+        for (int dx = 0; dx < footprintX; dx++) {
+            for (int dz = 0; dz < footprintZ; dz++) {
+                OptionalInt surface = observableStandableY(
+                        bot, anchor.getX() + dx, anchor.getZ() + dz, anchor.getY(), maxRange);
+                if (surface.isEmpty()) {
+                    return Double.MAX_VALUE;
+                }
+                int y = surface.getAsInt();
+                surfaces[dx][dz] = y;
+                minY = Math.min(minY, y);
+                maxY = Math.max(maxY, y);
+                sum += y;
+            }
+        }
+        if (maxY - minY > maxRange) {
+            return Double.MAX_VALUE;
+        }
+        int count = footprintX * footprintZ;
+        double mean = sum / count;
+        double variance = 0.0D;
+        for (int[] row : surfaces) {
+            for (int y : row) {
+                double delta = y - mean;
+                variance += delta * delta;
+            }
+        }
+        return variance / count + (maxY - minY);
+    }
+
+    private static boolean hasObservableUsableStand(AIPlayerEntity bot,
+                                                    BlockPos anchor,
+                                                    int footprintX,
+                                                    int footprintZ) {
+        for (int dx = -1; dx <= footprintX; dx++) {
+            if (observableStandableY(bot, anchor.getX() + dx, anchor.getZ() - 1, anchor.getY(), 4).isPresent()
+                    || observableStandableY(bot, anchor.getX() + dx,
+                    anchor.getZ() + footprintZ, anchor.getY(), 4).isPresent()) {
+                return true;
+            }
+        }
+        for (int dz = 0; dz < footprintZ; dz++) {
+            if (observableStandableY(bot, anchor.getX() - 1, anchor.getZ() + dz, anchor.getY(), 4).isPresent()
+                    || observableStandableY(bot, anchor.getX() + footprintX,
+                    anchor.getZ() + dz, anchor.getY(), 4).isPresent()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static OptionalInt observableStandableY(AIPlayerEntity bot,
+                                                    int x,
+                                                    int z,
+                                                    int preferredY,
+                                                    int verticalRange) {
+        ServerWorld world = bot.getServerWorld();
+        int range = Math.max(0, verticalRange);
+        for (int delta = 0; delta <= range; delta++) {
+            int high = preferredY + delta;
+            if (isObservableStandable(bot, world, x, high, z)) {
+                return OptionalInt.of(high);
+            }
+            int low = preferredY - delta;
+            if (delta > 0 && isObservableStandable(bot, world, x, low, z)) {
+                return OptionalInt.of(low);
+            }
+        }
+        return OptionalInt.empty();
+    }
+
+    private static boolean isObservableStandable(AIPlayerEntity bot,
+                                                 ServerWorld world,
+                                                 int x,
+                                                 int y,
+                                                 int z) {
+        if (y <= world.getBottomY() || y >= world.getBottomY() + world.getHeight() - 1) {
+            return false;
+        }
+        BlockPos feet = new BlockPos(x, y, z);
+        return ObservableWorldQuery.canObserveBlock(bot, feet.down())
+                && ObservableWorldQuery.canObserveCell(bot, feet)
+                && ObservableWorldQuery.canObserveCell(bot, feet.up())
+                && Standability.isStandable(world, feet);
+    }
+
+    private static boolean isObservableFootprint(AIPlayerEntity bot,
+                                                 BlockPos anchor,
+                                                 int footprintX,
+                                                 int footprintZ) {
+        for (int dx = 0; dx < footprintX; dx++) {
+            for (int dz = 0; dz < footprintZ; dz++) {
+                BlockPos ground = anchor.add(dx, -1, dz);
+                if (!ObservableWorldQuery.canObserveBlock(bot, ground)) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     // 诊断用:对 footprint 跑 flatnessScore 同款逐列检查,返回【首个】拒因码——

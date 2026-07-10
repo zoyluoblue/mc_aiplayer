@@ -66,6 +66,14 @@ public final class BotMemory {
         goalCursor = 0;
     }
 
+    public boolean clearGoal() {
+        boolean changed = !goalTitle.isBlank() || !goalSteps.isEmpty() || goalCursor != 0;
+        goalTitle = "";
+        goalSteps.clear();
+        goalCursor = 0;
+        return changed;
+    }
+
     public String advanceGoal(String result) {
         if (goalSteps.isEmpty()) {
             return "no_goal";

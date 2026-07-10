@@ -61,6 +61,14 @@ public final class StuckWatcher {
                 "pos", current.pos().toShortString());
     }
 
+    public boolean reset(AIPlayerEntity bot) {
+        return samples.remove(bot.getUuid()) != null;
+    }
+
+    public void clearAll() {
+        samples.clear();
+    }
+
     private static int inventoryTotal(AIPlayerEntity bot) {
         int total = 0;
         for (ItemStack stack : bot.getInventory().main) {

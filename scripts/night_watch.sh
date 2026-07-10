@@ -1,43 +1,47 @@
-#!/bin/bash
-# 夜间值守(④):无人值班的回归长跑——你睡觉,它跑测试出报告;QA 这个班由机器值。
-# 轮转跑全部套件 × 多 seed,失败摘要归档到 reports/night_<日期>.md,起床一眼看完。
-# 用法: bash scripts/night_watch.sh [轮数,默认3]   (cron 例: 0 2 * * * cd <repo> && bash scripts/night_watch.sh)
-set -u
-cd "$(dirname "$0")/.." || exit 1
-ROUNDS="${1:-3}"
-SEEDS=(20260610 3000 777)            # 地狱关(云杉悬崖湖)/平原/随机第三地形
-SUITES=(geo_suite mining food_suite assistant_suite material_suite extreme_suite nav_suite)
-REPORT="reports/night_$(date +%Y%m%d_%H%M).md"
-mkdir -p reports
+#!/usr/bin/env bash
+# Local unattended regression runner backed by immutable evidence batches.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+ROUNDS="${1:-1}"
+SEEDS="${AIBOT_NIGHT_SEEDS:-20260610,3000,777}"
+PROFILE_VALUE="${AIBOT_PROFILE:-strict_survival}"
+SCENARIOS="${AIBOT_NIGHT_SCENARIOS:-capability_profile+runtime_control_suite,food_suite,mining}"
+REPORT="$ROOT/reports/night_$(date '+%Y%m%d_%H%M').md"
+
+[[ "$ROUNDS" =~ ^[1-9][0-9]*$ && "$ROUNDS" -le 20 ]] || {
+  printf '[night-watch] rounds must be between 1 and 20\n' >&2
+  exit 2
+}
+
+mkdir -p "$ROOT/reports"
+overall=0
 {
-echo "# 夜间值守报告 $(date '+%F %T')"
-echo ""
-for round in $(seq 1 "$ROUNDS"); do
-  SEED="${SEEDS[$(( (round-1) % ${#SEEDS[@]} ))]}"
-  echo "## 第 $round 轮 (seed=$SEED)"
-  for suite in "${SUITES[@]}"; do
-    # real/geo 等用例由 food_test.sh 自管世界重置;SEED 仅对 real* 生效,其余套件用当前世界
-    line=$(SEED="$SEED" bash scripts/food_test.sh "$suite" 2400 2>/dev/null | grep -E "\[AIBot Verify\] summary" | tail -1)
-    summary="${line#*summary }"
-    echo "- $suite: ${summary:-NO_RESULT(server异常,查 /tmp/mc_test_${suite}_*.log)}"
-    LOG=$(ls -t /tmp/mc_test_${suite}_*.log 2>/dev/null | head -1)
-    # 失败用例的存档日志路径附在报告里,起床直接取证
-    if echo "$summary" | grep -q "FAIL"; then
-      echo "  - 日志: $LOG"
-    fi
-    # 挖矿效率基准(P3):按任务类型汇总耗时 ticks——跨夜对比抓"没红但变慢"的隐性退化
-    if [ "$suite" = "mining" ] && [ -n "${LOG:-}" ]; then
-      bench=$(grep -aE "TASK event=task_completed" "$LOG" 2>/dev/null \
-        | awk '{ n=""; t="";
-            if (match($0,/name=[a-z_]+/)) n=substr($0,RSTART+5,RLENGTH-5);
-            if (match($0,/elapsed_ticks=[0-9]+/)) t=substr($0,RSTART+14,RLENGTH-14);
-            if (n!="" && t!="") { sum[n]+=t; cnt[n]++ } }
-          END { for (k in cnt) printf "%s=%d(x%d) ", k, sum[k]/cnt[k], cnt[k] }')
-      echo "  - 任务均耗时(ticks): ${bench:-n/a}"
-    fi
-  done
-  echo ""
+  printf '# 夜间值守报告 %s\n\n' "$(date '+%F %T')"
+  printf -- '- profile: `%s`\n- seeds: `%s`\n- runs per seed: `%s`\n\n' "$PROFILE_VALUE" "$SEEDS" "$ROUNDS"
+} > "$REPORT"
+
+old_ifs="$IFS"
+IFS=',' read -r -a scenario_list <<< "$SCENARIOS"
+IFS="$old_ifs"
+for scenario in "${scenario_list[@]}"; do
+  args=(--scenario "$scenario" --seeds "$SEEDS" --runs "$ROUNDS"
+    --timeout "${AIBOT_NIGHT_TIMEOUT:-2400}" --profile "$PROFILE_VALUE")
+  [[ "$PROFILE_VALUE" != operator ]] || args+=(--operator-capabilities "${AIBOT_OPERATOR_CAPABILITIES:-all}")
+  output="$(mktemp "${TMPDIR:-/tmp}/aibot-night.XXXXXX")"
+  set +e
+  "$ROOT/scripts/evidence_batch.sh" "${args[@]}" | tee "$output"
+  status=${PIPESTATUS[0]}
+  set -e
+  batch_dir="$(sed -n 's/^BATCH_EVIDENCE_DIR=//p' "$output" | tail -1)"
+  rm -f -- "$output"
+  {
+    printf '## `%s`\n\n' "$scenario"
+    printf -- '- status: `%s`\n' "$status"
+    printf -- '- evidence: `%s`\n\n' "${batch_dir:-missing}"
+  } >> "$REPORT"
+  [[ $status -eq 0 ]] || overall=1
 done
-echo "_全部存档日志: /tmp/mc_test_*.log ;诊断事件 grep: stall_dump / approach_rejected / timeout_diag_"
-} | tee "$REPORT"
-echo "[night_watch] report: $REPORT"
+
+printf '[night-watch] report: %s\n' "$REPORT"
+exit "$overall"

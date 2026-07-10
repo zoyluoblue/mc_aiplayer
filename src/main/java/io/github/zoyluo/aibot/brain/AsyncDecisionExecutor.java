@@ -17,21 +17,25 @@ public final class AsyncDecisionExecutor {
     }
 
     public void submit(AIPlayerEntity bot,
+                       DecisionLease lease,
                        List<ChatMessage> historySnapshot,
                        List<ToolDefinition> tools,
-                       BiConsumer<AIPlayerEntity, ChatResponse> onResponse,
-                       BiConsumer<AIPlayerEntity, Throwable> onError) {
+                       BiConsumer<DecisionLease, ChatResponse> onResponse,
+                       BiConsumer<DecisionLease, Throwable> onError) {
+        var server = bot.getServer();
+        var botId = bot.getUuid();
+        String botName = bot.getGameProfile().getName();
         executor.submit(() -> {
             long started = System.nanoTime();
             try {
                 ChatResponse response = apiClient.chat(historySnapshot, tools);
                 long elapsed = System.nanoTime() - started;
-                bot.getServer().execute(() -> onResponse.accept(bot, response));
-                BotProfiler.INSTANCE.record(bot.getUuid(), bot.getGameProfile().getName(), "brain_latency", elapsed);
+                server.execute(() -> onResponse.accept(lease, response));
+                BotProfiler.INSTANCE.record(botId, botName, "brain_latency", elapsed);
             } catch (Exception exception) {
                 long elapsed = System.nanoTime() - started;
-                BotProfiler.INSTANCE.record(bot.getUuid(), bot.getGameProfile().getName(), "brain_latency_error", elapsed);
-                bot.getServer().execute(() -> onError.accept(bot, exception));
+                BotProfiler.INSTANCE.record(botId, botName, "brain_latency_error", elapsed);
+                server.execute(() -> onError.accept(lease, exception));
             }
         });
     }

@@ -185,6 +185,7 @@ public final class CraftTask extends AbstractTask {
     private static BlockPos nearbyCraftingTable(AIPlayerEntity bot) {
         BlockPos origin = bot.getBlockPos();
         return BlockPos.stream(origin.add(-8, -2, -8), origin.add(8, 3, 8))
+                .filter(pos -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, pos))
                 .filter(pos -> bot.getServerWorld().getBlockState(pos).isOf(Blocks.CRAFTING_TABLE))
                 .map(BlockPos::toImmutable)
                 .findFirst()
@@ -226,6 +227,7 @@ public final class CraftTask extends AbstractTask {
     private static BlockPos nearbyBlock(AIPlayerEntity bot, net.minecraft.block.Block block) {
         BlockPos origin = bot.getBlockPos();
         return BlockPos.stream(origin.add(-8, -2, -8), origin.add(8, 3, 8))
+                .filter(pos -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, pos))
                 .filter(pos -> bot.getServerWorld().getBlockState(pos).isOf(block))
                 .map(BlockPos::toImmutable)
                 .findFirst()

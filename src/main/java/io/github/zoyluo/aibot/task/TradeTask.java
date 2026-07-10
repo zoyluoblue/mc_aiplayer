@@ -159,6 +159,7 @@ public final class TradeTask extends AbstractTask {
         return bot.getServerWorld()
                 .getEntitiesByClass(VillagerEntity.class, box, entity -> entity.isAlive() && !entity.isBaby())
                 .stream()
+                .filter(entity -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveEntity(bot, entity))
                 .min(Comparator.comparingDouble(bot::distanceTo));
     }
 

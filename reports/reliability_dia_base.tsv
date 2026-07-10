@@ -1,0 +1,20 @@
+feature	seed	run	result	reason	stage	summary
+real_diamond	3000	1	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	3000	2	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	3000	3	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	105441651	1	FAIL	ore_dig_no_progress collected=0	ore_dig	0/1 PASS: {real_diamond=FAIL:ore_dig_no_progress collected=0}
+real_diamond	105441651	2	FAIL	aborted	aborted	0/1 PASS: {real_diamond=FAIL:aborted}
+real_diamond	105441651	3	FAIL	ore_dig_no_progress collected=0	ore_dig	0/1 PASS: {real_diamond=FAIL:ore_dig_no_progress collected=0}
+real_diamond	155361719	1	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	155361719	2	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	155361719	3	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	206232996	1	FAIL	no_resource_nearby	wood_gather	0/1 PASS: {real_diamond=FAIL:no_resource_nearby}
+real_diamond	206232996	2	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	206232996	3	FAIL	ore_dig_no_progress collected=0	ore_dig	0/1 PASS: {real_diamond=FAIL:ore_dig_no_progress collected=0}
+real_diamond	12345	1	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	12345	2	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	12345	3	FAIL	no_resource_nearby	wood_gather	0/1 PASS: {real_diamond=FAIL:no_resource_nearby}
+real_diamond	632510390	1	FAIL	ore_dig_no_progress collected=0	ore_dig	0/1 PASS: {real_diamond=FAIL:ore_dig_no_progress collected=0}
+real_diamond	632510390	2	FAIL	ore_dig_no_progress collected=0	ore_dig	0/1 PASS: {real_diamond=FAIL:ore_dig_no_progress collected=0}
+real_diamond	632510390	3	FAIL	ore_dig_no_progress collected=0	ore_dig	0/1 PASS: {real_diamond=FAIL:ore_dig_no_progress collected=0}
+ALLDONE

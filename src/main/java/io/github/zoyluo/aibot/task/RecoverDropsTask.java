@@ -4,6 +4,9 @@ import io.github.zoyluo.aibot.action.ActionResult;
 import io.github.zoyluo.aibot.action.HarvestCore;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
+import io.github.zoyluo.aibot.mode.CapabilityRuntime;
+import io.github.zoyluo.aibot.mode.ObservableWorldQuery;
+import io.github.zoyluo.aibot.mode.PrivilegedCapability;
 import net.minecraft.util.math.BlockPos;
 
 /**
@@ -93,9 +96,11 @@ public final class RecoverDropsTask extends AbstractTask {
             HarvestCore.sweepPickupAnyOf(bot, null, 10.0D, 6);
             if (elapsed - arrivedTick >= PICKUP_WINDOW) {
                 // 掉落物雷达:窗口结束时还有多少没捡走(=0 才算真干净;>0 说明捡取被什么拦了)
+                CapabilityRuntime.decide(bot, PrivilegedCapability.HIDDEN_BLOCK_SCAN, "recover_drops_report");
                 var leftovers = bot.getServerWorld().getEntitiesByClass(
                         net.minecraft.entity.ItemEntity.class,
-                        bot.getBoundingBox().expand(32.0D, 16.0D, 32.0D), e -> true);
+                        bot.getBoundingBox().expand(32.0D, 16.0D, 32.0D),
+                        e -> ObservableWorldQuery.canObserveEntity(bot, e));
                 BotLog.action(bot, "recover_drops_done", "at", deathPos.toShortString(),
                         "leftover", leftovers.size(),
                         "nearest", leftovers.isEmpty() ? "-" : leftovers.get(0).getBlockPos().toShortString());

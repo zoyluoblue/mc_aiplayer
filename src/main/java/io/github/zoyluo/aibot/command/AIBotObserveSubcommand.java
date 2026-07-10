@@ -3,6 +3,8 @@ package io.github.zoyluo.aibot.command;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import io.github.zoyluo.aibot.auth.BotAuthorizationGate;
+import io.github.zoyluo.aibot.auth.BotAuthorizationPolicy;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
 import io.github.zoyluo.aibot.observe.BotProfiler;
@@ -94,6 +96,9 @@ public final class AIBotObserveSubcommand {
     }
 
     private static int tps(ServerCommandSource source) {
+        if (!BotAuthorizationGate.INSTANCE.requireGlobalAdmin(source, "command:tps")) {
+            return 0;
+        }
         TpsGuard.Snapshot snapshot = TpsGuard.INSTANCE.snapshot(source.getServer());
         source.sendFeedback(() -> Text.literal("[AIBot] tps estimated="
                 + format(snapshot.estimatedTps())
@@ -105,11 +110,8 @@ public final class AIBotObserveSubcommand {
     }
 
     private static Optional<AIPlayerEntity> getBot(ServerCommandSource source, String name) {
-        Optional<AIPlayerEntity> bot = AIPlayerManager.INSTANCE.getByName(name);
-        if (bot.isEmpty()) {
-            source.sendError(Text.literal("[AIBot] No such bot: " + name));
-        }
-        return bot;
+        return BotAuthorizationGate.INSTANCE.resolveAuthorized(
+                source, name, BotAuthorizationPolicy.Operation.VIEW, "command:observe");
     }
 
     private static String format(double value) {

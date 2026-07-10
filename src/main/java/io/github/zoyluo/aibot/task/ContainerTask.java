@@ -109,11 +109,12 @@ public final class ContainerTask extends AbstractTask {
             fail("no_container");
             return;
         }
-        if (ContainerAction.resolve(bot, containerPos).isEmpty()) {
+        boolean observable = io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, containerPos);
+        if (observable && ContainerAction.resolve(bot, containerPos).isEmpty()) {
             fail("no_container_at: " + shortPos(containerPos));
             return;
         }
-        if (bot.getEyePos().squaredDistanceTo(containerPos.toCenterPos()) <= REACH_SQUARED) {
+        if (observable && bot.getEyePos().squaredDistanceTo(containerPos.toCenterPos()) <= REACH_SQUARED) {
             phase = Phase.TRANSFERRING;
             return;
         }
@@ -131,11 +132,16 @@ public final class ContainerTask extends AbstractTask {
     }
 
     private void walkToContainer(AIPlayerEntity bot) {
-        if (containerPos == null || ContainerAction.resolve(bot, containerPos).isEmpty()) {
+        if (containerPos == null) {
             phase = Phase.FINDING;
             return;
         }
-        if (bot.getEyePos().squaredDistanceTo(containerPos.toCenterPos()) <= REACH_SQUARED) {
+        boolean observable = io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, containerPos);
+        if (observable && ContainerAction.resolve(bot, containerPos).isEmpty()) {
+            phase = Phase.FINDING;
+            return;
+        }
+        if (observable && bot.getEyePos().squaredDistanceTo(containerPos.toCenterPos()) <= REACH_SQUARED) {
             bot.getActionPack().stopAll();
             phase = Phase.TRANSFERRING;
             return;
@@ -146,6 +152,12 @@ public final class ContainerTask extends AbstractTask {
     }
 
     private void transfer(AIPlayerEntity bot) {
+        if (containerPos == null
+                || bot.getEyePos().squaredDistanceTo(containerPos.toCenterPos()) > REACH_SQUARED
+                || !io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, containerPos)) {
+            phase = Phase.FINDING;
+            return;
+        }
         Inventory container = ContainerAction.resolve(bot, containerPos).orElse(null);
         if (container == null) {
             fail("container_missing");
@@ -195,6 +207,7 @@ public final class ContainerTask extends AbstractTask {
     public static Optional<BlockPos> nearestContainerNear(AIPlayerEntity bot, BlockPos center, int radius) {
         BlockPos origin = bot.getBlockPos();
         return BlockPos.stream(center.add(-radius, -3, -radius), center.add(radius, 4, radius))
+                .filter(pos -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, pos))
                 .filter(pos -> ContainerAction.resolve(bot, pos).isPresent())
                 .map(BlockPos::toImmutable)
                 .min(Comparator.comparingDouble(pos -> pos.getSquaredDistance(origin)));
@@ -203,7 +216,8 @@ public final class ContainerTask extends AbstractTask {
     private static Optional<BlockPos> rememberedContainer(AIPlayerEntity bot) {
         return BotMemoryStore.INSTANCE.of(bot.getUuid())
                 .placeIn(bot.getServerWorld(), "depot", "home", "base", "chest")
-                .flatMap(pos -> ContainerAction.resolve(bot, pos).isPresent()
+                .flatMap(pos -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, pos)
+                        && ContainerAction.resolve(bot, pos).isPresent()
                         ? Optional.of(pos.toImmutable())
                         : nearestContainerNear(bot, pos, 4));
     }

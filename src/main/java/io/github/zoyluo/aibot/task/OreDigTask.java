@@ -7,6 +7,9 @@ import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.mining.OreProspector;
 import io.github.zoyluo.aibot.mining.OreScan;
 import io.github.zoyluo.aibot.mining.ToolTier;
+import io.github.zoyluo.aibot.mode.CapabilityRuntime;
+import io.github.zoyluo.aibot.mode.ObservableWorldQuery;
+import io.github.zoyluo.aibot.mode.PrivilegedCapability;
 import net.minecraft.block.Block;
 import net.minecraft.item.Item;
 import net.minecraft.registry.tag.FluidTags;
@@ -568,8 +571,9 @@ public final class OreDigTask extends AbstractTask {
     }
 
     private void queueVeinAround(AIPlayerEntity bot, ServerWorld world, BlockPos around) {
-        for (BlockPos p : OreScan.veinFrom(world, around, targetOres, VEIN_CAP)) {
-            if (!oreExcluded(bot, p)) {
+        for (BlockPos p : OreScan.veinFrom(bot, around, targetOres, VEIN_CAP)) {
+            if (!oreExcluded(bot, p)
+                    && io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, p)) {
                 veinQueue.addLast(p.toImmutable());
             }
         }
@@ -728,6 +732,7 @@ public final class OreDigTask extends AbstractTask {
     // 字符:B=bot 脚位,T=目标矿,O=其它矿,~=流体,#=实心(挖得动),X=实心(挖不动/基岩),.=空气。
     // 用途:把"A* 返回路径、执行器破块却不缩 dist"的真实地形冻成确定性复现场景,精修接近抖动。
     private void dumpStallRegion(AIPlayerEntity bot, ServerWorld world) {
+        CapabilityRuntime.decide(bot, PrivilegedCapability.HIDDEN_BLOCK_SCAN, "ore_dig_stall_dump");
         BlockPos b = bot.getBlockPos();
         BlockPos t = targetOre != null ? targetOre : b;
         int minX = Math.min(b.getX(), t.getX()) - 3, maxX = Math.max(b.getX(), t.getX()) + 3;
@@ -744,6 +749,7 @@ public final class OreDigTask extends AbstractTask {
                     char c;
                     if (p.equals(b)) c = 'B';
                     else if (p.equals(t)) c = 'T';
+                    else if (!ObservableWorldQuery.canObserveBlock(bot, p)) c = '?';
                     else {
                         var st = world.getBlockState(p);
                         if (!st.getFluidState().isEmpty()) c = '~';
@@ -770,6 +776,9 @@ public final class OreDigTask extends AbstractTask {
     private BlockPos scanBonusOre(AIPlayerEntity bot, ServerWorld world) {
         BlockPos feet = bot.getBlockPos();
         for (BlockPos p : BlockPos.iterate(feet.add(-2, -1, -2), feet.add(2, 3, 2))) {
+            if (!ObservableWorldQuery.canObserveBlock(bot, p)) {
+                continue;
+            }
             Block b = world.getBlockState(p).getBlock();
             if (!OreScan.isOreBlock(b) || targetOres.contains(b)) {
                 continue;
@@ -798,7 +807,7 @@ public final class OreDigTask extends AbstractTask {
         lastProspectTick = now;
         // 拉黑过滤:不带 posFilter 时,unreachable_skip 刚排除的矿会被 prospect 原样再选——
         // skip→prospect→同矿→skip 死循环直到 no_progress(geo_rich 套跑实测 637,47,-11 五连)。
-        return OreProspector.nearest(world, bot.getBlockPos(), PROSPECT_RANGE,
+        return OreProspector.nearest(bot, PROSPECT_RANGE,
                 state -> OreScan.isOre(state, targetOres),
                 p -> !oreExcluded(bot, p));
     }
@@ -810,7 +819,9 @@ public final class OreDigTask extends AbstractTask {
         BlockPos best = null;
         double bestDist = Double.MAX_VALUE;
         for (BlockPos pos : BlockPos.iterate(min, max)) {
-            if (oreExcluded(bot, pos) || !OreScan.isOre(world.getBlockState(pos), targetOres)) {
+            if (oreExcluded(bot, pos)
+                    || !io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, pos)
+                    || !OreScan.isOre(world.getBlockState(pos), targetOres)) {
                 continue;
             }
             double dist = origin.getSquaredDistance(pos);

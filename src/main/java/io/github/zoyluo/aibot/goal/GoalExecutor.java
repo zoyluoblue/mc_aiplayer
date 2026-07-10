@@ -5,6 +5,7 @@ import io.github.zoyluo.aibot.brain.BotReporter;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.task.BlueprintLoader;
+import io.github.zoyluo.aibot.task.BlueprintSchema;
 import io.github.zoyluo.aibot.task.BuildTask;
 import io.github.zoyluo.aibot.task.CraftTask;
 import io.github.zoyluo.aibot.task.DescendToYTask;
@@ -23,18 +24,26 @@ import io.github.zoyluo.aibot.task.Task;
 import io.github.zoyluo.aibot.task.TaskManager;
 import io.github.zoyluo.aibot.task.TaskState;
 import io.github.zoyluo.aibot.task.TaskStatus;
+import io.github.zoyluo.aibot.runtime.TaskOrigin;
+import io.github.zoyluo.aibot.persist.MissionRecord;
+import io.github.zoyluo.aibot.persist.MissionRuntimeRecord;
+import io.github.zoyluo.aibot.persist.MissionSpec;
 import net.minecraft.block.Block;
 import net.minecraft.item.Item;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.server.MinecraftServer;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.HashSet;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 public final class GoalExecutor {
     public static final GoalExecutor INSTANCE = new GoalExecutor();
@@ -46,11 +55,17 @@ public final class GoalExecutor {
     private final Map<UUID, java.util.Deque<Goal>> goalQueue = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> lastGoalFailTick = new ConcurrentHashMap<>(); // 优化2:goal 整体失败时刻,拦大脑随后手动逐格挖矿
     private final Map<UUID, Goal> userGoal = new ConcurrentHashMap<>(); // B:用户原始高层目标,防大脑把它降级成其前置子目标(挖钻石→做铁镐)
+    private final Map<UUID, GoalResult> lastResults = new ConcurrentHashMap<>();
+    private final AtomicLong resultSequence = new AtomicLong();
 
     private GoalExecutor() {
     }
 
     public boolean submit(AIPlayerEntity bot, Goal goal) {
+        return submit(bot, goal, null);
+    }
+
+    private boolean submit(AIPlayerEntity bot, Goal goal, RestoreSeed restore) {
         // GOALFIX-GF3:幂等——同一 bot 已有相同目标的活跃计划时,忽略重复 submit
         //(防大脑连点 mine_ore/achieve_goal 覆盖计划、打断进行中的步骤)。
         ActivePlan existing = activePlans.get(bot.getUuid());
@@ -75,6 +90,7 @@ public final class GoalExecutor {
             queued.addLast(goal);
             BotLog.task(bot, "goal_queued", "goal", goal, "behind", String.valueOf(existing.goal), "queue_size", queued.size());
             report(bot, "记下了,等手头这件干完就去办:" + goalLabel(goal));
+            markDirty(bot);
             return true;
         }
         // B:保护用户原始目标——大脑不能把它降级成其前置子目标。实测:挖钻石失败后大脑 achieve_goal 做铁镐、
@@ -85,21 +101,41 @@ public final class GoalExecutor {
             report(bot, "这是当前目标的前置步骤,系统会自动完成,无需单独做。要更换目标请直接告诉我。");
             return false;
         }
-        GoalPlanner.GoalPlan plan = GoalPlanner.plan(bot, goal);
+        UUID missionId = restore == null ? UUID.randomUUID() : restore.missionId();
+        int startedTick = restore == null ? bot.getServer().getTicks() : restore.startedTick();
+        GoalPredicate predicate = GoalPredicates.forGoal(goal);
+        GoalSnapshotCollector.Context context = restore == null ? initialContext(bot, goal) : restore.context();
+        GoalEvaluation initialEvaluation = predicate.evaluate(GoalSnapshotCollector.collect(bot, goal, context));
+        if (initialEvaluation.state() == GoalEvaluation.State.SATISFIED) {
+            queued.removeFirstOccurrence(goal);
+            recordImmediateResult(bot, missionId, goal, startedTick, initialEvaluation,
+                    GoalResult.Status.COMPLETED, "already_satisfied");
+            return true;
+        }
+        GoalPlanner.GoalPlan plan = GoalPlanner.plan(bot, goal, context);
         if (!plan.success()) {
-            report(bot, "目标暂时无法规划:" + String.join(", ", plan.unresolved()));
+            recordImmediateResult(bot, missionId, goal, startedTick, initialEvaluation,
+                    GoalResult.classify(initialEvaluation, false), "plan_failed:" + String.join(",", plan.unresolved()));
             BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.TASK, bot, "goal_plan_failed",
                     "goal", goal,
                     "unresolved", plan.unresolved());
             return false;
         }
+        // replace 边界:A 活跃、B 已排队，随后同批 stop + B。只有 B 已成功规划后才从旧队列移除；
+        // 若 replacement 规划失败，保留 B 让下一 tick 的常规 queue drain 再处理，不能静默丢目标。
+        queued.removeFirstOccurrence(goal);
         if (plan.steps().isEmpty()) {
             activePlans.remove(bot.getUuid());
-            report(bot, "目标已经满足。");
-            return true;
+            GoalResult.Status status = GoalResult.classify(initialEvaluation, false);
+            recordImmediateResult(bot, missionId, goal, startedTick, initialEvaluation, status, "empty_plan_unsatisfied");
+            return false;
         }
-        ActivePlan active = new ActivePlan(goal, new ArrayDeque<>(plan.steps()), plan.steps().size(),
-                plan.steps().stream().map(GoalStep::describe).toList());
+        ActivePlan active = new ActivePlan(missionId, startedTick, goal, predicate, context,
+                new ArrayDeque<>(plan.steps()), plan.steps().size(), plan.steps().stream().map(GoalStep::describe).toList());
+        if (restore != null) {
+            active.completedSteps = restore.completedSteps();
+        }
+        active.lastEvaluationMatched = initialEvaluation.matched();
         // Phase A:进度快照初始化(开局基准),供 handleStepFailure 的进度赦免对比。
         net.minecraft.util.math.BlockPos sp0 = bot.getBlockPos();
         active.snapX = sp0.getX();
@@ -114,12 +150,21 @@ public final class GoalExecutor {
         BotLog.task(bot, "goal_plan", "goal", goal, "steps", plan.describeSteps());
         report(bot, "我会按 " + plan.steps().size() + " 步完成目标。");
         assignNext(bot, active);
+        markDirty(bot);
         return true;
     }
 
     public boolean tickBot(MinecraftServer server, AIPlayerEntity bot) {
+        if (TaskManager.INSTANCE.isUserPaused(bot)) {
+            return hasActivePlan(bot) || queuedGoalCount(bot) > 0 || TaskManager.INSTANCE.hasPaused(bot);
+        }
         ActivePlan plan = activePlans.get(bot.getUuid());
         if (plan == null) {
+            if (TaskManager.INSTANCE.getActive(bot).isEmpty()
+                    && !TaskManager.INSTANCE.hasPaused(bot)
+                    && !bot.getActionPack().hasActiveActions()) {
+                return startNextQueuedIfIdle(bot);
+            }
             return false;
         }
         Optional<Task> active = TaskManager.INSTANCE.getActive(bot);
@@ -133,7 +178,7 @@ public final class GoalExecutor {
                 }
                 // step 既不活跃也不在暂停池 = 被玩家显式指令真正替换 → 放弃目标让位。
                 BotLog.task(bot, "goal_abandoned", "goal", plan.goal, "reason", "foreign_task_assigned");
-                activePlans.remove(bot.getUuid());
+                finishActive(bot, plan, evaluate(bot, plan), "foreign_task_assigned", false, true);
                 return false;
             }
             return true;
@@ -149,6 +194,7 @@ public final class GoalExecutor {
         TaskStatus status = TaskManager.INSTANCE.status(bot);
         if (status.state() == TaskState.COMPLETED) {
             BotLog.task(bot, "goal_step_completed", "step", plan.current.describe());
+            captureTaskEvidence(plan);
             plan.completedSteps++; // Phase A:完成一步=进展信号
             plan.current = null;
             plan.currentTask = null;
@@ -168,14 +214,230 @@ public final class GoalExecutor {
         return activePlans.containsKey(bot.getUuid());
     }
 
+    /** Exact active-goal probe used by deterministic runtime verification and diagnostics. */
+    public boolean isActiveGoal(AIPlayerEntity bot, Goal goal) {
+        ActivePlan plan = activePlans.get(bot.getUuid());
+        return plan != null && plan.goal.equals(goal);
+    }
+
     public void clear(AIPlayerEntity bot) {
-        activePlans.remove(bot.getUuid());
-        // user goal 记录一并清:clear=外部要求彻底复位(verify 场景切换/管理操作)。只清 plan 不清它,
-        // 残留的旧 Food 目标会把后续"恰好是其前置"的新目标 downgrade_blocked 拒掉
-        //(实测 verify forage 的 HaveItem(浆果) 被上一场景 Food 残留拦截 goal_submit_failed)。
-        userGoal.remove(bot.getUuid());
-        goalQueue.remove(bot.getUuid()); // 队列一并清:复位=全部待办作废
-        io.github.zoyluo.aibot.task.EpisodeMemory.INSTANCE.reset(bot.getUuid()); // 工作记忆同清
+        cancelAll(bot);
+    }
+
+    /** Detaches only the active mission. Queue promotion is deliberately a separate step. */
+    public boolean cancelCurrent(AIPlayerEntity bot) {
+        return cancelCurrent(bot, "intent_cancelled");
+    }
+
+    public boolean cancelCurrent(AIPlayerEntity bot, String reason) {
+        UUID uuid = bot.getUuid();
+        ActivePlan active = activePlans.get(uuid);
+        boolean changed = active != null;
+        if (active != null) {
+            finishActive(bot, active, evaluate(bot, active), reason, true, false);
+        }
+        changed |= userGoal.remove(uuid) != null;
+        changed |= lastGoalFailTick.remove(uuid) != null;
+        if (changed) {
+            io.github.zoyluo.aibot.task.EpisodeMemory.INSTANCE.reset(uuid);
+        }
+        return changed;
+    }
+
+    public int clearQueue(AIPlayerEntity bot) {
+        java.util.Deque<Goal> queued = goalQueue.remove(bot.getUuid());
+        int removed = queued == null ? 0 : queued.size();
+        if (removed > 0) {
+            markDirty(bot);
+        }
+        return removed;
+    }
+
+    public boolean cancelAll(AIPlayerEntity bot) {
+        boolean changed = cancelCurrent(bot);
+        return clearQueue(bot) > 0 || changed;
+    }
+
+    /** Death is a factual failure, not a user cancellation. Queue promotion waits for recovery to finish. */
+    public boolean failCurrent(AIPlayerEntity bot, String reason) {
+        ActivePlan active = activePlans.get(bot.getUuid());
+        if (active == null) {
+            return false;
+        }
+        finishActive(bot, active, evaluate(bot, active), reason, false, false, GoalResult.Status.FAILED);
+        return true;
+    }
+
+    /** Drop every in-memory projection for a Bot without publishing a terminal result (server unload path). */
+    public void unload(AIPlayerEntity bot) {
+        UUID uuid = bot.getUuid();
+        activePlans.remove(uuid);
+        goalQueue.remove(uuid);
+        lastGoalFailTick.remove(uuid);
+        userGoal.remove(uuid);
+        lastResults.remove(uuid);
+        io.github.zoyluo.aibot.task.EpisodeMemory.INSTANCE.reset(uuid);
+    }
+
+    public void clearAllRuntime() {
+        activePlans.clear();
+        goalQueue.clear();
+        lastGoalFailTick.clear();
+        userGoal.clear();
+        lastResults.clear();
+    }
+
+    public int queuedGoalCount(AIPlayerEntity bot) {
+        java.util.Deque<Goal> queued = goalQueue.get(bot.getUuid());
+        return queued == null ? 0 : queued.size();
+    }
+
+    public Optional<GoalResult> lastResult(AIPlayerEntity bot) {
+        return Optional.ofNullable(lastResults.get(bot.getUuid()));
+    }
+
+    public Optional<GoalResult> resultAfter(AIPlayerEntity bot, long sequence) {
+        GoalResult result = lastResults.get(bot.getUuid());
+        return result != null && result.sequence() > sequence ? Optional.of(result) : Optional.empty();
+    }
+
+    public String resultSummary(GoalResult result) {
+        return resultMessage(result.status(), result.evaluation(), result.reason());
+    }
+
+    public MissionRuntimeRecord captureRuntime(AIPlayerEntity bot) {
+        ActivePlan active = activePlans.get(bot.getUuid());
+        if (active != null) {
+            captureTaskEvidence(active);
+        }
+        MissionRecord activeRecord = active == null ? null : new MissionRecord(
+                active.missionId.toString(), MissionSpec.fromGoal(active.goal), checkpoint(active));
+        java.util.Deque<Goal> queued = goalQueue.get(bot.getUuid());
+        List<MissionSpec> queue = queued == null ? List.of() : queued.stream().map(MissionSpec::fromGoal).toList();
+        boolean hasPersistableMission = activeRecord != null || !queue.isEmpty();
+        return new MissionRuntimeRecord(activeRecord, queue,
+                hasPersistableMission && TaskManager.INSTANCE.isUserPaused(bot));
+    }
+
+    public void restoreRuntime(AIPlayerEntity bot, MissionRuntimeRecord runtime) {
+        if (runtime == null) {
+            return;
+        }
+        MissionRecord activeRecord = runtime.active();
+        if (activeRecord != null && activeRecord.spec() != null) {
+            Optional<Goal> restored = activeRecord.spec().toGoal();
+            if (restored.isPresent()) {
+                submit(bot, restored.get(), restoreSeed(bot, restored.get(), activeRecord));
+            } else if (restored.isEmpty()) {
+                BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.LIFECYCLE, bot,
+                        "mission_restore_isolated", "type", activeRecord.spec().type(), "reason", "invalid_spec");
+            }
+        }
+        for (MissionSpec spec : runtime.queue()) {
+            Optional<Goal> queued = spec.toGoal();
+            if (queued.isPresent()) {
+                submit(bot, queued.get());
+            } else {
+                BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.LIFECYCLE, bot,
+                        "mission_queue_restore_isolated", "type", spec.type(), "reason", "invalid_spec");
+            }
+        }
+        if (runtime.userPaused() && (hasActivePlan(bot) || queuedGoalCount(bot) > 0)) {
+            TaskManager.INSTANCE.pauseUserIntent(bot, "restore_persisted_pause");
+        }
+    }
+
+    private static Map<String, String> checkpoint(ActivePlan active) {
+        Map<String, String> checkpoint = new java.util.LinkedHashMap<>();
+        checkpoint.put("origin", encodePos(active.origin));
+        checkpoint.put("started_tick", String.valueOf(active.startedTick));
+        if (active.buildAnchor != null) {
+            checkpoint.put("build_anchor", encodePos(active.buildAnchor));
+            checkpoint.put("build_placed", String.valueOf(active.buildPlaced));
+            checkpoint.put("build_skipped", String.valueOf(active.buildSkipped));
+        }
+        if (!active.boundContainers.isEmpty()) {
+            checkpoint.put("containers", active.boundContainers.stream().map(GoalExecutor::encodePos).sorted()
+                    .collect(java.util.stream.Collectors.joining(";")));
+        }
+        checkpoint.put("revision", String.valueOf(active.completedSteps));
+        return Map.copyOf(checkpoint);
+    }
+
+    private static RestoreSeed restoreSeed(AIPlayerEntity bot, Goal goal, MissionRecord record) {
+        Map<String, String> checkpoint = record.checkpoint() == null ? Map.of() : record.checkpoint();
+        GoalSnapshotCollector.Context fallback = initialContext(bot, goal);
+        BlockPos origin = decodePos(checkpoint.get("origin")).orElse(fallback.origin());
+        Set<BlockPos> containers = new HashSet<>();
+        String encodedContainers = checkpoint.get("containers");
+        if (encodedContainers != null && !encodedContainers.isBlank()) {
+            for (String encoded : encodedContainers.split(";")) {
+                decodePos(encoded).ifPresent(containers::add);
+            }
+        }
+        BlockPos buildAnchor = decodePos(checkpoint.get("build_anchor")).orElse(null);
+        BlueprintSchema blueprint = null;
+        if (goal instanceof Goal.Build build && buildAnchor != null) {
+            try {
+                blueprint = BlueprintLoader.load(build.blueprint());
+            } catch (IOException exception) {
+                BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.LIFECYCLE, bot,
+                        "mission_checkpoint_blueprint_missing", "blueprint", build.blueprint());
+            }
+        }
+        GoalSnapshotCollector.Context context = new GoalSnapshotCollector.Context(
+                origin, containers, blueprint, buildAnchor,
+                nonNegativeInt(checkpoint.get("build_placed")),
+                nonNegativeInt(checkpoint.get("build_skipped")));
+        UUID missionId;
+        try {
+            missionId = UUID.fromString(record.missionId());
+        } catch (RuntimeException exception) {
+            missionId = UUID.randomUUID();
+        }
+        int restoredStartedTick = checkpoint.containsKey("started_tick")
+                ? nonNegativeInt(checkpoint.get("started_tick"))
+                : bot.getServer().getTicks();
+        return new RestoreSeed(
+                missionId,
+                context,
+                nonNegativeInt(checkpoint.get("revision")),
+                restoredStartedTick);
+    }
+
+    private static int nonNegativeInt(String value) {
+        try {
+            return Math.max(0, Integer.parseInt(value));
+        } catch (RuntimeException exception) {
+            return 0;
+        }
+    }
+
+    private static String encodePos(net.minecraft.util.math.BlockPos pos) {
+        return pos.getX() + "," + pos.getY() + "," + pos.getZ();
+    }
+
+    private static Optional<net.minecraft.util.math.BlockPos> decodePos(String value) {
+        if (value == null || value.isBlank()) {
+            return Optional.empty();
+        }
+        try {
+            String[] parts = value.split(",");
+            if (parts.length != 3) {
+                return Optional.empty();
+            }
+            return Optional.of(new net.minecraft.util.math.BlockPos(
+                    Integer.parseInt(parts[0]), Integer.parseInt(parts[1]), Integer.parseInt(parts[2])));
+        } catch (RuntimeException ignored) {
+            return Optional.empty();
+        }
+    }
+
+    public boolean startNextQueuedIfIdle(AIPlayerEntity bot) {
+        if (hasActivePlan(bot)) {
+            return false;
+        }
+        return advanceQueue(bot);
     }
 
     /** 诊断埋点:当前激活的顶层目标(无则 "none")。日志用,保留英文便于排查。 */
@@ -236,37 +498,46 @@ public final class GoalExecutor {
     }
 
     // P0 队列衔接:当前目标了结(完成/失败)后,自动开始队列里的下一个;规划失败的逐个跳过并说明。
-    private void advanceQueue(AIPlayerEntity bot) {
+    private boolean advanceQueue(AIPlayerEntity bot) {
         java.util.Deque<Goal> queued = goalQueue.get(bot.getUuid());
         if (queued == null) {
-            return;
+            return false;
         }
         Goal next;
         while ((next = queued.pollFirst()) != null) {
             report(bot, "接着办下一件:" + goalLabel(next));
             if (submit(bot, next)) {
-                return;
+                if (hasActivePlan(bot)) {
+                    return true;
+                }
+                // 目标已经满足、没有创建 active plan：继续检查队列下一项。
             }
             // submit 失败(规划不成/被拦)已在内部 report 过原因,继续试队列里再下一个
         }
+        goalQueue.remove(bot.getUuid(), queued);
+        return false;
     }
 
     private void assignNext(AIPlayerEntity bot, ActivePlan plan) {
         GoalStep step = plan.steps.pollFirst();
         if (step == null) {
-            // Food 目标续足:步骤跑完 ≠ 真凑够熟食。打猎扑空(附近动物少)、cookAll 只烤了部分生肉时,
-            // COOK_FOOD 会 collected>0 即 complete → 步骤耗尽 → 这里谎报"Food[4] 完成",实则只 2/4
-            // (real_food 随机地形实测此假完成占食物失败 3/10)。重规划一次让 GoalPlanner 重新感知择源:
-            // 它内部按 cooked>=target 判定——已够则返回空步骤(照常下面完成);不够且有源(浆果/种田/再打猎远征)
-            // 则给出补足步骤继续。仅对【独立 Food 目标】生效:挖矿/铁套的备粮是其计划内 best-effort 步,
-            // plan.goal 是 Diamond/Armor 而非 Food,不受影响(续航本就交饥饿链兜底,不该阻断挖矿)。
-            // replanCount<3 兜底:地形真无足量食物源时按尽力收尾,绝不无限循环。
-            if (plan.goal instanceof Goal.Food && bot.isAlive() && plan.replanCount < 3) {
-                GoalPlanner.GoalPlan fresh = GoalPlanner.plan(bot, plan.goal);
-                if (fresh.success() && !fresh.steps().isEmpty()) {
-                    plan.replanCount++;
-                    BotLog.task(bot, "goal_food_topup", "goal", plan.goal,
-                            "steps", fresh.describeSteps(), "replan", String.valueOf(plan.replanCount));
+            GoalEvaluation evaluation = evaluate(bot, plan);
+            if (evaluation.state() == GoalEvaluation.State.SATISFIED) {
+                finishActive(bot, plan, evaluation, "postcondition_satisfied", false, true);
+                return;
+            }
+            if (!(plan.goal instanceof Goal.Build) && bot.isAlive() && plan.postconditionReplans < 3) {
+                GoalPlanner.GoalPlan fresh = GoalPlanner.plan(bot, plan.goal, snapshotContext(plan));
+                String fingerprint = fresh.describeSteps();
+                boolean progress = evaluation.matched() > plan.lastEvaluationMatched;
+                if (fresh.success() && !fresh.steps().isEmpty()
+                        && (progress || !fingerprint.equals(plan.lastRepairFingerprint))) {
+                    plan.postconditionReplans++;
+                    plan.lastEvaluationMatched = Math.max(plan.lastEvaluationMatched, evaluation.matched());
+                    plan.lastRepairFingerprint = fingerprint;
+                    BotLog.task(bot, "goal_postcondition_repair", "goal", plan.goal,
+                            "matched", evaluation.matched(), "required", evaluation.required(),
+                            "steps", fingerprint, "repair", plan.postconditionReplans);
                     plan.steps.clear();
                     plan.steps.addAll(fresh.steps());
                     plan.totalSteps = fresh.steps().size();
@@ -276,19 +547,12 @@ public final class GoalExecutor {
                     return;
                 }
             }
-            activePlans.remove(bot.getUuid());
-            BotLog.task(bot, "goal_completed", "goal", plan.goal);
-            io.github.zoyluo.aibot.memory.EpisodeLog.INSTANCE.record(bot,
-                    io.github.zoyluo.aibot.memory.EpisodeLog.Type.GOAL_DONE, bot.getBlockPos(), goalLabel(plan.goal));
-            report(bot, "目标完成。");
-            userGoal.remove(bot.getUuid()); // 本目标已了结,让队列里下一个接管"用户原始目标"位
-            advanceQueue(bot);
+            finishActive(bot, plan, evaluation, "postcondition_unsatisfied", false, true);
             return;
         }
-        Optional<Task> task = stepToTask(bot, step);
+        Optional<Task> task = stepToTask(bot, step, plan);
         if (task.isEmpty()) {
-            activePlans.remove(bot.getUuid());
-            report(bot, "目标步骤无法执行:" + step.describe());
+            finishActive(bot, plan, evaluate(bot, plan), "unmapped_step:" + step.describe(), false, true);
             BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.TASK, bot, "goal_step_unmapped", "step", step.describe());
             return;
         }
@@ -296,7 +560,7 @@ public final class GoalExecutor {
         plan.currentTask = task.get();
         int done = plan.totalSteps - plan.steps.size();
         BotLog.task(bot, "goal_step", "index", done, "total", plan.totalSteps, "step", step.describe());
-        TaskManager.INSTANCE.assign(bot, task.get());
+        TaskManager.INSTANCE.assign(bot, task.get(), TaskOrigin.mission(plan.missionId, step.describe()));
     }
 
     // Phase A 进度信号:目标产物当前库存计数(HaveItem/Stockpile 用其物品,MineOre 用矿石掉落)。
@@ -315,6 +579,7 @@ public final class GoalExecutor {
     }
 
     private void handleStepFailure(MinecraftServer server, AIPlayerEntity bot, ActivePlan plan, String reason) {
+        captureTaskEvidence(plan);
         // 第4层:best-effort 步骤(如 HUNT 备粮)失败不阻断整体目标——跳过它直接继续下一步。
         // 这样"挖钻石前备点肉"在周围没动物时也不会让整条挖矿目标 goal_failed(续航仍由饥饿链兜底)。
         // 打猎(Goal.Food)整体 best-effort:任何前置(砍树/做剑)失败都降级继续(用现有工具/空手猎),绝不卡死/发呆。
@@ -328,6 +593,8 @@ public final class GoalExecutor {
                 || plan.current.kind() == GoalStep.Kind.HUNT
                 || plan.current.kind() == GoalStep.Kind.COOK_FOOD
                 || plan.current.kind() == GoalStep.Kind.STOCKPILE)) {
+            captureTaskEvidence(plan);
+            plan.skippedSteps.add(new GoalResult.SkippedStep(plan.current.describe(), reason));
             BotLog.task(bot, "goal_step_skipped_besteffort", "step", plan.current.describe(), "reason", reason);
             assignNext(bot, plan);
             return;
@@ -354,34 +621,21 @@ public final class GoalExecutor {
         plan.lifetimeReplans++;
         // 死亡闸:连续 3 次无进展 replan,或终生 12 次(防"挖一点卡一点"无限磨),或 replan 关闭 → 判死。
         if (plan.replanCount >= 3 || plan.lifetimeReplans >= 12 || !AIBotConfig.get().goal().replanOnFailureEnabled()) {
-            activePlans.remove(bot.getUuid());
-            lastGoalFailTick.put(bot.getUuid(), server.getTicks());
-            BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.TASK, bot, "goal_failed", "goal", plan.goal, "reason", reason);
-            io.github.zoyluo.aibot.memory.EpisodeLog.INSTANCE.record(bot,
-                    io.github.zoyluo.aibot.memory.EpisodeLog.Type.GOAL_FAILED, bot.getBlockPos(), goalLabel(plan.goal));
-            report(bot, humanGoalFailure(reason));
-            userGoal.remove(bot.getUuid());
-            advanceQueue(bot); // 像真人:这件办不成说一声,接着办队列里的下一件
+            finishActive(bot, plan, evaluate(bot, plan), reason, false, true);
             return;
         }
         plan.replanCount++;
-        GoalPlanner.GoalPlan fresh = GoalPlanner.plan(bot, plan.goal);
+        GoalPlanner.GoalPlan fresh = GoalPlanner.plan(bot, plan.goal, snapshotContext(plan));
         BotLog.task(bot, "goal_replan", "goal", plan.goal, "reason", reason, "steps", fresh.describeSteps(), "unresolved", fresh.unresolved());
         if (!fresh.success() || fresh.steps().isEmpty()) {
-            activePlans.remove(bot.getUuid());
-            report(bot, fresh.success() ? "目标已停止:没有可继续执行的步骤。" : "目标重规划失败:" + String.join(", ", fresh.unresolved()));
+            finishActive(bot, plan, evaluate(bot, plan),
+                    fresh.success() ? "replan_empty" : "replan_failed:" + String.join(",", fresh.unresolved()), false, true);
             return;
         }
         // 防呆:若重规划的第一步与刚失败的步骤完全相同,且失败是"硬卡死"类(挖不动/卡住/超时),
         // 重试只会原样再失败一次(实测#9 的 replan 风暴根因)。直接判失败,交大脑/玩家换思路。
         if (plan.current != null && plan.current.equals(fresh.steps().get(0)) && isHardFailure(reason) && !madeProgress) {
-            activePlans.remove(bot.getUuid());
-            lastGoalFailTick.put(bot.getUuid(), server.getTicks());
-            BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.TASK, bot, "goal_failed",
-                    "goal", plan.goal, "reason", "replan_same_step:" + reason);
-            report(bot, humanGoalFailure(reason));
-            userGoal.remove(bot.getUuid());
-            advanceQueue(bot);
+            finishActive(bot, plan, evaluate(bot, plan), "replan_same_step:" + reason, false, true);
             return;
         }
         plan.steps.clear();
@@ -431,7 +685,7 @@ public final class GoalExecutor {
         return false;
     }
 
-    private static Optional<Task> stepToTask(AIPlayerEntity bot, GoalStep step) {
+    private static Optional<Task> stepToTask(AIPlayerEntity bot, GoalStep step, ActivePlan plan) {
         return switch (step.kind()) {
             case GATHER -> Optional.of(new GatherQuotaTask(step.item(), step.count()));
             // DIGDOWN(实测#8):MINE 步改用 DigDownTask——站着就近垂直下挖,不定位/不寻路,
@@ -464,12 +718,150 @@ public final class GoalExecutor {
             // flatten=true:真实地形罕有现成平地,lenient 选址选最平点 + FLATTEN 挖高填低整平(治 real_build no_flat_site)。
             case BUILD -> {
                 try {
-                    yield Optional.of(new BuildTask(BlueprintLoader.load(step.tag()), null, true, true));
+                    BlockPos anchor = plan.buildAnchor;
+                    yield Optional.of(new BuildTask(
+                            BlueprintLoader.load(step.tag()), anchor, anchor == null, anchor == null));
                 } catch (IOException e) {
                     yield Optional.empty();
                 }
             }
         };
+    }
+
+    private GoalEvaluation evaluate(AIPlayerEntity bot, ActivePlan plan) {
+        GoalSnapshot snapshot = GoalSnapshotCollector.collect(bot, plan.goal, snapshotContext(plan));
+        plan.lastStructure = snapshot.structure().orElse(null);
+        return plan.predicate.evaluate(snapshot);
+    }
+
+    private static GoalSnapshotCollector.Context snapshotContext(ActivePlan plan) {
+        return new GoalSnapshotCollector.Context(
+                plan.origin,
+                plan.boundContainers,
+                plan.blueprint,
+                plan.buildAnchor,
+                plan.buildPlaced,
+                plan.buildSkipped);
+    }
+
+    private static void captureTaskEvidence(ActivePlan plan) {
+        if (plan.currentTask instanceof BuildTask build) {
+            plan.blueprint = build.blueprint();
+            plan.buildAnchor = build.anchor();
+            plan.buildPlaced = build.placedBlocks();
+            plan.buildSkipped = build.skippedBlocks();
+        } else if (plan.currentTask instanceof StockpileTask stockpile) {
+            plan.boundContainers.addAll(stockpile.depositedContainers());
+        } else if (plan.currentTask instanceof PlaceStationsTask stations && !stations.placedPositions().isEmpty()) {
+            plan.origin = stations.placedPositions().iterator().next();
+        }
+    }
+
+    private static GoalSnapshotCollector.Context initialContext(AIPlayerEntity bot, Goal goal) {
+        if (goal instanceof Goal.Stockpile) {
+            net.minecraft.util.math.BlockPos base = io.github.zoyluo.aibot.memory.BotMemoryStore.INSTANCE
+                    .of(bot.getUuid())
+                    .placeIn(bot.getServerWorld(), "base")
+                    .orElse(bot.getBlockPos());
+            return GoalSnapshotCollector.Context.at(base);
+        }
+        return GoalSnapshotCollector.Context.at(bot.getBlockPos());
+    }
+
+    private void finishActive(AIPlayerEntity bot,
+                              ActivePlan plan,
+                              GoalEvaluation evaluation,
+                              String reason,
+                              boolean cancelled,
+                              boolean advanceQueue) {
+        finishActive(bot, plan, evaluation, reason, cancelled, advanceQueue, null);
+    }
+
+    private void finishActive(AIPlayerEntity bot,
+                              ActivePlan plan,
+                              GoalEvaluation evaluation,
+                              String reason,
+                              boolean cancelled,
+                              boolean advanceQueue,
+                              GoalResult.Status forcedStatus) {
+        if (!activePlans.remove(bot.getUuid(), plan)) {
+            return;
+        }
+        GoalResult.Status status = forcedStatus == null
+                ? GoalResult.classify(evaluation, cancelled) : forcedStatus;
+        GoalResult result = new GoalResult(
+                resultSequence.incrementAndGet(),
+                plan.missionId,
+                plan.goal,
+                status,
+                evaluation,
+                reason,
+                plan.startedTick,
+                bot.getServer().getTicks(),
+                plan.skippedSteps,
+                plan.lastStructure);
+        publishResult(bot, result);
+        userGoal.remove(bot.getUuid());
+        if (status == GoalResult.Status.FAILED || status == GoalResult.Status.PARTIAL) {
+            lastGoalFailTick.put(bot.getUuid(), bot.getServer().getTicks());
+        }
+        if (advanceQueue) {
+            advanceQueue(bot);
+        }
+    }
+
+    private void recordImmediateResult(AIPlayerEntity bot,
+                                       UUID missionId,
+                                       Goal goal,
+                                       int startedTick,
+                                       GoalEvaluation evaluation,
+                                       GoalResult.Status status,
+                                       String reason) {
+        publishResult(bot, new GoalResult(
+                resultSequence.incrementAndGet(), missionId, goal, status, evaluation, reason,
+                startedTick, bot.getServer().getTicks(), List.of(), null));
+    }
+
+    private void publishResult(AIPlayerEntity bot, GoalResult result) {
+        lastResults.put(bot.getUuid(), result);
+        BotLog.task(bot, "goal_result",
+                "sequence", result.sequence(),
+                "mission_id", result.missionId(),
+                "goal", result.goal(),
+                "status", result.status(),
+                "matched", result.evaluation().matched(),
+                "required", result.evaluation().required(),
+                "reason", result.reason(),
+                "skipped", result.skippedSteps().size(),
+                "evidence", result.evaluation().evidence());
+        if (result.status() == GoalResult.Status.COMPLETED) {
+            io.github.zoyluo.aibot.memory.EpisodeLog.INSTANCE.record(bot,
+                    io.github.zoyluo.aibot.memory.EpisodeLog.Type.GOAL_DONE, bot.getBlockPos(), goalLabel(result.goal()));
+        } else if (result.status() != GoalResult.Status.CANCELLED) {
+            io.github.zoyluo.aibot.memory.EpisodeLog.INSTANCE.record(bot,
+                    io.github.zoyluo.aibot.memory.EpisodeLog.Type.GOAL_FAILED, bot.getBlockPos(), goalLabel(result.goal()));
+        }
+        String message = resultMessage(result.status(), result.evaluation(), result.reason());
+        reportTerminal(bot, message, result.status());
+        markDirty(bot);
+    }
+
+    private static void markDirty(AIPlayerEntity bot) {
+        io.github.zoyluo.aibot.persist.BotPersistence.INSTANCE.markDirty(bot.getServer());
+    }
+
+    private static String resultMessage(GoalResult.Status status, GoalEvaluation evaluation, String reason) {
+        return switch (status) {
+            case COMPLETED -> "目标已验收完成。";
+            case PARTIAL -> "目标只完成了一部分(" + evaluation.matched() + "/" + evaluation.required() + "):"
+                    + String.join(",", evaluation.unmet());
+            case FAILED -> "目标未通过最终验收:" + (evaluation.unmet().isEmpty() ? reason : String.join(",", evaluation.unmet()));
+            case CANCELLED -> "目标已取消。";
+        };
+    }
+
+    private static void reportTerminal(AIPlayerEntity bot, String text, GoalResult.Status status) {
+        BotReporter.INSTANCE.onGoalResult(bot, status, text);
     }
 
     private static void report(AIPlayerEntity bot, String text) {
@@ -505,13 +897,27 @@ public final class GoalExecutor {
     }
 
     private static final class ActivePlan {
+        private UUID missionId;
+        private final int startedTick;
         private final Goal goal;
+        private final GoalPredicate predicate;
+        private net.minecraft.util.math.BlockPos origin;
+        private final Set<net.minecraft.util.math.BlockPos> boundContainers = new HashSet<>();
         private final ArrayDeque<GoalStep> steps;
         private final java.util.List<String> stepLabels; // 完整步骤描述(steps 会随执行 poll 空,这里留全量供面板任务链条展示)
+        private final List<GoalResult.SkippedStep> skippedSteps = new ArrayList<>();
         private GoalStep current;
         private Task currentTask;
+        private BlueprintSchema blueprint;
+        private net.minecraft.util.math.BlockPos buildAnchor;
+        private int buildPlaced;
+        private int buildSkipped;
+        private StructureReport lastStructure;
         private int totalSteps;
         private int replanCount;       // Phase A:语义=连续无进展 replan 数(有进展则清零)
+        private int postconditionReplans;
+        private int lastEvaluationMatched;
+        private String lastRepairFingerprint = "";
         // Phase A 韧性·进度感知预算(断点恢复):
         private int completedSteps;    // 累计完成步数(单调增)
         private int lifetimeReplans;   // 终生 replan 数(永不重置,绝对兜底闸=12)
@@ -519,11 +925,33 @@ public final class GoalExecutor {
         private int snapTargetCount;   // 上次 replan 时目标产物库存计数
         private int snapX, snapY, snapZ; // 上次 replan 时 bot 坐标(横向位移/下潜=进展判据)
 
-        private ActivePlan(Goal goal, ArrayDeque<GoalStep> steps, int totalSteps, java.util.List<String> stepLabels) {
+        private ActivePlan(UUID missionId,
+                           int startedTick,
+                           Goal goal,
+                           GoalPredicate predicate,
+                           GoalSnapshotCollector.Context context,
+                           ArrayDeque<GoalStep> steps,
+                           int totalSteps,
+                           java.util.List<String> stepLabels) {
+            this.missionId = missionId;
+            this.startedTick = startedTick;
             this.goal = goal;
+            this.predicate = predicate;
+            this.origin = context.origin();
+            this.boundContainers.addAll(context.boundContainers());
+            this.blueprint = context.blueprint();
+            this.buildAnchor = context.buildAnchor();
+            this.buildPlaced = context.buildPlaced();
+            this.buildSkipped = context.buildSkipped();
             this.steps = steps;
             this.totalSteps = totalSteps;
             this.stepLabels = stepLabels;
         }
+    }
+
+    private record RestoreSeed(UUID missionId,
+                               GoalSnapshotCollector.Context context,
+                               int completedSteps,
+                               int startedTick) {
     }
 }

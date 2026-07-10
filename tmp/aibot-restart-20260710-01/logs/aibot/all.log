@@ -1,0 +1,2 @@
+2026-07-10T01:50:00.231Z [INFO ] [LIFECYCLE ] bot=- event=mod_loaded version='0.0.1'
+2026-07-10T01:50:00.232Z [INFO ] [CONFIG    ] bot=- event=config_loaded deepseek_model='deepseek-chat' perception_radius='16' profile='strict_survival' operator_capabilities='OperatorCapabilities[hiddenBlockScan=true, emergencyTeleport=true, forcedPickup=true, manualTeleport=true]' logging_enabled='true' pickup_force_radius='2.75' nav_lookahead='4'

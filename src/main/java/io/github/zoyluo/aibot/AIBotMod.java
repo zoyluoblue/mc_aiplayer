@@ -3,14 +3,15 @@ package io.github.zoyluo.aibot;
 import io.github.zoyluo.aibot.brain.BrainCoordinator;
 import io.github.zoyluo.aibot.brain.ChatCaptureListener;
 import io.github.zoyluo.aibot.command.AIBotCommand;
-import io.github.zoyluo.aibot.command.AIBotVerifySubcommand;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.log.BotLogWriter;
-import io.github.zoyluo.aibot.manager.AIPlayerManager;
 import io.github.zoyluo.aibot.network.AIBotServerNetworking;
 import io.github.zoyluo.aibot.network.payload.AIPayloads;
+import io.github.zoyluo.aibot.mode.CapabilityPolicy;
+import io.github.zoyluo.aibot.mode.PrivilegedCapability;
 import io.github.zoyluo.aibot.observe.TpsGuard;
 import io.github.zoyluo.aibot.persist.BotPersistence;
+import io.github.zoyluo.aibot.runtime.RuntimeLifecycleCoordinator;
 import io.github.zoyluo.aibot.task.BotTickCoordinator;
 import io.github.zoyluo.aibot.task.TaskManager;
 import net.fabricmc.api.ModInitializer;
@@ -20,6 +21,8 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.Arrays;
 
 public class AIBotMod implements ModInitializer {
     public static final String MOD_ID = "aibot";
@@ -31,6 +34,13 @@ public class AIBotMod implements ModInitializer {
         BotLogWriter.INSTANCE.start(config);
         BotLog.lifecycle("mod_loaded", "version", getModVersion());
         BotLog.config("config_loaded",
+                "profile", config.profile().configValue(),
+                "configured_operator_capabilities", config.operatorCapabilities(),
+                "effective_capabilities", Arrays.stream(PrivilegedCapability.values())
+                        .filter(capability -> CapabilityPolicy.decide(
+                                config.profile(), config.operatorCapabilities(), capability).allowed())
+                        .map(Enum::name)
+                        .toList(),
                 "deepseek_model", config.deepseek().model(),
                 "perception_radius", config.perception().radius(),
                 "nav_lookahead", config.nav().lookahead(),
@@ -49,28 +59,13 @@ public class AIBotMod implements ModInitializer {
 
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
             BotLog.lifecycle("server_started", "motd", server.getServerMotd());
-            // 知识层数据驱动:扫 RecipeManager 建运行时配方索引(含模组配方,手写表的兜底层);
-            // 知识库挂 server(落盘路径)。
-            io.github.zoyluo.aibot.craft.RuntimeRecipeIndex.rebuild(server);
-            io.github.zoyluo.aibot.memory.KnowledgeBase.INSTANCE.attachServer(server);
-            int restored = BotPersistence.INSTANCE.loadAndRespawn(server);
-            if (restored > 0) {
-                BotLog.lifecycle("bot_persist_restored", "count", restored);
-            }
+            RuntimeLifecycleCoordinator.INSTANCE.onServerStarted(server, config);
         });
-        ServerLifecycleEvents.SERVER_STOPPING.register(server ->
-                BotLog.lifecycle("server_stopping"));
-        ServerLifecycleEvents.SERVER_STOPPING.register(server -> AIBotServerNetworking.INSTANCE.clear());
-        ServerLifecycleEvents.SERVER_STOPPING.register(server -> BotPersistence.INSTANCE.saveAll(server));
-        ServerLifecycleEvents.SERVER_STOPPING.register(AIPlayerManager.INSTANCE::onServerStopping);
-        ServerLifecycleEvents.SERVER_STOPPING.register(server -> BrainCoordinator.INSTANCE.shutdown());
-        ServerLifecycleEvents.SERVER_STOPPING.register(TaskManager.INSTANCE::onServerStopping);
-        ServerLifecycleEvents.SERVER_STOPPING.register(server -> BotLogWriter.INSTANCE.shutdown(3000));
+        ServerLifecycleEvents.SERVER_STOPPING.register(RuntimeLifecycleCoordinator.INSTANCE::onServerStopping);
         ServerTickEvents.END_SERVER_TICK.register(server -> {
             TpsGuard.INSTANCE.tick(server);
             TaskManager.INSTANCE.tickAll(server);
             BotTickCoordinator.INSTANCE.tick(server);
-            AIBotVerifySubcommand.tick(server);
             AIBotServerNetworking.INSTANCE.tick(server);
             io.github.zoyluo.aibot.log.DiagnosticLogger.INSTANCE.tick(server);
             if (server.getTicks() > 0 && server.getTicks() % 6000 == 0) {

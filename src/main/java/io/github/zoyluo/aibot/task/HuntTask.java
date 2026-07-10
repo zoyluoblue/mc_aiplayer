@@ -120,10 +120,16 @@ public final class HuntTask extends AbstractTask {
         for (int dy = 1; feet.getY() + dy < top - 1 && dy <= 80; dy++) {
             BlockPos candidate = feet.up(dy);
             if (Standability.isStandable(world, candidate) && world.isSkyVisible(candidate)) {
-                bot.getActionPack().stopAll();
-                bot.teleport(world, candidate.getX() + 0.5D, candidate.getY(), candidate.getZ() + 0.5D,
-                        java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
-                BotLog.action(bot, "hunt_surfaced", "to", candidate.toShortString());
+                boolean moved = io.github.zoyluo.aibot.mode.CapabilityRuntime.run(
+                        bot, io.github.zoyluo.aibot.mode.PrivilegedCapability.EMERGENCY_TELEPORT,
+                        "hunt_surface", () -> {
+                            bot.getActionPack().stopAll();
+                            bot.teleport(world, candidate.getX() + 0.5D, candidate.getY(), candidate.getZ() + 0.5D,
+                                    java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+                        });
+                if (moved) {
+                    BotLog.action(bot, "hunt_surfaced", "to", candidate.toShortString());
+                }
                 return;
             }
         }
@@ -421,6 +427,7 @@ public final class HuntTask extends AbstractTask {
                 .getEntitiesByClass(LivingEntity.class, box,
                         entity -> entity.isAlive() && entity != bot && isHuntable(entity))
                 .stream()
+                .filter(entity -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveEntity(bot, entity))
                 .min(Comparator.comparingDouble(bot::distanceTo))
                 .orElse(null);
     }
@@ -430,6 +437,9 @@ public final class HuntTask extends AbstractTask {
         return !bot.getServerWorld()
                 .getEntitiesByClass(LivingEntity.class, bot.getBoundingBox().expand(SEARCH_RANGE),
                         entity -> entity.isAlive() && entity != bot && isHuntable(entity))
+                .stream()
+                .filter(entity -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveEntity(bot, entity))
+                .toList()
                 .isEmpty();
     }
 }

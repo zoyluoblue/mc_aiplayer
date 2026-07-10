@@ -176,6 +176,13 @@ public final class ActionPack {
         if (Standability.isStandable(world, current)) {
             return true;
         }
+        // A valid current start is ordinary pathfinding and must not require an emergency
+        // capability. Only the fallback relocation to a different cell is privileged.
+        if (!io.github.zoyluo.aibot.mode.CapabilityRuntime.decide(
+                player, io.github.zoyluo.aibot.mode.PrivilegedCapability.EMERGENCY_TELEPORT,
+                "action_pack_snap:" + reason).allowed()) {
+            return false;
+        }
         Optional<BlockPos> snapped = Standability.findNearestStandable(world, current, 8, 128, 32);
         if (snapped.isEmpty()) {
             BotLog.warn(LogCategory.PATH, player, "path_start_snap_failed", "reason", reason, "from", io.github.zoyluo.aibot.log.LogFields.pos(current));
@@ -211,10 +218,7 @@ public final class ActionPack {
         if (player.getBlockPos().getY() <= target.getY()) {
             return;
         }
-        stopMovement();
-        player.teleport(player.getServerWorld(),
-                target.getX() + 0.5D, target.getY(), target.getZ() + 0.5D,
-                Collections.emptySet(), player.getYaw(), player.getPitch(), false);
+        io.github.zoyluo.aibot.mode.FakePlayerMotion.stepTo(player, target, "descend_into");
     }
 
     public ActionResult startMining(BlockPos pos, Direction face) {
@@ -251,6 +255,20 @@ public final class ActionPack {
         stopMining();
         this.walkTo = null;
         stopMovement();
+        player.stopUsingItem();
+    }
+
+    public boolean hasActiveActions() {
+        return pathExecutor != null
+                || walkTo != null
+                || mining != null
+                || forward != 0.0F
+                || strafing != 0.0F
+                || sneaking
+                || sprinting
+                || jumping
+                || jumpTicks > 0
+                || player.isUsingItem();
     }
 
     public boolean isPathExecutorIdle() {

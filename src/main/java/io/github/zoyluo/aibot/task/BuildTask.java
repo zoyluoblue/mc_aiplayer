@@ -6,6 +6,11 @@ import io.github.zoyluo.aibot.action.InventoryAction;
 import io.github.zoyluo.aibot.action.MaterialPalette;
 import io.github.zoyluo.aibot.action.MiningAction;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
+import io.github.zoyluo.aibot.goal.StructureVerifier;
+import io.github.zoyluo.aibot.log.BotLog;
+import io.github.zoyluo.aibot.mode.CapabilityRuntime;
+import io.github.zoyluo.aibot.mode.ObservableWorldQuery;
+import io.github.zoyluo.aibot.mode.PrivilegedCapability;
 import io.github.zoyluo.aibot.pathfinding.Standability;
 import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
@@ -46,7 +51,10 @@ public final class BuildTask extends AbstractTask {
     private int buildTargetIndex = -1;
     private int retryTicks;
     private int placeDelayTicks;
+    private int placedBlocks;
+    private int skippedBlocks;
     private boolean flattenMiningStarted;
+    private boolean buildMiningStarted;
     private String note = "";
 
     public BuildTask(BlueprintSchema blueprint, BlockPos anchor) {
@@ -101,9 +109,12 @@ public final class BuildTask extends AbstractTask {
         buildTargetIndex = -1;
         retryTicks = 0;
         placeDelayTicks = 0;
+        placedBlocks = 0;
+        skippedBlocks = 0;
         flattenTargets.clear();
         currentFlattenTarget = null;
         flattenMiningStarted = false;
+        buildMiningStarted = false;
         phase = Phase.SITE;
     }
 
@@ -142,24 +153,30 @@ public final class BuildTask extends AbstractTask {
             note = "auto_site=" + compact(anchor);
         }
         if (flatten) {
-            planFlatten(bot.getServerWorld());
+            planFlatten(bot);
             phase = Phase.FLATTEN;
         } else {
             phase = Phase.BUILD;
         }
     }
 
-    private void planFlatten(ServerWorld world) {
+    private void planFlatten(AIPlayerEntity bot) {
+        ServerWorld world = bot.getServerWorld();
+        boolean rawTerrainRead = CapabilityRuntime.decide(
+                bot, PrivilegedCapability.HIDDEN_BLOCK_SCAN, "build_flatten_plan").allowed();
         flattenTargets.clear();
         for (int dx = 0; dx < blueprint.width(); dx++) {
             for (int dz = 0; dz < blueprint.depth(); dz++) {
                 BlockPos ground = anchor.add(dx, -1, dz);
-                if (world.getBlockState(ground).isAir() || !world.getFluidState(ground).isEmpty()) {
+                if (!rawTerrainRead
+                        || world.getBlockState(ground).isAir()
+                        || !world.getFluidState(ground).isEmpty()) {
                     flattenTargets.addLast(new FlattenTarget(ground, FlattenKind.FILL));
                 }
                 for (int dy = 0; dy < Math.max(blueprint.height(), 1); dy++) {
                     BlockPos clear = anchor.add(dx, dy, dz);
-                    if (!world.getBlockState(clear).isAir() && world.getFluidState(clear).isEmpty()) {
+                    if (!rawTerrainRead
+                            || (!world.getBlockState(clear).isAir() && world.getFluidState(clear).isEmpty())) {
                         flattenTargets.addLast(new FlattenTarget(clear, FlattenKind.CLEAR));
                     }
                 }
@@ -172,6 +189,7 @@ public final class BuildTask extends AbstractTask {
             currentFlattenTarget = flattenTargets.pollFirst();
             flattenMiningStarted = false;
             flattenTargetTick = elapsed;
+            retryTicks = 0;
             if (currentFlattenTarget == null) {
                 phase = Phase.BUILD;
                 return;
@@ -193,12 +211,13 @@ public final class BuildTask extends AbstractTask {
 
     private void clearFlattenBlock(AIPlayerEntity bot) {
         BlockPos pos = currentFlattenTarget.pos();
+        if (!ensureObservableWorkPose(bot, pos, "flatten_clear")) {
+            return;
+        }
         if (bot.getServerWorld().getBlockState(pos).isAir()) {
             Standability.clearCache();
             currentFlattenTarget = null;
-            return;
-        }
-        if (!moveWithinReach(bot, pos, "flatten_clear", 20.25D)) {
+            retryTicks = 0;
             return;
         }
         if (!flattenMiningStarted && bot.getActionPack().isMiningIdle()) {
@@ -213,12 +232,13 @@ public final class BuildTask extends AbstractTask {
 
     private void fillFlattenBlock(AIPlayerEntity bot) {
         BlockPos pos = currentFlattenTarget.pos();
+        if (!ensureObservableWorkPose(bot, pos, "flatten_fill")) {
+            return;
+        }
         if (!bot.getServerWorld().getBlockState(pos).isAir()) {
             Standability.clearCache();
             currentFlattenTarget = null;
-            return;
-        }
-        if (!moveWithinReach(bot, pos, "flatten_fill", 100.0D)) {
+            retryTicks = 0;
             return;
         }
         OptionalInt slot = MaterialPalette.pickSlot(bot, "dirt_like");
@@ -234,10 +254,15 @@ public final class BuildTask extends AbstractTask {
         if (result.isSuccess()) {
             Standability.clearCache();
             currentFlattenTarget = null;
+            retryTicks = 0;
             placeDelayTicks = 2;
             return;
         }
         retryTicks++;
+        BlockPos stand = nearbyStand(bot, pos);
+        if (stand != null && bot.getActionPack().isPathExecutorIdle()) {
+            bot.getActionPack().startPathTo(stand);
+        }
         if (retryTicks > 12) {
             fail("flatten_fill_failed: " + result.reason() + " at " + compact(pos));
         }
@@ -245,38 +270,49 @@ public final class BuildTask extends AbstractTask {
 
     private void build(AIPlayerEntity bot) {
         if (nextIndex >= blueprint.placements().size()) {
-            complete();
-            return;
-        }
-        // 落块格预算(镜像 flatten 50t skip):同一块连续放不到——moveWithinReach 永续寻路(nearbyStand 退化
-        // 走向自己/够不到,executor 非 idle 时只 return false 不计 retryTicks)→ 80t 跳过该块继续盖,best-effort
-        // 不卡死到 build_timeout(real_build 实测卡 block 54 死住 ~16000t 的根因)。完工判 ≥80/116 容忍少量跳过。
-        if (nextIndex != buildTargetIndex) {
-            buildTargetIndex = nextIndex;
-            buildTargetTick = elapsed;
-            retryTicks = 0;
-        } else if (elapsed - buildTargetTick > 80) {
-            note = "build_skip=" + nextIndex + "@" + elapsed;
-            nextIndex++;
-            retryTicks = 0;
+            var report = StructureVerifier.verify(
+                    bot.getServerWorld(), blueprint, anchor, placedBlocks, skippedBlocks);
+            bot.getActionPack().stopAll();
+            if (report.mismatched() > 0 || report.matched() != report.expected()) {
+                fail("structure_incomplete: matched=" + report.matched()
+                        + "/" + report.expected()
+                        + " skipped=" + report.skipped());
+            } else {
+                complete();
+            }
             return;
         }
         BlueprintSchema.BlockPlacement placement = blueprint.placements().get(nextIndex);
         BlockPos pos = anchor.add(placement.dx(), placement.dy(), placement.dz());
+        // Registry validation is pure and must happen before visibility/path budgets. Otherwise an
+        // invalid ID can be skipped while still unseen and reach terminal structure verification,
+        // where it used to surface as an uncaught Identifier exception.
         Block block = resolveBlock(placement.blockId());
         if (block == null) {
             return;
         }
+        // 落块格预算(镜像 flatten 50t skip):同一块连续放不到时先记录并继续其余结构，避免单格把
+        // 整个执行器卡到 build_timeout。末尾按完整 blueprint（包括 AIR）核验世界状态；只有 exact
+        // match 才完成，否则以 structure_incomplete 失败，不能把 best-effort 误报为完工。
+        if (nextIndex != buildTargetIndex) {
+            buildTargetIndex = nextIndex;
+            buildTargetTick = elapsed;
+            retryTicks = 0;
+            buildMiningStarted = false;
+        } else if (elapsed - buildTargetTick > 80) {
+            skipBuildTarget(bot, pos, "target_timeout");
+            return;
+        }
+        if (!ensureObservableWorkPose(bot, pos, "build")) {
+            return;
+        }
         if (block == Blocks.AIR) {
-            nextIndex++;
+            clearBlueprintAir(bot, pos);
             return;
         }
         if (bot.getServerWorld().getBlockState(pos).isOf(block)
                 || (placement.palette() != null && MaterialPalette.matchesBlock(bot.getServerWorld().getBlockState(pos), placement.palette()))) {
             nextIndex++;
-            return;
-        }
-        if (!moveWithinReach(bot, pos, "build", 100.0D)) {
             return;
         }
         OptionalInt slot = materialSlot(bot, placement, block);
@@ -287,6 +323,7 @@ public final class BuildTask extends AbstractTask {
         InventoryAction.equipFromSlot(bot, slot.getAsInt());
         ActionResult result = BuildAction.placeBlockAt(bot, pos);
         if (result.isSuccess()) {
+            placedBlocks++;
             nextIndex++;
             retryTicks = 0;
             placeDelayTicks = 2;
@@ -294,17 +331,78 @@ public final class BuildTask extends AbstractTask {
         }
         retryTicks++;
         BlockPos stand = nearbyStand(bot, pos);
-        if (stand != null && retryTicks % 4 == 0) {
+        if (stand != null && bot.getActionPack().isPathExecutorIdle()) {
             bot.getActionPack().startPathTo(stand);
         }
         placeDelayTicks = 5;
         if (retryTicks > 12) {
-            // best-effort:这一块反复放不到(障碍/视线/支撑缺)→ 跳过继续盖,不毁整任务(real 地形单块卡不该全败;
-            // 完工判 ≥80/116 容忍)。与上面的 80t 预算双保险:谁先到谁跳。
-            note = "build_skip_placefail=" + nextIndex + ":" + result.reason();
+            // best-effort execution:单块反复失败时先继续其余结构；终态仍会因 skippedBlocks>0
+            // 明确失败。与上面的 80t 预算双保险，谁先到谁记录该缺口。
+            skipBuildTarget(bot, pos, "place_failed:" + result.reason());
+        }
+    }
+
+    private void clearBlueprintAir(AIPlayerEntity bot, BlockPos pos) {
+        if (!ensureObservableWorkPose(bot, pos, "build_air")) {
+            return;
+        }
+        if (bot.getServerWorld().getBlockState(pos).isAir()) {
+            if (buildMiningStarted) {
+                placedBlocks++;
+            }
+            buildMiningStarted = false;
             nextIndex++;
             retryTicks = 0;
+            return;
         }
+        if (!bot.getActionPack().isMiningIdle()) {
+            return;
+        }
+        if (buildMiningStarted) {
+            buildMiningStarted = false;
+            retryTicks++;
+        }
+        ActionResult result = MiningAction.startMining(
+                bot, pos, Direction.getFacing(bot.getEyePos().subtract(pos.toCenterPos())));
+        if (result.isFailed()) {
+            retryTicks++;
+            if (retryTicks > 12) {
+                skipBuildTarget(bot, pos, "air_clear_failed:" + result.reason());
+            }
+            return;
+        }
+        buildMiningStarted = true;
+    }
+
+    private boolean ensureObservableWorkPose(AIPlayerEntity bot, BlockPos pos, String reason) {
+        double reach = bot.getBlockInteractionRange();
+        if (ObservableWorldQuery.canObserveCell(bot, pos)
+                && moveWithinReach(bot, pos, reason, reach * reach)) {
+            return true;
+        }
+        if (bot.getActionPack().isPathExecutorIdle()) {
+            BlockPos stand = nearbyStand(bot, pos);
+            if (stand != null) {
+                ActionResult path = bot.getActionPack().startPathTo(stand);
+                if (path.isFailed() && "pathfinding_throttled".equals(path.reason())) {
+                    placeDelayTicks = 4;
+                }
+            }
+        }
+        return false;
+    }
+
+    private void skipBuildTarget(AIPlayerEntity bot, BlockPos pos, String reason) {
+        bot.getActionPack().stopAll();
+        BotLog.action(bot, "build_block_skipped",
+                "index", nextIndex,
+                "pos", compact(pos),
+                "reason", reason);
+        note = "build_skip=" + nextIndex + ":" + reason;
+        skippedBlocks++;
+        nextIndex++;
+        retryTicks = 0;
+        buildMiningStarted = false;
     }
 
     private OptionalInt materialSlot(AIPlayerEntity bot, BlueprintSchema.BlockPlacement placement, Block block) {
@@ -342,51 +440,161 @@ public final class BuildTask extends AbstractTask {
     }
 
     private boolean moveWithinReach(AIPlayerEntity bot, BlockPos pos, String reason, double maxDistanceSquared) {
-        if (bot.getEyePos().squaredDistanceTo(pos.toCenterPos()) > maxDistanceSquared) {
+        // Never place a blueprint block through the bot's feet or head. Operator mode used to
+        // hide this mistake with an emergency teleport; strict survival must first walk to a
+        // real adjacent stand position.
+        BlockPos feet = bot.getBlockPos();
+        if (pos.equals(feet) || pos.equals(feet.up())) {
             if (bot.getActionPack().isPathExecutorIdle()) {
                 BlockPos stand = nearbyStand(bot, pos);
-                if (stand == null) {
-                    fail("no_stand_position_for_" + reason + ": " + compact(pos));
+                if (stand == null || stand.equals(feet)) {
+                    fail("no_safe_stand_for_" + reason + ": " + compact(pos));
                     return false;
                 }
                 ActionResult path = bot.getActionPack().startPathTo(stand);
-                if (path.isFailed()) {
-                    if ("pathfinding_throttled".equals(path.reason())) {
-                        // 节流退避:寻路是全局速率限。整地逐块大量请求时每 tick 重请会【永远撞限流】→
-                        // bot 到不了第一个整地目标、0 place/0 mine → build_timeout(real_build 实测 flatten 0 进度)。
-                        // 退避 4 tick 让速率窗口清掉再重试(不计失败预算);onTick 顶部 placeDelayTicks>0 正好跳过。
-                        placeDelayTicks = 4;
-                    } else {
-                        // 真实无路(无 stand/障碍)才累计,>12 判死。
-                        retryTicks++;
-                        if (retryTicks > 12) {
-                            fail("path_to_" + reason + "_failed: " + path.reason());
-                        }
+                if (path.isFailed() && !"pathfinding_throttled".equals(path.reason())) {
+                    retryTicks++;
+                    if (retryTicks > 12) {
+                        fail("path_to_safe_stand_for_" + reason + "_failed: " + path.reason());
                     }
                 }
             }
             return false;
         }
+        // A path started to gain a safe angle is part of this placement attempt. Let it finish;
+        // stopping it merely because the block is already within raw reach leaves the bot on the
+        // same occluded side forever.
         if (!bot.getActionPack().isPathExecutorIdle()) {
-            bot.getActionPack().stopAll();
+            return false;
         }
-        retryTicks = 0; // 够到目标=进展,重置真实失败预算(整地跨多块时不累计误杀)
+        if (bot.getEyePos().squaredDistanceTo(pos.toCenterPos()) > maxDistanceSquared) {
+            BlockPos stand = nearbyStand(bot, pos);
+            if (stand == null) {
+                fail("no_stand_position_for_" + reason + ": " + compact(pos));
+                return false;
+            }
+            ActionResult path = bot.getActionPack().startPathTo(stand);
+            if (path.isFailed()) {
+                if ("pathfinding_throttled".equals(path.reason())) {
+                    // 节流退避:寻路是全局速率限。整地逐块大量请求时每 tick 重请会【永远撞限流】→
+                    // bot 到不了第一个整地目标、0 place/0 mine → build_timeout(real_build 实测 flatten 0 进度)。
+                    // 退避 4 tick 让速率窗口清掉再重试(不计失败预算);onTick 顶部 placeDelayTicks>0 正好跳过。
+                    placeDelayTicks = 4;
+                } else {
+                    // 真实无路(无 stand/障碍)才累计,>12 判死。
+                    retryTicks++;
+                    if (retryTicks > 12) {
+                        fail("path_to_" + reason + "_failed: " + path.reason());
+                    }
+                }
+            }
+            return false;
+        }
         return true;
     }
 
-    private static BlockPos nearbyStand(AIPlayerEntity bot, BlockPos pos) {
+    private BlockPos nearbyStand(AIPlayerEntity bot, BlockPos pos) {
         Standability.clearCache();
-        for (Direction direction : Direction.Type.HORIZONTAL) {
-            BlockPos candidate = pos.offset(direction);
-            if (Standability.isStandable(bot.getServerWorld(), candidate)) {
-                return candidate;
+        BlockPos current = bot.getBlockPos();
+        BlockPos exterior = preferredExteriorStand(bot, pos, current);
+        if (exterior != null) {
+            return exterior;
+        }
+        BlockPos best = null;
+        double bestScore = Double.MAX_VALUE;
+        // Search a small shell around the target at practical foot heights. Using only target.y
+        // misses the ordinary case where a wall block is one to four blocks above the ground.
+        for (int radius = 1; radius <= 3; radius++) {
+            for (int dx = -radius; dx <= radius; dx++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dz)) != radius) {
+                        continue;
+                    }
+                    for (int y = pos.getY() - 4; y <= pos.getY() + 1; y++) {
+                        BlockPos candidate = new BlockPos(pos.getX() + dx, y, pos.getZ() + dz);
+                        int fromDx = candidate.getX() - current.getX();
+                        int fromDz = candidate.getZ() - current.getZ();
+                        boolean pathAlreadyConsidersArrived = fromDx * fromDx + fromDz * fromDz <= 1
+                                && Math.abs(candidate.getY() - current.getY()) <= 1;
+                        if (candidate.equals(current)
+                                || pathAlreadyConsidersArrived
+                                || candidate.getSquaredDistance(pos) > 100.0D
+                                || !isObservableStandable(bot, candidate)) {
+                            continue;
+                        }
+                        double score = candidate.getSquaredDistance(current)
+                                + candidate.getSquaredDistance(pos) * 0.05D;
+                        if (score < bestScore) {
+                            bestScore = score;
+                            best = candidate.toImmutable();
+                        }
+                    }
+                }
             }
         }
-        BlockPos below = pos.down();
-        if (Standability.isStandable(bot.getServerWorld(), below)) {
-            return below;
+        return best;
+    }
+
+    /**
+     * Pick a predictable work position outside the known blueprint bounds. This keeps the bot
+     * from slowly walling itself into the structure and gives it a clear angle to the nearest
+     * facade without inspecting hidden terrain inside the footprint.
+     */
+    private BlockPos preferredExteriorStand(AIPlayerEntity bot, BlockPos target, BlockPos current) {
+        if (anchor == null) {
+            return null;
         }
-        return bot.getBlockPos();
+        int localX = target.getX() - anchor.getX();
+        int localZ = target.getZ() - anchor.getZ();
+        int left = Math.abs(localX);
+        int right = Math.abs(blueprint.width() - 1 - localX);
+        int front = Math.abs(localZ);
+        int back = Math.abs(blueprint.depth() - 1 - localZ);
+        int min = Math.min(Math.min(left, right), Math.min(front, back));
+
+        BlockPos horizontal;
+        if (min == left) {
+            horizontal = new BlockPos(anchor.getX() - 2, anchor.getY(), target.getZ());
+        } else if (min == right) {
+            horizontal = new BlockPos(anchor.getX() + blueprint.width() + 1, anchor.getY(), target.getZ());
+        } else if (min == front) {
+            horizontal = new BlockPos(target.getX(), anchor.getY(), anchor.getZ() - 2);
+        } else {
+            horizontal = new BlockPos(target.getX(), anchor.getY(), anchor.getZ() + blueprint.depth() + 1);
+        }
+
+        for (int delta = 0; delta <= 4; delta++) {
+            for (int y : delta == 0
+                    ? new int[]{anchor.getY()}
+                    : new int[]{anchor.getY() + delta, anchor.getY() - delta}) {
+                BlockPos candidate = new BlockPos(horizontal.getX(), y, horizontal.getZ());
+                if (!pathAlreadyConsidersArrived(current, candidate)
+                        && candidate.getSquaredDistance(target) <= 100.0D
+                        && isObservableStandable(bot, candidate)) {
+                    return candidate.toImmutable();
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Work-pose selection is part of planning, not the pathfinder's local collision adapter. In
+     * strict survival it therefore has to prove the ground, feet, and head cells observable before
+     * consulting raw standability. Operator mode passes these queries through its explicit hidden
+     * scan capability.
+     */
+    private static boolean isObservableStandable(AIPlayerEntity bot, BlockPos candidate) {
+        return ObservableWorldQuery.canObserveBlock(bot, candidate.down())
+                && ObservableWorldQuery.canObserveCell(bot, candidate)
+                && ObservableWorldQuery.canObserveCell(bot, candidate.up())
+                && Standability.isStandable(bot.getServerWorld(), candidate);
+    }
+
+    private static boolean pathAlreadyConsidersArrived(BlockPos current, BlockPos candidate) {
+        int dx = candidate.getX() - current.getX();
+        int dz = candidate.getZ() - current.getZ();
+        return dx * dx + dz * dz <= 1 && Math.abs(candidate.getY() - current.getY()) <= 1;
     }
 
     private static String materialName(BlueprintSchema.BlockPlacement placement) {
@@ -395,6 +603,29 @@ public final class BuildTask extends AbstractTask {
 
     private static String compact(BlockPos pos) {
         return pos.getX() + "," + pos.getY() + "," + pos.getZ();
+    }
+
+    public BlockPos anchor() {
+        return anchor == null ? null : anchor.toImmutable();
+    }
+
+    public BlueprintSchema blueprint() {
+        return blueprint;
+    }
+
+    public int placedBlocks() {
+        return placedBlocks;
+    }
+
+    public int skippedBlocks() {
+        return skippedBlocks;
+    }
+
+    public void restoreAnchor(BlockPos restoredAnchor) {
+        if (restoredAnchor != null && phase == Phase.SITE) {
+            this.anchor = restoredAnchor.toImmutable();
+            this.note = "restored_anchor=" + compact(this.anchor);
+        }
     }
 
     private record FlattenTarget(BlockPos pos, FlattenKind kind) {

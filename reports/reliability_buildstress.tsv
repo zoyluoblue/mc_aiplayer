@@ -1,0 +1,12 @@
+feature	seed	run	result	reason	stage	summary
+real_build	20260610	1	PASS	PASS	pass	1/1 PASS: {real_build=PASS}
+real_build	12345	1	PASS	PASS	pass	1/1 PASS: {real_build=PASS}
+real_build	99999	1	PASS	PASS	pass	1/1 PASS: {real_build=PASS}
+real_build	70821	1	PASS	PASS	pass	1/1 PASS: {real_build=PASS}
+real_build	5550	1	PASS	PASS	pass	1/1 PASS: {real_build=PASS}
+real_build	424242	1	PASS	PASS	pass	1/1 PASS: {real_build=PASS}
+real_build	8888	1	FAIL	no_flat_site	other	0/1 PASS: {real_build=FAIL:no_flat_site}
+real_build	20240101	1	PASS	PASS	pass	1/1 PASS: {real_build=PASS}
+real_build	31337	1	FAIL	no_flat_site	other	0/1 PASS: {real_build=FAIL:no_flat_site}
+real_build	7777777	1	FAIL	no_flat_site	other	0/1 PASS: {real_build=FAIL:no_flat_site}
+ALLDONE

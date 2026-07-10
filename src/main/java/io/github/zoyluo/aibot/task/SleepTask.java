@@ -179,13 +179,11 @@ public final class SleepTask extends AbstractTask {
             complete();
             return;
         }
-        if (sleepWaitTicks > 100) {
-            long time = bot.getServerWorld().getTimeOfDay();
-            bot.getServerWorld().setTimeOfDay(time - time % 24000L + 24000L);
+        if (sleepWaitTicks > 1200) {
             if (bot.isSleeping()) {
                 bot.wakeUp();
             }
-            complete();
+            fail("sleep_quorum_not_met");
         }
     }
 
@@ -197,6 +195,7 @@ public final class SleepTask extends AbstractTask {
         BlockPos origin = bot.getBlockPos();
         return BlockPos.stream(center.add(-radius, -3, -radius), center.add(radius, 3, radius))
                 .map(BlockPos::toImmutable)
+                .filter(pos -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, pos))
                 .filter(pos -> bot.getServerWorld().getBlockState(pos).getBlock() instanceof BedBlock)
                 .min((left, right) -> Double.compare(left.getSquaredDistance(origin), right.getSquaredDistance(origin)))
                 .orElse(null);
@@ -209,7 +208,8 @@ public final class SleepTask extends AbstractTask {
     private static BlockPos rememberedBed(AIPlayerEntity bot) {
         return BotMemoryStore.INSTANCE.of(bot.getUuid())
                 .placeIn(bot.getServerWorld(), "bed", "home", "base")
-                .map(pos -> bot.getServerWorld().getBlockState(pos).getBlock() instanceof BedBlock
+                .map(pos -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, pos)
+                        && bot.getServerWorld().getBlockState(pos).getBlock() instanceof BedBlock
                         ? pos.toImmutable()
                         : findBedNear(bot, pos, 4))
                 .orElse(null);

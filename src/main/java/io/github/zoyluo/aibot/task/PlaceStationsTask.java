@@ -27,6 +27,7 @@ public final class PlaceStationsTask extends AbstractTask {
 
     private final List<Item> pending = new ArrayList<>();
     private final Set<BlockPos> used = new HashSet<>();
+    private final Set<BlockPos> placedPositions = new HashSet<>();
     private int placed;
 
     @Override
@@ -52,6 +53,7 @@ public final class PlaceStationsTask extends AbstractTask {
         pending.clear();
         pending.addAll(STATIONS);
         used.clear();
+        placedPositions.clear();
         placed = 0;
     }
 
@@ -88,6 +90,7 @@ public final class PlaceStationsTask extends AbstractTask {
         used.add(spot);
         if (result.isSuccess()) {
             placed++;
+            placedPositions.add(spot.toImmutable());
             pending.remove(0);
         }
     }
@@ -120,5 +123,9 @@ public final class PlaceStationsTask extends AbstractTask {
             }
         }
         return -1;
+    }
+
+    public Set<BlockPos> placedPositions() {
+        return Set.copyOf(placedPositions);
     }
 }

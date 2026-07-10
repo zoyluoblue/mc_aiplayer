@@ -262,7 +262,9 @@ public final class StripMineTask extends AbstractTask {
             if (Math.abs(pos.getY() - center.getY()) > 3) {
                 continue;
             }
-            if (OreScan.isOre(bot.getServerWorld().getBlockState(pos), targetOres) && isExposed(bot.getServerWorld(), pos)) {
+            if (OreScan.isOre(bot.getServerWorld().getBlockState(pos), targetOres)
+                    && isExposed(bot.getServerWorld(), pos)
+                    && io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, pos)) {
                 return true;
             }
         }
@@ -511,6 +513,12 @@ public final class StripMineTask extends AbstractTask {
     }
 
     private void deposit(AIPlayerEntity bot) {
+        if (activeDepotChest == null
+                || bot.getEyePos().squaredDistanceTo(activeDepotChest.toCenterPos()) > REACH_SQUARED
+                || !io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, activeDepotChest)) {
+            phase = Phase.RETURN;
+            return;
+        }
         Inventory container = ContainerAction.resolve(bot, activeDepotChest).orElse(null);
         if (container == null) {
             fail("depot_missing");
@@ -568,10 +576,13 @@ public final class StripMineTask extends AbstractTask {
     private void scanNearbyVeins(AIPlayerEntity bot, BlockPos center, int radius) {
         BlockPos.stream(center.add(-radius, -radius, -radius), center.add(radius, radius, radius))
                 .map(BlockPos::toImmutable)
+                .filter(pos -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, pos))
                 .filter(pos -> OreScan.isOre(bot.getServerWorld().getBlockState(pos), targetOres))
                 .sorted(Comparator.comparingDouble(pos -> pos.getSquaredDistance(bot.getBlockPos())))
                 .findFirst()
-                .ifPresent(seed -> OreScan.veinFrom(bot.getServerWorld(), seed, targetOres, MAX_VEIN_BLOCKS)
+                .ifPresent(seed -> OreScan.veinFrom(bot, seed, targetOres, MAX_VEIN_BLOCKS)
+                        .stream()
+                        .filter(pos -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, pos))
                         .forEach(pos -> {
                             if (queuedVeinBlocks.add(pos)) {
                                 veinBlocks.addLast(pos);

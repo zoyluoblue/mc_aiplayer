@@ -1,0 +1,5 @@
+feature	seed	run	result	reason	stage	summary
+real_gold	3000	1	FAIL	aborted	aborted	0/1 PASS: {real_gold=FAIL:aborted}
+real_gold	105441651	1	FAIL	assertion_failed status=light_area Lighting radius=8 placed=8/8 phase=PLACE	other	0/1 PASS: {real_gold=FAIL:assertion_failed status=light_area Lighting radius=8 placed=8/8 phase=PLACE}
+real_gold	12345	1	FAIL	missing shelter_block	other	0/1 PASS: {real_gold=FAIL:missing shelter_block}
+ALLDONE

@@ -1,5 +1,9 @@
 package io.github.zoyluo.aibot.mining;
 
+import io.github.zoyluo.aibot.entity.AIPlayerEntity;
+import io.github.zoyluo.aibot.mode.CapabilityRuntime;
+import io.github.zoyluo.aibot.mode.ObservableWorldQuery;
+import io.github.zoyluo.aibot.mode.PrivilegedCapability;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.util.math.BlockPos;
@@ -25,27 +29,75 @@ public final class OreProspector {
     }
 
     /** 在 origin 周围 range 立方体的已加载区块内,找最近的目标矿;无则 null。全程主线程(只读世界数据)。 */
-    public static BlockPos nearest(ServerWorld world, BlockPos origin, Set<Block> targets, int range) {
+    public static BlockPos nearest(AIPlayerEntity bot, Set<Block> targets, int range) {
         if (targets == null || targets.isEmpty()) {
             return null;
         }
-        return nearest(world, origin, range, state -> OreScan.isOre(state, targets));
+        return nearest(bot, range, state -> OreScan.isOre(state, targets));
     }
 
     /**
      * 通用版:找最近的"满足 match 的方块"——找矿用 OreScan.isOre、找树用"原木集合 contains"等皆可复用。
      * palette 级 section.hasAny(match) 快速跳过不含目标的 section,故大半径也不卡。
      */
-    public static BlockPos nearest(ServerWorld world, BlockPos origin, int range, Predicate<BlockState> match) {
-        return nearest(world, origin, range, match, null);
+    public static BlockPos nearest(AIPlayerEntity bot, int range, Predicate<BlockState> match) {
+        return nearest(bot, range, match, null);
     }
 
     /**
      * 带坐标过滤版:posFilter 拒绝的坐标跳过(如调用方拉黑"走不到的目标"防止反复 prospect 同一个死循环)。
      * posFilter 为 null 时不过滤。
      */
-    public static BlockPos nearest(ServerWorld world, BlockPos origin, int range,
+    public static BlockPos nearest(AIPlayerEntity bot, int range,
                                    Predicate<BlockState> match, Predicate<BlockPos> posFilter) {
+        boolean hiddenScanAllowed = CapabilityRuntime.decide(
+                bot, PrivilegedCapability.HIDDEN_BLOCK_SCAN, "ore_prospector").allowed();
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        if (hiddenScanAllowed) {
+            return nearestRaw(world, origin, range, match, posFilter);
+        }
+        return nearestObservable(bot, origin, range, match, posFilter);
+    }
+
+    /** Strict-survival search: visibility is decided before any candidate block state is read. */
+    private static BlockPos nearestObservable(AIPlayerEntity bot,
+                                              BlockPos origin,
+                                              int requestedRange,
+                                              Predicate<BlockState> match,
+                                              Predicate<BlockPos> posFilter) {
+        ServerWorld world = bot.getServerWorld();
+        int range = Math.min(Math.max(1, requestedRange),
+                Math.max(1, io.github.zoyluo.aibot.AIBotConfig.get().perception().radius()));
+        int minY = Math.max(world.getBottomY(), origin.getY() - range);
+        int maxY = Math.min(world.getBottomY() + world.getHeight() - 1, origin.getY() + range);
+        BlockPos best = null;
+        double bestDist = Double.MAX_VALUE;
+        for (int x = origin.getX() - range; x <= origin.getX() + range; x++) {
+            for (int y = minY; y <= maxY; y++) {
+                for (int z = origin.getZ() - range; z <= origin.getZ() + range; z++) {
+                    BlockPos pos = new BlockPos(x, y, z);
+                    if ((posFilter != null && !posFilter.test(pos))
+                            || !ObservableWorldQuery.canObserveBlock(bot, pos)) {
+                        continue;
+                    }
+                    BlockState state = world.getBlockState(pos);
+                    if (!match.test(state)) {
+                        continue;
+                    }
+                    double distance = origin.getSquaredDistance(pos);
+                    if (distance < bestDist) {
+                        bestDist = distance;
+                        best = pos.toImmutable();
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    private static BlockPos nearestRaw(ServerWorld world, BlockPos origin, int range,
+                                       Predicate<BlockState> match, Predicate<BlockPos> posFilter) {
         int minX = origin.getX() - range;
         int maxX = origin.getX() + range;
         int minY = Math.max(world.getBottomY(), origin.getY() - range);

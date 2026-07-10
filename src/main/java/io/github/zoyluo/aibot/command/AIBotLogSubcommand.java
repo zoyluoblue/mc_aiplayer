@@ -2,6 +2,7 @@ package io.github.zoyluo.aibot.command;
 
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import io.github.zoyluo.aibot.auth.BotAuthorizationGate;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.log.BotLogWriter;
 import net.minecraft.server.command.ServerCommandSource;
@@ -29,6 +30,9 @@ public final class AIBotLogSubcommand {
     }
 
     private static int status(ServerCommandSource source) {
+        if (!BotAuthorizationGate.INSTANCE.requireGlobalAdmin(source, "command:log_status")) {
+            return 0;
+        }
         BotLogWriter writer = BotLogWriter.INSTANCE;
         source.sendFeedback(() -> Text.literal("[AIBot] log started="
                 + writer.isStarted()
@@ -42,6 +46,9 @@ public final class AIBotLogSubcommand {
     }
 
     private static int rotate(ServerCommandSource source) {
+        if (!BotAuthorizationGate.INSTANCE.requireGlobalAdmin(source, "command:log_rotate")) {
+            return 0;
+        }
         BotLog.config("log_rotate_requested", "source", "command");
         BotLogWriter.INSTANCE.forceRotateForTest();
         source.sendFeedback(() -> Text.literal("[AIBot] log rotation triggered"), false);
@@ -49,6 +56,9 @@ public final class AIBotLogSubcommand {
     }
 
     private static int overflow(ServerCommandSource source, int count) {
+        if (!BotAuthorizationGate.INSTANCE.requireGlobalAdmin(source, "command:log_overflow")) {
+            return 0;
+        }
         BotLogWriter.INSTANCE.forceOverflowForTest(count);
         source.sendFeedback(() -> Text.literal("[AIBot] log overflow validation enqueued " + count + " events"), false);
         return 1;

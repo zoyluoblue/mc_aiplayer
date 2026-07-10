@@ -234,6 +234,7 @@ public final class FishTask extends AbstractTask {
         return BlockPos.stream(
                         origin.add(-SEARCH_RADIUS, -2, -SEARCH_RADIUS),
                         origin.add(SEARCH_RADIUS, 3, SEARCH_RADIUS))
+                .filter(pos -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, pos))
                 .filter(pos -> bot.getServerWorld().getFluidState(pos).isIn(FluidTags.WATER))
                 .map(BlockPos::toImmutable)
                 .map(pos -> waterChoice(bot, pos))

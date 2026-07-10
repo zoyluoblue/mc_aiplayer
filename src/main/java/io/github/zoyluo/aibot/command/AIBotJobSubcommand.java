@@ -2,6 +2,8 @@ package io.github.zoyluo.aibot.command;
 
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import io.github.zoyluo.aibot.auth.BotAuthorizationGate;
+import io.github.zoyluo.aibot.auth.BotAuthorizationPolicy;
 import io.github.zoyluo.aibot.brain.BrainCoordinator;
 import io.github.zoyluo.aibot.coordination.Job;
 import io.github.zoyluo.aibot.coordination.TaskBoard;
@@ -50,12 +52,19 @@ public final class AIBotJobSubcommand {
     }
 
     private static int post(ServerCommandSource source, String kind, String role, String paramsText) {
-        UUID id = TaskBoard.INSTANCE.post(kind, parseParams(paramsText), role);
+        if (!BotAuthorizationGate.INSTANCE.requireGlobalAdmin(source, "command:job_post")) {
+            return 0;
+        }
+        UUID id = TaskBoard.INSTANCE.postGlobal(kind, parseParams(paramsText), role);
+        io.github.zoyluo.aibot.persist.BotPersistence.INSTANCE.markDirty(source.getServer());
         source.sendFeedback(() -> Text.literal("[AIBot] job posted " + id + " kind=" + kind + " role=" + role), false);
         return 1;
     }
 
     private static int list(ServerCommandSource source) {
+        if (!BotAuthorizationGate.INSTANCE.requireGlobalAdmin(source, "command:job_list")) {
+            return 0;
+        }
         var jobs = TaskBoard.INSTANCE.snapshot();
         if (jobs.isEmpty()) {
             source.sendFeedback(() -> Text.literal("[AIBot] jobs: empty"), false);
@@ -69,24 +78,29 @@ public final class AIBotJobSubcommand {
     }
 
     private static int clear(ServerCommandSource source) {
+        if (!BotAuthorizationGate.INSTANCE.requireGlobalAdmin(source, "command:job_clear")) {
+            return 0;
+        }
         TaskBoard.INSTANCE.clear();
+        io.github.zoyluo.aibot.persist.BotPersistence.INSTANCE.markDirty(source.getServer());
         source.sendFeedback(() -> Text.literal("[AIBot] jobs cleared"), false);
         return 1;
     }
 
     private static int tell(ServerCommandSource source, String fromBot, String targetBot, String message) {
-        var from = AIPlayerManager.INSTANCE.getByName(fromBot);
-        var target = AIPlayerManager.INSTANCE.getByName(targetBot);
-        if (from.isEmpty()) {
-            source.sendError(Text.literal("[AIBot] No such sender bot: " + fromBot));
+        if (!BotAuthorizationGate.INSTANCE.requireGlobalAdmin(source, "command:job_tell")) {
             return 0;
         }
+        var target = BotAuthorizationGate.INSTANCE.resolveAuthorized(
+                source, targetBot, BotAuthorizationPolicy.Operation.COMMAND, "command:job_tell_target");
         if (target.isEmpty()) {
-            source.sendError(Text.literal("[AIBot] No such target bot: " + targetBot));
             return 0;
         }
-        boolean queued = BrainCoordinator.INSTANCE.handleMessage(target.get(), from.get().getGameProfile().getName(), message);
-        source.sendFeedback(() -> Text.literal("[AIBot] tell_bot " + (queued ? "queued" : "busy")), false);
+        // Preserve the real OP/console provenance. The legacy from_bot argument is not used as an
+        // identity because that would let an administrator silently impersonate a Bot.
+        boolean queued = BrainCoordinator.INSTANCE.handleMessage(target.get(), source.getName(), message);
+        source.sendFeedback(() -> Text.literal("[AIBot] operator tell " + (queued ? "queued" : "busy")
+                + " (legacy from_bot=" + fromBot + " ignored)"), false);
         return queued ? 1 : 0;
     }
 

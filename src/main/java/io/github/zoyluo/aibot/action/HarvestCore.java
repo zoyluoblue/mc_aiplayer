@@ -3,6 +3,9 @@ package io.github.zoyluo.aibot.action;
 import io.github.zoyluo.aibot.AIBotConfig;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
+import io.github.zoyluo.aibot.mode.CapabilityRuntime;
+import io.github.zoyluo.aibot.mode.ObservableWorldQuery;
+import io.github.zoyluo.aibot.mode.PrivilegedCapability;
 import io.github.zoyluo.aibot.pathfinding.AStarPathfinder;
 import io.github.zoyluo.aibot.pathfinding.Standability;
 import net.minecraft.block.Block;
@@ -31,9 +34,11 @@ public final class HarvestCore {
     }
 
     public static TargetChoice nearestReachableBlock(AIPlayerEntity bot, Block targetBlock, int horizontalRadius, int down, int up) {
+        CapabilityRuntime.decide(bot, PrivilegedCapability.HIDDEN_BLOCK_SCAN, "harvest_nearest_block");
         BlockPos origin = bot.getBlockPos();
         return firstWalkReachable(bot, origin,
                 BlockPos.stream(origin.add(-horizontalRadius, -down, -horizontalRadius), origin.add(horizontalRadius, up, horizontalRadius))
+                        .filter(pos -> ObservableWorldQuery.canObserveBlock(bot, pos))
                         .filter(pos -> bot.getServerWorld().getBlockState(pos).isOf(targetBlock))
                         .map(BlockPos::toImmutable)
                         .map(pos -> targetChoice(bot, pos))
@@ -49,9 +54,11 @@ public final class HarvestCore {
     // null 不过滤。供 GatherQuotaTask.survey 滤掉拉黑目标,不再重锁同一棵不可达的树死循环。
     public static TargetChoice nearestReachableBlock(AIPlayerEntity bot, Set<Block> targetBlocks, int horizontalRadius, int down, int up,
                                                      Predicate<BlockPos> posFilter) {
+        CapabilityRuntime.decide(bot, PrivilegedCapability.HIDDEN_BLOCK_SCAN, "harvest_nearest_blocks");
         BlockPos origin = bot.getBlockPos();
         return firstWalkReachable(bot, origin,
                 BlockPos.stream(origin.add(-horizontalRadius, -down, -horizontalRadius), origin.add(horizontalRadius, up, horizontalRadius))
+                        .filter(pos -> ObservableWorldQuery.canObserveBlock(bot, pos))
                         .filter(pos -> targetBlocks.contains(bot.getServerWorld().getBlockState(pos).getBlock()))
                         .filter(pos -> posFilter == null || posFilter.test(pos))
                         .map(BlockPos::toImmutable)
@@ -71,7 +78,8 @@ public final class HarvestCore {
     public static Optional<ItemEntity> nearestDropAnyOf(AIPlayerEntity bot, Set<Item> items, double radius) {
         return bot.getServerWorld()
                 .getEntitiesByClass(ItemEntity.class, bot.getBoundingBox().expand(radius),
-                        entity -> !entity.getStack().isEmpty() && matches(entity.getStack(), items))
+                        entity -> !entity.getStack().isEmpty() && matches(entity.getStack(), items)
+                                && ObservableWorldQuery.canObserveEntity(bot, entity))
                 .stream()
                 .min(Comparator.comparingDouble(entity -> entity.distanceTo(bot)));
     }
@@ -81,10 +89,14 @@ public final class HarvestCore {
     }
 
     public static boolean forcePickupNearbyAnyOf(AIPlayerEntity bot, Set<Item> items, double maxH, double maxV) {
+        if (!CapabilityRuntime.decide(bot, PrivilegedCapability.FORCED_PICKUP, "harvest_force_pickup").allowed()) {
+            return false;
+        }
         Box box = bot.getBoundingBox().expand(maxH, maxV, maxH);
         List<ItemEntity> drops = bot.getServerWorld().getEntitiesByClass(ItemEntity.class, box,
                 entity -> !entity.getStack().isEmpty()
                         && matches(entity.getStack(), items)
+                        && ObservableWorldQuery.canObserveEntity(bot, entity)
                         && canForcePickup(bot, entity, maxH, maxV));
         boolean picked = false;
         for (ItemEntity drop : drops) {

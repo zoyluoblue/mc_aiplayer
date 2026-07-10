@@ -13,14 +13,23 @@ import io.github.zoyluo.aibot.action.MovementAction;
 import io.github.zoyluo.aibot.action.ToolSelector;
 import io.github.zoyluo.aibot.coordination.Job;
 import io.github.zoyluo.aibot.coordination.TaskBoard;
+import io.github.zoyluo.aibot.auth.BotAuthorizationGate;
+import io.github.zoyluo.aibot.auth.BotAuthorizationPolicy;
 import io.github.zoyluo.aibot.craft.AcquisitionHints;
 import io.github.zoyluo.aibot.craft.CraftingHelper;
 import io.github.zoyluo.aibot.goal.Goal;
 import io.github.zoyluo.aibot.goal.GoalExecutor;
+import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
 import io.github.zoyluo.aibot.memory.BotMemory;
 import io.github.zoyluo.aibot.memory.BotMemoryStore;
 import io.github.zoyluo.aibot.mining.OreScan;
+import io.github.zoyluo.aibot.mode.CapabilityRuntime;
+import io.github.zoyluo.aibot.mode.ObservableWorldQuery;
+import io.github.zoyluo.aibot.mode.PrivilegedCapability;
+import io.github.zoyluo.aibot.runtime.IntentController;
+import io.github.zoyluo.aibot.runtime.TaskOrigin;
+import io.github.zoyluo.aibot.runtime.IntentControlTransaction;
 import io.github.zoyluo.aibot.task.BlueprintLoader;
 import io.github.zoyluo.aibot.task.BreedTask;
 import io.github.zoyluo.aibot.task.BuildTask;
@@ -169,13 +178,13 @@ public final class ToolRegistry {
                 .required("item")
                 .build(), (bot, args) -> {
             Task task = new CraftTask(requiredItem(args, "item"), optionalInt(args, "count", 1));
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: " + task.name());
         });
 
         register("eat", "Eat available food from inventory", objectSchema().build(), (bot, args) -> {
             Task task = new EatTask();
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: " + task.name());
         });
 
@@ -190,7 +199,7 @@ public final class ToolRegistry {
                     requiredItem(args, "input_item"),
                     requiredItem(args, "output_item"),
                     optionalInt(args, "count", 1));
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: " + task.name());
         });
 
@@ -200,7 +209,7 @@ public final class ToolRegistry {
                 .required("item")
                 .build(), (bot, args) -> {
             Task task = new GatherQuotaTask(requiredItem(args, "item"), optionalInt(args, "count", 1));
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: " + task.name());
         });
 
@@ -209,7 +218,7 @@ public final class ToolRegistry {
                 .property("max_ticks", integerSchema("maximum task duration in ticks"))
                 .build(), (bot, args) -> {
             Task task = new FishTask(optionalInt(args, "max_catches", 1), optionalInt(args, "max_ticks", 6000));
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: " + task.name());
         });
 
@@ -218,7 +227,7 @@ public final class ToolRegistry {
                 .property("max_distance", integerSchema("search radius"))
                 .build(), (bot, args) -> {
             Task task = new TradeTask(optionalItem(args, "target_item"), optionalInt(args, "max_distance", 16));
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: " + task.name());
         });
 
@@ -231,7 +240,7 @@ public final class ToolRegistry {
                 .property("all_except_tools", booleanSchema("deposit all non-damageable items and keep tools/equipment"))
                 .build(), (bot, args) -> {
             Task task = new StockpileTask(optionalBoolean(args, "all_except_tools", true));
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: " + task.name());
         });
 
@@ -250,7 +259,7 @@ public final class ToolRegistry {
                     optionalInt(args, "spacing", 4),
                     optionalBlockPos(args, "depot_x", "depot_y", "depot_z"),
                     optionalBlocksCsv(args, "target_ores"));
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: " + task.name());
         });
 
@@ -258,7 +267,7 @@ public final class ToolRegistry {
                 .property("target_ores", stringSchema("optional comma separated ore block ids; default is common ores"))
                 .build(), (bot, args) -> {
             Task task = StripMineTask.mineNearbyVein(optionalBlocksCsv(args, "target_ores"));
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: " + task.name());
         });
 
@@ -269,7 +278,7 @@ public final class ToolRegistry {
                 .build(), (bot, args) -> {
             if (!AIBotConfig.get().goal().autoToolFillEnabled()) {
                 Task task = new OreDigTask(oreTargetsFrom(requiredString(args, "ore")), optionalInt(args, "count", 1));
-                TaskManager.INSTANCE.assign(bot, task);
+                assignLlm(bot, task);
                 return ok("assigned: " + task.name());
             }
             boolean started = GoalExecutor.INSTANCE.submit(bot,
@@ -385,7 +394,7 @@ public final class ToolRegistry {
                     optionalItem(args, "item"),
                     optionalInt(args, "count", 0),
                     optionalBoolean(args, "all_except_tools", false));
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: " + task.name());
         });
 
@@ -401,7 +410,7 @@ public final class ToolRegistry {
                     optionalBlockPos(args, "chest_x", "chest_y", "chest_z"),
                     requiredItem(args, "item"),
                     optionalInt(args, "count", 1));
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: " + task.name());
         });
 
@@ -420,13 +429,13 @@ public final class ToolRegistry {
                     requiredEntityType(args, "entity_type"),
                     optionalInt(args, "count", 1),
                     io.github.zoyluo.aibot.AIBotConfig.get().combat().retreatHp());
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: " + task.name());
         });
 
         register("sleep", "Find or place a bed, sleep through night, and wake up in the morning", objectSchema().build(), (bot, args) -> {
             Task task = new SleepTask();
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: " + task.name());
         });
 
@@ -435,7 +444,7 @@ public final class ToolRegistry {
                 .property("max_torches", integerSchema("maximum torches to place"))
                 .build(), (bot, args) -> {
             Task task = new LightAreaTask(optionalInt(args, "radius", 8), optionalInt(args, "max_torches", 8));
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: " + task.name());
         });
 
@@ -443,13 +452,13 @@ public final class ToolRegistry {
                 .property("player_name", stringSchema("optional player name; defaults to owner"))
                 .build(), (bot, args) -> {
             Task task = new FollowTask(optionalString(args, "player_name", ""));
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: " + task.name());
         });
 
         register("hold", "Hold the current position until another task is assigned. DangerWatcher can still interrupt for survival threats.", objectSchema().build(), (bot, args) -> {
             Task task = new HoldTask();
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: " + task.name());
         });
 
@@ -464,7 +473,7 @@ public final class ToolRegistry {
             Task task = playerName.isBlank()
                     ? GuardTask.point(point == null ? bot.getBlockPos() : point)
                     : GuardTask.player(playerName);
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: " + task.name());
         });
 
@@ -483,7 +492,7 @@ public final class ToolRegistry {
             FarmAction.CropSpec spec = FarmAction.cropSpec(requiredString(args, "crop"));
             Task task = new FarmTask(blockPos(args), optionalInt(args, "radius", 3), spec.seed(), spec.crop(),
                     optionalBoolean(args, "keep_tending", false), false);
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: " + task.name());
         });
 
@@ -500,7 +509,7 @@ public final class ToolRegistry {
                 .build(), (bot, args) -> {
             FarmAction.CropSpec spec = FarmAction.cropSpec(requiredString(args, "crop"));
             Task task = new FarmTask(blockPos(args), optionalInt(args, "radius", 3), spec.seed(), spec.crop(), false, true);
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: " + task.name());
         });
 
@@ -510,7 +519,7 @@ public final class ToolRegistry {
                 .required("entity_type")
                 .build(), (bot, args) -> {
             Task task = new BreedTask(requiredEntityType(args, "entity_type"), optionalInt(args, "pairs", 1));
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: " + task.name());
         });
 
@@ -520,8 +529,11 @@ public final class ToolRegistry {
                 .build(), ToolDefinition.Group.LOW_LEVEL, (bot, args) -> {
             String entityType = requiredString(args, "entity_type");
             Identifier id = Identifier.of(entityType);
+            CapabilityRuntime.decide(bot, PrivilegedCapability.HIDDEN_BLOCK_SCAN, "tool_attack_entity");
             Optional<Entity> target = bot.getServerWorld()
-                    .getOtherEntities(bot, bot.getBoundingBox().expand(4.5D), entity -> Registries.ENTITY_TYPE.getId(entity.getType()).equals(id))
+                    .getOtherEntities(bot, bot.getBoundingBox().expand(4.5D),
+                            entity -> Registries.ENTITY_TYPE.getId(entity.getType()).equals(id)
+                                    && ObservableWorldQuery.canObserveEntity(bot, entity))
                     .stream()
                     .min(Comparator.comparingDouble(bot::distanceTo));
             if (target.isEmpty()) {
@@ -530,9 +542,29 @@ public final class ToolRegistry {
             return result(InteractAction.attackEntity(bot, target.get()));
         });
 
-        register("stop", "Stop all ongoing actions", objectSchema().build(), (bot, args) -> {
-            MovementAction.stopAll(bot);
-            return ok("stopped");
+        register("stop", "Cancel the current mission/task but preserve explicitly queued missions. Use immediately before a replacement goal.", objectSchema().build(), (bot, args) -> {
+            IntentControlTransaction.Outcome outcome = IntentController.INSTANCE.cancelCurrent(
+                    bot, IntentController.ControlOrigin.LLM_TOOL, "tool_stop");
+            return ok(outcome.changed() ? "cancelled_current" : "already_idle");
+        });
+
+        register("pause", "Pause the current mission without deleting it or its queue; safety actions may still run.",
+                objectSchema().build(), (bot, args) -> {
+            boolean changed = IntentController.INSTANCE.pause(
+                    bot, IntentController.ControlOrigin.LLM_TOOL, "tool_pause");
+            return ok(changed ? "mission_paused" : "already_paused");
+        });
+
+        register("resume", "Resume a mission previously paused by the user.", objectSchema().build(), (bot, args) -> {
+            boolean changed = IntentController.INSTANCE.resume(
+                    bot, IntentController.ControlOrigin.LLM_TOOL, "tool_resume");
+            return ok(changed ? "mission_resumed" : "not_paused");
+        });
+
+        register("cancel_all", "Cancel the current mission and every queued mission", objectSchema().build(), (bot, args) -> {
+            IntentControlTransaction.Outcome outcome = IntentController.INSTANCE.cancelAll(
+                    bot, IntentController.ControlOrigin.LLM_TOOL, "tool_cancel_all");
+            return ok(outcome.changed() ? "cancelled_all" : "already_idle");
         });
 
         register("post_job", "Post a shared job to the multi-bot task board. Idle bots whose role matches the job role can claim and execute it.", objectSchema()
@@ -542,12 +574,22 @@ public final class ToolRegistry {
                 .required("kind")
                 .required("params")
                 .build(), ToolDefinition.Group.COORDINATION, (bot, args) -> {
-            UUID id = TaskBoard.INSTANCE.post(requiredString(args, "kind"), paramsObject(args, "params"), optionalString(args, "role", ""));
+            Optional<UUID> ownerUuid = AIPlayerManager.INSTANCE.ownerOf(bot);
+            if (ownerUuid.isEmpty()) {
+                return fail("coordination_requires_owned_bot");
+            }
+            UUID id = TaskBoard.INSTANCE.postForOwner(ownerUuid.get(), requiredString(args, "kind"),
+                    paramsObject(args, "params"), optionalString(args, "role", ""));
+            io.github.zoyluo.aibot.persist.BotPersistence.INSTANCE.markDirty(bot.getServer());
             return ok("job_posted: " + id);
         });
 
         register("list_jobs", "List shared jobs on the multi-bot task board", objectSchema().build(), ToolDefinition.Group.COORDINATION, (bot, args) -> {
-            List<Job> jobs = TaskBoard.INSTANCE.snapshot();
+            Optional<UUID> ownerUuid = AIPlayerManager.INSTANCE.ownerOf(bot);
+            if (ownerUuid.isEmpty()) {
+                return fail("coordination_requires_owned_bot");
+            }
+            List<Job> jobs = TaskBoard.INSTANCE.snapshotForOwner(ownerUuid.get());
             if (jobs.isEmpty()) {
                 return ok("[]");
             }
@@ -577,7 +619,11 @@ public final class ToolRegistry {
             String targetName = requiredString(args, "target");
             var target = AIPlayerManager.INSTANCE.getByName(targetName);
             if (target.isEmpty()) {
-                return fail("no_such_bot: " + targetName);
+                return fail("target_unavailable");
+            }
+            if (!BotAuthorizationGate.INSTANCE.authorizeBot(
+                    bot, target.get(), BotAuthorizationPolicy.Operation.COMMAND, "tool:tell_bot")) {
+                return fail("target_unavailable");
             }
             boolean queued = BrainCoordinator.INSTANCE.handleMessage(target.get(), bot.getGameProfile().getName(), requiredString(args, "message"));
             return queued ? ok("message_sent") : fail("target_busy");
@@ -629,7 +675,7 @@ public final class ToolRegistry {
                 return fail("place_in_other_dimension: " + place.get().dimension());
             }
             Task task = new MoveTask(bot, place.get().pos());
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: " + task.name());
         });
 
@@ -656,7 +702,7 @@ public final class ToolRegistry {
             });
             // 队列接力:先走回作业面,再原矿种续挖(goal 队列自动衔接,中途打断也能再续)。
             Task back = new MoveTask(bot, face.get().pos());
-            TaskManager.INSTANCE.assign(bot, back);
+            assignLlm(bot, back);
             GoalExecutor.INSTANCE.submit(bot, new Goal.MineOre(
                     ores.isEmpty() ? java.util.Set.of(net.minecraft.block.Blocks.IRON_ORE) : ores,
                     optionalInt(args, "count", 8)));
@@ -692,7 +738,7 @@ public final class ToolRegistry {
             }
             var death = deaths.get(0);
             Task task = new io.github.zoyluo.aibot.task.RecoverDropsTask(death.pos(), death.gameTick());
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: recover_drops -> " + death.pos().toShortString());
         });
 
@@ -725,7 +771,7 @@ public final class ToolRegistry {
             if ("mine_ore".equals(taskType)) {
                 if (!AIBotConfig.get().goal().autoToolFillEnabled()) {
                     Task task = new OreDigTask(oreTargetsFrom(requiredString(params, "ore")), optionalInt(params, "count", 1));
-                    TaskManager.INSTANCE.assign(bot, task);
+                    assignLlm(bot, task);
                     return ok("assigned: " + task.name());
                 }
                 boolean started = GoalExecutor.INSTANCE.submit(bot,
@@ -738,7 +784,7 @@ public final class ToolRegistry {
                     int count = optionalInt(params, "count", 1);
                     if (!AIBotConfig.get().goal().autoToolFillEnabled()) {
                         Task task = new OreDigTask(OreScan.oreFamily(block), count);
-                        TaskManager.INSTANCE.assign(bot, task);
+                        assignLlm(bot, task);
                         return ok("assigned: " + task.name());
                     }
                     boolean started = GoalExecutor.INSTANCE.submit(bot, new Goal.MineOre(OreScan.oreFamily(block), count));
@@ -746,7 +792,7 @@ public final class ToolRegistry {
                 }
             }
             Task task = createTask(bot, taskType, params);
-            TaskManager.INSTANCE.assign(bot, task);
+            assignLlm(bot, task);
             return ok("assigned: " + task.name());
         });
 
@@ -763,9 +809,10 @@ public final class ToolRegistry {
                     + ",\"description\":\"" + escape(status.description()) + "\"}");
         });
 
-        register("abort_task", "Cancel the current task", objectSchema().build(), (bot, args) -> {
-            TaskManager.INSTANCE.abort(bot);
-            return ok("aborted");
+        register("abort_task", "Legacy alias for cancelling the current mission/task while preserving queued missions", objectSchema().build(), (bot, args) -> {
+            IntentControlTransaction.Outcome outcome = IntentController.INSTANCE.cancelCurrent(
+                    bot, IntentController.ControlOrigin.LLM_TOOL, "tool_abort_task");
+            return ok(outcome.changed() ? "cancelled_current" : "already_idle");
         });
     }
 
@@ -915,6 +962,10 @@ public final class ToolRegistry {
 
     private static ToolDefinition.ToolResult fail(String message) {
         return new ToolDefinition.ToolResult(false, message);
+    }
+
+    private static void assignLlm(AIPlayerEntity bot, Task task) {
+        TaskManager.INSTANCE.assign(bot, task, TaskOrigin.of(TaskOrigin.Kind.LLM_TOOL, "llm_tool"));
     }
 
     private static BlockPos blockPos(JsonObject args) {

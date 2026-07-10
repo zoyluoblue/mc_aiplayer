@@ -141,7 +141,7 @@ public final class ToolTier {
     }
 
     private static int tierOf(ItemStack stack) {
-        if (stack.isEmpty()) {
+        if (stack.isEmpty() || nearlyBroken(stack)) {
             return NONE;
         }
         Item item = stack.getItem();

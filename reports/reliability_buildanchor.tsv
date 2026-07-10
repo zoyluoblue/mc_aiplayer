@@ -1,0 +1,8 @@
+feature	seed	run	result	reason	stage	summary
+real_build	105441651	1	PASS	PASS	pass	1/1 PASS: {real_build=PASS}
+real_build	155361719	1	PASS	PASS	pass	1/1 PASS: {real_build=PASS}
+real_build	1061665215	1	PASS	PASS	pass	1/1 PASS: {real_build=PASS}
+real_build	3000	1	PASS	PASS	pass	1/1 PASS: {real_build=PASS}
+real_build	777	1	PASS	PASS	pass	1/1 PASS: {real_build=PASS}
+real_build	632510390	1	PASS	PASS	pass	1/1 PASS: {real_build=PASS}
+ALLDONE

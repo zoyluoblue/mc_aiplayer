@@ -74,20 +74,24 @@ public final class GoalPlanner {
     }
 
     public static GoalPlan plan(AIPlayerEntity bot, Goal goal) {
+        return plan(bot, goal, null);
+    }
+
+    public static GoalPlan plan(AIPlayerEntity bot, Goal goal, GoalSnapshotCollector.Context resumeContext) {
         // Goal.Food 感知择源:规划时扫一眼周围实际有什么,据此选打猎/种植(见 ensureFoodTo),不再绑死打猎
         //(没动物的地形硬派打猎只会抓瞎)。其余目标不受这两个标志影响。
         boolean hasPrey = HuntTask.hasPreyNearby(bot);
-        boolean hasGrass = OreProspector.nearest(bot.getServerWorld(), bot.getBlockPos(),
+        boolean hasGrass = OreProspector.nearest(bot,
                 FOOD_GRASS_SCAN, GoalPlanner::isGrassForSeeds) != null;
         // 荒芜兜底源:针叶林等生物群系动物稀少(实测 hunt 漫游 10 次 1092t 仍 0 猎物)但常有甜浆果丛——
         // 无动物可猎时浆果是"能立刻吃上"的最后手段。
-        boolean hasBerries = OreProspector.nearest(bot.getServerWorld(), bot.getBlockPos(),
+        boolean hasBerries = OreProspector.nearest(bot,
                 FOOD_GRASS_SCAN, state -> state.isOf(Blocks.SWEET_BERRY_BUSH)) != null;
         // 附近矿感知:规划时扫一眼目标矿是否已在身边(48 格)。在 → 不下潜矿层直接挖
         //(站在铁矿旁还先挖 70 格竖井到 Y16 是蠢的;且竖井穿天然地形洞/水/沙砾极易 descend_blocked,
         // 实测场景地表化后 descend 类失败爆发,旧 y6 出生点 botY<mineY 恰好从不触发才一直没暴露)。
         java.util.function.Predicate<Set<Block>> oreNearby = ores -> {
-            if (OreProspector.nearest(bot.getServerWorld(), bot.getBlockPos(), 48,
+            if (OreProspector.nearest(bot, 48,
                     state -> ores.contains(state.getBlock())) != null) {
                 return true;
             }
@@ -102,8 +106,8 @@ public final class GoalPlanner {
             }
             return false;
         };
-        Planner planner = new Planner(inventoryCounts(bot), Math.max(1, AIBotConfig.get().goal().maxPlanDepth()),
-                bot.getBlockPos().getY(), hasPrey, hasGrass, hasBerries, oreNearby);
+        Planner planner = new Planner(bot, inventoryCounts(bot), Math.max(1, AIBotConfig.get().goal().maxPlanDepth()),
+                bot.getBlockPos().getY(), hasPrey, hasGrass, hasBerries, oreNearby, resumeContext);
         planner.ensureGoal(goal, 0, new HashSet<>());
         return new GoalPlan(goal, List.copyOf(mergeGathers(planner.steps)), List.copyOf(planner.unresolved));
     }
@@ -191,6 +195,7 @@ public final class GoalPlanner {
     }
 
     private static final class Planner {
+        private final AIPlayerEntity bot;
         private final Map<Item, Integer> counts;
         private final int maxDepth;
         private final int botY; // 规划时 bot 的 Y,用于判断深层矿是否需先下竖井到矿层
@@ -198,12 +203,15 @@ public final class GoalPlanner {
         private final boolean hasGrassNearby; // 周围有草(食物择源:无动物但有草→种植面包)
         private final boolean hasBerriesNearby; // 周围有甜浆果丛(食物择源:无动物无现成粮→采浆果兜底)
         private final java.util.function.Predicate<Set<Block>> oreNearby; // 目标矿是否已在身边(48格)→跳过下潜
+        private final GoalSnapshotCollector.Context resumeContext;
         private final List<GoalStep> steps = new ArrayList<>();
         private final List<String> unresolved = new ArrayList<>();
 
-        private Planner(Map<Item, Integer> counts, int maxDepth, int botY,
+        private Planner(AIPlayerEntity bot, Map<Item, Integer> counts, int maxDepth, int botY,
                         boolean hasPreyNearby, boolean hasGrassNearby, boolean hasBerriesNearby,
-                        java.util.function.Predicate<Set<Block>> oreNearby) {
+                        java.util.function.Predicate<Set<Block>> oreNearby,
+                        GoalSnapshotCollector.Context resumeContext) {
+            this.bot = bot;
             this.counts = counts;
             this.maxDepth = maxDepth;
             this.botY = botY;
@@ -211,6 +219,7 @@ public final class GoalPlanner {
             this.hasGrassNearby = hasGrassNearby;
             this.hasBerriesNearby = hasBerriesNearby;
             this.oreNearby = oreNearby;
+            this.resumeContext = resumeContext;
         }
 
         private boolean ensureGoal(Goal goal, int depth, Set<String> visiting) {
@@ -441,7 +450,22 @@ public final class GoalPlanner {
 
         // Phase3:囤货——先获取够 count 个 item,再下 STOCKPILE 步把资源存进附近箱子(best-effort)。
         private boolean ensureStockpile(Goal.Stockpile g, int depth, Set<String> visiting) {
-            if (!ensureItem(g.item(), g.count(), depth + 1, visiting)) {
+            net.minecraft.util.math.BlockPos base = resumeContext == null
+                    ? io.github.zoyluo.aibot.memory.BotMemoryStore.INSTANCE
+                            .of(bot.getUuid()).placeIn(bot.getServerWorld(), "base").orElse(bot.getBlockPos())
+                    : resumeContext.origin();
+            GoalSnapshotCollector.Context stockpileContext = resumeContext == null
+                    ? GoalSnapshotCollector.Context.at(base)
+                    : resumeContext;
+            GoalSnapshot snapshot = GoalSnapshotCollector.collect(
+                    bot, g, stockpileContext);
+            int alreadyDelivered = new GoalPredicate.Stockpile(
+                    Registries.ITEM.getId(g.item()).toString(), g.count()).evaluate(snapshot).matched();
+            int missing = Math.max(0, g.count() - alreadyDelivered);
+            if (missing == 0) {
+                return true;
+            }
+            if (!ensureItem(g.item(), missing, depth + 1, visiting)) {
                 return false;
             }
             addStep(GoalStep.stockpile(g.item()));
@@ -477,6 +501,10 @@ public final class GoalPlanner {
             Map<String, Integer> paletteNeeds = new LinkedHashMap<>();
             Map<Item, Integer> exactNeeds = new LinkedHashMap<>();
             for (BlueprintSchema.BlockPlacement placement : schema.placements()) {
+                if (resumeContext != null && resumeContext.buildAnchor() != null
+                        && StructureVerifier.matches(bot.getServerWorld(), resumeContext.buildAnchor(), placement)) {
+                    continue;
+                }
                 if ("minecraft:air".equals(placement.blockId())) {
                     continue;
                 }

@@ -201,7 +201,17 @@ public final class KnowledgeBase {
     // ==================== 落盘 ====================
 
     public void attachServer(MinecraftServer server) {
+        knowledge.clear();
         this.server = server;
+    }
+
+    public void detachServer() {
+        knowledge.clear();
+        server = null;
+    }
+
+    public void forget(UUID botId) {
+        knowledge.remove(botId);
     }
 
     private Path fileFor(UUID botId) {

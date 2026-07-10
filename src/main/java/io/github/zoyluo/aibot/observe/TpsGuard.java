@@ -69,6 +69,13 @@ public final class TpsGuard {
         return new Snapshot(averageTickMs, estimatedTps(), lastDegraded, continuationDelaySeconds(), scanInterval());
     }
 
+    public synchronized void reset() {
+        lastSampleNanos = 0L;
+        averageTickMs = 20.0D;
+        lastDegraded = false;
+        sampleCount = 0;
+    }
+
     private double estimatedTps() {
         return Math.min(20.0D, 1000.0D / Math.max(1.0D, averageTickMs));
     }

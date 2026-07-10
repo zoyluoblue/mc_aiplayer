@@ -1,0 +1,5 @@
+feature	seed	run	result	reason	stage	summary
+real_wheat	105441651	1	FAIL	gather_timeout	wood_gather	0/1 PASS: {real_wheat=FAIL:gather_timeout}
+real_wheat	1061665215	1	FAIL	missing shelter_block	other	0/1 PASS: {real_wheat=FAIL:missing shelter_block}
+real_wheat	155361719	1	FAIL	no_resource_nearby	wood_gather	0/1 PASS: {real_wheat=FAIL:no_resource_nearby}
+real_wheat	206232996	1	FAIL	aborted	aborted	0/1 PASS: {real_wheat=FAIL:aborted}

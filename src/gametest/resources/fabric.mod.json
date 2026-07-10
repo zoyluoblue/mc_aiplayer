@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "aibot-gametest",
+  "version": "1.0.0",
+  "name": "AIBot GameTests",
+  "description": "Deterministic, isolated GameTests for AIBot.",
+  "environment": "server",
+  "entrypoints": {
+    "main": [
+      "io.github.zoyluo.aibot.gametest.AIBotHarnessTestMod"
+    ],
+    "fabric-gametest": [
+      "io.github.zoyluo.aibot.gametest.AIBotDeterministicGameTests"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.18.4",
+    "minecraft": "1.21.3",
+    "fabric-api": "*",
+    "aibot": "*"
+  }
+}

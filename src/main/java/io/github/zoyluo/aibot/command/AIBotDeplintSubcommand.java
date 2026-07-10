@@ -3,6 +3,8 @@ package io.github.zoyluo.aibot.command;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
+import io.github.zoyluo.aibot.auth.BotAuthorizationGate;
+import io.github.zoyluo.aibot.auth.BotAuthorizationPolicy;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.goal.Goal;
 import io.github.zoyluo.aibot.goal.GoalPlanner;
@@ -44,9 +46,9 @@ public final class AIBotDeplintSubcommand {
 
     private static int run(CommandContext<ServerCommandSource> context) {
         String name = StringArgumentType.getString(context, "name");
-        Optional<AIPlayerEntity> botOpt = AIPlayerManager.INSTANCE.getByName(name);
+        Optional<AIPlayerEntity> botOpt = BotAuthorizationGate.INSTANCE.resolveAuthorized(
+                context.getSource(), name, BotAuthorizationPolicy.Operation.ADMIN, "command:deplint");
         if (botOpt.isEmpty()) {
-            context.getSource().sendError(Text.literal("[AIBot] No such bot: " + name));
             return 0;
         }
         String spec = StringArgumentType.getString(context, "spec").trim();

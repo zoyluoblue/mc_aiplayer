@@ -56,6 +56,14 @@ public final class BotProfiler {
         return stats;
     }
 
+    public void clear(UUID botId) {
+        byBot.remove(botId);
+    }
+
+    public void clearAll() {
+        byBot.clear();
+    }
+
     private static final class Samples {
         private final ArrayDeque<Long> nanos = new ArrayDeque<>();
 

@@ -2,6 +2,8 @@ package io.github.zoyluo.aibot.command;
 
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import io.github.zoyluo.aibot.auth.BotAuthorizationGate;
+import io.github.zoyluo.aibot.auth.BotAuthorizationPolicy;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
 import net.minecraft.command.CommandRegistryAccess;
 import net.minecraft.server.command.ServerCommandSource;
@@ -21,7 +23,6 @@ public final class AIBotCommand {
 
     public static void register(CommandDispatcher<ServerCommandSource> dispatcher, CommandRegistryAccess registryAccess) {
         dispatcher.register(literal("aibot")
-                .requires(source -> source.hasPermissionLevel(2))
                 .then(literal("spawn")
                         .then(argument("name", StringArgumentType.word())
                                 .executes(context -> spawn(context.getSource(), StringArgumentType.getString(context, "name"), "worker"))
@@ -48,14 +49,15 @@ public final class AIBotCommand {
                 .then(AIBotObserveSubcommand.profile())
                 .then(AIBotObserveSubcommand.replay())
                 .then(AIBotObserveSubcommand.tps())
-                .then(AIBotTestSubcommand.build(registryAccess))
                 .then(AIBotTaskSubcommand.build())
-                .then(AIBotVerifySubcommand.build())
                 .then(AIBotDeplintSubcommand.build())
                 .then(AIBotSnapshotSubcommand.build()));
     }
 
     private static int spawn(ServerCommandSource source, String name, String role) {
+        if (!BotAuthorizationGate.INSTANCE.canProvisionPersonalBot(source, "command:spawn")) {
+            return 0;
+        }
         ServerPlayerEntity executor = source.getPlayer();
         GameMode gameMode = executor == null ? GameMode.SURVIVAL : executor.interactionManager.getGameMode();
         UUID ownerUuid = executor == null ? null : executor.getUuid();
@@ -85,9 +87,9 @@ public final class AIBotCommand {
     }
 
     private static int role(ServerCommandSource source, String name, String role) {
-        var bot = AIPlayerManager.INSTANCE.getByName(name);
+        var bot = BotAuthorizationGate.INSTANCE.resolveAuthorized(
+                source, name, BotAuthorizationPolicy.Operation.ADMIN, "command:role");
         if (bot.isEmpty()) {
-            source.sendError(Text.literal("[AIBot] No such bot: " + name));
             return 0;
         }
         AIPlayerManager.INSTANCE.setRole(bot.get(), role);
@@ -96,6 +98,11 @@ public final class AIBotCommand {
     }
 
     private static int despawn(ServerCommandSource source, String name) {
+        var bot = BotAuthorizationGate.INSTANCE.resolveAuthorized(
+                source, name, BotAuthorizationPolicy.Operation.ADMIN, "command:despawn");
+        if (bot.isEmpty()) {
+            return 0;
+        }
         boolean removed = AIPlayerManager.INSTANCE.despawn(source.getServer(), name);
         if (removed) {
             source.sendFeedback(() -> Text.literal("[AIBot] Despawned " + name), true);
@@ -107,7 +114,9 @@ public final class AIBotCommand {
     }
 
     private static int list(ServerCommandSource source) {
-        var bots = AIPlayerManager.INSTANCE.all();
+        var bots = AIPlayerManager.INSTANCE.all().stream()
+                .filter(bot -> BotAuthorizationGate.INSTANCE.canView(source, bot))
+                .toList();
         String names = bots.stream()
                 .map(player -> player.getGameProfile().getName() + "(" + AIPlayerManager.INSTANCE.role(player) + ")")
                 .collect(Collectors.joining(", "));

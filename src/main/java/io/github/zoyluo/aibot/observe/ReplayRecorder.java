@@ -61,6 +61,14 @@ public final class ReplayRecorder {
         return all.subList(start, all.size());
     }
 
+    public void clear(UUID botId) {
+        events.remove(botId);
+    }
+
+    public void clearAll() {
+        events.clear();
+    }
+
     private void remember(UUID botId, ReplayEvent event) {
         ArrayDeque<ReplayEvent> deque = events.computeIfAbsent(botId, ignored -> new ArrayDeque<>());
         synchronized (deque) {

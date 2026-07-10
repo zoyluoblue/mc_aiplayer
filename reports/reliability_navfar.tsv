@@ -1,0 +1,6 @@
+feature	seed	run	result	reason	stage	summary
+real_nav_far	20260610	1	FAIL	aborted	aborted	0/1 PASS: {real_nav_far=FAIL:aborted}
+real_nav_far	8888	1	FAIL	move_timeout	timeout	0/1 PASS: {real_nav_far=FAIL:move_timeout}
+real_nav_far	3000	1	FAIL	move_dig_drowning	other	0/1 PASS: {real_nav_far=FAIL:move_dig_drowning}
+real_nav_far	12345	1	FAIL	aborted	aborted	0/1 PASS: {real_nav_far=FAIL:aborted}
+ALLDONE

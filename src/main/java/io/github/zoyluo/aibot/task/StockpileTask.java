@@ -14,6 +14,8 @@ import net.minecraft.util.math.Direction;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
+import java.util.LinkedHashSet;
 import java.util.function.Predicate;
 
 public final class StockpileTask extends AbstractTask {
@@ -35,6 +37,7 @@ public final class StockpileTask extends AbstractTask {
     private BlockPos containerPos;
     private int containerIndex;
     private int transferred;
+    private final Set<BlockPos> depositedContainers = new LinkedHashSet<>();
     private String note = "";
 
     public StockpileTask(boolean allExceptTools) {
@@ -68,6 +71,7 @@ public final class StockpileTask extends AbstractTask {
         transferred = 0;
         containers.clear();
         containerIndex = 0;
+        depositedContainers.clear();
     }
 
     @Override
@@ -101,6 +105,7 @@ public final class StockpileTask extends AbstractTask {
         Item preferred = nextDepositItem(bot);
         BlockPos.stream(basePos.add(-BASE_RADIUS, -3, -BASE_RADIUS), basePos.add(BASE_RADIUS, 4, BASE_RADIUS))
                 .map(BlockPos::toImmutable)
+                .filter(pos -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, pos))
                 .filter(pos -> ContainerAction.resolve(bot, pos).isPresent())
                 .forEach(containers::add);
         containers.sort(Comparator
@@ -158,6 +163,12 @@ public final class StockpileTask extends AbstractTask {
     }
 
     private void transfer(AIPlayerEntity bot) {
+        if (containerPos == null
+                || bot.getEyePos().squaredDistanceTo(containerPos.toCenterPos()) > REACH_SQUARED
+                || !io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, containerPos)) {
+            phase = Phase.FIND_CONTAINER;
+            return;
+        }
         Inventory container = ContainerAction.resolve(bot, containerPos).orElse(null);
         if (container == null) {
             selectNextContainer(bot);
@@ -166,6 +177,7 @@ public final class StockpileTask extends AbstractTask {
         ContainerAction.TransferResult result = ContainerAction.depositOne(container, bot, depositFilter(), 64);
         if (result.movedAny()) {
             transferred += result.count();
+            depositedContainers.add(containerPos.toImmutable());
             return;
         }
         if ("nothing_to_deposit".equals(result.reason())) {
@@ -218,5 +230,9 @@ public final class StockpileTask extends AbstractTask {
             }
         }
         return null;
+    }
+
+    public Set<BlockPos> depositedContainers() {
+        return Set.copyOf(depositedContainers);
     }
 }

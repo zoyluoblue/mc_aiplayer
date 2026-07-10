@@ -1,0 +1,23 @@
+{
+  "name": "aibot-tiktok-promo",
+  "version": "1.0.0",
+  "description": "30s vertical TikTok promo for AIBot — an autonomous Minecraft AI player. Source: zuuzii.com",
+  "private": true,
+  "scripts": {
+    "start": "remotion studio",
+    "render": "remotion render Promo out/aibot-promo.mp4 --codec=h264 --concurrency=1",
+    "still": "remotion still Promo out/poster.png --frame=60",
+    "upgrade": "remotion upgrade"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.200",
+    "@remotion/google-fonts": "4.0.200",
+    "remotion": "4.0.200",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.1",
+    "typescript": "5.4.5"
+  }
+}

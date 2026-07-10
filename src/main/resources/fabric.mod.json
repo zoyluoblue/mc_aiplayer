@@ -8,8 +8,8 @@
     "zoyluo"
   ],
   "contact": {
-    "homepage": "https://github.com/zoyluo/mc_aiplayer",
-    "sources": "https://github.com/zoyluo/mc_aiplayer"
+    "homepage": "https://github.com/zoyluoblue/mc_aiplayer",
+    "sources": "https://github.com/zoyluoblue/mc_aiplayer"
   },
   "license": "MIT",
   "environment": "*",
@@ -28,6 +28,6 @@
     "fabricloader": ">=0.18.4",
     "minecraft": "1.21.3",
     "java": ">=21",
-    "fabric-api": "*"
+    "fabric-api": ">=0.114.1+1.21.3"
   }
 }

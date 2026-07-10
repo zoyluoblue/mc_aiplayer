@@ -4,9 +4,11 @@ import com.google.gson.JsonObject;
 import io.github.zoyluo.aibot.AIBotConfig;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
+import io.github.zoyluo.aibot.task.TaskManager;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.BooleanSupplier;
 
 public final class ActionDispatcher {
     // 优化2:目标失败后大脑常改用这些工具/子任务手动一格格挖矿、盲目移动,瞬间耗尽轮次(还会把 bot 挖进
@@ -18,6 +20,8 @@ public final class ActionDispatcher {
     private static final java.util.Set<String> MANUAL_MINING_TASK_TYPES =
             java.util.Set.of("move", "mine", "strip_mine");
     private static final int GOAL_FAIL_GUARD_TICKS = 600; // 30s
+    private static final java.util.Set<String> USER_PAUSED_ALLOWED_TOOLS = java.util.Set.of(
+            "say", "get_task_status", "goal_status", "recall", "list_jobs", "pause", "resume", "stop", "cancel_all");
 
     private final ToolRegistry registry;
 
@@ -26,9 +30,25 @@ public final class ActionDispatcher {
     }
 
     public List<ChatMessage> dispatch(AIPlayerEntity bot, List<ChatToolCall> calls) {
+        return dispatchBatch(bot, calls, () -> true).messages();
+    }
+
+    public List<ChatMessage> dispatch(AIPlayerEntity bot,
+                                      List<ChatToolCall> calls,
+                                      BooleanSupplier leaseGuard) {
+        return dispatchBatch(bot, calls, leaseGuard).messages();
+    }
+
+    public DispatchBatch dispatchBatch(AIPlayerEntity bot,
+                                       List<ChatToolCall> calls,
+                                       BooleanSupplier leaseGuard) {
         int maxCalls = AIBotConfig.get().brain().maxToolCallsPerTurn();
         List<ChatMessage> results = new ArrayList<>();
+        ControlEffect controlEffect = ControlEffect.NONE;
         for (int index = 0; index < calls.size(); index++) {
+            if (!leaseGuard.getAsBoolean()) {
+                break;
+            }
             ChatToolCall call = calls.get(index);
             ToolDefinition.ToolResult result;
             if (index >= maxCalls) {
@@ -36,14 +56,25 @@ public final class ActionDispatcher {
             } else {
                 result = invoke(bot, call);
             }
+            // A tool may synchronously start a newer decision (for example tell_bot targeting self).
+            // Do not execute or publish any remaining work from the superseded response.
+            if (!leaseGuard.getAsBoolean()) {
+                break;
+            }
+            if (result.ok()) {
+                controlEffect = controlEffect.merge(effectOf(call.name()));
+            }
             BotLog.action(bot, "tool_result", "tool", call.name(), "ok", result.ok(), "message", result.message());
             results.add(ChatMessage.toolResult(call.id(), result.toToolContent()));
         }
-        return results;
+        return new DispatchBatch(List.copyOf(results), controlEffect);
     }
 
     private ToolDefinition.ToolResult invoke(AIPlayerEntity bot, ChatToolCall call) {
         try {
+            if (TaskManager.INSTANCE.isUserPaused(bot) && !USER_PAUSED_ALLOWED_TOOLS.contains(call.name())) {
+                return new ToolDefinition.ToolResult(false, "blocked: mission_user_paused");
+            }
             // 优化2:目标刚失败时,大脑常改用 strip_mine/mine_block/move_to(或 assign_task{move/mine/strip_mine})
             // 手动一格格挖、盲目移动,瞬间耗尽轮次,还会把 bot 挖进水/岩浆/怪堆送命(实测两次死亡)。
             // 拦下来逼它用高层目标(mine_ore 自动找矿 / gather 自动找资源)重试或停下。
@@ -57,7 +88,7 @@ public final class ActionDispatcher {
             ToolDefinition definition = registry.get(call.name())
                     .orElseThrow(() -> new IllegalArgumentException("unknown_tool: " + call.name()));
             JsonObject args = call.parsedArguments();
-            BotLog.action(bot, "tool_dispatch", "tool", call.name(), "args", args);
+            BotLog.action(bot, "tool_dispatch", "tool", call.name(), "args", sanitizedArguments(args));
             return definition.handler().invoke(bot, args);
         } catch (IllegalArgumentException exception) {
             // D:参数/输入校验失败(多为大脑用错工具或传参不全,如 assign_task mine 只给坐标缺 block)属**预期**错误——
@@ -70,6 +101,16 @@ public final class ActionDispatcher {
             String reason = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
             return new ToolDefinition.ToolResult(false, "exception: " + reason);
         }
+    }
+
+    private static JsonObject sanitizedArguments(JsonObject args) {
+        JsonObject sanitized = args == null ? new JsonObject() : args.deepCopy();
+        for (String sensitive : java.util.List.of("message", "text", "value")) {
+            if (sanitized.has(sensitive)) {
+                sanitized.addProperty(sensitive, "<redacted>");
+            }
+        }
+        return sanitized;
     }
 
     // 是否"手动挖矿/盲目移动"类调用——含直接低层工具(strip_mine/mine_block/move_to)与
@@ -89,5 +130,26 @@ public final class ActionDispatcher {
             }
         }
         return false;
+    }
+
+    private static ControlEffect effectOf(String toolName) {
+        return switch (toolName) {
+            case "stop", "abort_task" -> ControlEffect.CANCEL_CURRENT;
+            case "cancel_all" -> ControlEffect.CANCEL_ALL;
+            default -> ControlEffect.NONE;
+        };
+    }
+
+    public enum ControlEffect {
+        NONE,
+        CANCEL_CURRENT,
+        CANCEL_ALL;
+
+        private ControlEffect merge(ControlEffect other) {
+            return ordinal() >= other.ordinal() ? this : other;
+        }
+    }
+
+    public record DispatchBatch(List<ChatMessage> messages, ControlEffect controlEffect) {
     }
 }

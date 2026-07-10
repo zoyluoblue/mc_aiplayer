@@ -120,10 +120,16 @@ public final class DigDownTask extends AbstractTask {
                     BlockPos cand = new BlockPos(x, ty, z);
                     if (io.github.zoyluo.aibot.pathfinding.Standability.isStandable(world, cand)
                             && dryColumn(world, cand)) {
-                        bot.getActionPack().stopAll();
-                        bot.teleport(world, x + 0.5D, ty, z + 0.5D,
-                                java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
-                        BotLog.action(bot, "dig_down_dry_relocate", "to", cand.toShortString());
+                        boolean moved = io.github.zoyluo.aibot.mode.CapabilityRuntime.run(
+                                bot, io.github.zoyluo.aibot.mode.PrivilegedCapability.EMERGENCY_TELEPORT,
+                                "dig_down_dry_relocate", () -> {
+                                    bot.getActionPack().stopAll();
+                                    bot.teleport(world, x + 0.5D, ty, z + 0.5D,
+                                            java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+                                });
+                        if (moved) {
+                            BotLog.action(bot, "dig_down_dry_relocate", "to", cand.toShortString());
+                        }
                         break outer;
                     }
                 }

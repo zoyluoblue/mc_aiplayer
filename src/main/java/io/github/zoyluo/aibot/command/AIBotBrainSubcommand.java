@@ -3,8 +3,12 @@ package io.github.zoyluo.aibot.command;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import io.github.zoyluo.aibot.auth.BotAuthorizationGate;
+import io.github.zoyluo.aibot.auth.BotAuthorizationPolicy;
 import io.github.zoyluo.aibot.brain.BrainValidation;
 import io.github.zoyluo.aibot.brain.BrainCoordinator;
+import io.github.zoyluo.aibot.runtime.IntentController;
+import io.github.zoyluo.aibot.runtime.RuntimeLifecycleCoordinator;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.log.LogCategory;
@@ -87,7 +91,7 @@ public final class AIBotBrainSubcommand {
     }
 
     private static int status(ServerCommandSource source, String name) {
-        Optional<AIPlayerEntity> bot = getBot(source, name);
+        Optional<AIPlayerEntity> bot = getBot(source, name, BotAuthorizationPolicy.Operation.VIEW, "command:brain_status");
         if (bot.isEmpty()) {
             return 0;
         }
@@ -102,17 +106,18 @@ public final class AIBotBrainSubcommand {
     }
 
     private static int reset(ServerCommandSource source, String name) {
-        Optional<AIPlayerEntity> bot = getBot(source, name);
+        Optional<AIPlayerEntity> bot = getBot(source, name, BotAuthorizationPolicy.Operation.COMMAND, "command:brain_reset");
         if (bot.isEmpty()) {
             return 0;
         }
-        BrainCoordinator.INSTANCE.reset(bot.get());
+        RuntimeLifecycleCoordinator.INSTANCE.resetBot(
+                bot.get(), IntentController.ControlOrigin.PLAYER_COMMAND, "command_brain_reset");
         source.sendFeedback(() -> Text.literal("[AIBot] brain reset " + name), false);
         return 1;
     }
 
     private static int manual(ServerCommandSource source, String name, boolean enabled) {
-        Optional<AIPlayerEntity> bot = getBot(source, name);
+        Optional<AIPlayerEntity> bot = getBot(source, name, BotAuthorizationPolicy.Operation.ADMIN, "command:brain_manual");
         if (bot.isEmpty()) {
             return 0;
         }
@@ -122,9 +127,13 @@ public final class AIBotBrainSubcommand {
     }
 
     private static int say(ServerCommandSource source, String name, String text) {
-        Optional<AIPlayerEntity> bot = getBot(source, name);
+        Optional<AIPlayerEntity> bot = getBot(source, name, BotAuthorizationPolicy.Operation.COMMAND, "command:brain_say");
         if (bot.isEmpty()) {
             return 0;
+        }
+        if (IntentController.INSTANCE.routePlayerControlPhrase(
+                bot.get(), IntentController.ControlOrigin.PLAYER_COMMAND, text)) {
+            return 1;
         }
         boolean queued = BrainCoordinator.INSTANCE.handleMessage(bot.get(), source.getName(), text);
         if (queued) {
@@ -135,19 +144,19 @@ public final class AIBotBrainSubcommand {
     }
 
     private static int validateApiFailure(ServerCommandSource source, String name) {
-        return reportValidation(source, getBot(source, name), BrainValidation::apiFailure);
+        return reportValidation(source, getBot(source, name, BotAuthorizationPolicy.Operation.ADMIN, "command:brain_validate"), BrainValidation::apiFailure);
     }
 
     private static int validateBadToolArgs(ServerCommandSource source, String name) {
-        return reportValidation(source, getBot(source, name), BrainValidation::badToolArgs);
+        return reportValidation(source, getBot(source, name, BotAuthorizationPolicy.Operation.ADMIN, "command:brain_validate"), BrainValidation::badToolArgs);
     }
 
     private static int validateBadResponse(ServerCommandSource source, String name) {
-        return reportValidation(source, getBot(source, name), BrainValidation::badResponse);
+        return reportValidation(source, getBot(source, name, BotAuthorizationPolicy.Operation.ADMIN, "command:brain_validate"), BrainValidation::badResponse);
     }
 
     private static int validateTps(ServerCommandSource source, String name, int seconds, String text) {
-        Optional<AIPlayerEntity> bot = getBot(source, name);
+        Optional<AIPlayerEntity> bot = getBot(source, name, BotAuthorizationPolicy.Operation.ADMIN, "command:brain_validate_tps");
         if (bot.isEmpty()) {
             return 0;
         }
@@ -194,11 +203,10 @@ public final class AIBotBrainSubcommand {
         return 0;
     }
 
-    private static Optional<AIPlayerEntity> getBot(ServerCommandSource source, String name) {
-        Optional<AIPlayerEntity> bot = AIPlayerManager.INSTANCE.getByName(name);
-        if (bot.isEmpty()) {
-            source.sendError(Text.literal("[AIBot] No such bot: " + name));
-        }
-        return bot;
+    private static Optional<AIPlayerEntity> getBot(ServerCommandSource source,
+                                                   String name,
+                                                   BotAuthorizationPolicy.Operation operation,
+                                                   String channel) {
+        return BotAuthorizationGate.INSTANCE.resolveAuthorized(source, name, operation, channel);
     }
 }

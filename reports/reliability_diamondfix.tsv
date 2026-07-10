@@ -1,0 +1,8 @@
+feature	seed	run	result	reason	stage	summary
+real_diamond	3000	1	FAIL	aborted	aborted	0/1 PASS: {real_diamond=FAIL:aborted}
+real_diamond	105441651	1	FAIL	aborted	aborted	0/1 PASS: {real_diamond=FAIL:aborted}
+real_diamond	155361719	1	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	206232996	1	FAIL	assertion_failed status=combat Attacking minecraft:skeleton 0/1 phase=APPROACH	other	0/1 PASS: {real_diamond=FAIL:assertion_failed status=combat Attacking minecraft:skeleton 0/1 phase=APPROACH}
+real_diamond	12345	1	FAIL	ore_dig_timeout collected=0	timeout	0/1 PASS: {real_diamond=FAIL:ore_dig_timeout collected=0}
+real_diamond	632510390	1	FAIL	aborted	aborted	0/1 PASS: {real_diamond=FAIL:aborted}
+ALLDONE

@@ -86,6 +86,7 @@ public final class LightAreaTask extends AbstractTask {
         int threshold = AIBotConfig.get().night().torchLightThreshold();
         BlockPos.stream(origin.add(-radius, -2, -radius), origin.add(radius, 3, radius))
                 .map(BlockPos::toImmutable)
+                .filter(pos -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, pos.down()))
                 .filter(pos -> canPlaceTorchAt(bot, pos, threshold))
                 .sorted(Comparator.comparingDouble(pos -> pos.getSquaredDistance(origin)))
                 .limit(maxTorches)

@@ -15,6 +15,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.EnumMap;
+import java.util.ArrayDeque;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
@@ -28,6 +29,7 @@ public final class BotLogWriter {
     private static final DateTimeFormatter TS_FORMAT = DateTimeFormatter.ISO_INSTANT;
 
     private final ArrayBlockingQueue<LogEntry> queue = new ArrayBlockingQueue<>(4096);
+    private final ArrayDeque<LogEntry> bootstrapEntries = new ArrayDeque<>();
     private final AtomicLong droppedCount = new AtomicLong();
     private final Map<String, BufferedWriter> botWriters = new ConcurrentHashMap<>();
 
@@ -44,6 +46,9 @@ public final class BotLogWriter {
     }
 
     public synchronized void start(AIBotConfig config) {
+        if (started) {
+            return;
+        }
         this.config = config.logging();
         thresholds = thresholds(this.config);
         if (!this.config.enabled()) {
@@ -60,20 +65,35 @@ public final class BotLogWriter {
             workerThread.setDaemon(true);
             workerThread.start();
             started = true;
+            flushBootstrapEntries();
         } catch (IOException exception) {
             MIRROR.warn("[AIBot] structured log disabled, failed to start writer", exception);
         }
     }
 
     public void submit(LogCategory category, Level level, String botName, String event, Map<String, String> fields, String humanMessage, Throwable throwable) {
+        LogEntry entry = new LogEntry(System.currentTimeMillis(), category, level, botName, event, Map.copyOf(fields), humanMessage, throwable);
+        boolean security = category == LogCategory.SECURITY;
+        boolean bootstrapCritical = (category == LogCategory.CONFIG || category == LogCategory.ERROR)
+                && (!started || !config.enabled());
+        if (security || bootstrapCritical) {
+            // Authorization denials and configuration/bootstrap failures must remain observable even
+            // before the asynchronous writer starts, or when structured logging is disabled.
+            mirror(entry);
+        }
+        if (!started && (category == LogCategory.CONFIG || category == LogCategory.ERROR)) {
+            bufferBootstrapEntry(entry);
+        }
         if (!started || !config.enabled() || level.toInt() < thresholds.getOrDefault(category, Level.INFO).toInt()) {
             return;
         }
-        LogEntry entry = new LogEntry(System.currentTimeMillis(), category, level, botName, event, Map.copyOf(fields), humanMessage, throwable);
         if (!queue.offer(entry)) {
             droppedCount.incrementAndGet();
+            if (security) {
+                MIRROR.error("[AIBot] SECURITY log queue full; denial remained mirrored but structured copy was dropped");
+            }
         }
-        if (config.mirrorToSlf4j() && level.toInt() >= Level.INFO.toInt()) {
+        if (!security && config.mirrorToSlf4j() && level.toInt() >= Level.INFO.toInt()) {
             mirror(entry);
         }
     }
@@ -148,6 +168,26 @@ public final class BotLogWriter {
 
     public Path baseDir() {
         return baseDir;
+    }
+
+    private synchronized void bufferBootstrapEntry(LogEntry entry) {
+        if (bootstrapEntries.size() >= 128) {
+            bootstrapEntries.removeFirst();
+            droppedCount.incrementAndGet();
+        }
+        bootstrapEntries.addLast(entry);
+    }
+
+    private void flushBootstrapEntries() {
+        while (!bootstrapEntries.isEmpty()) {
+            LogEntry entry = bootstrapEntries.removeFirst();
+            if (entry.level().toInt() < thresholds.getOrDefault(entry.category(), Level.INFO).toInt()) {
+                continue;
+            }
+            if (!queue.offer(entry)) {
+                droppedCount.incrementAndGet();
+            }
+        }
     }
 
     private void workerLoop() {

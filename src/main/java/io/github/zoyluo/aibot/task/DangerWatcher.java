@@ -7,6 +7,8 @@ import io.github.zoyluo.aibot.brain.BrainCoordinator;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
+import io.github.zoyluo.aibot.mode.ObservableWorldQuery;
+import io.github.zoyluo.aibot.runtime.TaskOrigin;
 import net.minecraft.block.BlockState;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.mob.CreeperEntity;
@@ -48,6 +50,31 @@ public final class DangerWatcher {
     private DangerWatcher() {
     }
 
+    public void clear(AIPlayerEntity bot) {
+        UUID id = bot.getUuid();
+        nextThreatAttemptTick.remove(id);
+        nextEatAttemptTick.remove(id);
+        nextResupplyAttemptTick.remove(id);
+        nextNightAttemptTick.remove(id);
+        observedSleepCompletionTicks.remove(id);
+        trapRecords.remove(id);
+        nextHuntAttemptTick.remove(id);
+        darkStuckRecords.remove(id);
+        nextEscapeHelpTick.remove(id);
+    }
+
+    public void clearAll() {
+        nextThreatAttemptTick.clear();
+        nextEatAttemptTick.clear();
+        nextResupplyAttemptTick.clear();
+        nextNightAttemptTick.clear();
+        observedSleepCompletionTicks.clear();
+        trapRecords.clear();
+        nextHuntAttemptTick.clear();
+        darkStuckRecords.clear();
+        nextEscapeHelpTick.clear();
+    }
+
     private record TrapRecord(BlockPos pos, int repeatCount, int lastHelpTick) {
     }
 
@@ -66,8 +93,6 @@ public final class DangerWatcher {
             BlockPos deathPos = bot.getBlockPos();
             long deathTick = server.getTicks();
             AIPlayerManager.INSTANCE.respawnDeadBot(bot);
-            TaskManager.INSTANCE.abort(bot);
-            io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.clear(bot);
             // 死亡找回反射:装备掉在死亡点(5 分钟 despawn),真实玩家第一反应就是跑尸。
             // 自动出发的两个闸:①重生点离死亡点 ≤160(太远赶不上白跑);②死亡点不在危险区
             // (同区两死记忆会立牌——记忆劝阻就听劝,别第三次送死,装备认亏)。
@@ -75,7 +100,7 @@ public final class DangerWatcher {
             boolean dangerous = io.github.zoyluo.aibot.memory.KnowledgeBase.INSTANCE
                     .isDanger(bot.getUuid(), deathPos);
             if (nearEnough && !dangerous) {
-                TaskManager.INSTANCE.assign(bot, new RecoverDropsTask(deathPos, deathTick));
+                TaskManager.INSTANCE.assign(bot, new RecoverDropsTask(deathPos, deathTick), TaskOrigin.safety("recover_drops"));
                 BrainCoordinator.INSTANCE.sendPanelChat(bot, "system",
                         bot.getGameProfile().getName() + " 死亡后已复活,正赶回 "
                                 + deathPos.toShortString() + " 找回掉落装备。");
@@ -95,7 +120,7 @@ public final class DangerWatcher {
             if (active.isPresent()) {
                 TaskManager.INSTANCE.pauseFor(bot, "lava_escape");
             }
-            TaskManager.INSTANCE.assign(bot, new LavaEscapeTask());
+            TaskManager.INSTANCE.assign(bot, new LavaEscapeTask(), TaskOrigin.safety("lava_escape"));
             BotLog.danger(bot, "lava_escape_start", "pos", bot.getBlockPos().toShortString(),
                     "hp", (int) bot.getHealth());
             return true;
@@ -122,7 +147,7 @@ public final class DangerWatcher {
             if (active.isPresent()) {
                 TaskManager.INSTANCE.pauseFor(bot, "emergency_entomb");
             }
-            TaskManager.INSTANCE.assign(bot, new EmergencyShelterTask());
+            TaskManager.INSTANCE.assign(bot, new EmergencyShelterTask(), TaskOrigin.safety("emergency_entomb"));
             BotLog.danger(bot, "emergency_entomb", "hp", (int) bot.getHealth(),
                     "underground", cannotFlee, "threat", threat.get().type());
             return true;
@@ -139,7 +164,7 @@ public final class DangerWatcher {
                 if (active.isPresent() && shouldPauseForThreat(active.get(), top, task)) {
                     TaskManager.INSTANCE.pauseFor(bot, "threat: " + top.type());
                 }
-                TaskManager.INSTANCE.assign(bot, task);
+                TaskManager.INSTANCE.assign(bot, task, TaskOrigin.safety("threat:" + top.type()));
                 nextThreatAttemptTick.put(bot.getUuid(), server.getTicks() + threatCooldownTicks(top, task));
                 BotLog.danger(bot, "threat_detected",
                         "type", top.type(),
@@ -165,10 +190,15 @@ public final class DangerWatcher {
         if (maybeLightDarkArea(server, bot, active)) {
             return true;
         }
-        if (active.isEmpty() && BrainCoordinator.INSTANCE.maybeWakeForFailureOrGoal(bot)) {
+        if (active.isEmpty()
+                && !TaskManager.INSTANCE.isUserPaused(bot)
+                && !bot.getActionPack().hasActiveActions()
+                && BrainCoordinator.INSTANCE.maybeWakeForFailureOrGoal(bot)) {
             return true;
         }
-        if (active.isEmpty() && TaskManager.INSTANCE.hasPaused(bot)) {
+        if (active.isEmpty()
+                && !bot.getActionPack().hasActiveActions()
+                && TaskManager.INSTANCE.hasPaused(bot)) {
             TaskManager.INSTANCE.resumeFromPause(bot);
             return true;
         }
@@ -176,6 +206,14 @@ public final class DangerWatcher {
     }
 
     private boolean maybeResupply(MinecraftServer server, AIPlayerEntity bot, Optional<Task> active) {
+        boolean criticalStarvation = bot.getHungerManager().getFoodLevel()
+                <= AIBotConfig.get().survival().hungerCriticalThreshold();
+        if (TaskManager.INSTANCE.isUserPaused(bot) && !criticalStarvation) {
+            return false;
+        }
+        if (bot.getActionPack().hasActiveActions()) {
+            return false; // 普通补给不抢占 action-only replacement；紧急生存分支在本方法之前处理。
+        }
         if (active.isPresent() && active.get() instanceof ResupplyTask) {
             return true;
         }
@@ -209,7 +247,9 @@ public final class DangerWatcher {
         if (active.isPresent()) {
             TaskManager.INSTANCE.pauseFor(bot, "resupply");
         }
-        TaskManager.INSTANCE.assign(bot, task);
+        TaskManager.INSTANCE.assign(bot, task, criticalStarvation
+                ? TaskOrigin.safety("critical_resupply")
+                : TaskOrigin.of(TaskOrigin.Kind.SYSTEM_BACKGROUND, "resupply"));
         nextResupplyAttemptTick.put(bot.getUuid(), now + 200);
         BotLog.danger(bot, "resupply_started", "need", task.describe());
         return true;
@@ -220,6 +260,13 @@ public final class DangerWatcher {
         AIBotConfig.Survival survival = AIBotConfig.get().survival();
         if (foodLevel > survival.hungerEatThreshold()) {
             return false;
+        }
+        boolean critical = foodLevel <= survival.hungerCriticalThreshold();
+        if (TaskManager.INSTANCE.isUserPaused(bot) && !critical) {
+            return false;
+        }
+        if (bot.getActionPack().hasActiveActions() && !critical) {
+            return false; // 非紧急进食等动作完成；critical starvation 仍可抢占保命。
         }
         if (active.isPresent() && active.get() instanceof EatTask) {
             return true;
@@ -237,14 +284,15 @@ public final class DangerWatcher {
             return false;
         }
 
-        boolean critical = foodLevel <= survival.hungerCriticalThreshold();
         if (active.isPresent()) {
             if (!critical || active.get() instanceof EvadeTask) {
                 return false;
             }
             TaskManager.INSTANCE.pauseFor(bot, "hunger: " + foodLevel);
         }
-        TaskManager.INSTANCE.assign(bot, new EatTask());
+        TaskManager.INSTANCE.assign(bot, new EatTask(), critical
+                ? TaskOrigin.safety("critical_hunger")
+                : TaskOrigin.of(TaskOrigin.Kind.SYSTEM_BACKGROUND, "eat"));
         nextEatAttemptTick.put(bot.getUuid(), now + 100);
         BotLog.danger(bot, "hunger_eat_started", "food", foodLevel, "critical", critical);
         return true;
@@ -252,6 +300,11 @@ public final class DangerWatcher {
 
     // 第2层 饥饿链:没食物时主动猎食(获取生肉)。仅在不处于威胁应对(evade/combat)时派;周围无猎物则不空派。
     private boolean huntForFood(MinecraftServer server, AIPlayerEntity bot, Optional<Task> active) {
+        boolean critical = bot.getHungerManager().getFoodLevel()
+                <= AIBotConfig.get().survival().hungerCriticalThreshold();
+        if (TaskManager.INSTANCE.isUserPaused(bot) && !critical) {
+            return false;
+        }
         if (active.isPresent()) {
             if (active.get() instanceof HuntTask) {
                 return true; // 已在猎食,保持
@@ -271,7 +324,9 @@ public final class DangerWatcher {
         if (active.isPresent()) {
             TaskManager.INSTANCE.pauseFor(bot, "hunt_for_food");
         }
-        TaskManager.INSTANCE.assign(bot, new HuntTask(HUNT_FOOD_TARGET));
+        TaskManager.INSTANCE.assign(bot, new HuntTask(HUNT_FOOD_TARGET), critical
+                ? TaskOrigin.safety("critical_hunt_for_food")
+                : TaskOrigin.of(TaskOrigin.Kind.SYSTEM_BACKGROUND, "hunt_for_food"));
         nextHuntAttemptTick.put(bot.getUuid(), now + 400);
         BotLog.danger(bot, "hunt_for_food_started", "food", bot.getHungerManager().getFoodLevel());
         return true;
@@ -316,10 +371,16 @@ public final class DangerWatcher {
             var hostile = bot.getServerWorld().getEntitiesByClass(
                     net.minecraft.entity.mob.HostileEntity.class,
                     bot.getBoundingBox().expand(4.0D), e -> e.isAlive())
-                    .stream().findFirst().orElse(null);
+                    .stream()
+                    .filter(e -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveEntity(bot, e))
+                    .findFirst().orElse(null);
             if (hostile != null) {
                 BotLog.danger(bot, "trapped_fight_back", "target", hostile.getType().toString());
-                TaskManager.INSTANCE.assign(bot, new CombatTask(hostile.getType(), 1, 0.0F));
+                if (TaskManager.INSTANCE.getActive(bot).isPresent()) {
+                    TaskManager.INSTANCE.pauseFor(bot, "trapped_fight_back");
+                }
+                TaskManager.INSTANCE.assign(bot, new CombatTask(hostile.getType(), 1, 0.0F),
+                        TaskOrigin.safety("trapped_fight_back"));
                 return true;
             }
         }
@@ -341,8 +402,14 @@ public final class DangerWatcher {
     }
 
     private boolean maybeStartNightTask(MinecraftServer server, AIPlayerEntity bot, Optional<Task> active) {
+        if (TaskManager.INSTANCE.isUserPaused(bot)) {
+            return false;
+        }
         AIBotConfig.Night night = AIBotConfig.get().night();
-        if (!night.autoSleep() || bot.getServerWorld().isDay() || active.isPresent()) {
+        if (!night.autoSleep()
+                || bot.getServerWorld().isDay()
+                || active.isPresent()
+                || bot.getActionPack().hasActiveActions()) {
             return false;
         }
         // 目标计划进行中(步骤间隙 active 短暂为空)不插夜间照明:它是 foreign task,会让 GoalExecutor
@@ -372,7 +439,7 @@ public final class DangerWatcher {
             nextNightAttemptTick.put(bot.getUuid(), now + 600);
             return false;
         }
-        TaskManager.INSTANCE.assign(bot, task);
+        TaskManager.INSTANCE.assign(bot, task, TaskOrigin.of(TaskOrigin.Kind.SYSTEM_BACKGROUND, "night_task"));
         nextNightAttemptTick.put(bot.getUuid(), now + 600);
         BotLog.danger(bot, "night_task_started", "task", task.name());
         return true;
@@ -381,7 +448,10 @@ public final class DangerWatcher {
     // 规避加固:地下/黑暗处(方块光照<8)只要 idle 且有火把,就先点亮——从源头减少怪物在身边刷新。
     // 不限夜晚(地下白天 light=0 同样刷怪)。仅 active 为空(idle/目标步骤间隙)时派,避免打断挖矿。
     private boolean maybeLightDarkArea(MinecraftServer server, AIPlayerEntity bot, Optional<Task> active) {
-        if (active.isPresent()) {
+        if (TaskManager.INSTANCE.isUserPaused(bot)) {
+            return false;
+        }
+        if (active.isPresent() || bot.getActionPack().hasActiveActions()) {
             return false;
         }
         // 目标计划进行中(步骤间隙 active 会短暂为空)不要插照明:它是 foreign task,会让 GoalExecutor
@@ -403,7 +473,8 @@ public final class DangerWatcher {
         if (now < nextNightAttemptTick.getOrDefault(bot.getUuid(), 0)) {
             return false; // 复用夜间节流,避免每次扫描都派
         }
-        TaskManager.INSTANCE.assign(bot, new LightAreaTask(8, 8));
+        TaskManager.INSTANCE.assign(bot, new LightAreaTask(8, 8),
+                TaskOrigin.of(TaskOrigin.Kind.SYSTEM_BACKGROUND, "dark_area_light"));
         nextNightAttemptTick.put(bot.getUuid(), now + 600);
         BotLog.danger(bot, "dark_area_lit",
                 "light", world.getLightLevel(net.minecraft.world.LightType.BLOCK, feet));
@@ -463,10 +534,13 @@ public final class DangerWatcher {
             BlockPos cand = feet.up(dy);
             if (io.github.zoyluo.aibot.pathfinding.Standability.isStandable(world, cand)
                     && world.isSkyVisible(cand)) {
-                bot.getActionPack().stopAll();
-                bot.teleport(world, cand.getX() + 0.5D, cand.getY(), cand.getZ() + 0.5D,
-                        java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
-                return true;
+                return io.github.zoyluo.aibot.mode.CapabilityRuntime.run(
+                        bot, io.github.zoyluo.aibot.mode.PrivilegedCapability.EMERGENCY_TELEPORT,
+                        "danger_dark_trap_surface", () -> {
+                            bot.getActionPack().stopAll();
+                            bot.teleport(world, cand.getX() + 0.5D, cand.getY(), cand.getZ() + 0.5D,
+                                    java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+                        });
             }
         }
         return false;
@@ -494,7 +568,9 @@ public final class DangerWatcher {
         int hostiles = bot.getServerWorld()
                 .getEntitiesByClass(LivingEntity.class, bot.getBoundingBox().expand(8.0D),
                         entity -> entity instanceof HostileEntity && entity.isAlive())
-                .size();
+                .stream()
+                .filter(entity -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveEntity(bot, entity))
+                .toList().size();
         return hostiles <= combat.maxEnemiesToFight() && EquipAction.bestWeaponSlot(bot).isPresent();
     }
 
@@ -551,7 +627,8 @@ public final class DangerWatcher {
         // 让 bot 一直"正在战斗"、中断正常挖矿)。按距离从近到远找第一个有视线(可达)的怪。
         List<LivingEntity> hostiles = bot.getServerWorld()
                 .getEntitiesByClass(LivingEntity.class, bot.getBoundingBox().expand(10.0D),
-                        entity -> entity instanceof HostileEntity && entity.isAlive());
+                        entity -> entity instanceof HostileEntity && entity.isAlive()
+                                && ObservableWorldQuery.canObserveEntity(bot, entity));
         hostiles.sort(Comparator.comparingDouble(bot::distanceTo));
         for (LivingEntity mob : hostiles) {
             if (!canReachThreat(bot, mob)) {
@@ -565,6 +642,7 @@ public final class DangerWatcher {
             return Optional.of(new Threat(Threat.Type.DROWNING, Threat.Severity.MEDIUM, null, bot.getBlockPos()));
         }
         Optional<BlockPos> lava = BlockPos.stream(bot.getBlockPos().add(-2, -1, -2), bot.getBlockPos().add(2, 1, 2))
+                .filter(pos -> ObservableWorldQuery.canObserveBlock(bot, pos))
                 .filter(pos -> {
                     BlockState state = bot.getServerWorld().getBlockState(pos);
                     return state.getFluidState().isIn(FluidTags.LAVA);
@@ -592,7 +670,8 @@ public final class DangerWatcher {
     private static boolean hasReachableHostile(AIPlayerEntity bot) {
         List<LivingEntity> hostiles = bot.getServerWorld()
                 .getEntitiesByClass(LivingEntity.class, bot.getBoundingBox().expand(8.0D),
-                        entity -> entity instanceof HostileEntity && entity.isAlive());
+                        entity -> entity instanceof HostileEntity && entity.isAlive()
+                                && ObservableWorldQuery.canObserveEntity(bot, entity));
         for (LivingEntity mob : hostiles) {
             if (canReachThreat(bot, mob)) {
                 return true;

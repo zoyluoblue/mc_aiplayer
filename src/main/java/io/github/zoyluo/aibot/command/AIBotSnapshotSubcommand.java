@@ -3,8 +3,11 @@ package io.github.zoyluo.aibot.command;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
+import io.github.zoyluo.aibot.auth.BotAuthorizationGate;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
+import io.github.zoyluo.aibot.mode.CapabilityRuntime;
+import io.github.zoyluo.aibot.mode.PrivilegedCapability;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
@@ -55,12 +58,19 @@ public final class AIBotSnapshotSubcommand {
 
     private static int run(CommandContext<ServerCommandSource> context, int radius) {
         ServerCommandSource source = context.getSource();
+        if (!BotAuthorizationGate.INSTANCE.requireGlobalAdmin(source, "command:snapshot")) {
+            return 0;
+        }
         Optional<AIPlayerEntity> botOpt = selectBot(source);
         if (botOpt.isEmpty()) {
             source.sendError(Text.literal("[AIBot Snapshot] no bot — /aibot spawn <name> first"));
             return 0;
         }
         AIPlayerEntity bot = botOpt.get();
+        if (!CapabilityRuntime.decide(bot, PrivilegedCapability.HIDDEN_BLOCK_SCAN, "admin_snapshot").allowed()) {
+            source.sendError(Text.literal("[AIBot Snapshot] unavailable in strict_survival; enable operator hiddenBlockScan explicitly"));
+            return 0;
+        }
         ServerWorld world = bot.getServerWorld();
         BlockPos center = bot.getBlockPos();
 
@@ -122,7 +132,7 @@ public final class AIBotSnapshotSubcommand {
                 + "// dimension=" + world.getRegistryKey().getValue()
                 + "  seed=" + seed + "  surface_y=" + surfaceY + "\n"
                 + "// radius=" + radius + "  notable_blocks=" + written + "  notable_kinds=" + notable + "\n"
-                + "// PASTE 下面整段进 AIBotVerifySubcommand 的 assignCapturedX(setRel 辅助已在该文件)。\n";
+                + "// PASTE 下面整段进 testmod verification fixture 的 assignCapturedX。\n";
     }
 
     private static Path writeReport(BlockPos center, String header, String code,

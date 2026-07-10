@@ -41,6 +41,7 @@ public final class SmeltTask extends AbstractTask {
 
     private static final Map<Item, Integer> FUEL_TICKS = new LinkedHashMap<>();
     private static final int BASE_FUEL_RADIUS = 8;
+    private static final double REACH_SQUARED = 20.25D;
 
     static {
         FUEL_TICKS.put(Items.COAL, 1600);
@@ -195,7 +196,6 @@ public final class SmeltTask extends AbstractTask {
             var remembered = io.github.zoyluo.aibot.memory.BotMemoryStore.INSTANCE
                     .of(bot.getUuid()).placeIn(bot.getServerWorld(), "furnace");
             if (remembered.isPresent()
-                    && bot.getServerWorld().getBlockState(remembered.get()).isOf(Blocks.FURNACE)
                     && remembered.get().isWithinDistance(bot.getBlockPos(), 96.0D)) {
                 furnacePos = remembered.get();
             }
@@ -208,7 +208,8 @@ public final class SmeltTask extends AbstractTask {
             phase = Phase.PLACING_FURNACE;
             return;
         }
-        if (bot.getEyePos().squaredDistanceTo(furnacePos.toCenterPos()) <= 20.25D) {
+        if (bot.getEyePos().squaredDistanceTo(furnacePos.toCenterPos()) <= REACH_SQUARED
+                && io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, furnacePos)) {
             phase = Phase.LOADING;
             return;
         }
@@ -235,12 +236,17 @@ public final class SmeltTask extends AbstractTask {
     }
 
     private void walkToFurnace(AIPlayerEntity bot) {
-        if (furnacePos == null || !bot.getServerWorld().getBlockState(furnacePos).isOf(Blocks.FURNACE)) {
+        if (furnacePos == null) {
+            phase = Phase.FINDING_FURNACE;
+            return;
+        }
+        boolean observable = io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, furnacePos);
+        if (observable && !bot.getServerWorld().getBlockState(furnacePos).isOf(Blocks.FURNACE)) {
             phase = Phase.FINDING_FURNACE;
             return;
         }
         double dist2 = bot.getEyePos().squaredDistanceTo(furnacePos.toCenterPos());
-        if (dist2 <= 20.25D) {
+        if (observable && dist2 <= REACH_SQUARED) {
             clearMiner.cancel(bot);
             bot.getActionPack().stopAll();
             phase = Phase.LOADING;
@@ -457,7 +463,9 @@ public final class SmeltTask extends AbstractTask {
     }
 
     private AbstractFurnaceBlockEntity furnace(AIPlayerEntity bot) {
-        if (furnacePos == null) {
+        if (furnacePos == null
+                || bot.getEyePos().squaredDistanceTo(furnacePos.toCenterPos()) > REACH_SQUARED
+                || !io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, furnacePos)) {
             return null;
         }
         return bot.getServerWorld().getBlockEntity(furnacePos) instanceof AbstractFurnaceBlockEntity furnace ? furnace : null;
@@ -466,6 +474,7 @@ public final class SmeltTask extends AbstractTask {
     private static Optional<BlockPos> nearestFurnace(AIPlayerEntity bot) {
         BlockPos origin = bot.getBlockPos();
         return BlockPos.stream(origin.add(-10, -3, -10), origin.add(10, 4, 10))
+                .filter(pos -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, pos))
                 .filter(pos -> bot.getServerWorld().getBlockState(pos).isOf(Blocks.FURNACE))
                 .map(BlockPos::toImmutable)
                 .min(Comparator.comparingDouble(pos -> pos.getSquaredDistance(origin)));
@@ -573,6 +582,8 @@ public final class SmeltTask extends AbstractTask {
     private static java.util.List<BlockPos> fuelContainers(AIPlayerEntity bot, BlockPos base, Item fuel) {
         return BlockPos.stream(base.add(-BASE_FUEL_RADIUS, -3, -BASE_FUEL_RADIUS), base.add(BASE_FUEL_RADIUS, 4, BASE_FUEL_RADIUS))
                 .map(BlockPos::toImmutable)
+                .filter(pos -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, pos))
+                .filter(pos -> bot.getEyePos().squaredDistanceTo(pos.toCenterPos()) <= REACH_SQUARED)
                 .filter(pos -> containsItem(bot, pos, fuel))
                 .sorted(Comparator.comparingDouble(pos -> pos.getSquaredDistance(bot.getBlockPos())))
                 .toList();

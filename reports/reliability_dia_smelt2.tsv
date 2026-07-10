@@ -1,0 +1,20 @@
+feature	seed	run	result	reason	stage	summary
+real_diamond	155361719	1	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	155361719	2	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	155361719	3	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	632510390	1	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	632510390	2	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	632510390	3	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	3000	1	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	3000	2	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	3000	3	FAIL	no_resource_nearby	wood_gather	0/1 PASS: {real_diamond=FAIL:no_resource_nearby}
+real_diamond	4040404	1	FAIL	verify_timeout status=mine_ore OreDig 0/1 ->141	timeout	0/1 PASS: {real_diamond=FAIL:verify_timeout status=mine_ore OreDig 0/1 ->141,51,123}
+real_diamond	4040404	2	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	4040404	3	FAIL	verify_timeout status=mine_ore OreDig 0/1 ->141	timeout	0/1 PASS: {real_diamond=FAIL:verify_timeout status=mine_ore OreDig 0/1 ->141,51,123}
+real_diamond	111	1	FAIL	guard_low_hp_under_attack	other	0/1 PASS: {real_diamond=FAIL:guard_low_hp_under_attack}
+real_diamond	111	2	FAIL	no_stand_position_for_furnace	other	0/1 PASS: {real_diamond=FAIL:no_stand_position_for_furnace}
+real_diamond	111	3	FAIL	ore_dig_timeout collected=0	timeout	0/1 PASS: {real_diamond=FAIL:ore_dig_timeout collected=0}
+real_diamond	700	1	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	700	2	FAIL	ore_dig_timeout collected=0	timeout	0/1 PASS: {real_diamond=FAIL:ore_dig_timeout collected=0}
+real_diamond	700	3	FAIL	aborted	aborted	0/1 PASS: {real_diamond=FAIL:aborted}
+ALLDONE

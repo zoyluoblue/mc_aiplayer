@@ -21,6 +21,7 @@ public final class MilkCowAction {
         return world.getEntitiesByClass(CowEntity.class, bot.getBoundingBox().expand(radius),
                         cow -> cow.isAlive() && !cow.isBaby())
                 .stream()
+                .filter(cow -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveEntity(bot, cow))
                 .min(Comparator.comparingDouble(bot::squaredDistanceTo))
                 .orElse(null);
     }

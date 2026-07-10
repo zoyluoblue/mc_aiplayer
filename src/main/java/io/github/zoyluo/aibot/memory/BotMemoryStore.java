@@ -40,4 +40,8 @@ public final class BotMemoryStore {
     public void remove(UUID botId) {
         memories.remove(botId);
     }
+
+    public void clear() {
+        memories.clear();
+    }
 }

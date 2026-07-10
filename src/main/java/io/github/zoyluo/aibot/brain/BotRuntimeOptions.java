@@ -36,4 +36,9 @@ public final class BotRuntimeOptions {
         memoryTools.remove(bot.getUuid());
         verboseReports.remove(bot.getUuid());
     }
+
+    public void clearAll() {
+        memoryTools.clear();
+        verboseReports.clear();
+    }
 }

@@ -27,7 +27,7 @@ public final class GoalCard extends PanelCard {
             return;
         }
         if (snapshot.goalTotalSteps() <= 0) {
-            context.drawTextWithShadow(renderer, Theme.tr("goal.aibot.empty"), bx, by, Theme.TEXT_DIM);
+            renderResultOrEmpty(context, renderer, bx, by, bw);
             return;
         }
         String title = snapshot.goalTitle().isBlank() ? Theme.tr("goal.aibot.untitled") : localize(snapshot.goalTitle());
@@ -47,6 +47,29 @@ public final class GoalCard extends PanelCard {
             String marker = current ? ">" : stepIndex < snapshot.goalCurrentStepIndex() ? "x" : "-";
             context.drawTextWithShadow(renderer, trim(renderer, marker + " " + localize(snapshot.goalSteps().get(stepIndex)), bw), bx, by + 27 + index * Theme.LINE_H, color);
         }
+    }
+
+    private void renderResultOrEmpty(DrawContext context, TextRenderer renderer, int bx, int by, int bw) {
+        if (snapshot.goalResultStatus().isBlank()) {
+            context.drawTextWithShadow(renderer, Theme.tr("goal.aibot.empty"), bx, by, Theme.TEXT_DIM);
+            return;
+        }
+        int color = resultColor(snapshot.goalResultStatus());
+        context.drawTextWithShadow(renderer, Theme.tr("goal.aibot.result." + snapshot.goalResultStatus().toLowerCase(java.util.Locale.ROOT)),
+                bx, by, color);
+        context.drawTextWithShadow(renderer, trim(renderer, snapshot.goalResultSummary(), bw), bx, by + 14, Theme.TEXT);
+        context.drawTextWithShadow(renderer,
+                Theme.tr("goal.aibot.evidence", snapshot.goalResultMatched(), snapshot.goalResultRequired()),
+                bx, by + 28, Theme.TEXT_DIM);
+    }
+
+    private static int resultColor(String status) {
+        return switch (status) {
+            case "COMPLETED" -> Theme.OK;
+            case "PARTIAL" -> Theme.SYS;
+            case "FAILED" -> Theme.HP;
+            default -> Theme.TEXT_DIM;
+        };
     }
 
     private static String trim(TextRenderer renderer, String value, int maxWidth) {

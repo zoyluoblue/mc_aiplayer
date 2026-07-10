@@ -2,8 +2,16 @@ package io.github.zoyluo.aibot;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.log.LogCategory;
+import io.github.zoyluo.aibot.mode.OperatingProfile;
+import io.github.zoyluo.aibot.mode.OperatorCapabilities;
+import io.github.zoyluo.aibot.mode.CapabilityPolicy;
+import io.github.zoyluo.aibot.mode.PrivilegedCapability;
+import io.github.zoyluo.aibot.mode.ProfileResolver;
 import net.fabricmc.loader.api.FabricLoader;
 
 import java.io.IOException;
@@ -12,8 +20,12 @@ import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.Arrays;
+import java.util.List;
 
 public record AIBotConfig(
+        OperatingProfile profile,
+        OperatorCapabilities operatorCapabilities,
         DeepSeek deepseek,
         Perception perception,
         Brain brain,
@@ -37,14 +49,25 @@ public record AIBotConfig(
     public static AIBotConfig load() {
         Path path = FabricLoader.getInstance().getConfigDir().resolve("aibot.json");
         AIBotConfig loaded = defaults();
+        ProfileResolver.Resolution profileResolution;
         if (Files.exists(path)) {
             try (Reader reader = Files.newBufferedReader(path)) {
-                AIBotConfig parsed = GSON.fromJson(reader, AIBotConfig.class);
-                if (parsed != null) {
-                    loaded = parsed.withDefaults();
+                JsonElement element = JsonParser.parseReader(reader);
+                if (element == null || !element.isJsonObject()) {
+                    throw new IllegalArgumentException("config_root_must_be_object");
                 }
-            } catch (IOException exception) {
+                JsonObject root = element.getAsJsonObject();
+                profileResolution = ProfileResolver.resolve(
+                        true, root, System.getenv(ProfileResolver.ENVIRONMENT_KEY));
+                AIBotConfig parsed = GSON.fromJson(root, AIBotConfig.class);
+                if (parsed != null) {
+                    loaded = parsed.withProfile(profileResolution.profile()).withDefaults();
+                }
+            } catch (IOException | RuntimeException exception) {
                 BotLog.error("config_read_failed", exception, "path", path);
+                profileResolution = ProfileResolver.resolve(
+                        false, null, System.getenv(ProfileResolver.ENVIRONMENT_KEY));
+                loaded = loaded.withProfile(profileResolution.profile());
             }
         } else {
             try {
@@ -56,7 +79,12 @@ public record AIBotConfig(
             } catch (IOException exception) {
                 BotLog.error("config_write_failed", exception, "path", path);
             }
+            profileResolution = ProfileResolver.resolve(
+                    false, null, System.getenv(ProfileResolver.ENVIRONMENT_KEY));
+            loaded = loaded.withProfile(profileResolution.profile());
         }
+
+        logProfileResolution(profileResolution, path, loaded.operatorCapabilities());
 
         String envKey = System.getenv("DEEPSEEK_API_KEY");
         if (envKey != null && !envKey.isBlank()) {
@@ -70,12 +98,20 @@ public record AIBotConfig(
     }
 
     public AIBotConfig withDeepSeek(DeepSeek deepseek) {
-        return new AIBotConfig(deepseek, perception(), brain(), watchdog(), logging(), survival(), combat(), night(), mining(), goal(), nav(), pickup());
+        return new AIBotConfig(profile(), operatorCapabilities(), deepseek, perception(), brain(), watchdog(), logging(), survival(), combat(), night(), mining(), goal(), nav(), pickup());
+    }
+
+    private AIBotConfig withProfile(OperatingProfile profile) {
+        return new AIBotConfig(profile, operatorCapabilities(), deepseek(), perception(), brain(), watchdog(), logging(), survival(), combat(), night(), mining(), goal(), nav(), pickup());
     }
 
     private AIBotConfig withDefaults() {
         AIBotConfig defaults = defaults();
         return new AIBotConfig(
+                profile == null ? defaults.profile : profile,
+                operatorCapabilities == null
+                        ? defaults.operatorCapabilities
+                        : operatorCapabilities.withDefaults(defaults.operatorCapabilities),
                 deepseek == null ? defaults.deepseek : deepseek.withDefaults(defaults.deepseek),
                 perception == null ? defaults.perception : perception.withDefaults(defaults.perception),
                 brain == null ? defaults.brain : brain.withDefaults(defaults.brain),
@@ -92,6 +128,8 @@ public record AIBotConfig(
 
     public static AIBotConfig defaults() {
         return new AIBotConfig(
+                OperatingProfile.STRICT_SURVIVAL,
+                OperatorCapabilities.defaults(),
                 new DeepSeek("", "https://api.deepseek.com", "deepseek-chat", 2048, 0.3D, 60, 3, 500),
                 new Perception(16, 20, 10, 10, false),
                 new Brain(36, 6, 12, false, true, false, 3, true), // 优化4:maxTurns 24→12——挖矿失败后大脑手动逐格挖会瞬间耗轮,早止损早复位(善后已有 clear+resetIdle)
@@ -114,6 +152,42 @@ public record AIBotConfig(
                 new Goal(24, true, true), // S7:配方补全后链更深(熟食/盾/钻装备等),16→24 留余量
                 new Nav(1.0D, 12, 60, 30, 4, 2, 3.0D, 3),
                 new Pickup(2.75D, 2.5D, 8.0D)); // 实测 1.5/1.0 太小:砍树掉落物垂直差>1 就吸不到→countSoFar=0 死循环
+    }
+
+    private static void logProfileResolution(ProfileResolver.Resolution resolution,
+                                             Path path,
+                                             OperatorCapabilities capabilities) {
+        for (ProfileResolver.Warning warning : resolution.warnings()) {
+            switch (warning) {
+                case LEGACY_PROFILE_MISSING -> BotLog.warn(LogCategory.CONFIG, null,
+                        "operating_profile_legacy_compatibility",
+                        "path", path,
+                        "effective_profile", resolution.profile().configValue(),
+                        "migration", "set_top_level_profile_explicitly");
+                case INVALID_FILE_PROFILE -> BotLog.warn(LogCategory.CONFIG, null,
+                        "operating_profile_invalid",
+                        "path", path,
+                        "effective_profile", OperatingProfile.STRICT_SURVIVAL.configValue());
+                case INVALID_ENVIRONMENT_PROFILE -> BotLog.warn(LogCategory.CONFIG, null,
+                        "operating_profile_environment_invalid",
+                        "environment", ProfileResolver.ENVIRONMENT_KEY,
+                        "effective_profile", OperatingProfile.STRICT_SURVIVAL.configValue());
+            }
+        }
+        OperatorCapabilities configured = capabilities == null ? OperatorCapabilities.none() : capabilities;
+        List<String> effectiveCapabilities = Arrays.stream(PrivilegedCapability.values())
+                .filter(capability -> CapabilityPolicy.decide(
+                        resolution.profile(), configured, capability).allowed())
+                .map(Enum::name)
+                .toList();
+        BotLog.config("operating_profile_resolved",
+                "profile", resolution.profile().configValue(),
+                "source", resolution.source(),
+                "configured_hidden_block_scan", configured.hiddenBlockScan(),
+                "configured_emergency_teleport", configured.emergencyTeleport(),
+                "configured_forced_pickup", configured.forcedPickup(),
+                "configured_manual_teleport", configured.manualTeleport(),
+                "effective_capabilities", effectiveCapabilities);
     }
 
     public record DeepSeek(

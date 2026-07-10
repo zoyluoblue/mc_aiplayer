@@ -1,0 +1,28 @@
+WEBVTT
+
+00:00:00.000 --> 00:00:03.800
+mc_aiplayer.
+
+00:00:03.800 --> 00:00:07.200
+Open source Minecraft AI player for GitHub.
+
+00:00:07.200 --> 00:00:11.400
+Meet Bob, the fake player who read the job description and took it personally.
+
+00:00:11.400 --> 00:00:15.200
+You type one goal: mine three diamonds.
+
+00:00:15.200 --> 00:00:19.300
+The language model understands the request.
+
+00:00:19.300 --> 00:00:24.600
+Then deterministic task machines do the real work: gather wood, craft tools, smelt iron, staircase down safely, and keep going until the diamonds show up.
+
+00:00:24.600 --> 00:00:29.900
+If Bob gets hungry, stuck, attacked, or considers lava soup, the safety net says nope.
+
+00:00:29.900 --> 00:00:34.800
+Open the Bob panel, watch health, inventory, task state, and brain status.
+
+00:00:34.800 --> 00:00:40.300
+mc_aiplayer: LLM plans, tasks execute, Bob survives.

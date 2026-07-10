@@ -145,7 +145,7 @@ public final class CreateObsidianTask extends AbstractTask {
             return;
         }
         lastScanTick = now;
-        BlockPos found = OreProspector.nearest(world, bot.getBlockPos(), PROSPECT_RANGE,
+        BlockPos found = OreProspector.nearest(bot, PROSPECT_RANGE,
                 st -> st.getFluidState().isIn(FluidTags.LAVA) && st.getFluidState().isStill());
         if (found == null) {
             fail("create_obsidian_no_lava collected=" + collected);

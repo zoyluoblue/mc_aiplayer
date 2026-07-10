@@ -1,0 +1,20 @@
+feature	seed	run	result	reason	stage	summary
+real_diamond	3000	1	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	3000	2	FAIL	assertion_failed status=evade Evading HOSTILE toward -68	other	0/1 PASS: {real_diamond=FAIL:assertion_failed status=evade Evading HOSTILE toward -68,31,-107}
+real_diamond	3000	3	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	105441651	1	FAIL	gather_timeout	wood_gather	0/1 PASS: {real_diamond=FAIL:gather_timeout}
+real_diamond	105441651	2	FAIL	ore_dig_timeout collected=0	timeout	0/1 PASS: {real_diamond=FAIL:ore_dig_timeout collected=0}
+real_diamond	105441651	3	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	155361719	1	FAIL	assertion_failed status=light_area Lighting radius=8 placed=2/8 phase=WALK	other	0/1 PASS: {real_diamond=FAIL:assertion_failed status=light_area Lighting radius=8 placed=2/8 phase=WALK}
+real_diamond	155361719	2	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	155361719	3	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	206232996	1	FAIL	assertion_failed status=combat Attacking minecraft:bogged 0/1 phase=REPOSITION	other	0/1 PASS: {real_diamond=FAIL:assertion_failed status=combat Attacking minecraft:bogged 0/1 phase=REPOSITION}
+real_diamond	206232996	2	FAIL	no_resource_nearby	wood_gather	0/1 PASS: {real_diamond=FAIL:no_resource_nearby}
+real_diamond	206232996	3	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	12345	1	FAIL	assertion_failed status=evade Evading HOSTILE toward 111	other	0/1 PASS: {real_diamond=FAIL:assertion_failed status=evade Evading HOSTILE toward 111,135,-52}
+real_diamond	12345	2	FAIL	assertion_failed status=combat Attacking minecraft:zombie 0/1 phase=APPROACH	other	0/1 PASS: {real_diamond=FAIL:assertion_failed status=combat Attacking minecraft:zombie 0/1 phase=APPROACH}
+real_diamond	12345	3	FAIL	no_resource_nearby	wood_gather	0/1 PASS: {real_diamond=FAIL:no_resource_nearby}
+real_diamond	632510390	1	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	632510390	2	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+real_diamond	632510390	3	PASS	PASS	pass	1/1 PASS: {real_diamond=PASS}
+ALLDONE

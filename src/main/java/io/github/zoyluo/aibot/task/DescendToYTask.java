@@ -186,8 +186,9 @@ public final class DescendToYTask extends AbstractTask {
                 }
                 // 侧列已通(脚位+头位皆空)→ teleport 平移过去(可能上退了一层),下个 tick 在新列继续下挖。
                 miner.cancel(bot);
-                bot.teleport(world, side.getX() + 0.5D, side.getY(), side.getZ() + 0.5D,
-                        java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+                if (!io.github.zoyluo.aibot.mode.FakePlayerMotion.stepTo(bot, side, "descend_lava_detour")) {
+                    continue;
+                }
                 lateralDetours++;
                 BotLog.action(bot, "descend_lava_detour", "dir", dir.asString(), "at_y", side.getY(), "up", dy);
                 return true;

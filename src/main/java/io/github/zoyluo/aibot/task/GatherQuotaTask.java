@@ -194,12 +194,18 @@ public final class GatherQuotaTask extends AbstractTask {
         for (int dy = 1; feet.getY() + dy < top - 1 && dy <= 80; dy++) {
             BlockPos candidate = feet.up(dy);
             if (Standability.isStandable(world, candidate) && world.isSkyVisible(candidate)) {
-                bot.getActionPack().stopAll();
-                bot.teleport(world, candidate.getX() + 0.5D, candidate.getY(), candidate.getZ() + 0.5D,
-                        java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
-                BotLog.action(bot, "gather_surfaced",
-                        "to", candidate.getX() + "," + candidate.getY() + "," + candidate.getZ());
-                return true;
+                boolean moved = io.github.zoyluo.aibot.mode.CapabilityRuntime.run(
+                        bot, io.github.zoyluo.aibot.mode.PrivilegedCapability.EMERGENCY_TELEPORT,
+                        "gather_surface", () -> {
+                            bot.getActionPack().stopAll();
+                            bot.teleport(world, candidate.getX() + 0.5D, candidate.getY(), candidate.getZ() + 0.5D,
+                                    java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+                        });
+                if (moved) {
+                    BotLog.action(bot, "gather_surfaced",
+                            "to", candidate.getX() + "," + candidate.getY() + "," + candidate.getZ());
+                }
+                return moved;
             }
         }
         return false;
@@ -222,7 +228,7 @@ public final class GatherQuotaTask extends AbstractTask {
             lastProspectFound = null;
         }
         var world = bot.getServerWorld();
-        BlockPos found = OreProspector.nearest(world, bot.getBlockPos(), PROSPECT_RANGE,
+        BlockPos found = OreProspector.nearest(bot, PROSPECT_RANGE,
                 state -> harvestBlocks.contains(state.getBlock()),
                 pos -> !EpisodeMemory.INSTANCE.isExcluded(botId, pos, now));
         if (found == null) {
@@ -522,7 +528,7 @@ public final class GatherQuotaTask extends AbstractTask {
         int now = bot.getServer().getTicks();
         if (now - lastExploreScanTick >= EXPLORE_SCAN_INTERVAL) {
             lastExploreScanTick = now;
-            BlockPos seen = OreProspector.nearest(bot.getServerWorld(), bot.getBlockPos(), 16,
+            BlockPos seen = OreProspector.nearest(bot, 16,
                     state -> harvestBlocks.contains(state.getBlock()));
             if (seen != null) {
                 bot.getActionPack().stopAll();

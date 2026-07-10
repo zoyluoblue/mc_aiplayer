@@ -21,8 +21,24 @@ public final class GoalView extends PanelCard {
 
     @Override
     protected void renderBody(DrawContext context, int mouseX, int mouseY, float delta, TextRenderer renderer, int bx, int by, int bw, int bh) {
-        if (snapshot == null || snapshot.goalTotalSteps() <= 0) {
+        if (snapshot == null) {
             context.drawTextWithShadow(renderer, Theme.tr("goal.aibot.empty"), bx, by, Theme.TEXT_DIM);
+            return;
+        }
+        if (snapshot.goalTotalSteps() <= 0) {
+            if (snapshot.goalResultStatus().isBlank()) {
+                context.drawTextWithShadow(renderer, Theme.tr("goal.aibot.empty"), bx, by, Theme.TEXT_DIM);
+            } else {
+                context.drawTextWithShadow(renderer,
+                        Theme.tr("goal.aibot.result." + snapshot.goalResultStatus().toLowerCase(java.util.Locale.ROOT)),
+                        bx, by, "COMPLETED".equals(snapshot.goalResultStatus()) ? Theme.OK
+                                : "PARTIAL".equals(snapshot.goalResultStatus()) ? Theme.SYS
+                                : "FAILED".equals(snapshot.goalResultStatus()) ? Theme.HP : Theme.TEXT_DIM);
+                context.drawTextWithShadow(renderer, trim(renderer, snapshot.goalResultSummary(), bw), bx, by + 16, Theme.TEXT);
+                context.drawTextWithShadow(renderer,
+                        Theme.tr("goal.aibot.evidence", snapshot.goalResultMatched(), snapshot.goalResultRequired()),
+                        bx, by + 32, Theme.TEXT_DIM);
+            }
             return;
         }
         String title = snapshot.goalTitle().isBlank() ? Theme.tr("goal.aibot.untitled") : snapshot.goalTitle();

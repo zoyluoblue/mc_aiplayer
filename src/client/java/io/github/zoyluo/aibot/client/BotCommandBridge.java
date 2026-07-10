@@ -7,7 +7,6 @@ import io.github.zoyluo.aibot.network.payload.SetOptionC2S;
 import io.github.zoyluo.aibot.network.payload.SubscribeBotC2S;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.resource.language.I18n;
 
 public final class BotCommandBridge {
     private BotCommandBridge() {
@@ -15,7 +14,9 @@ public final class BotCommandBridge {
 
     public static boolean hasPermission() {
         MinecraftClient client = MinecraftClient.getInstance();
-        return client.player != null && client.player.hasPermissionLevel(2);
+        // Owner authorization is server-side and depends on the selected Bot; the client cannot
+        // infer it from OP level. This probe only means that a player connection exists.
+        return client.player != null;
     }
 
     public static void subscribe(String botName, boolean subscribe) {
@@ -29,10 +30,6 @@ public final class BotCommandBridge {
             return;
         }
         BotClientState.INSTANCE.addTranscript("user", text.trim());
-        if (!hasPermission()) {
-            BotClientState.INSTANCE.addTranscript("system", I18n.translate("screen.aibot.permission.need_op"));
-            return;
-        }
         if (ClientPlayNetworking.canSend(BotCommandC2S.ID)) {
             ClientPlayNetworking.send(new BotCommandC2S(botName, "chat", text.trim(), "", 1));
         } else {
@@ -41,10 +38,6 @@ public final class BotCommandBridge {
     }
 
     public static void command(String botName, String action, String arg1, String arg2, int count) {
-        if (!hasPermission()) {
-            BotClientState.INSTANCE.addTranscript("system", I18n.translate("screen.aibot.permission.need_op"));
-            return;
-        }
         if (ClientPlayNetworking.canSend(BotCommandC2S.ID)) {
             ClientPlayNetworking.send(new BotCommandC2S(clean(botName), action, clean(arg1), clean(arg2), count));
             return;
@@ -61,6 +54,8 @@ public final class BotCommandBridge {
             case "eat" -> "aibot task assign " + botName + " eat";
             case "sleep" -> "aibot task assign " + botName + " sleep";
             case "abort" -> "aibot task abort " + botName;
+            case "pause" -> "aibot task pause " + botName;
+            case "resume" -> "aibot task resume " + botName;
             case "reset" -> "aibot brain reset " + botName;
             default -> "aibot status";
         };
@@ -73,7 +68,7 @@ public final class BotCommandBridge {
         }
     }
 
-    /** 在玩家与 AI 之间移动物品。direction:BotItemMoveC2S.TAKE/PUT;slot=源容器槽位;amount<=0=整堆。任何人可拿放。 */
+    /** 在 owner 与自己的 AI 之间移动物品；服务端统一复核 owner/OP。 */
     public static void moveItem(String botName, int direction, int slot, int amount) {
         if (ClientPlayNetworking.canSend(BotItemMoveC2S.ID)) {
             ClientPlayNetworking.send(new BotItemMoveC2S(clean(botName), direction, slot, amount));
@@ -88,10 +83,6 @@ public final class BotCommandBridge {
     }
 
     public static void setOption(String botName, String key, boolean value) {
-        if (!hasPermission()) {
-            BotClientState.INSTANCE.addTranscript("system", I18n.translate("screen.aibot.permission.need_op"));
-            return;
-        }
         if (ClientPlayNetworking.canSend(SetOptionC2S.ID)) {
             ClientPlayNetworking.send(new SetOptionC2S(botName == null ? "" : botName, key, value));
         }

@@ -19,13 +19,31 @@ Thumbs.db
 .classpath
 bin/
 
-# Keep planning and work logs local.
+# Keep legacy planning and work logs local. Track the active roadmap and docs.
 *.md
 !README.md
 !README.zh-CN.md
+!ROADMAP.md
+!docs/
+!docs/*.md
+!docs/**/*.md
 
 # Local reference source used during implementation.
 references/
 
 # headless production test server (installer-generated, 含 56MB server.jar)
 run-prod/
+
+# Immutable harness output is local until a VERIFIED run is explicitly pinned.
+artifacts/evidence/
+artifacts/evidence-batches/
+
+# Transient files used while atomically pinning committed baseline evidence.
+# Override broad repository-level ignores such as build/, run/, bin/, and *.md
+# so a safe capability id cannot silently make explicitly pinned evidence local.
+!reports/baselines/
+!reports/baselines/**
+reports/baselines/.pin.lock/
+reports/baselines/.pin.lock.stale.*
+reports/baselines/.staging.*
+reports/baselines/.index.*

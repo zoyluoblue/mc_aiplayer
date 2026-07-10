@@ -1,6 +1,8 @@
 package io.github.zoyluo.aibot.brain;
 
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
+import io.github.zoyluo.aibot.goal.GoalExecutor;
+import io.github.zoyluo.aibot.goal.GoalResult;
 import io.github.zoyluo.aibot.network.AIBotServerNetworking;
 import io.github.zoyluo.aibot.task.TaskState;
 import io.github.zoyluo.aibot.task.TaskStatus;
@@ -51,11 +53,16 @@ public final class BotReporter {
             case RUNNING -> reportProgress(server, bot, status, state);
             case PAUSED -> report(bot, state, "我先暂停" + summary(status) + "。", server.getTicks(), false);
             case COMPLETED -> {
-                report(bot, state, "完成了:" + summary(status) + "。", server.getTicks(), true);
+                String prefix = GoalExecutor.INSTANCE.hasActivePlan(bot) ? "步骤完成:" : "完成了:";
+                report(bot, state, prefix + summary(status) + "。", server.getTicks(), true);
                 states.remove(bot.getUuid());
             }
             case FAILED -> {
                 report(bot, state, "没完成:" + summary(status) + "。" + ReasonText.friendly(status.failureReason()), server.getTicks(), true);
+                states.remove(bot.getUuid());
+            }
+            case CANCELLED -> {
+                report(bot, state, "已取消:" + summary(status) + "。", server.getTicks(), true);
                 states.remove(bot.getUuid());
             }
             default -> {
@@ -67,11 +74,20 @@ public final class BotReporter {
         states.remove(bot.getUuid());
     }
 
+    public void clearAll() {
+        states.clear();
+    }
+
     public void onGoalMessage(AIPlayerEntity bot, String text) {
         if (!enabled(bot)) {
             return;
         }
         AIBotServerNetworking.INSTANCE.sendBotChat(bot, "system", text);
+    }
+
+    /** Terminal Goal facts are never hidden by verbose progress settings. */
+    public void onGoalResult(AIPlayerEntity bot, GoalResult.Status status, String text) {
+        AIBotServerNetworking.INSTANCE.sendBotChat(bot, "system", "[" + status.name() + "] " + text);
     }
 
     private void reportProgress(MinecraftServer server, AIPlayerEntity bot, TaskStatus status, ReportState state) {

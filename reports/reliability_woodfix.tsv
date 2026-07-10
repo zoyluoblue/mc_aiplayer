@@ -1,0 +1,6 @@
+feature	seed	run	result	reason	stage	summary
+real_wood	206232996	1	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	42414950	1	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	3000	1	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+real_wood	777	1	PASS	PASS	pass	1/1 PASS: {real_wood=PASS}
+ALLDONE

@@ -21,11 +21,97 @@ loom {
     }
 }
 
+fabricApi {
+    configureTests {
+        createSourceSet.set(true)
+        modId.set('aibot-gametest')
+        enableGameTests.set(true)
+        enableClientGameTests.set(false)
+    }
+}
+
+// Interactive/dedicated verification server. It loads the isolated gametest source set but does
+// not enable automatic GameTest execution, so command-driven harnesses stay out of the production jar.
+def harnessRunDir = providers.gradleProperty('aibotHarnessRunDir').orElse('build/run/harness').get()
+def harnessRunInput = new File(harnessRunDir)
+def harnessRunFile = file(harnessRunDir).canonicalFile
+if (harnessRunInput.isAbsolute()
+        || !harnessRunFile.toPath().startsWith(project.projectDir.canonicalFile.toPath())
+        || harnessRunFile == project.projectDir.canonicalFile) {
+    throw new GradleException('aibotHarnessRunDir must be a project-relative child directory')
+}
+loom.runs {
+    harnessServer {
+        server()
+        configName = 'AIBot Harness Server'
+        source sourceSets.gametest
+        runDir harnessRunDir
+    }
+}
+
+def prepareHarnessRun = tasks.register('prepareHarnessRun') {
+    group = 'verification'
+    description = 'Creates missing files for an isolated command-driven harness server.'
+    outputs.upToDateWhen { false }
+
+    doLast {
+        def dir = harnessRunFile
+        dir.mkdirs()
+        def eula = new File(dir, 'eula.txt')
+        if (!eula.exists()) {
+            eula.setText('eula=true\n', 'UTF-8')
+        }
+        def properties = new File(dir, 'server.properties')
+        if (!properties.exists()) {
+            def seed = System.getenv('AIBOT_TEST_SEED') ?: '20260610'
+            def port = System.getenv('AIBOT_TEST_PORT') ?: '25565'
+            properties.setText(
+                    "online-mode=false\nlevel-name=world\nlevel-seed=${seed}\nserver-port=${port}\n", 'UTF-8')
+        }
+    }
+}
+
+tasks.named('runHarnessServer') {
+    dependsOn prepareHarnessRun
+}
+
+loom.runs.named('gameTest') {
+    property 'fabric-api.gametest.report-file',
+            file('build/test-results/gametest/TEST-aibot-gametest.xml').absolutePath
+}
+
+def prepareGameTestRun = tasks.register('prepareGameTestRun') {
+    group = 'verification'
+    description = 'Creates a clean, deterministic headless GameTest run directory.'
+    outputs.upToDateWhen { false }
+
+    doLast {
+        def runDir = file('build/run/gameTest')
+        delete runDir
+        runDir.mkdirs()
+        new File(runDir, 'eula.txt').setText('eula=true\n', 'UTF-8')
+        new File(runDir, 'server.properties').setText(
+                'online-mode=false\nlevel-name=world\nlevel-seed=0\n', 'UTF-8')
+    }
+}
+
+tasks.named('runGameTest') {
+    dependsOn prepareGameTestRun
+}
+
 dependencies {
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
     mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+
+    testImplementation platform('org.junit:junit-bom:6.1.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
 }
 
 processResources {

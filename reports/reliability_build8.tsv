@@ -1,0 +1,2 @@
+feature	seed	run	result	reason	stage	summary
+real_build	105441651	1	FAIL	assertion_failed status=combat Attacking minecraft:zombie 0/1 phase=APPROACH	other	0/1 PASS: {real_build=FAIL:assertion_failed status=combat Attacking minecraft:zombie 0/1 phase=APPROACH}

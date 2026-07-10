@@ -33,6 +33,7 @@ public final class CombatCore {
                 .getEntitiesByClass(LivingEntity.class, bot.getBoundingBox().expand(range),
                         entity -> entity.isAlive() && entity.getType().equals(targetType) && entity != bot)
                 .stream()
+                .filter(entity -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveEntity(bot, entity))
                 .min(Comparator.comparingDouble(bot::distanceTo));
     }
 
@@ -42,6 +43,7 @@ public final class CombatCore {
                 .getEntitiesByClass(LivingEntity.class, box,
                         entity -> entity instanceof HostileEntity && entity.isAlive() && entity != bot)
                 .stream()
+                .filter(entity -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveEntity(bot, entity))
                 .min(Comparator.comparingDouble(bot::distanceTo));
     }
 

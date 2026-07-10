@@ -53,6 +53,10 @@ public final class EpisodeMemory {
         episodes.remove(botId);
     }
 
+    public void clearAll() {
+        episodes.clear();
+    }
+
     /** 排除一个目标点(走不到/挖空/试过没结果),TTL 后自动复活。 */
     public void exclude(UUID botId, BlockPos pos, int nowTick, int ttlTicks) {
         BotEpisode ep = of(botId);

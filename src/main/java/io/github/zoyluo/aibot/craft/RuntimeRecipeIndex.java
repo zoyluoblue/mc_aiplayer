@@ -105,6 +105,13 @@ public final class RuntimeRecipeIndex {
         }
     }
 
+    public static void clear() {
+        synchronized (INDEX) {
+            INDEX.clear();
+        }
+        ready = false;
+    }
+
     // Ingredient(同槽多候选) → 我们的 anyOf 结构;同种材料多槽合并 count。
     // 1.21.3:原料统一从 getIngredientPlacement().getIngredients() 取(shaped/shapeless 同口),
     // 取物用 getMatchingItems()(RegistryEntry 列表);hasNoPlacement=动态特殊配方,调用方跳过。

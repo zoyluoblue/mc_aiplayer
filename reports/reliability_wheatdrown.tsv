@@ -1,7 +1,0 @@
-feature	seed	run	result	reason	stage	summary
-real_wheat	105441651	1	FAIL	no_valid_escape_route	other	0/1 PASS: {real_wheat=FAIL:no_valid_escape_route}
-real_wheat	1061665215	1	FAIL	guard_low_hp_under_attack	other	0/1 PASS: {real_wheat=FAIL:guard_low_hp_under_attack}
-real_wheat	155361719	1	PASS	PASS	pass	1/1 PASS: {real_wheat=PASS}
-real_wheat	206232996	1	FAIL	no_valid_escape_route	other	0/1 PASS: {real_wheat=FAIL:no_valid_escape_route}
-real_wheat	42414950	1	FAIL	gather_timeout	wood_gather	0/1 PASS: {real_wheat=FAIL:gather_timeout}
-ALLDONE

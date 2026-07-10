@@ -1,7 +1,0 @@
-feature	seed	run	result	reason	stage	summary
-real_wheat	105441651	1	FAIL	verify_timeout status=gather Gathering minecraft:wheat_seeds 2/6 phase=PICKUP	timeout	0/1 PASS: {real_wheat=FAIL:verify_timeout status=gather Gathering minecraft:wheat_seeds 2/6 phase=PICKUP}
-real_wheat	1061665215	1	FAIL	verify_timeout status=farm farm crop=Block{minecraft:wheat	timeout	0/1 PASS: {real_wheat=FAIL:verify_timeout status=farm farm crop=Block{minecraft:wheat} center=319,71,601 radius=4 done=6 phase=SURVEY note=plant_skipped:missing minecraft:wheat_seeds x1}
-real_wheat	155361719	1	FAIL	guard_low_hp_under_attack	other	0/1 PASS: {real_wheat=FAIL:guard_low_hp_under_attack}
-real_wheat	206232996	1	FAIL	gather_timeout	wood_gather	0/1 PASS: {real_wheat=FAIL:gather_timeout}
-real_wheat	42414950	1	FAIL	no_resource_nearby	wood_gather	0/1 PASS: {real_wheat=FAIL:no_resource_nearby}
-ALLDONE

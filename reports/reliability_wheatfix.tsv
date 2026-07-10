@@ -1,7 +1,0 @@
-feature	seed	run	result	reason	stage	summary
-real_wheat	105441651	1	FAIL	guard_drowning	other	0/1 PASS: {real_wheat=FAIL:guard_drowning}
-real_wheat	1061665215	1	FAIL	no_resource_nearby	wood_gather	0/1 PASS: {real_wheat=FAIL:no_resource_nearby}
-real_wheat	155361719	1	FAIL	guard_drowning	other	0/1 PASS: {real_wheat=FAIL:guard_drowning}
-real_wheat	206232996	1	FAIL	no_resource_nearby	wood_gather	0/1 PASS: {real_wheat=FAIL:no_resource_nearby}
-real_wheat	42414950	1	FAIL	gather_timeout	wood_gather	0/1 PASS: {real_wheat=FAIL:gather_timeout}
-ALLDONE

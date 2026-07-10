@@ -1,1 +1,0 @@
-[11:30:49] [Test worker/WARN]: [AIBot] SECURITY event=legacy_job_scope_rejected bot=- {reason=missing_or_invalid_scope, job_uuid=b1975854-1819-4131-9e83-09b8c89f3fab}

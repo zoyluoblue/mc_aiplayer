@@ -246,7 +246,7 @@ public final class CombatTask extends AbstractTask {
                 away = new Vec3d(1.0D, 0.0D, 0.0D);
             }
             Vec3d retreatTo = bot.getPos().add(away.normalize().multiply(8.0D));
-            bot.getActionPack().startWalkTo(retreatTo);
+            bot.getActionPack().startSmartWalkTo(retreatTo);
         } else {
             bot.getActionPack().stopMovement();
         }

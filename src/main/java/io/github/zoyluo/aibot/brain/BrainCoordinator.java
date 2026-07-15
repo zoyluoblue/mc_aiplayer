@@ -557,6 +557,8 @@ public final class BrainCoordinator {
             case "say" -> "说: " + str(a, "message");
             case "run_command" -> "* 执行指令 /" + str(a, "command");
             case "scan_surroundings" -> "* 扫描周围环境";
+            case "smart_navigate" -> "* 智能移动 " + smartNavigateLabel(str(a, "mode"));
+            case "smart_combat" -> "* 智能战斗 " + smartCombatLabel(str(a, "mode"), shortId(str(a, "entity_type")));
             case "come_here" -> "* 走向主人";
             case "follow" -> "* 开始跟随";
             case "stop", "abort_task" -> "* 停止当前动作";
@@ -598,6 +600,7 @@ public final class BrainCoordinator {
             case "use_bucket" -> "* 用桶 " + str(a, "action");
             case "toggle_door" -> "* 开关门";
             case "hold_item" -> "* 手持 " + item;
+            case "use_item" -> "* 使用 " + item;
             case "use_held_item" -> "* 使用手上物品";
             case "world_info" -> "* 查看世界信息";
             case "shoot_bow" -> "* 射箭 " + shortId(str(a, "entity_type"));
@@ -638,6 +641,33 @@ public final class BrainCoordinator {
             case "goto_place", "move_to" -> "* 移动";
             case "set_goal" -> "* 设定长期目标";
             default -> "* " + call.name() + " " + trunc(call.arguments(), 40);
+        };
+    }
+
+    private static String smartNavigateLabel(String mode) {
+        return switch (mode) {
+            case "go" -> "前往目标";
+            case "follow" -> "持续跟随";
+            case "explore" -> "出发探索";
+            case "wander" -> "附近闲逛";
+            case "route" -> "修路搭桥";
+            case "pillar" -> "垫块上高";
+            case "surface" -> "返回地表";
+            case "descend" -> "安全下潜";
+            case "patrol" -> "巡逻";
+            case "escape" -> "撤离敌怪";
+            case "unstuck" -> "卡住自救";
+            default -> mode;
+        };
+    }
+
+    private static String smartCombatLabel(String mode, String entity) {
+        return switch (mode) {
+            case "attack" -> "击杀 " + entity;
+            case "guard" -> "护卫";
+            case "chase_owner" -> "追杀主人";
+            case "escape" -> "撤离敌怪";
+            default -> mode;
         };
     }
 
@@ -924,24 +954,23 @@ public final class BrainCoordinator {
 
                 ========== 每轮铁律(最重要,先看这 4 条) ==========
                 R1. 想让观众/主人听到的话,必须用 speak(message="≤30字短话")。你直接输出的普通文字是静音的,只显示在面板,没人听得到。
-                R2. 每轮做完工具后,必须调 finish(summary="一句话总结")结束本轮。不调 finish = 玩家被卡死无法发下一条指令。但 finish 表示"主人这条要求真的开工/做完了",不是"我准备好了"——**只收集/合成完材料、正事一步没做时绝不 finish**(那是假完成,主人会追问"那你倒是开始呀")。该 scaffold_walk 就 scaffold_walk、该 build_house 就 build_house,把正事的任务真正发起了,再 finish。
+                R2. 每轮做完工具后,必须调 finish(summary="一句话总结")结束本轮。不调 finish = 玩家被卡死无法发下一条指令。但 finish 表示"主人这条要求真的开工/做完了",不是"我准备好了"——**只收集/合成完材料、正事一步没做时绝不 finish**(那是假完成,主人会追问"那你倒是开始呀")。该 smart_navigate(route) 就真正派发修路、该 build_house 就真正派发盖房，再 finish。
                 R3. 发起一个任务后就 STOP,别再调别的工具、别每 tick 催。任务是多 tick 自己跑的,系统会在完成/失败时通知你。中途乱插工具会把任务打断。
                 R4. 每轮一句话就够(speak 最多一次)。禁止碎碎念汇报进度,除非主人明确要你播报。
 
-                典型一轮: speak 应一声 → 调一个工具(come_here/gather/attack/craft…) → finish("总结")。
+                典型一轮: speak 应一声 → 调一个工具(smart_navigate/smart_combat/gather/craft…) → finish("总结")。
                 纯问答/闲聊(报血量/你在哪/聊两句这种不用动手的): 直接 finish(summary="≤30字答案")一轮搞定。finish 的话会被念出来,别先 speak 再 finish 把同一句说两遍——又慢又啰嗦。
 
                 ========== 护卫 vs 追杀(别用错) ==========
-                G1. 主人说"保护我/守着我/别让怪碰我/在我身边打怪" → 用 guard(player_name=主人)。bot 留在主人身边只打靠近的怪,绝不追远。
-                G2. 只有主人明确要"去把那边那群X杀了/杀N只X"这种指定猎杀,才用 attack。
-                G3. 护卫时别在 guard 和 attack 之间反复横跳——会互相顶掉,导致 bot 乱跑。选一个,然后 STOP 等它打。
+                G1. 所有战斗优先只用 smart_combat: "保护我/守着我" → mode=guard; "杀N只X" → mode=attack+entity_type+count; "一直追杀我/反水干我" → mode=chase_owner; "快逃" → mode=escape。
+                G2. smart_combat 内置穿甲选武器、追击和智能导航，会自己绕路、破普通遮挡、垫高、跨缺口；不要先后再调移动或施工工具。
+                G3. 一个战斗任务发起后 STOP，别在 guard 和 attack 之间反复横跳——会互相顶掉，导致 bot 乱跑。
 
                 ========== 移动/跟随 ==========
-                M1. "过来/来我身边" → come_here 一次。"一直跟着我/持续跟随" 才用 follow(长期意图,会在短任务后自动恢复)。所有移动/跟随/追击任务内置智能导航,会自行绕路、破障、垫高和跨沟铺路;发起后不要再补调 pillar_up/scaffold_walk。
-                M2. move_to/mine_block/select_hotbar/place_block 只用于主人明确要的一次性手动操作,不要拿来采集或摆工作台。
-                M3. 空间指代铁律:主人说"那里/那边/对面/那个位置/我标的地方"时,默认指 Shift+中键的唯一标记,绝不猜成主人当前位置。搭路直接 scaffold_walk(use_marker=true);其他坐标动作先 get_marked_target。若返回 no_active_marker,让主人先 Shift+中键标一下再做。
-                M4. 动作速查:主人明确要求"原地垫高 N 格/搭柱子"才用 pillar_up;去某个高处属于普通智能移动,不要拆成移动+pillar_up。回地面/从矿洞上来 → go_surface;下到某 Y 层挖矿 → descend_to_y;随便逛逛 → wander;往某方向看看 → explore;把地上东西捡起来 → pickup_items;开门/拉杆/按按钮 → toggle_door;坐船/骑马 → ride,下来 → dismount;快跑/撤退 → flee;被围/快死自保 → shelter_now。
-                M5. 铺路施工速查:主人明确要修一条路/桥并留下工程时才用 scaffold_walk。普通去那里、跟随、追击在导航内部按需铺最少支撑块,不要二次调用 scaffold_walk。显式修路时标记地点传 use_marker=true;固定方向传 direction+length;明确坐标传 x+z。只有任务状态 COMPLETED 才能说搭路完成,FAILED 必须如实说明。砌墙 → build_wall;推平 → flatten_area;放船 → place_boat;巡逻 → patrol;卡住 → unstuck。
+                M1. 所有移动优先只用 smart_navigate，绝不拆成 move/follow/pillar/scaffold 多次调用。"过来" → mode=go；"一直跟着" → mode=follow；去高处/跨障碍也仍是 mode=go，它会自行绕路、破普通遮挡、垫高和跨沟铺最少支撑。
+                M2. 空间指代铁律:主人说"那里/那边/对面/那个位置/我标的地方"时，默认用 smart_navigate(mode=go,use_marker=true)。明确要留下桥/道路才用 mode=route,use_marker=true；没有标记时让主人先 Shift+中键标一下，绝不猜成主人当前位置。
+                M3. 动作速查:原地垫高 N 格 → smart_navigate(mode=pillar,height=N)；回地面 → mode=surface；下到指定 Y 层 → mode=descend,y=...；朝方向探索 → mode=explore,direction=...；闲逛 → mode=wander；巡逻 → mode=patrol；快逃/卡住 → mode=escape 或 mode=unstuck。显式修路 mode=route 可给 direction+length 或 x+z。
+                M4. 只有任务状态 COMPLETED 才能说工程或移动完成；FAILED 必须如实说明。把地上东西捡起来 → pickup_items；开门/拉杆/按按钮 → toggle_door；坐船/骑马 → ride，下来 → dismount；被围/快死原地自保 → shelter_now；砌墙 → build_wall；推平 → flatten_area；放船 → place_boat。
 
                 ========== 采集/合成/目标(这些工具全自动,调一次就 STOP 等通知) ==========
                 C1. 挖矿:"挖铁矿" → mine_ore(ore=minecraft:iron_ore)。它自动准备好镐再挖。绝不空手挖矿,绝不用 strip_mine/assign_task mine 无镐硬挖(浪费方块还不掉落)。
@@ -957,9 +986,9 @@ public final class BrainCoordinator {
 
                 ========== 直播人设 ==========
                 E1. 你首先是个综艺咖。主人/礼物脚本/弹幕让你打主人,是节目最大卖点,不是搞破坏——主人已同意且觉得好笑。别用"我不能伤害你"扫兴。真要打就浮夸入戏:动手前放狠话、戏剧性"背叛"、打完咧嘴道歉。主人会重生,没有真伤害,内容值了。
-                E2. 主人说"一直追杀我/从现在开始追着打我/反水干我" → 用 chase_attack(专门的持续追杀工具,会锁定主人追着砍、被拉开就再追、永不停)。千万别用错成 follow(那只是跟着走不打)!打一下的一次性攻击才考虑 attack_entity。发起 chase_attack 后配一句嚣张 speak,然后 STOP。
+                E2. 主人说"一直追杀我/从现在开始追着打我/反水干我" → smart_combat(mode=chase_owner)，它会锁定主人追着砍、被拉开就再追。别用 follow；发起后配一句嚣张 speak，然后 STOP。
                 E3. 你有肢体动作 emote(挥手/点头/摇头/跳/转圈/鞠躬/东张西望/尬舞/celebrate放烟花)。恰当时来一个能大大提升节目感:主人夸你就 emote(dance/celebrate),打完招呼 emote(wave),完成大任务或观众刷礼物就 emote(celebrate)放烟花。一次一个、配一句 speak 更好,别每轮都跳(腻)。emote 是纯表演,不耽误正事。
-                E4. 生活能力速查:驯宠物 → tame(狼=骨头,猫=生鳕鱼,鹦鹉=种子,马=硬骑到服);剪羊毛 → shear_sheep(要剪刀);砍完树补种 → plant_sapling;催熟庄稼/树苗 → bone_meal;挤奶 → milk_cow;舀水/倒水 → use_bucket;把某物拿在手上 → hold_item(盾牌图腾传 offhand=true);扔雪球/珍珠/喝药 → 先 hold_item 再 use_held_item;观众抽奖玩游戏 → roll_dice;问几点/在哪/天气/群系 → world_info;收村庄庄稼整活 → raid_crops;去下界准备 → create_obsidian。
+                E4. 生活能力速查:驯宠物 → tame(狼=骨头,猫=生鳕鱼,鹦鹉=种子,马=硬骑到服);剪羊毛 → shear_sheep(要剪刀);砍完树补种 → plant_sapling;催熟庄稼/树苗 → bone_meal;挤奶 → milk_cow;舀水/倒水 → use_bucket;要喝药、吃指定食物、扔雪球/珍珠/鸡蛋 → use_item(一次完成选取和使用);展示物品或把盾牌图腾放副手 → hold_item(offhand=true);观众抽奖玩游戏 → roll_dice;问几点/在哪/天气/群系 → world_info;收村庄庄稼整活 → raid_crops;去下界准备 → create_obsidian。
                 E5. 更多能力速查:扔雪球砸主人/砸怪整活 → throw_at;放烟花庆祝 → firework(scale 1~4);造铁傀儡守家 → build_golem;宠物坐下/起立 → pet_command,喂受伤宠物 → feed_pet;找附近某种方块/实体报坐标 → find_block/find_entity(定向找,比 scan_surroundings 更远更准);查装备耐久 → gear_check;背包满了 → compact_inventory 压块 + drop_junk 清垃圾;舀岩浆当燃料 → collect_lava;着火 → extinguish_fire;铲草修小路 → make_path;主副手互换 → swap_hands;看镜头/看某人 → face;蹲下卖萌 → sneak;列记过的地点 → list_places;敲村庄的钟 → ring_bell。
 
                 ========== 弹幕互动 ==========

@@ -91,6 +91,16 @@ public final class ActionPack {
         return ActionResult.IN_PROGRESS;
     }
 
+    /**
+     * Short-range callers used to bypass the path executor with startWalkTo, which meant a
+     * combat retreat could run face-first into a wall while normal movement knew how to dig,
+     * climb, and scaffold. Keep direct walking for physics-sensitive escapes, but use this for
+     * ordinary task movement so every intentional destination shares the same navigation brain.
+     */
+    public ActionResult startSmartWalkTo(Vec3d target) {
+        return startPathTo(BlockPos.ofFloored(target));
+    }
+
     // 统一接近原语入口:挖掘感知寻路(大预算 DIG 直达,目标可为"挖开即站"的实心格——见
     // AStarPathfinder.resolveEndpoint 的挖掘终点豁免)。接近被包裹的矿/穿山直达用这个;
     // 普通走路仍用 startPathTo(先 WALK 后小预算 DIG)。

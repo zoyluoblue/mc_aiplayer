@@ -138,7 +138,14 @@ public final class ToolRegistry {
     // 弱模型误选诱饵:strip_mine/mine_vein 是脆逻辑旧任务(硬失败多、与 C1 引导相悖),set_goal 让模型
     // 自由编步骤字符串=「自信地做错」高发口。默认不暴露给模型(exposeAdvancedTools=false),高层入口
     // gather/mine_ore/achieve_goal 全覆盖;/aibot 命令行与 verify 直连任务层,不受影响。
-    private static final java.util.Set<String> ADVANCED_ONLY_TOOLS = java.util.Set.of("strip_mine", "mine_vein", "set_goal");
+    private static final java.util.Set<String> ADVANCED_ONLY_TOOLS = java.util.Set.of(
+            "strip_mine", "mine_vein", "set_goal", "assign_task",
+            // These remain available to commands and expert mode, but the model gets the two
+            // intent-level tools below. Keeping the legacy surface hidden stops it from
+            // decomposing a single journey into conflicting movement and construction calls.
+            "attack", "chase_attack", "come_here", "follow", "guard", "flee",
+            "pillar_up", "go_surface", "descend_to_y", "explore", "wander",
+            "scaffold_walk", "patrol", "unstuck", "use_held_item");
 
     public List<ToolDefinition> tools(AIBotConfig.Brain config,
                                       boolean exposeLowLevelTools,
@@ -554,6 +561,34 @@ public final class ToolRegistry {
             return ok("executed: /" + command);
         });
 
+        register("smart_navigate", "统一智能移动。mode=go(去坐标/主人/标记), follow(持续跟随), explore(朝方向探索), wander(附近闲逛), route(明确修桥/铺路), pillar(原地垫高), surface(回地表), descend(安全下到 Y 层), patrol(巡逻), escape(脱离附近敌怪), unstuck(卡住自救)。所有移动模式均内置绕路、破普通遮挡、自动垫高、跨缺口铺最少支撑和失败反馈；不要再拼接 move/follow/scaffold/pillar 等多个工具。", objectSchema()
+                .property("mode", stringSchema("go/follow/explore/wander/route/pillar/surface/descend/patrol/escape/unstuck"))
+                .property("player_name", stringSchema("go/follow 时目标玩家；省略为主人"))
+                .property("use_marker", booleanSchema("go/route 时使用主人 Shift+中键标记"))
+                .property("x", integerSchema("go/route 时目标 x"))
+                .property("y", integerSchema("go 时目标 y；descend 时目标 Y"))
+                .property("z", integerSchema("go/route 时目标 z"))
+                .property("direction", stringSchema("explore/route 时 north/south/east/west"))
+                .property("distance", integerSchema("explore/wander 距离"))
+                .property("length", integerSchema("route 铺路长度"))
+                .property("max_blocks", integerSchema("route 最多消耗的方块数"))
+                .property("height", integerSchema("pillar 垫高格数"))
+                .property("radius", integerSchema("patrol 半径"))
+                .property("laps", integerSchema("patrol 圈数"))
+                .required("mode")
+                .build(), ToolRegistry::assignSmartNavigate);
+
+        register("smart_combat", "统一智能战斗。mode=attack(击杀指定生物), guard(护卫主人/玩家/坐标), chase_owner(持续追杀主人), escape(撤离附近敌怪)。会自动穿甲选武器、追击与智能导航；遇到普通遮挡会绕、挖、垫高或跨缺口，不要先调移动工具。", objectSchema()
+                .property("mode", stringSchema("attack/guard/chase_owner/escape"))
+                .property("entity_type", stringSchema("attack 时实体 id，例如 minecraft:zombie"))
+                .property("count", integerSchema("attack 时击杀数，默认 1"))
+                .property("player_name", stringSchema("guard 时护卫的玩家；省略为主人"))
+                .property("x", integerSchema("guard 时固定地点 x"))
+                .property("y", integerSchema("guard 时固定地点 y"))
+                .property("z", integerSchema("guard 时固定地点 z"))
+                .required("mode")
+                .build(), ToolRegistry::assignSmartCombat);
+
         register("attack", "KILL N entities of a type — the ONLY correct tool for 杀/击杀/杀死/kill requests. Deterministic combat task: equips armor and weapon, fights until exactly N are killed, then completes. Example: 杀一只牛 -> entity_type=minecraft:cow, count=1.", objectSchema()
                 .property("entity_type", stringSchema("entity type, for example minecraft:zombie"))
                 .property("count", integerSchema("number of kills"))
@@ -910,6 +945,37 @@ public final class ToolRegistry {
             }
             int hotbar = InventoryAction.equipFromSlot(bot, slot.getAsInt());
             return hotbar >= 0 ? ok("held: " + Registries.ITEM.getId(item)) : fail("equip_failed");
+        });
+
+        register("use_item", "一次完成从背包选取并右键使用指定物品。用于喝药水/牛奶、吃指定食物、扔雪球/鸡蛋/末影珍珠等连续动作；不要先 hold_item 再 use_held_item。弓箭请用 shoot_bow，纯展示或把盾牌/图腾放副手才用 hold_item。", objectSchema()
+                .property("item", stringSchema("要使用的物品 id，例如 minecraft:snowball"))
+                .property("offhand", booleanSchema("true 时从副手使用；物品不在副手会自动换入"))
+                .required("item")
+                .build(), (bot, args) -> {
+            Item item = requiredItem(args, "item");
+            boolean offhand = optionalBoolean(args, "offhand", false);
+            var inventory = bot.getInventory();
+            Hand hand = offhand ? Hand.OFF_HAND : Hand.MAIN_HAND;
+            if (offhand && !inventory.offHand.get(0).isOf(item)) {
+                var slot = InventoryAction.findItem(bot, item);
+                if (slot.isEmpty()) {
+                    return fail("not_in_inventory: " + Registries.ITEM.getId(item));
+                }
+                ItemStack moving = inventory.main.get(slot.getAsInt());
+                ItemStack old = inventory.offHand.get(0);
+                inventory.offHand.set(0, moving);
+                inventory.main.set(slot.getAsInt(), old);
+                inventory.markDirty();
+            } else if (!offhand) {
+                var slot = InventoryAction.findItem(bot, item);
+                if (slot.isEmpty()) {
+                    return fail("not_in_inventory: " + Registries.ITEM.getId(item));
+                }
+                if (InventoryAction.equipFromSlot(bot, slot.getAsInt()) < 0) {
+                    return fail("equip_failed");
+                }
+            }
+            return result(InteractAction.useItemInAir(bot, hand));
         });
 
         register("use_held_item", "使用(右键)主手物品一次:扔雪球/末影珍珠/鸡蛋、喝药水/奶桶等。先 hold_item 拿好再用。", objectSchema().build(), (bot, args) ->
@@ -1760,6 +1826,191 @@ public final class ToolRegistry {
             TaskManager.INSTANCE.abort(bot);
             return ok("aborted");
         });
+    }
+
+    private static ToolDefinition.ToolResult assignSmartNavigate(AIPlayerEntity bot, JsonObject args) {
+        String mode = requiredString(args, "mode").trim().toLowerCase(java.util.Locale.ROOT);
+        Task task;
+        switch (mode) {
+            case "go" -> {
+                boolean useMarker = optionalBoolean(args, "use_marker", false);
+                boolean hasX = args.has("x");
+                boolean hasY = args.has("y");
+                boolean hasZ = args.has("z");
+                String playerName = optionalString(args, "player_name", "").trim();
+                int targets = (useMarker ? 1 : 0) + ((hasX || hasY || hasZ) ? 1 : 0) + (!playerName.isEmpty() ? 1 : 0);
+                if (targets > 1) {
+                    return fail("conflicting_target: use_marker/坐标/player_name 只能选一种");
+                }
+                BlockPos target;
+                if (useMarker) {
+                    var marker = io.github.zoyluo.aibot.marker.TargetMarkerService.INSTANCE.forBot(bot)
+                            .orElseThrow(() -> new IllegalArgumentException("no_active_marker: 请主人先 Shift+中键标记目标"));
+                    String botDimension = bot.getServerWorld().getRegistryKey().getValue().toString();
+                    if (!botDimension.equals(marker.dimensionId())) {
+                        return fail("marker_in_other_dimension: " + marker.dimensionId());
+                    }
+                    target = marker.standPos();
+                } else if (hasX || hasY || hasZ) {
+                    if (!(hasX && hasY && hasZ)) {
+                        return fail("bad_target: go 需要同时提供 x、y、z");
+                    }
+                    target = new BlockPos(requiredInt(args, "x"), requiredInt(args, "y"), requiredInt(args, "z"));
+                } else {
+                    ServerPlayerEntity player = targetPlayer(bot, playerName)
+                            .orElseThrow(() -> new IllegalArgumentException("target_player_not_found"));
+                    target = player.getBlockPos();
+                }
+                task = new MoveTask(bot, target);
+            }
+            case "follow" -> {
+                String playerName = optionalString(args, "player_name", "");
+                LongRunningIntentManager.INSTANCE.setFollow(bot, playerName);
+                task = new FollowTask(playerName);
+            }
+            case "explore" -> {
+                Direction direction = optionalDirection(args, "direction", bot.getHorizontalFacing());
+                int distance = Math.max(8, Math.min(64, optionalInt(args, "distance", 32)));
+                BlockPos target = surfaceStandable(bot.getServerWorld(),
+                        bot.getBlockX() + direction.getOffsetX() * distance,
+                        bot.getBlockZ() + direction.getOffsetZ() * distance, 8);
+                if (target == null) {
+                    return fail("no_standable_target");
+                }
+                task = new MoveTask(bot, target);
+            }
+            case "wander" -> {
+                BlockPos target = randomWanderTarget(bot, optionalInt(args, "distance", 16));
+                if (target == null) {
+                    return fail("wander_no_target");
+                }
+                task = new MoveTask(bot, target);
+            }
+            case "route" -> {
+                boolean useMarker = optionalBoolean(args, "use_marker", false);
+                boolean hasX = args.has("x");
+                boolean hasZ = args.has("z");
+                String playerName = optionalString(args, "player_name", "").trim();
+                String directionName = optionalString(args, "direction", "").trim();
+                int selectedModes = (useMarker ? 1 : 0) + ((hasX || hasZ) ? 1 : 0)
+                        + (!playerName.isEmpty() ? 1 : 0) + (!directionName.isEmpty() ? 1 : 0);
+                if (selectedModes > 1) {
+                    return fail("conflicting_target: use_marker/x+z/direction/player_name 只能选一种");
+                }
+                if (hasX != hasZ) {
+                    return fail("bad_target: route 的 x 和 z 必须同时提供");
+                }
+                if (useMarker) {
+                    var marker = io.github.zoyluo.aibot.marker.TargetMarkerService.INSTANCE.forBot(bot)
+                            .orElseThrow(() -> new IllegalArgumentException("no_active_marker: 请主人先 Shift+中键标记目标"));
+                    String botDimension = bot.getServerWorld().getRegistryKey().getValue().toString();
+                    if (!botDimension.equals(marker.dimensionId())) {
+                        return fail("marker_in_other_dimension: " + marker.dimensionId());
+                    }
+                    int budget = scaffoldBudget(bot, marker.standPos(), args);
+                    task = new ScaffoldWalkTask(marker.standPos().getX(), marker.standPos().getZ(), budget);
+                } else if (!directionName.isEmpty()) {
+                    Direction direction = optionalDirection(args, "direction", Direction.NORTH);
+                    int length = Math.max(1, Math.min(256, optionalInt(args, "length", 16)));
+                    BlockPos target = bot.getBlockPos().offset(direction, length);
+                    int budget = args.has("max_blocks") ? optionalInt(args, "max_blocks", length + 8) : length + 8;
+                    task = new ScaffoldWalkTask(target.getX(), target.getZ(), budget);
+                } else if (hasX) {
+                    BlockPos target = new BlockPos(requiredInt(args, "x"), bot.getBlockY(), requiredInt(args, "z"));
+                    task = new ScaffoldWalkTask(target.getX(), target.getZ(), scaffoldBudget(bot, target, args));
+                } else {
+                    ServerPlayerEntity player = targetPlayer(bot, playerName)
+                            .orElseThrow(() -> new IllegalArgumentException("target_player_not_found"));
+                    int budget = scaffoldBudget(bot, player.getBlockPos(), args);
+                    task = new ScaffoldWalkTask(player.getGameProfile().getName(), player.getBlockPos(), budget);
+                }
+            }
+            case "pillar" -> task = new PillarUpTask(optionalInt(args, "height", 5));
+            case "surface" -> {
+                ServerWorld world = bot.getServerWorld();
+                BlockPos feet = bot.getBlockPos();
+                int topY = world.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, feet.getX(), feet.getZ());
+                if (feet.getY() >= topY - 2) {
+                    return ok("already_on_surface");
+                }
+                BlockPos target = surfaceStandable(world, feet.getX(), feet.getZ(), 16);
+                if (target == null) {
+                    return fail("no_surface_spot");
+                }
+                task = new MoveTask(bot, target);
+            }
+            case "descend" -> task = new DescendToYTask(Math.max(-59, Math.min(100, requiredInt(args, "y"))));
+            case "patrol" -> task = new PatrolTask(optionalInt(args, "radius", 8), optionalInt(args, "laps", 1));
+            case "escape" -> {
+                HostileEntity hostile = bot.getServerWorld()
+                        .getEntitiesByClass(HostileEntity.class, bot.getBoundingBox().expand(24.0D), Entity::isAlive)
+                        .stream()
+                        .min(Comparator.comparingDouble(bot::distanceTo))
+                        .orElse(null);
+                if (hostile == null) {
+                    return fail("no_hostile_nearby: 附近没怪,不用逃");
+                }
+                task = new EvadeTask(new Threat(Threat.Type.HOSTILE, Threat.Severity.HIGH, hostile, hostile.getBlockPos()));
+            }
+            case "unstuck" -> {
+                bot.getActionPack().stopAll();
+                bot.getActionPack().jumpOnce();
+                double angle = java.util.concurrent.ThreadLocalRandom.current().nextDouble(Math.PI * 2.0D);
+                double distance = 2.0D + java.util.concurrent.ThreadLocalRandom.current().nextDouble(1.5D);
+                var result = bot.getActionPack().startPathTo(BlockPos.ofFloored(
+                        bot.getPos().add(Math.cos(angle) * distance, 0.0D, Math.sin(angle) * distance)));
+                return result.isFailed() ? fail("unstuck_failed: " + result.reason()) : ok("unstuck_nudge_started");
+            }
+            default -> {
+                return fail("unknown_navigation_mode: " + mode);
+            }
+        }
+        TaskManager.INSTANCE.assign(bot, task);
+        return ok("assigned: " + task.name());
+    }
+
+    private static ToolDefinition.ToolResult assignSmartCombat(AIPlayerEntity bot, JsonObject args) {
+        String mode = requiredString(args, "mode").trim().toLowerCase(java.util.Locale.ROOT);
+        Task task;
+        switch (mode) {
+            case "attack" -> {
+                java.util.UUID leashOwner = AIPlayerManager.INSTANCE.ownerOf(bot).orElse(null);
+                task = new CombatTask(requiredEntityType(args, "entity_type"), optionalInt(args, "count", 1),
+                        AIBotConfig.get().combat().retreatHp(), leashOwner, 16.0D);
+            }
+            case "chase_owner" -> task = ChaseAttackTask.ownerTarget(bot)
+                    .orElseThrow(() -> new IllegalArgumentException("no_owner: 这个 bot 没有主人,无法追杀"));
+            case "guard" -> {
+                BlockPos point = optionalBlockPos(args, "x", "y", "z");
+                String playerName = optionalString(args, "player_name", "").trim();
+                if (point != null && !playerName.isEmpty()) {
+                    return fail("conflicting_target: guard 只能选 player_name 或坐标");
+                }
+                if (point != null) {
+                    task = GuardTask.point(point);
+                } else {
+                    ServerPlayerEntity player = targetPlayer(bot, playerName)
+                            .orElseThrow(() -> new IllegalArgumentException("target_player_not_found"));
+                    task = GuardTask.player(player.getGameProfile().getName());
+                }
+            }
+            case "escape" -> {
+                HostileEntity hostile = bot.getServerWorld()
+                        .getEntitiesByClass(HostileEntity.class, bot.getBoundingBox().expand(24.0D), Entity::isAlive)
+                        .stream()
+                        .min(Comparator.comparingDouble(bot::distanceTo))
+                        .orElse(null);
+                if (hostile == null) {
+                    return fail("no_hostile_nearby: 附近没怪,不用逃");
+                }
+                task = new EvadeTask(new Threat(Threat.Type.HOSTILE, Threat.Severity.HIGH, hostile, hostile.getBlockPos()));
+            }
+            default -> {
+                return fail("unknown_combat_mode: " + mode);
+            }
+        }
+        TaskManager.INSTANCE.assign(bot, task);
+        return ok("assigned: " + task.name());
     }
 
     private static Task createTask(io.github.zoyluo.aibot.entity.AIPlayerEntity bot, String taskType, JsonObject params) {

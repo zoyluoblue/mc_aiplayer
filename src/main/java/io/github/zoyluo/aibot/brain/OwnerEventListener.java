@@ -77,6 +77,10 @@ public final class OwnerEventListener {
             if (bot.getServerWorld() != victim.getServerWorld()) {
                 continue;
             }
+            // 观众 AI 只接受绑定观众与主播的显式命令，被动护卫不得抢占直播控制权。
+            if (io.github.zoyluo.aibot.gift.AudienceControlService.INSTANCE.isAudienceBot(bot)) {
+                continue;
+            }
             // chase_owner 是明确的主人意图。主人同时被别的怪打到时，旧逻辑会把
             // "去护卫主人"再喂给空闲的大脑，进而中断追杀；这条事件在追杀期间必须失效。
             if (TaskManager.INSTANCE.getActive(bot).orElse(null) instanceof ChaseAttackTask) {

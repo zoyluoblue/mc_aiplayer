@@ -131,6 +131,9 @@ public final class BotPersistence {
     private List<BotRecord> captureAll() {
         List<BotRecord> records = new ArrayList<>();
         for (AIPlayerEntity bot : AIPlayerManager.INSTANCE.all()) {
+            if ("audience".equals(AIPlayerManager.INSTANCE.role(bot))) {
+                continue; // 直播观众 AI 是会话临时实体，重启后不得自动恢复。
+            }
             records.add(capture(bot));
         }
         return records;

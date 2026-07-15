@@ -1,6 +1,7 @@
 package io.github.zoyluo.aibot.client;
 
 import io.github.zoyluo.aibot.network.payload.BotCommandC2S;
+import io.github.zoyluo.aibot.network.payload.AudienceControlC2S;
 import io.github.zoyluo.aibot.network.payload.BotItemMoveC2S;
 import io.github.zoyluo.aibot.network.payload.BotTeleportC2S;
 import io.github.zoyluo.aibot.network.payload.SetOptionC2S;
@@ -21,6 +22,16 @@ public final class BotCommandBridge {
     public static void subscribe(String botName, boolean subscribe) {
         if (ClientPlayNetworking.canSend(SubscribeBotC2S.ID)) {
             ClientPlayNetworking.send(new SubscribeBotC2S(botName, subscribe));
+        }
+    }
+
+    public static void audienceControl(int action, String viewerKey) {
+        if (!hasPermission()) {
+            BotClientState.INSTANCE.addTranscript("system", I18n.translate("screen.aibot.permission.need_op"));
+            return;
+        }
+        if (ClientPlayNetworking.canSend(AudienceControlC2S.ID)) {
+            ClientPlayNetworking.send(new AudienceControlC2S(action, clean(viewerKey)));
         }
     }
 

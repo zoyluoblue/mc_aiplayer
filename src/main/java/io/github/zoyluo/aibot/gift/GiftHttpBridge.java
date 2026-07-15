@@ -110,6 +110,8 @@ public final class GiftHttpBridge {
         String user = text(json, "user");
         String gift = text(json, "gift");
         String bot = text(json, "bot");
+        String viewerId = text(json, "viewer_id");
+        boolean identityReliable = json.has("identity_reliable") && json.get("identity_reliable").getAsBoolean();
         int count = json.has("count") ? Math.max(1, json.get("count").getAsInt()) : 1;
         if (gift.isBlank()) {
             write(exchange, 400, "{\"ok\":false,\"error\":\"gift_required\"}");
@@ -120,6 +122,10 @@ public final class GiftHttpBridge {
             write(exchange, 503, "{\"ok\":false,\"error\":\"server_not_ready\"}");
             return;
         }
+        // Roster collection is independent from gift-action admission: an unmapped or rate-limited
+        // gift sender must still be selectable by the streamer in the audience panel.
+        mc.execute(() -> AudienceControlService.INSTANCE.accept(
+                mc, "gift", user, gift, viewerId, identityReliable));
         GiftDispatcher.GiftEvent event = new GiftDispatcher.GiftEvent(user, gift, count, bot);
         var rejected = GiftDispatcher.INSTANCE.admissionCheck(event);
         if (rejected.isPresent()) {
@@ -175,11 +181,20 @@ public final class GiftHttpBridge {
                 String kind = text(item, "kind");
                 String user = text(item, "user");
                 String content = text(item, "text");
+                String viewerId = text(item, "viewer_id");
+                boolean identityReliable = item.has("identity_reliable")
+                        && item.get("identity_reliable").getAsBoolean();
                 if (kind.isBlank() || user.isBlank()) {
                     continue;
                 }
                 accepted++;
-                mc.execute(() -> DanmakuService.INSTANCE.accept(mc, kind, user, content));
+                mc.execute(() -> {
+                    boolean consumed = AudienceControlService.INSTANCE.accept(
+                            mc, kind, user, content, viewerId, identityReliable);
+                    if (!consumed) {
+                        DanmakuService.INSTANCE.accept(mc, kind, user, content);
+                    }
+                });
             }
         }
         write(exchange, 200, "{\"ok\":true,\"accepted\":" + accepted + "}");

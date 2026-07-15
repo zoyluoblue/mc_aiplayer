@@ -2,6 +2,7 @@ package io.github.zoyluo.aibot.client.voice;
 
 import io.github.zoyluo.aibot.client.BotClientState;
 import io.github.zoyluo.aibot.client.BotCommandBridge;
+import io.github.zoyluo.aibot.client.AudienceClientState;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.text.Text;
 
@@ -20,6 +21,8 @@ public final class AIBotVoiceController {
     private volatile AIBotVoiceConfig config = AIBotVoiceConfig.load();
     private volatile StepFunVoiceClient client = new StepFunVoiceClient(config);
     private boolean keyWasDown;
+    private String recordingTarget = "";
+    private String recordingKey = "V";
     private volatile boolean busy;
     private volatile boolean speaking;
 
@@ -37,7 +40,8 @@ public final class AIBotVoiceController {
     private AIBotVoiceController() {
     }
 
-    public void tick(MinecraftClient minecraftClient, boolean keyDown) {
+    public void tick(MinecraftClient minecraftClient, boolean mainKeyDown, boolean audienceKeyDown) {
+        boolean keyDown = mainKeyDown || audienceKeyDown;
         if (!config.enabled() || config.apiKey().isBlank()) {
             keyWasDown = keyDown;
             return;
@@ -50,8 +54,16 @@ public final class AIBotVoiceController {
             return;
         }
         if (keyDown && !keyWasDown && !busy) {
+            boolean audienceTarget = audienceKeyDown;
+            recordingTarget = audienceTarget ? AudienceClientState.INSTANCE.audienceBotName() : targetBot();
+            recordingKey = audienceTarget ? "B" : "V";
+            if (audienceTarget && recordingTarget.isBlank()) {
+                status(minecraftClient, "观众 AI：尚未绑定，B 键未发送");
+                keyWasDown = true;
+                return;
+            }
             if (recorder.start(config.vadRmsThreshold())) {
-                status(minecraftClient, "麦克风：正在录音，松开 V 发送");
+                status(minecraftClient, "麦克风：正在录音，松开 " + recordingKey + " 发送给 " + recordingTarget);
             } else {
                 status(minecraftClient, "麦克风：无法打开，请检查系统权限");
             }
@@ -61,13 +73,13 @@ public final class AIBotVoiceController {
                 && recorder.silenceMillis() >= config.vadSilenceMs()) {
             byte[] audio = recorder.stop();
             status(minecraftClient, "麦克风：检测到停顿，自动发送");
-            submitAsr(audio);
+            submitAsr(audio, recordingTarget);
             // keyWasDown 保持 true:松开再按才会开始下一段,避免同一次按住反复触发
         }
         if (!keyDown && keyWasDown && recorder.recording()) {
             byte[] audio = recorder.stop();
             status(minecraftClient, "麦克风：录音结束，正在识别...");
-            submitAsr(audio);
+            submitAsr(audio, recordingTarget);
         }
         keyWasDown = keyDown;
     }
@@ -79,7 +91,10 @@ public final class AIBotVoiceController {
         if (!"bot".equals(role) || text == null || text.isBlank()) {
             return;
         }
-        if (!targetBot().equalsIgnoreCase(botName == null ? "" : botName.trim())) {
+        String spokenBy = botName == null ? "" : botName.trim();
+        String audienceBot = AudienceClientState.INSTANCE.audienceBotName();
+        if (!targetBot().equalsIgnoreCase(spokenBy)
+                && (audienceBot.isBlank() || !audienceBot.equalsIgnoreCase(spokenBy))) {
             return;
         }
         while (ttsQueue.size() >= TTS_QUEUE_MAX) {
@@ -163,7 +178,7 @@ public final class AIBotVoiceController {
         return audio;
     }
 
-    private void submitAsr(byte[] audio) {
+    private void submitAsr(byte[] audio, String target) {
         if (audio.length < 3200) {
             BotClientState.INSTANCE.addTranscript("system", "录音太短");
             return;
@@ -178,7 +193,7 @@ public final class AIBotVoiceController {
                     return;
                 }
                 status(MinecraftClient.getInstance(), "语音：识别为“" + text + "”");
-                MinecraftClient.getInstance().execute(() -> BotCommandBridge.chat(targetBot(), text));
+                MinecraftClient.getInstance().execute(() -> BotCommandBridge.chat(target, text));
             } catch (Exception exception) {
                 status(MinecraftClient.getInstance(), "语音：识别失败 " + shortError(exception));
             } finally {

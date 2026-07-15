@@ -70,11 +70,13 @@ public final class AIPlayerManager {
         final long deathTick;
         final Vec3d spawnPos;
         final boolean movedToSpawn;
+        final boolean primaryOwnerBot;
         int dueTick;
         int attempts;
 
         PendingRespawn(String name, String role, UUID ownerUuid, float yaw, ServerWorld world,
-                       BlockPos deathPos, long deathTick, Vec3d spawnPos, boolean movedToSpawn, int dueTick) {
+                       BlockPos deathPos, long deathTick, Vec3d spawnPos, boolean movedToSpawn,
+                       boolean primaryOwnerBot, int dueTick) {
             this.name = name;
             this.role = role;
             this.ownerUuid = ownerUuid;
@@ -84,6 +86,7 @@ public final class AIPlayerManager {
             this.deathTick = deathTick;
             this.spawnPos = spawnPos;
             this.movedToSpawn = movedToSpawn;
+            this.primaryOwnerBot = primaryOwnerBot;
             this.dueTick = dueTick;
         }
     }
@@ -103,6 +106,8 @@ public final class AIPlayerManager {
         String name = bot.getGameProfile().getName();
         String role = role(bot);
         UUID ownerUuid = botOwners.get(bot.getUuid());
+        boolean primaryOwnerBot = ownerUuid != null && bot.getUuid().equals(ownerIndex.get(ownerUuid));
+        io.github.zoyluo.aibot.gift.AudienceControlService.INSTANCE.onBotDeath(bot);
         float yaw = bot.getYaw();
         BlockPos deathPos = bot.getBlockPos();
         // 情景记忆:死亡入流(用死亡位置,在移除实体之前记)。蒸馏规则:同区两死 → 危险区。
@@ -122,7 +127,8 @@ public final class AIPlayerManager {
         BlockPos surface = respawnWorld.getTopPosition(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, anchor);
         despawn(server, name);
         pendingRespawns.add(new PendingRespawn(name, role, ownerUuid, yaw, respawnWorld, deathPos, nowTick,
-                new Vec3d(surface.getX() + 0.5D, surface.getY(), surface.getZ() + 0.5D), deathLoop, nowTick + 10));
+                new Vec3d(surface.getX() + 0.5D, surface.getY(), surface.getZ() + 0.5D), deathLoop,
+                primaryOwnerBot, nowTick + 10));
         BotLog.lifecycle("bot_corpse_removed", "name", name, "death_pos", LogFields.pos(deathPos));
     }
 
@@ -138,11 +144,16 @@ public final class AIPlayerManager {
             if (now < pending.dueTick) {
                 continue;
             }
-            Optional<AIPlayerEntity> fresh = spawn(server, pending.name, pending.world, pending.spawnPos,
-                    pending.yaw, 0.0F, GameMode.SURVIVAL, pending.ownerUuid);
+            Optional<AIPlayerEntity> fresh = pending.primaryOwnerBot
+                    ? spawn(server, pending.name, pending.world, pending.spawnPos,
+                            pending.yaw, 0.0F, GameMode.SURVIVAL, pending.ownerUuid)
+                    : spawnAdditional(server, pending.name, pending.world, pending.spawnPos,
+                            pending.yaw, 0.0F, GameMode.SURVIVAL, pending.ownerUuid);
             if (fresh.isEmpty()) {
                 if (++pending.attempts >= 5) {
                     it.remove();
+                    io.github.zoyluo.aibot.gift.AudienceControlService.INSTANCE
+                            .onBotRespawnFailed(pending.name);
                     BotLog.lifecycle("bot_respawn_gave_up", "name", pending.name);
                 } else {
                     pending.dueTick = now + 20;
@@ -152,6 +163,7 @@ public final class AIPlayerManager {
             it.remove();
             AIPlayerEntity newBot = fresh.get();
             setRole(newBot, pending.role);
+            io.github.zoyluo.aibot.gift.AudienceControlService.INSTANCE.onBotRespawn(newBot);
             // 重生保护:5s 抗性 V(免疫全部伤害)+回复 II,打破"重生秒死"循环
             newBot.addStatusEffect(new net.minecraft.entity.effect.StatusEffectInstance(
                     net.minecraft.entity.effect.StatusEffects.RESISTANCE, 100, 4, false, false));
@@ -180,6 +192,13 @@ public final class AIPlayerManager {
         }
     }
 
+    /** Cancel a queued respawn when an additional bot is explicitly unbound or replaced. */
+    public boolean cancelPendingRespawn(String name, UUID ownerUuid) {
+        String normalizedName = normalizeName(name);
+        return pendingRespawns.removeIf(pending -> normalizeName(pending.name).equals(normalizedName)
+                && java.util.Objects.equals(pending.ownerUuid, ownerUuid));
+    }
+
     public Optional<AIPlayerEntity> spawn(MinecraftServer server,
                                           String name,
                                           ServerWorld world,
@@ -198,11 +217,35 @@ public final class AIPlayerManager {
                                           float pitch,
                                           GameMode gameMode,
                                           UUID ownerUuid) {
+        return spawnOwned(server, name, world, pos, yaw, pitch, gameMode, ownerUuid, true);
+    }
+
+    /** Spawn an additional temporary bot for the same owner without replacing ownerIndex's primary assistant. */
+    public Optional<AIPlayerEntity> spawnAdditional(MinecraftServer server,
+                                                    String name,
+                                                    ServerWorld world,
+                                                    Vec3d pos,
+                                                    float yaw,
+                                                    float pitch,
+                                                    GameMode gameMode,
+                                                    UUID ownerUuid) {
+        return spawnOwned(server, name, world, pos, yaw, pitch, gameMode, ownerUuid, false);
+    }
+
+    private Optional<AIPlayerEntity> spawnOwned(MinecraftServer server,
+                                                String name,
+                                                ServerWorld world,
+                                                Vec3d pos,
+                                                float yaw,
+                                                float pitch,
+                                                GameMode gameMode,
+                                                UUID ownerUuid,
+                                                boolean primaryOwnerBot) {
         String normalizedName = normalizeName(name);
         if (nameIndex.containsKey(normalizedName) || server.getPlayerManager().getPlayer(name) != null) {
             return Optional.empty();
         }
-        if (ownerUuid != null && botOf(ownerUuid).isPresent()) {
+        if (primaryOwnerBot && ownerUuid != null && botOf(ownerUuid).isPresent()) {
             return Optional.empty();
         }
 
@@ -230,7 +273,9 @@ public final class AIPlayerManager {
         nameIndex.put(normalizedName, player.getUuid());
         roles.put(player.getUuid(), "worker");
         if (ownerUuid != null) {
-            ownerIndex.put(ownerUuid, player.getUuid());
+            if (primaryOwnerBot) {
+                ownerIndex.put(ownerUuid, player.getUuid());
+            }
             botOwners.put(player.getUuid(), ownerUuid);
         }
         BotLog.lifecycle(player, "bot_spawned", "pos", LogFields.pos(player.getBlockPos()), "mode", effectiveMode.getName());
@@ -271,6 +316,7 @@ public final class AIPlayerManager {
         }
 
         AIPlayerEntity entity = player.get();
+        io.github.zoyluo.aibot.gift.AudienceControlService.INSTANCE.onBotDespawn(entity);
         entity.getActionPack().stopAll();
         BrainCoordinator.INSTANCE.reset(entity);
         TaskManager.INSTANCE.onBotDespawn(entity);

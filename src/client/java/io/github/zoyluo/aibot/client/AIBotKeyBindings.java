@@ -11,6 +11,7 @@ public final class AIBotKeyBindings {
     private static KeyBinding openPanel;
     private static KeyBinding openActions;
     private static KeyBinding pushToTalk;
+    private static KeyBinding audiencePushToTalk;
     private static KeyBinding brainInterrupt;
     private static KeyBinding traceHudToggle;
     private static boolean altZeroDown;
@@ -34,6 +35,11 @@ public final class AIBotKeyBindings {
                 "key.aibot.push_to_talk",
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_V,
+                "key.categories.aibot"));
+        audiencePushToTalk = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.aibot.audience_push_to_talk",
+                InputUtil.Type.KEYSYM,
+                GLFW.GLFW_KEY_B,
                 "key.categories.aibot"));
         brainInterrupt = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.aibot.brain_interrupt",
@@ -93,5 +99,12 @@ public final class AIBotKeyBindings {
         }
         // Use the physical key state so a held key is not lost by KeyBinding's press queue.
         return InputUtil.isKeyPressed(client.getWindow().getHandle(), GLFW.GLFW_KEY_V);
+    }
+
+    public static boolean audiencePushToTalkDown(MinecraftClient client) {
+        if (client == null || client.getWindow() == null) {
+            return false;
+        }
+        return InputUtil.isKeyPressed(client.getWindow().getHandle(), GLFW.GLFW_KEY_B);
     }
 }

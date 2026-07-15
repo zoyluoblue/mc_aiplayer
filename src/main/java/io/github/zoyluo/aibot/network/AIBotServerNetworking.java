@@ -6,10 +6,13 @@ import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
 import io.github.zoyluo.aibot.marker.TargetMarkerService;
+import io.github.zoyluo.aibot.gift.AudienceControlService;
 import io.github.zoyluo.aibot.goal.GoalExecutor;
 import io.github.zoyluo.aibot.memory.BotMemory;
 import io.github.zoyluo.aibot.memory.BotMemoryStore;
 import io.github.zoyluo.aibot.network.payload.BotChatS2C;
+import io.github.zoyluo.aibot.network.payload.AudienceControlC2S;
+import io.github.zoyluo.aibot.network.payload.AudienceSnapshotS2C;
 import io.github.zoyluo.aibot.network.payload.BotCommandC2S;
 import io.github.zoyluo.aibot.network.payload.BotItemMoveC2S;
 import io.github.zoyluo.aibot.network.payload.BotTeleportC2S;
@@ -59,6 +62,8 @@ public final class AIBotServerNetworking {
     }
 
     public void register() {
+        ServerPlayNetworking.registerGlobalReceiver(AudienceControlC2S.ID, (payload, context) ->
+                context.server().execute(() -> handleAudienceControl(context.player(), payload)));
         ServerPlayNetworking.registerGlobalReceiver(SubscribeBotC2S.ID, (payload, context) ->
                 context.server().execute(() -> handleSubscribe(context.player(), payload)));
         ServerPlayNetworking.registerGlobalReceiver(BotCommandC2S.ID, (payload, context) ->
@@ -94,6 +99,7 @@ public final class AIBotServerNetworking {
             resolveBot(viewer, entry.getValue())
                     .map(this::snapshot)
                     .ifPresent(snapshot -> ServerPlayNetworking.send(viewer, snapshot));
+            sendAudienceSnapshot(viewer);
         }
     }
 
@@ -189,6 +195,29 @@ public final class AIBotServerNetworking {
             sendSystem(player, botName, botName == null || botName.isBlank() ? "未找到你的 AI 助手。" : "已订阅 " + botName);
         } else {
             subscriptions.remove(player.getUuid());
+        }
+    }
+
+    private void handleAudienceControl(ServerPlayerEntity player, AudienceControlC2S payload) {
+        if (!player.hasPermissionLevel(2)) {
+            sendSystem(player, "", "需要 OP 权限才能管理观众 AI。");
+            return;
+        }
+        switch (payload.action()) {
+            case AudienceControlC2S.REFRESH -> {
+            }
+            case AudienceControlC2S.BIND -> AudienceControlService.INSTANCE
+                    .bind(player.getServer(), player, payload.viewerKey());
+            case AudienceControlC2S.UNBIND -> AudienceControlService.INSTANCE
+                    .unbind(player.getServer(), player);
+            default -> throw new IllegalArgumentException("unknown_audience_action: " + payload.action());
+        }
+        sendAudienceSnapshot(player);
+    }
+
+    private static void sendAudienceSnapshot(ServerPlayerEntity player) {
+        if (ServerPlayNetworking.canSend(player, AudienceSnapshotS2C.ID)) {
+            ServerPlayNetworking.send(player, AudienceControlService.INSTANCE.snapshot());
         }
     }
 

@@ -42,7 +42,9 @@ public final class AIBotClient implements ClientModInitializer {
     }
 
     private void onClientTick(MinecraftClient client) {
-        AIBotVoiceController.INSTANCE.tick(client, AIBotKeyBindings.pushToTalkDown(client));
+        AIBotVoiceController.INSTANCE.tick(client,
+                AIBotKeyBindings.pushToTalkDown(client),
+                AIBotKeyBindings.audiencePushToTalkDown(client));
         while (AIBotKeyBindings.traceTogglePressed()) {
             BrainTraceHud.toggle();
         }

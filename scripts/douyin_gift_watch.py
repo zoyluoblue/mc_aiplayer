@@ -39,6 +39,7 @@ import json
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -54,13 +55,18 @@ OBSERVER_JS = r"""
   const seen = new Map(); // 签名 -> 时间戳,页面侧 800ms 去重(纯重复渲染;签名含 kind)
   const identityHints = (node) => {
     const hrefs = new Set();
+    const userLinks = new Map();
     const attrs = new Set();
     let current = node;
     for (let depth = 0; current && depth < 4; depth++, current = current.parentElement) {
-      if (current.matches && current.matches('a[href]')) hrefs.add(current.href);
+      if (current.matches && current.matches('a[href]')) {
+        hrefs.add(current.href);
+        userLinks.set(current.href, { href: current.href, text: (current.innerText || '').trim() });
+      }
       for (const link of current.querySelectorAll ? current.querySelectorAll('a[href]') : []) {
         if (hrefs.size >= 8) break;
         hrefs.add(link.href);
+        userLinks.set(link.href, { href: link.href, text: (link.innerText || '').trim() });
       }
       for (const attr of Array.from(current.attributes || [])) {
         if (/^data-.*(user|uid|id)/i.test(attr.name) && attr.value && attr.value.length <= 200) {
@@ -68,7 +74,11 @@ OBSERVER_JS = r"""
         }
       }
     }
-    return { hrefs: Array.from(hrefs).slice(0, 8), identity_attrs: Array.from(attrs).slice(0, 16) };
+    return {
+      hrefs: Array.from(hrefs).slice(0, 8),
+      user_links: Array.from(userLinks.values()).slice(0, 8),
+      identity_attrs: Array.from(attrs).slice(0, 16)
+    };
   };
   const emit = (kind, text, alts, node) => {
     const sig = kind + '|' + text + '|' + alts.join(',');
@@ -171,10 +181,51 @@ def parse_follow(text: str):
     return user or None
 
 
-def post_gift(bridge: str, token: str, user: str, gift: str, count: int, dry_run: bool) -> str:
+def viewer_identity(payload: dict, user: str) -> tuple[str, bool]:
+    """Best-effort stable account key from DOM attributes/profile links; blank means nickname fallback."""
+    import re
+
+    for raw in payload.get("identity_attrs", []):
+        if "=" not in raw:
+            continue
+        name, value = raw.split("=", 1)
+        value = value.strip()
+        if not value or len(value) > 128:
+            continue
+        lower = name.lower()
+        if "sec" in lower and "uid" in lower:
+            return "sec_uid:" + value, True
+        if "user" in lower and ("uid" in lower or "id" in lower):
+            return "user_id:" + value, True
+
+    links = payload.get("user_links", [])
+    matching = [link for link in links if (link.get("text") or "").strip() == user]
+    candidates = matching + [link for link in links if link not in matching]
+    for link in candidates:
+        href = (link.get("href") or "").strip()
+        if not href:
+            continue
+        parsed = urllib.parse.urlparse(href)
+        query = urllib.parse.parse_qs(parsed.query)
+        for key in ("sec_user_id", "sec_uid", "user_id", "uid"):
+            value = (query.get(key) or [""])[0].strip()
+            if value and len(value) <= 128:
+                return key + ":" + value, True
+        match = re.search(r"/(?:user|profile)/([^/?#]+)", parsed.path)
+        if match:
+            value = urllib.parse.unquote(match.group(1)).strip()
+            if value and len(value) <= 128:
+                return "profile:" + value, True
+    return "", False
+
+
+def post_gift(bridge: str, token: str, user: str, gift: str, count: int, dry_run: bool,
+              viewer_id: str = "", identity_reliable: bool = False) -> str:
     if dry_run:
         return "dry-run"
-    payload = json.dumps({"user": user, "gift": gift, "count": count}).encode("utf-8")
+    payload = json.dumps({"user": user, "gift": gift, "count": count,
+                          "viewer_id": viewer_id,
+                          "identity_reliable": identity_reliable}).encode("utf-8")
     req = urllib.request.Request(bridge, data=payload, method="POST")
     req.add_header("Content-Type", "application/json")
     if token:
@@ -265,8 +316,8 @@ def run_session(p, url: str, bridge: str, danmaku_url: str, token: str, headless
     stats = {"gift": 0, "chat": 0, "follow": 0, "post_ok": 0, "post_fail": 0}
     post_fail_streak = [0]
 
-    def send(user: str, gift: str, count: int):
-        result = post_gift(bridge, token, user, gift, count, dry_run)
+    def send(user: str, gift: str, count: int, viewer_id: str = "", identity_reliable: bool = False):
+        result = post_gift(bridge, token, user, gift, count, dry_run, viewer_id, identity_reliable)
         stamp = time.strftime("%H:%M:%S")
         print(f"[{stamp}] 🎁 {user} 送出 {gift} ×{count} → {result}")
         if result.startswith("POST失败"):
@@ -284,6 +335,7 @@ def run_session(p, url: str, bridge: str, danmaku_url: str, token: str, headless
                 "kind": kind,
                 "text": text,
                 "hrefs": payload.get("hrefs", []),
+                "user_links": payload.get("user_links", []),
                 "identity_attrs": payload.get("identity_attrs", []),
             }
             print("[身份采样] " + json.dumps(sample, ensure_ascii=False), flush=True)
@@ -293,18 +345,23 @@ def run_session(p, url: str, bridge: str, danmaku_url: str, token: str, headless
                 return
             stats["gift"] += 1
             user, gift, count = parsed
+            viewer_id, identity_reliable = viewer_identity(payload, user)
             now = time.time()
             if agg_idle <= 0:  # 关聚合:回退直发(校准/调试用)
                 sig = f"{user}|{gift}|{count}"
                 if now - recent.get(sig, 0) < 1.2:
                     return
                 recent[sig] = now
-                send(user, gift, count)
+                send(user, gift, count, viewer_id, identity_reliable)
                 return
             entry = pending.get((user, gift))
             if entry is None:
-                pending[(user, gift)] = {"total": count, "max_seen": count, "first": now, "last": now}
+                pending[(user, gift)] = {"total": count, "max_seen": count, "first": now, "last": now,
+                                         "viewer_id": viewer_id, "identity_reliable": identity_reliable}
                 return
+            if identity_reliable:
+                entry["viewer_id"] = viewer_id
+                entry["identity_reliable"] = True
             # 抖音连击两种形态都要算对:累计计数(×1→×2→×3 逐条刷,真实总数=最新值)只加增量;
             # 独立单发(N 条 ×1)逐条累加。判据:计数比见过的最大值还大 = 累计计数在涨。
             if count > entry["max_seen"]:
@@ -322,7 +379,9 @@ def run_session(p, url: str, bridge: str, danmaku_url: str, token: str, headless
                 return
             stats["chat"] += 1
             user, content = parsed
-            danmaku_pending.append({"kind": "chat", "user": user, "text": content})
+            viewer_id, identity_reliable = viewer_identity(payload, user)
+            danmaku_pending.append({"kind": "chat", "user": user, "text": content,
+                                     "viewer_id": viewer_id, "identity_reliable": identity_reliable})
             return
         if kind == "follow":
             user = parse_follow(text)
@@ -330,7 +389,9 @@ def run_session(p, url: str, bridge: str, danmaku_url: str, token: str, headless
                 return
             seen_follows.add(user)
             stats["follow"] += 1
-            danmaku_pending.append({"kind": "follow", "user": user, "text": ""})
+            viewer_id, identity_reliable = viewer_identity(payload, user)
+            danmaku_pending.append({"kind": "follow", "user": user, "text": "",
+                                     "viewer_id": viewer_id, "identity_reliable": identity_reliable})
 
     def flush_pending():
         now = time.time()
@@ -339,7 +400,8 @@ def run_session(p, url: str, bridge: str, danmaku_url: str, token: str, headless
             # 静默 agg_idle 秒 = 连击结束;或存活满 agg_max 秒强制出账,连击不断流也不会无限攒。
             if now - entry["last"] >= agg_idle or now - entry["first"] >= agg_max:
                 del pending[key]
-                send(key[0], key[1], entry["total"])
+                send(key[0], key[1], entry["total"],
+                     entry.get("viewer_id", ""), entry.get("identity_reliable", False))
 
     def flush_danmaku():
         if not danmaku_pending:

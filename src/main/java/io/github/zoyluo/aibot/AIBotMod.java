@@ -75,6 +75,7 @@ public class AIBotMod implements ModInitializer {
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> io.github.zoyluo.aibot.brain.OwnerEventListener.INSTANCE.clear());
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> io.github.zoyluo.aibot.action.IdleLookController.INSTANCE.clear());
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> io.github.zoyluo.aibot.gift.DanmakuService.INSTANCE.clear());
+        ServerLifecycleEvents.SERVER_STOPPING.register(server -> io.github.zoyluo.aibot.gift.AudienceControlService.INSTANCE.clear());
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> io.github.zoyluo.aibot.gift.IdleScheduler.INSTANCE.clear());
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> io.github.zoyluo.aibot.camera.CameraMirror.INSTANCE.clear());
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> io.github.zoyluo.aibot.overlay.OverlayService.INSTANCE.clear());

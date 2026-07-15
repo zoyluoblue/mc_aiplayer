@@ -57,6 +57,7 @@ public final class BrainCoordinator {
         // 主人的新一句话是最高优先级：作废旧 API 回应，停止主动/被动任务和目标计划。
         // system:event、弹幕和礼物仍走各自的非抢占语义，不能借机取消主人正在做的事。
         if (fromOwner) {
+            io.github.zoyluo.aibot.gift.AudienceControlService.INSTANCE.onOwnerCommand(bot);
             preemptForOwnerMessage(bot, conversation);
         } else if (io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.hasActivePlan(bot)) {
             // 非主人消息不抢走确定性目标，只解除对话 busy，让模型按其既有规则决定是否回应。

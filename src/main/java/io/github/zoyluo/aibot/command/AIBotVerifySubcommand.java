@@ -67,6 +67,7 @@ import static net.minecraft.server.command.CommandManager.literal;
 public final class AIBotVerifySubcommand {
     private static final List<String> ALL_FEATURES = List.of(
             "persist",
+            "audience_control",
             "container",
             "combat",
             "sleep",
@@ -363,6 +364,7 @@ public final class AIBotVerifySubcommand {
         TaskManager.INSTANCE.abort(bot);
         return switch (feature) {
             case "persist" -> verifyPersist(source);
+            case "audience_control" -> verifyAudienceControl(bot);
             case "memory" -> verifyMemory(bot);
             case "job" -> verifyJob();
             case "container" -> assignContainer(bot);
@@ -470,6 +472,52 @@ public final class AIBotVerifySubcommand {
     private static Result verifyPersist(ServerCommandSource source) {
         int saved = BotPersistence.INSTANCE.saveAll(source.getServer());
         return Result.pass("persist", "saveAll ok, bots=" + saved);
+    }
+
+    private static Result verifyAudienceControl(AIPlayerEntity owner) {
+        io.github.zoyluo.aibot.gift.AudienceControlService service =
+                io.github.zoyluo.aibot.gift.AudienceControlService.INSTANCE;
+        service.clear();
+        service.accept(owner.getServer(), "chat", "测试观众", "你好", "test-account", true);
+        var roster = service.snapshot();
+        if (roster.viewers().size() != 1 || !roster.viewers().getFirst().reliableIdentity()) {
+            service.clear();
+            return Result.fail("audience_control", "stable_viewer_not_recorded");
+        }
+        String viewerKey = roster.viewers().getFirst().key();
+        String bindResult = service.bind(owner.getServer(), owner, viewerKey);
+        String fanName = service.snapshot().audienceBotName();
+        AIPlayerEntity fan = AIPlayerManager.INSTANCE.getByName(fanName).orElse(null);
+        if (fan == null || !"audience".equals(AIPlayerManager.INSTANCE.role(fan))
+                || AIPlayerManager.INSTANCE.ownerOf(fan).filter(owner.getUuid()::equals).isEmpty()
+                || AIPlayerManager.INSTANCE.botOf(owner.getUuid()).isPresent()) {
+            service.unbind(owner.getServer(), owner);
+            service.clear();
+            return Result.fail("audience_control", "secondary_spawn_or_owner_index_failed: " + bindResult);
+        }
+        TaskManager.INSTANCE.assign(fan,
+                new io.github.zoyluo.aibot.task.FollowTask(owner.getGameProfile().getName()));
+        service.onOwnerCommand(fan);
+        boolean wrongViewerConsumed = service.accept(
+                owner.getServer(), "chat", "其他观众", "停下", "other-account", true);
+        boolean boundViewerConsumed = service.accept(
+                owner.getServer(), "chat", "测试观众", "停下", "test-account", true);
+        boolean ownerTaskKept = TaskManager.INSTANCE.getActive(fan).isPresent();
+        AIPlayerManager.INSTANCE.handleDeath(owner.getServer(), fan);
+        boolean bindingVisibleDuringRespawn = fanName.equals(service.snapshot().audienceBotName());
+        boolean respawnWindowConsumed = service.accept(
+                owner.getServer(), "chat", "测试观众", "等你复活", "test-account", true);
+        service.unbind(owner.getServer(), owner);
+        boolean removed = AIPlayerManager.INSTANCE.getByName(fanName).isEmpty();
+        boolean pendingRespawnCanceled = !AIPlayerManager.INSTANCE
+                .cancelPendingRespawn(fanName, owner.getUuid());
+        service.clear();
+        if (wrongViewerConsumed || !boundViewerConsumed || !ownerTaskKept
+                || !bindingVisibleDuringRespawn || !respawnWindowConsumed
+                || !removed || !pendingRespawnCanceled) {
+            return Result.fail("audience_control", "routing_or_owner_priority_failed");
+        }
+        return Result.pass("audience_control", "roster/bind/owner_priority/death_unbind ok");
     }
 
     private static Result verifyMemory(AIPlayerEntity bot) {
@@ -2157,10 +2205,14 @@ public final class AIBotVerifySubcommand {
         clearNearbyMobs(world, origin);
         InventoryAction.giveItem(bot, new ItemStack(Items.IRON_INGOT, 5));
         InventoryAction.giveItem(bot, new ItemStack(Items.STONE_PICKAXE, 1));
+        UUID botUuid = bot.getUuid();
         // 一击致死:走原版死亡流程(掉落生成);setHealth(0) 不触发 onDeath 掉落,必须走 damage。
         bot.damage(world, world.getDamageSources().generic(), 1000.0F);
         return Result.running("geo_recover", 2400,
-                ignored -> bot.isAlive() && InventoryAction.countItem(bot, Items.IRON_INGOT) >= 5);
+                ignored -> AIPlayerManager.INSTANCE.getByUuid(botUuid)
+                        .filter(current -> current.isAlive()
+                                && InventoryAction.countItem(current, Items.IRON_INGOT) >= 5)
+                        .isPresent());
     }
 
     // 运行时配方索引端到端:OAK_TRAPDOOR 不在手写表(grep 确认),只能靠 RuntimeRecipeIndex 从
@@ -2974,6 +3026,13 @@ public final class AIBotVerifySubcommand {
         private boolean tick(MinecraftServer server) {
             Optional<AIPlayerEntity> bot = AIPlayerManager.INSTANCE.getByUuid(botId);
             if (bot.isEmpty()) {
+                // geo_recover deliberately kills the bot. Production death handling removes the
+                // corpse immediately and recreates the same UUID 10 ticks later, so this scenario
+                // must tolerate that valid respawn window instead of failing on its first empty tick.
+                if (active != null && "geo_recover".equals(active.result().feature())
+                        && server.getTicks() - active.startedTick() < active.result().timeoutTicks()) {
+                    return false;
+                }
                 record(Result.fail(active == null ? "run" : active.result().feature(), "bot_removed"));
                 finish();
                 return true;

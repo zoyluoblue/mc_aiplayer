@@ -20,6 +20,7 @@ public final class WalkToController {
     private static final int SIDLE_STEP_TICKS = 8;
 
     private final Vec3d target;
+    private final boolean allowDeepWater;
     private Vec3d lastPos;
     private int noProgressTicks;
     private int hardStuckTicks;
@@ -27,7 +28,12 @@ public final class WalkToController {
     private int elapsed;
 
     public WalkToController(Vec3d target) {
+        this(target, false);
+    }
+
+    public WalkToController(Vec3d target, boolean allowDeepWater) {
         this.target = target;
+        this.allowDeepWater = allowDeepWater;
     }
 
     public ActionResult tick(ActionPack pack) {
@@ -54,7 +60,7 @@ public final class WalkToController {
         // (follow 追人/接近原语),会闭眼走进湖里。前探 0.9 格:前方是游泳深度的水(上下两格都是水),
         // 或岸沿悬空、落点是深水,立即停走并以 water_ahead 失败——宁可停在岸边等,也不下水。
         // 距目标 <1.2 格时不熔断:允许走到紧贴水边的目标点(钓鱼/打水)。
-        if (horizontalDistance > 1.2D && deepWaterAhead(current, move, world)) {
+        if (!allowDeepWater && horizontalDistance > 1.2D && deepWaterAhead(current, move, world)) {
             pack.stopMovement();
             return ActionResult.failed("water_ahead");
         }

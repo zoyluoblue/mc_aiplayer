@@ -40,6 +40,16 @@ public final class Standability {
         return result;
     }
 
+    /** A surface-water navigation cell: passable water at the feet with a clear head. */
+    public static boolean isSwimmable(ServerWorld world, BlockPos pos) {
+        BlockState feet = world.getBlockState(pos);
+        BlockState head = world.getBlockState(pos.up());
+        return feet.getFluidState().isIn(FluidTags.WATER)
+                && feet.getCollisionShape(world, pos).isEmpty()
+                && head.getCollisionShape(world, pos.up()).isEmpty()
+                && !head.getFluidState().isIn(FluidTags.LAVA);
+    }
+
     public static Optional<BlockPos> findNearestStandable(ServerWorld world,
                                                           BlockPos origin,
                                                           int horizontalRadius,

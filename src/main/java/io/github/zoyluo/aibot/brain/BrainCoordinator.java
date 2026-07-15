@@ -11,6 +11,7 @@ import io.github.zoyluo.aibot.network.AIBotServerNetworking;
 import io.github.zoyluo.aibot.perception.PerceptionCollector;
 import io.github.zoyluo.aibot.perception.PerceptionSnapshot;
 import io.github.zoyluo.aibot.task.MemoryStore;
+import io.github.zoyluo.aibot.task.LongRunningIntentManager;
 import io.github.zoyluo.aibot.task.TaskManager;
 import io.github.zoyluo.aibot.task.TaskStatus;
 
@@ -52,15 +53,17 @@ public final class BrainCoordinator {
     public boolean handleMessage(AIPlayerEntity bot, String senderName, String text) {
         ensureConfigured();
         BotConversation conversation = conversations.computeIfAbsent(bot.getUuid(), ignored -> new BotConversation());
-        // P2 打断语义(对话式助手):玩家新消息**不再无脑清掉进行中的目标**——原 GOALFIX-CONT 的
-        // "新消息=重定向,清目标"会把"顺便再搞点吃的"当成叫停,把正在挖的铁直接杀掉,与目标队列(P0)
-        // 语义相反。现在保留目标,由大脑按语义决策:追加(goal 工具自动入队)/立刻改令(先 stop 再下新目标)/
-        // 闲聊(say)。仅解除 busy,防 goal 期间"正在思考"挡住对话(叫停能力由 stop 工具保留)。
-        if (io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.hasActivePlan(bot)) {
+        boolean fromOwner = isOwnerSender(bot, senderName);
+        // 主人的新一句话是最高优先级：作废旧 API 回应，停止主动/被动任务和目标计划。
+        // system:event、弹幕和礼物仍走各自的非抢占语义，不能借机取消主人正在做的事。
+        if (fromOwner) {
+            preemptForOwnerMessage(bot, conversation);
+        } else if (io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.hasActivePlan(bot)) {
+            // 非主人消息不抢走确定性目标，只解除对话 busy，让模型按其既有规则决定是否回应。
             synchronized (conversation) {
                 conversation.busy = false;
             }
-            BotLog.comm(bot, "goal_kept_on_user_message");
+            BotLog.comm(bot, "goal_kept_on_non_owner_message");
         }
         synchronized (conversation) {
             if (conversation.busy) {
@@ -87,7 +90,7 @@ public final class BrainCoordinator {
         if (conversation.history.isEmpty()) {
             conversation.history.add(ChatMessage.system(systemPrompt(bot.getGameProfile().getName())));
         }
-        conversation.fromOwner = isOwnerSender(bot, senderName);
+        conversation.fromOwner = fromOwner;
         if (!senderName.contains(":")) {
             // 真人消息(gift:/danmaku:/system: 都带冒号前缀,玩家名不含冒号)记为"最初的完整要求",
             // task_done_wake 时回灌——治复合指令"先A再B"里 B 靠被 trim 的历史回忆导致只做一半。
@@ -511,6 +514,24 @@ public final class BrainCoordinator {
         if (next != null) {
             handleMessage(bot, next[0], next[1]);
         }
+    }
+
+    /** 主人新指令的硬抢占：旧请求、任务、长期跟随和目标计划都不能在下一 tick 复活。 */
+    private void preemptForOwnerMessage(AIPlayerEntity bot, BotConversation conversation) {
+        synchronized (conversation) {
+            conversation.generation++;
+            conversation.busy = false;
+            conversation.inFlight = false;
+            conversation.pendingUserMessages.clear();
+            conversation.uncommittedTools = 0;
+            conversation.continuationTaskPolls = 0;
+        }
+        io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.clear(bot);
+        LongRunningIntentManager.INSTANCE.clear(bot);
+        TaskManager.INSTANCE.resetToIdle(bot);
+        awaitingTask.remove(bot.getUuid());
+        BotLog.comm(bot, "owner_message_preempted_all_work", "generation", conversation.generation);
+        trace(bot, "== 主人新指令，已停止旧任务");
     }
 
     /** 快捷键"打断":作废在途 API 请求、解除 busy,让 bot 立即可以接受新指令。 */
@@ -957,6 +978,7 @@ public final class BrainCoordinator {
                 R2. 每轮做完工具后,必须调 finish(summary="一句话总结")结束本轮。不调 finish = 玩家被卡死无法发下一条指令。但 finish 表示"主人这条要求真的开工/做完了",不是"我准备好了"——**只收集/合成完材料、正事一步没做时绝不 finish**(那是假完成,主人会追问"那你倒是开始呀")。该 smart_navigate(route) 就真正派发修路、该 build_house 就真正派发盖房，再 finish。
                 R3. 发起一个任务后就 STOP,别再调别的工具、别每 tick 催。任务是多 tick 自己跑的,系统会在完成/失败时通知你。中途乱插工具会把任务打断。
                 R4. 每轮一句话就够(speak 最多一次)。禁止碎碎念汇报进度,除非主人明确要你播报。
+                R5. 主人本人发来的任何新消息都由代码立即停止旧任务、旧目标和被动护卫/跟随后再处理；system:event、礼物和弹幕不能压过主人。不要试图保留或恢复上一条任务。
 
                 典型一轮: speak 应一声 → 调一个工具(smart_navigate/smart_combat/gather/craft…) → finish("总结")。
                 纯问答/闲聊(报血量/你在哪/聊两句这种不用动手的): 直接 finish(summary="≤30字答案")一轮搞定。finish 的话会被念出来,别先 speak 再 finish 把同一句说两遍——又慢又啰嗦。
@@ -967,9 +989,9 @@ public final class BrainCoordinator {
                 G3. 一个战斗任务发起后 STOP，别在 guard 和 attack 之间反复横跳——会互相顶掉，导致 bot 乱跑。
 
                 ========== 移动/跟随 ==========
-                M1. 所有移动优先只用 smart_navigate，绝不拆成 move/follow/pillar/scaffold 多次调用。"过来" → mode=go；"一直跟着" → mode=follow；去高处/跨障碍也仍是 mode=go，它会自行绕路、破普通遮挡、垫高和跨沟铺最少支撑。
+                M1. 所有移动优先只用 smart_navigate，绝不拆成 move/follow/pillar/scaffold 多次调用。"过来" → mode=go；"一直跟着" → mode=follow；去高处/跨障碍也仍是 mode=go，它会自行绕路、破普通遮挡、垫高、跨沟，并会游过普通水面。
                 M2. 空间指代铁律:主人说"那里/那边/对面/那个位置/我标的地方"时，默认用 smart_navigate(mode=go,use_marker=true)。明确要留下桥/道路才用 mode=route,use_marker=true；没有标记时让主人先 Shift+中键标一下，绝不猜成主人当前位置。
-                M3. 动作速查:原地垫高 N 格 → smart_navigate(mode=pillar,height=N)；回地面 → mode=surface；下到指定 Y 层 → mode=descend,y=...；朝方向探索 → mode=explore,direction=...；闲逛 → mode=wander；巡逻 → mode=patrol；快逃/卡住 → mode=escape 或 mode=unstuck。显式修路 mode=route 可给 direction+length 或 x+z。
+                M3. 动作速查:原地垫高 N 格 → smart_navigate(mode=pillar,height=N，固定脚下塔柱)；回地面 → mode=surface；下到指定 Y 层 → mode=descend,y=...；朝方向探索 → mode=explore,direction=...；闲逛 → mode=wander；巡逻 → mode=patrol；快逃/卡住 → mode=escape 或 mode=unstuck。普通过河直接 mode=go/follow，只有主人明确要留下桥/路才用 mode=route。
                 M4. 只有任务状态 COMPLETED 才能说工程或移动完成；FAILED 必须如实说明。把地上东西捡起来 → pickup_items；开门/拉杆/按按钮 → toggle_door；坐船/骑马 → ride，下来 → dismount；被围/快死原地自保 → shelter_now；砌墙 → build_wall；推平 → flatten_area；放船 → place_boat。
 
                 ========== 采集/合成/目标(这些工具全自动,调一次就 STOP 等通知) ==========

@@ -13,6 +13,9 @@ public final class CostModel {
     public static double stepCost(MoveType type, int fallHeight) {
         return switch (type) {
             case WALK -> 1.0D;
+            // Swimming is slower and carries a small risk, but remains cheaper than throwing
+            // blocks into every ordinary river. Explicit route construction still uses SCAFFOLD.
+            case SWIM -> 2.0D;
             // 对角 ≈ √2:比走两步直角(2.0)便宜,让 A* 优先抄近路,减少蛇形、更快到达。
             case DIAGONAL -> 1.41D;
             case JUMP_UP -> 1.5D;

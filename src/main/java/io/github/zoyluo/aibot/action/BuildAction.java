@@ -78,6 +78,20 @@ public final class BuildAction {
         return fallback.isSuccess() ? ActionResult.failed("fallback_without_target_block") : lastFailure;
     }
 
+    /**
+     * Server-authoritative exact placement for tower/scaffold mechanics. Unlike normal placement
+     * it never derives the destination from the current view ray, so a jumping fake player cannot
+     * accidentally put the block in front of itself. Callers must still verify the target became
+     * a solid support before treating the action as progress.
+     */
+    public static ActionResult placeBlockAtExactly(AIPlayerEntity player, BlockPos pos) {
+        ActionResult result = directPlaceFallback(player, pos, Hand.MAIN_HAND);
+        if (result.isSuccess() && !player.getServerWorld().getBlockState(pos).isReplaceable()) {
+            return result;
+        }
+        return result.isSuccess() ? ActionResult.failed("exact_place_without_target_block") : result;
+    }
+
     private static ActionResult directPlaceFallback(AIPlayerEntity player, BlockPos pos, Hand hand) {
         ItemStack stack = player.getStackInHand(hand);
         if (!(stack.getItem() instanceof BlockItem blockItem)) {

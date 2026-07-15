@@ -71,7 +71,8 @@ public final class PathExecutor {
         }
 
         ActionResult result = switch (next.moveType()) {
-            case WALK, DIAGONAL, JUMP_UP, DROP_DOWN -> tickWalk(pack, next);
+            case WALK, DIAGONAL, JUMP_UP, DROP_DOWN -> tickWalk(pack, next, false);
+            case SWIM -> tickWalk(pack, next, true);
             case DIG_THROUGH -> tickDigThrough(pack, next);
             case PILLAR_UP -> tickPillar(pack, next);
             case SCAFFOLD -> tickScaffold(pack, next);
@@ -112,7 +113,17 @@ public final class PathExecutor {
         return type == MoveType.DIG_THROUGH || type == MoveType.PILLAR_UP || type == MoveType.SCAFFOLD;
     }
 
-    private ActionResult tickWalk(ActionPack pack, Node next) {
+    /** True while the remaining route intentionally crosses water, so the safety layer will not pull it back to shore. */
+    public boolean hasWaterTraversalAhead() {
+        for (int i = index; i < path.size(); i++) {
+            if (path.get(i).moveType() == MoveType.SWIM) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private ActionResult tickWalk(ActionPack pack, Node next, boolean allowDeepWater) {
         if (arrivedAt(pack.player().getBlockPos(), next.pos())) {
             advance();
             return ActionResult.IN_PROGRESS;
@@ -127,7 +138,7 @@ public final class PathExecutor {
                         "from", LogFields.pos(next.pos()),
                         "to", LogFields.pos(target.pos()));
             }
-            subWalker = new WalkToController(Vec3d.ofCenter(target.pos()));
+            subWalker = new WalkToController(Vec3d.ofCenter(target.pos()), allowDeepWater);
         }
         Node target = path.get(activeWalkTargetIndex);
         if (arrivedAt(pack.player().getBlockPos(), target.pos())) {
@@ -260,7 +271,8 @@ public final class PathExecutor {
         return ActionResult.IN_PROGRESS;
     }
 
-    // NAV-9:垫方块上升一格。看向脚下→起跳→升空瞬间在原脚位放支撑方块→落到其上。
+    // Tower node: the target is one block above the current feet cell. Place exactly at the
+    // original feet cell after the player clears it; never derive the destination from view yaw.
     private ActionResult tickPillar(ActionPack pack, Node next) {
         if (++nodeActionTicks > 200) {
             return handleStuck(pack, "pillar_node_timeout");
@@ -271,26 +283,33 @@ public final class PathExecutor {
             advance();
             return ActionResult.IN_PROGRESS;
         }
+        pack.setForward(0.0F);
+        if (isSupportingBlock(player.getServerWorld(), placeSlot)) {
+            if (player.isOnGround()) {
+                return ActionResult.IN_PROGRESS;
+            }
+            return ActionResult.IN_PROGRESS; // Placed; wait for the landing check at the top of this method.
+        }
         OptionalInt slot = MaterialPalette.pickScaffoldBlockSlot(player);
         if (slot.isEmpty()) {
             return handleStuck(pack, "pillar_no_block");
         }
         InventoryAction.equipFromSlot(player, slot.getAsInt());
-        LookAction.lookAtBlock(player, placeSlot, Direction.UP);
-        pack.setForward(0.0F);
-        pack.setJumping(true);
-        pack.jumpOnce();
-        double rise = player.getY() - placeSlot.getY();
-        if (rise > 0.5D && rise < 1.2D && player.getServerWorld().getBlockState(placeSlot).isReplaceable()) {
-            ActionResult placed = BuildAction.placeBlockAt(player, placeSlot);
-            if (!placed.isSuccess() || !isSupportingBlock(player.getServerWorld(), placeSlot)) {
-                if (++buildRetries > 12) {
-                    return handleStuck(pack, "pillar_place_failed: " + placed.reason());
-                }
-            } else {
-                buildRetries = 0;
-                BotLog.path(player, "path_pillar_placed", "pos", LogFields.pos(placeSlot));
+        if (player.isOnGround()) {
+            pack.jumpOnce();
+            return ActionResult.IN_PROGRESS;
+        }
+        if (player.getY() < next.pos().getY() + 0.99D) {
+            return ActionResult.IN_PROGRESS;
+        }
+        ActionResult placed = BuildAction.placeBlockAtExactly(player, placeSlot);
+        if (!placed.isSuccess() || !isSupportingBlock(player.getServerWorld(), placeSlot)) {
+            if (++buildRetries > 12) {
+                return handleStuck(pack, "pillar_place_failed: " + placed.reason());
             }
+        } else {
+            buildRetries = 0;
+            BotLog.path(player, "path_pillar_placed", "pos", LogFields.pos(placeSlot));
         }
         return ActionResult.IN_PROGRESS;
     }
@@ -328,7 +347,7 @@ public final class PathExecutor {
         if (!isSupportingBlock(player.getServerWorld(), floor)) {
             return handleStuck(pack, "scaffold_support_invalid: " + compact(floor));
         }
-        return tickWalk(pack, next);
+        return tickWalk(pack, next, false);
     }
 
     private static boolean isSupportingBlock(net.minecraft.server.world.ServerWorld world, BlockPos pos) {

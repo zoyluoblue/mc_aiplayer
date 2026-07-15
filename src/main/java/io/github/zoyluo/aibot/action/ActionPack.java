@@ -144,7 +144,11 @@ public final class ActionPack {
         if (lastPathGoal != null && lastPathGoal.equals(immutableGoal) && now < nextPathfindTick) {
             return pathExecutor != null ? ActionResult.IN_PROGRESS : ActionResult.failed("pathfinding_throttled");
         }
-        if (!snapPlayerToNearestStandable("path_start_invalid")) {
+        ServerWorld world = player.getServerWorld();
+        BlockPos from = player.getBlockPos();
+        // A bot already following a SWIM path is valid in a water cell. Snapping it to the nearest
+        // dry shore on every moving-target replan made follow/chase turn around mid-crossing.
+        if (!Standability.isSwimmable(world, from) && !snapPlayerToNearestStandable("path_start_invalid")) {
             lastPathGoal = immutableGoal;
             activePathGoal = null;
             nextPathfindTick = now + PATHFIND_FAILURE_COOLDOWN_TICKS;
@@ -152,8 +156,7 @@ public final class ActionPack {
         }
         int buildBlocks = MaterialPalette.countScaffoldBlocks(player);
         boolean canPillar = buildBlocks > 0;
-        ServerWorld world = player.getServerWorld();
-        BlockPos from = player.getBlockPos();
+        from = player.getBlockPos();
         // NAV-OPT 两阶段寻路:先纯步行(禁挖,搜索空间=空气格,收敛快、不会被挖穿邻居撑爆到 SEARCH_LIMIT);
         // 纯步行无解再允许挖穿兜底(隧道/破障),挖穿预算更小以限制被困/地下时的 3D 体积爆搜。
         PathfindingResult result =
@@ -293,6 +296,11 @@ public final class ActionPack {
 
     public boolean isNavigationWorkingStationary() {
         return pathExecutor != null && pathExecutor.isWorkingStationary();
+    }
+
+    /** True when the active path intentionally contains water traversal rather than an accidental fall. */
+    public boolean isWaterNavigationActive() {
+        return pathExecutor != null && pathExecutor.hasWaterTraversalAhead();
     }
 
     public boolean isWalkToIdle() {

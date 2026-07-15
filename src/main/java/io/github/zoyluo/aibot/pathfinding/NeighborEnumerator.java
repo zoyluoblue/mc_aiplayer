@@ -96,6 +96,7 @@ public final class NeighborEnumerator {
         addDiagonals(current, world, result);
         addParkour(current, world, result);
         addPillar(current, world, result);
+        addSwim(current, world, result);
         addScaffold(current, world, result);
         return result;
     }
@@ -198,6 +199,12 @@ public final class NeighborEnumerator {
         for (Direction direction : HORIZONTAL) {
             BlockPos target = current.offset(direction);
             BlockPos floor = target.down();
+            // Normal navigation crosses water by SWIM. A scaffold node here used to place exactly
+            // one block at the shoreline, then replan against the same lake forever.
+            if (world.getFluidState(target).isIn(net.minecraft.registry.tag.FluidTags.WATER)
+                    || world.getFluidState(floor).isIn(net.minecraft.registry.tag.FluidTags.WATER)) {
+                continue;
+            }
             if (!collisionEmpty(world, target) || !collisionEmpty(world, target.up())) {
                 continue;
             }
@@ -210,6 +217,16 @@ public final class NeighborEnumerator {
                 continue;
             }
             result.add(new NeighborCandidate(target, MoveType.SCAFFOLD, 0));
+        }
+    }
+
+    /** Surface-water neighbors. Keep Y constant so routes swim across instead of diving. */
+    private static void addSwim(BlockPos current, ServerWorld world, List<NeighborCandidate> result) {
+        for (Direction direction : HORIZONTAL) {
+            BlockPos target = current.offset(direction);
+            if (Standability.isSwimmable(world, target)) {
+                result.add(new NeighborCandidate(target, MoveType.SWIM, 0));
+            }
         }
     }
 

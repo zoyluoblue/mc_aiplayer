@@ -75,9 +75,13 @@ public final class NavSafetyNet {
         // 立即进入危机态:持续按住 jump 上浮 + 朝最近岸点游,脚踩干地才释放。
         // 浅水站立(脚湿头干、踩着底)不触发,涉水过河照常。
         boolean inCrisis = waterRescueShore.containsKey(bot.getUuid());
+        boolean intentionalSwim = bot.getActionPack().isWaterNavigationActive();
         if (!inCrisis && (bot.isSubmergedInWater()
                 || (bot.isTouchingWater() && !bot.isOnGround()))) {
-            inCrisis = true; // 新触发
+            // A path with SWIM nodes owns the water movement. It keeps jump held to stay at the
+            // surface; the safety net only takes over when oxygen is actually becoming unsafe.
+            inCrisis = !intentionalSwim
+                    || (bot.getAir() < 100 && !breathableAbove(world, feet));
         }
         if (inCrisis) {
             // 释放条件:脚踩实地且不在水里 → 危机解除,交还控制。

@@ -2,6 +2,7 @@ package io.github.zoyluo.aibot.pathfinding;
 
 public enum MoveType {
     WALK,
+    SWIM,
     DIAGONAL,
     JUMP_UP,
     DROP_DOWN,

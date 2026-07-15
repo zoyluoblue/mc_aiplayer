@@ -125,6 +125,7 @@ public final class AIBotVerifySubcommand {
             "real_build",
             "real_obsidian",
             "real_nav_far",
+            "nav_tower_path",
             "nav_pillar_out",
             "nav_buried_escape",
             "nav_unreachable",
@@ -223,6 +224,7 @@ public final class AIBotVerifySubcommand {
             "nav_smart_dig",
             "nav_smart_scaffold",
             "nav_smart_descend",
+            "nav_tower_path",
             "nav_pillar_out",
             "nav_buried_escape",
             "nav_unreachable");
@@ -424,6 +426,7 @@ public final class AIBotVerifySubcommand {
             case "llm_iron" -> assignLlmIron(bot);
             case "llm_diamond" -> assignLlmDiamond(bot);
             case "real_nav_far" -> assignRealNavFar(bot);
+            case "nav_tower_path" -> assignNavTowerPath(bot);
             case "nav_pillar_out" -> assignNavPillarOut(bot);
             case "nav_buried_escape" -> assignNavBuriedEscape(bot);
             case "nav_unreachable" -> assignNavUnreachable(bot);
@@ -2687,6 +2690,32 @@ public final class AIBotVerifySubcommand {
      * MoveTask 要么搭柱翻墙、要么徒手挖穿墙,哪条活路都行,断言最终站到墙外目标点。
      * 这是实操"掉坑/被地形圈死"的最小复现:寻路必须把"垫方块/拆方块"当合法走法,纯平面 A* 会判死路空转。
      */
+    private static Result assignNavTowerPath(AIPlayerEntity bot) {
+        surfaceTeleport(bot);
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin);
+        for (BlockPos pos : BlockPos.iterate(origin.add(-4, 0, -4), origin.add(10, 9, 4))) {
+            world.setBlockState(pos, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        for (BlockPos pos : BlockPos.iterate(origin.add(-4, -1, -4), origin.add(10, -1, 4))) {
+            world.setBlockState(pos, Blocks.COBBLESTONE.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        BlockPos platformCenter = origin.east(6).up(4);
+        for (BlockPos pos : BlockPos.iterate(platformCenter.add(-1, 0, -1), platformCenter.add(1, 0, 1))) {
+            world.setBlockState(pos, Blocks.COBBLESTONE.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        BlockPos goal = platformCenter.up();
+        InventoryAction.giveItem(bot, new ItemStack(Items.DIRT, 16));
+        int startY = origin.getY();
+        return assignTask(bot, "nav_tower_path", new MoveTask(bot, goal), 1600,
+                ignored -> bot.isAlive()
+                        && bot.getBlockY() >= startY + 4
+                        && bot.getBlockPos().getSquaredDistance(goal) <= 4.0D);
+    }
+
     private static Result assignNavPillarOut(AIPlayerEntity bot) {
         surfaceTeleport(bot); // 必须地表化:y6 黑暗地下摆围墙会触发 dark_trap_escape 保命传送顶掉被测逃生(实测 aborted)
         prepareArea(bot);

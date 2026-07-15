@@ -4,6 +4,7 @@ import io.github.zoyluo.aibot.AIBotConfig;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
+import io.github.zoyluo.aibot.task.ChaseAttackTask;
 import io.github.zoyluo.aibot.task.GuardTask;
 import io.github.zoyluo.aibot.task.TaskManager;
 import net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents;
@@ -23,7 +24,8 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * 两条响应路(按优先级):
  *  1. bot 正在 guard → 确定性直报 GuardTask.noticeThreat(attacker),零 API 延迟秒反击。
- *  2. 否则(且 ownerEventPush 开)→ 节流 ≥30s/bot,在 !busy && !hasActivePlan 时喂大脑一条
+ *  2. 追杀主人期间完全静默：这是主人明确开启的节目模式，不能被"救主人"事件反向取消。
+ *  3. 其余情况(且 ownerEventPush 开)→ 节流 ≥30s/bot,在 !busy && !hasActivePlan 时喂大脑一条
  *     `system:event` 警报(与弹幕同铁律:绝不打断在途请求/确定性计划)。
  *
  * 另为快照提供 recentlyHurt/lastAttacker(5s 窗口)——PerceptionCollector.ownerInfo 读。
@@ -75,6 +77,11 @@ public final class OwnerEventListener {
             if (bot.getServerWorld() != victim.getServerWorld()) {
                 continue;
             }
+            // chase_owner 是明确的主人意图。主人同时被别的怪打到时，旧逻辑会把
+            // "去护卫主人"再喂给空闲的大脑，进而中断追杀；这条事件在追杀期间必须失效。
+            if (TaskManager.INSTANCE.getActive(bot).orElse(null) instanceof ChaseAttackTask) {
+                continue;
+            }
             if (attacker instanceof LivingEntity living && living.isAlive()
                     && bot.distanceTo(living) <= GUARD_NOTICE_RANGE
                     && TaskManager.INSTANCE.getActive(bot).orElse(null) instanceof GuardTask guard) {
@@ -104,7 +111,7 @@ public final class OwnerEventListener {
         String text = "警报:你的主人 " + victim.getGameProfile().getName()
                 + " 正被 " + attackerName + " 攻击(主人血量 " + Math.round(victim.getHealth())
                 + ",距你约 " + Math.round(bot.distanceTo(victim)) + " 格)!"
-                + "要救就立刻 guard(player_name=主人名) 或 attack 打掉它;顾不上就 speak 喊一声提醒。然后 finish。";
+                + "要救就立刻 smart_combat(mode=guard,player_name=主人名) 或 smart_combat(mode=attack) 打掉它;顾不上就 speak 喊一声提醒。然后 finish。";
         BotLog.comm(bot, "owner_hurt_brain_push", "attacker", attackerName);
         BrainCoordinator.INSTANCE.handleMessage(bot, "system:event", text);
     }

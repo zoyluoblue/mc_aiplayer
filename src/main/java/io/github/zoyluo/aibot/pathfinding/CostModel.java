@@ -38,9 +38,10 @@ public final class CostModel {
     public static double stepCost(Node current, NeighborCandidate neighbor, ServerWorld world) {
         double cost = stepCost(neighbor.moveType(), neighbor.fallHeight());
         cost += turnPenalty(current, neighbor.pos());
-        // WATER-1 配套:深水节点已被 Standability 整个拒掉,能进图的只剩浅水(可涉)。
-        // 涉水减速且有被推离路线的风险,×4 让 A* 只在没有干路时才蹚水,而不是抄水路近道。
-        if (world.getFluidState(neighbor.pos()).isIn(FluidTags.WATER)) {
+        // 浅水 WALK 仍高代价，避免无意义蹚水。SWIM 已在基础代价中计入游泳减速，不能再乘四；
+        // 否则一格深水实际成本变成 8，跨二十格湖面的 A* 会先扩散上万个陆地节点再 SEARCH_LIMIT。
+        if (neighbor.moveType() != MoveType.SWIM
+                && world.getFluidState(neighbor.pos()).isIn(FluidTags.WATER)) {
             cost *= 4.0D;
         }
         return cost;

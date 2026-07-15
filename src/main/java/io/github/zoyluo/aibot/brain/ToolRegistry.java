@@ -635,7 +635,7 @@ public final class ToolRegistry {
                 .build(), (bot, args) -> {
             ServerPlayerEntity target = targetPlayer(bot, optionalString(args, "player_name", ""))
                     .orElseThrow(() -> new IllegalArgumentException("target_player_not_found"));
-            Task task = new MoveTask(bot, target.getBlockPos());
+            Task task = new MoveTask(bot, target);
             TaskManager.INSTANCE.assign(bot, task);
             return ok("assigned: come_here");
         });
@@ -1859,7 +1859,8 @@ public final class ToolRegistry {
                 } else {
                     ServerPlayerEntity player = targetPlayer(bot, playerName)
                             .orElseThrow(() -> new IllegalArgumentException("target_player_not_found"));
-                    target = player.getBlockPos();
+                    task = new MoveTask(bot, player);
+                    break;
                 }
                 task = new MoveTask(bot, target);
             }

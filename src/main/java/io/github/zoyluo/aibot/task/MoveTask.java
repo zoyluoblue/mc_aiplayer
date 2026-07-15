@@ -6,9 +6,13 @@ import io.github.zoyluo.aibot.action.DigNav;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.pathfinding.Standability;
+import net.minecraft.registry.tag.FluidTags;
+import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.Heightmap;
+
+import java.util.UUID;
 
 public final class MoveTask extends AbstractTask {
     private static final int DIG_NO_PROGRESS_LIMIT = 200; // 挖掘式直行 10s 没破块/没迈步 → 放弃
@@ -26,22 +30,37 @@ public final class MoveTask extends AbstractTask {
     private static final int WAYPOINT_PATH_ATTEMPTS = 5;        // 单次选点最多对几个候选实跑 A*(同步寻路单次有 50ms 级预算,封顶防单 tick 长卡)
     private static final int[] WAYPOINT_DEFLECTIONS_DEG = {0, 30, -30, 60, -60, 90, -90}; // 偏角序列:先直奔,再左右扇形扫开
 
-    private final BlockPos goal;
+    private BlockPos goal;
     private final double startDistance;
+    private final UUID targetPlayerUuid;
+    private final String targetPlayerName;
     private BlockPos resolvedGoal;
     private boolean digging;                               // 纯寻路走不通 → 降级为挖掘式直行
     private final BlockMiner miner = new BlockMiner();
     private int digLastProgressTick;
     private BlockPos waypoint;                             // 经停模式:当前中继点;null = 直奔最终 goal
     private int waypointHops;                              // 已采用中继点次数(上限 WAYPOINT_MAX_HOPS)
+    private int nextPlayerRepathTick;
+    private int nextWaterRetryTick;
 
     public MoveTask(BlockPos start, BlockPos goal) {
+        this(start, goal, null, "");
+    }
+
+    private MoveTask(BlockPos start, BlockPos goal, UUID targetPlayerUuid, String targetPlayerName) {
         this.goal = goal.toImmutable();
         this.startDistance = Math.sqrt(start.getSquaredDistance(goal));
+        this.targetPlayerUuid = targetPlayerUuid;
+        this.targetPlayerName = targetPlayerName == null ? "" : targetPlayerName;
     }
 
     public MoveTask(AIPlayerEntity bot, BlockPos goal) {
         this(bot.getBlockPos(), goal);
+    }
+
+    /** One-shot approach to a moving player. Completion uses live entity distance, not a stale block snapshot. */
+    public MoveTask(AIPlayerEntity bot, ServerPlayerEntity target) {
+        this(bot.getBlockPos(), target.getBlockPos(), target.getUuid(), target.getGameProfile().getName());
     }
 
     @Override
@@ -51,6 +70,9 @@ public final class MoveTask extends AbstractTask {
 
     @Override
     public String describe() {
+        if (targetPlayerUuid != null) {
+            return (digging ? "Digging toward " : "Moving to ") + targetPlayerName;
+        }
         return (digging ? "Digging to " : "Walking to ") + compact(goal);
     }
 
@@ -79,6 +101,10 @@ public final class MoveTask extends AbstractTask {
             fail("goal_out_of_world y=" + goal.getY());
             return;
         }
+        if (!refreshPlayerGoal(bot, true)) {
+            return;
+        }
+        nextPlayerRepathTick = 20;
         startWalkOrDig(bot);
     }
 
@@ -91,6 +117,15 @@ public final class MoveTask extends AbstractTask {
     private void startWalkOrDig(AIPlayerEntity bot) {
         ActionResult result = bot.getActionPack().startPathTo(goal);
         if (result.isFailed()) {
+            if (isWaterGoal(bot)) {
+                // 水面目标不能降级成 DigNav。挖掘直行只会钻进湖底，然后被安全网拉回岸边。
+                digging = false;
+                waypoint = null;
+                resolvedGoal = null;
+                nextWaterRetryTick = Math.max(nextWaterRetryTick, elapsed + 40);
+                BotLog.action(bot, "move_water_path_retry", "goal", compact(goal), "reason", result.reason());
+                return;
+            }
             // 中继优先于挖掘降级:挖掘式直行是"最后手段"——它无视地形朝坐标硬挖,目标隔水时
             // 必然一路挖进湖里触发溺水熔断、任务必败。寻路失败先试分段中继(走得通就不动土),
             // 中继也选不出落脚点才退回挖掘式直行。
@@ -112,7 +147,25 @@ public final class MoveTask extends AbstractTask {
 
     @Override
     protected void onTick(AIPlayerEntity bot) {
-        if (bot.getBlockPos().getSquaredDistance(currentGoal()) <= 2.25D
+        ServerPlayerEntity playerTarget = currentPlayerTarget(bot);
+        if (targetPlayerUuid != null) {
+            if (playerTarget == null || playerTarget.getServerWorld() != bot.getServerWorld()) {
+                bot.getActionPack().stopAll();
+                fail("target_player_offline_or_other_dimension");
+                return;
+            }
+            if (bot.distanceTo(playerTarget) <= 3.0D) {
+                miner.cancel(bot);
+                bot.getActionPack().stopAll();
+                complete();
+                return;
+            }
+            BlockPos liveGoal = playerTarget.getBlockPos();
+            if (goal.getSquaredDistance(liveGoal) > 4.0D && elapsed >= nextPlayerRepathTick) {
+                retargetPlayer(bot, liveGoal);
+                return;
+            }
+        } else if (bot.getBlockPos().getSquaredDistance(currentGoal()) <= 2.25D
                 || (digging && bot.getBlockPos().getSquaredDistance(goal) <= ARRIVE_SQUARED)) {
             miner.cancel(bot);
             complete();
@@ -129,6 +182,16 @@ public final class MoveTask extends AbstractTask {
         }
         // 纯寻路模式:寻路执行器空闲(到不了)→ 降级挖掘式直行,而不是直接 did_not_reach 卡死。
         if (bot.getActionPack().isPathExecutorIdle() && elapsed > 5) {
+            if (isWaterGoal(bot)) {
+                if (elapsed >= nextWaterRetryTick) {
+                    nextWaterRetryTick = elapsed + 40;
+                    startWalkOrDig(bot);
+                }
+                if (elapsed > 1200) {
+                    fail("move_water_path_timeout");
+                }
+                return;
+            }
             beginDigging(bot, "path_idle");
             return;
         }
@@ -143,6 +206,45 @@ public final class MoveTask extends AbstractTask {
         digLastProgressTick = elapsed;
         bot.getActionPack().stopAll(); // 清掉寻路状态,改由 DigNav 驱动
         BotLog.action(bot, "move_dig_fallback", "goal", compact(goal), "reason", reason);
+    }
+
+    private void retargetPlayer(AIPlayerEntity bot, BlockPos liveGoal) {
+        miner.cancel(bot);
+        bot.getActionPack().stopAll();
+        goal = liveGoal.toImmutable();
+        resolvedGoal = null;
+        digging = false;
+        waypoint = null;
+        waypointHops = 0;
+        nextPlayerRepathTick = elapsed + 20;
+        startWalkOrDig(bot);
+        BotLog.action(bot, "move_player_retarget", "player", targetPlayerName, "goal", compact(goal));
+    }
+
+    private boolean refreshPlayerGoal(AIPlayerEntity bot, boolean failWhenMissing) {
+        if (targetPlayerUuid == null) {
+            return true;
+        }
+        ServerPlayerEntity target = currentPlayerTarget(bot);
+        if (target == null || target.getServerWorld() != bot.getServerWorld()) {
+            if (failWhenMissing) {
+                fail("target_player_offline_or_other_dimension");
+            }
+            return false;
+        }
+        goal = target.getBlockPos().toImmutable();
+        return true;
+    }
+
+    private ServerPlayerEntity currentPlayerTarget(AIPlayerEntity bot) {
+        return targetPlayerUuid == null ? null : bot.getServer().getPlayerManager().getPlayer(targetPlayerUuid);
+    }
+
+    private boolean isWaterGoal(AIPlayerEntity bot) {
+        ServerWorld world = bot.getServerWorld();
+        return Standability.isSwimmable(world, goal)
+                || world.getFluidState(goal).isIn(FluidTags.WATER)
+                || world.getFluidState(goal.down()).isIn(FluidTags.WATER);
     }
 
     private void digTick(AIPlayerEntity bot) {

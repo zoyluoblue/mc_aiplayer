@@ -74,15 +74,35 @@ public final class NavSafetyNet {
         // 观感=进水变智障。现在只要悬浮在水里(touching water 且不着地=在游/在沉)或头已没入水,
         // 立即进入危机态:持续按住 jump 上浮 + 朝最近岸点游,脚踩干地才释放。
         // 浅水站立(脚湿头干、踩着底)不触发,涉水过河照常。
-        boolean inCrisis = waterRescueShore.containsKey(bot.getUuid());
         boolean intentionalSwim = bot.getActionPack().isWaterNavigationActive();
-        if (!inCrisis && (bot.isSubmergedInWater()
-                || (bot.isTouchingWater() && !bot.isOnGround()))) {
-            // A path with SWIM nodes owns the water movement. It keeps jump held to stay at the
-            // surface; the safety net only takes over when oxygen is actually becoming unsafe.
-            inCrisis = !intentionalSwim
-                    || (bot.getAir() < 100 && !breathableAbove(world, feet));
+        if (intentionalSwim) {
+            // 新路径已接手水中移动，清掉上一轮可能残留的救援状态。路径执行器会持续按住 jump。
+            waterRescueShore.remove(bot.getUuid());
+            waterRescueSince.remove(bot.getUuid());
+            return false;
         }
+        boolean waterborne = bot.isSubmergedInWater()
+                || (bot.isTouchingWater() && !bot.isOnGround());
+        if (!waterborne) {
+            waterRescueShore.remove(bot.getUuid());
+            waterRescueSince.remove(bot.getUuid());
+            return false;
+        }
+
+        // 正常路径刚在水面结束时，只原地上浮等待下一条命令。旧逻辑立即寻找最近干地，
+        // 通常会选到出发岸，造成“游到主人旁边 -> 宣布完成 -> 自动游回去”。
+        if (bot.getAir() >= 100 && breathableAbove(world, feet)) {
+            waterRescueShore.remove(bot.getUuid());
+            waterRescueSince.remove(bot.getUuid());
+            bot.getActionPack().setForward(0.0F);
+            bot.getActionPack().setStrafing(0.0F);
+            bot.getActionPack().setSprinting(false);
+            bot.getActionPack().setJumping(true);
+            throttledLog(server, bot, "navsafe_hold_water_surface", feet);
+            return true;
+        }
+
+        boolean inCrisis = true;
         if (inCrisis) {
             // 释放条件:脚踩实地且不在水里 → 危机解除,交还控制。
             if (!bot.isTouchingWater() && bot.isOnGround()) {

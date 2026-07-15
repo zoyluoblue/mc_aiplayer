@@ -44,7 +44,7 @@ from pathlib import Path
 
 PROFILE_DIR = Path.home() / ".aibot" / "douyin-profile"
 
-# 注入页面的监听器:突变观察器扫新增节点,按文本特征分类回传 (kind, 原始文本, 图片alt列表)。
+# 注入页面的监听器:突变观察器扫新增节点,按文本特征分类回传事件和有限身份线索。
 # 分类顺序是防伪的关键:冒号行(观众打字)最先摘走——"张三:我送出了嘉年华"永远进不了礼物分支
 # (与 Python 侧 parse_gift 防伪判 1 同一事实,双层纵深)。不用抖音 class 选择器(改版就失效)。
 OBSERVER_JS = r"""
@@ -52,7 +52,25 @@ OBSERVER_JS = r"""
   if (window.__aibotGiftHooked) return;
   window.__aibotGiftHooked = true;
   const seen = new Map(); // 签名 -> 时间戳,页面侧 800ms 去重(纯重复渲染;签名含 kind)
-  const emit = (kind, text, alts) => {
+  const identityHints = (node) => {
+    const hrefs = new Set();
+    const attrs = new Set();
+    let current = node;
+    for (let depth = 0; current && depth < 4; depth++, current = current.parentElement) {
+      if (current.matches && current.matches('a[href]')) hrefs.add(current.href);
+      for (const link of current.querySelectorAll ? current.querySelectorAll('a[href]') : []) {
+        if (hrefs.size >= 8) break;
+        hrefs.add(link.href);
+      }
+      for (const attr of Array.from(current.attributes || [])) {
+        if (/^data-.*(user|uid|id)/i.test(attr.name) && attr.value && attr.value.length <= 200) {
+          attrs.add(attr.name + '=' + attr.value);
+        }
+      }
+    }
+    return { hrefs: Array.from(hrefs).slice(0, 8), identity_attrs: Array.from(attrs).slice(0, 16) };
+  };
+  const emit = (kind, text, alts, node) => {
     const sig = kind + '|' + text + '|' + alts.join(',');
     const now = Date.now();
     const last = seen.get(sig);
@@ -62,7 +80,7 @@ OBSERVER_JS = r"""
       const cutoff = now - 5000;
       for (const [k, v] of seen) { if (v < cutoff) seen.delete(k); }
     }
-    window.__aibotGift({ kind, text, alts });
+    window.__aibotGift({ kind, text, alts, ...identityHints(node) });
   };
   const scan = (node) => {
     if (!node || node.nodeType !== 1) return;
@@ -71,9 +89,9 @@ OBSERVER_JS = r"""
     const alts = Array.from(node.querySelectorAll('img[alt]'))
       .map(i => (i.getAttribute('alt') || '').trim())
       .filter(a => a && a.length <= 20);
-    if (/^[^:：]{1,40}[:：]/.test(text)) { emit('chat', text, alts); return; }
-    if (/送出/.test(text)) { emit('gift', text, alts); return; }
-    if (/关注了主播/.test(text)) { emit('follow', text, alts); return; }
+    if (/^[^:：]{1,40}[:：]/.test(text)) { emit('chat', text, alts, node); return; }
+    if (/送出/.test(text)) { emit('gift', text, alts, node); return; }
+    if (/关注了主播/.test(text)) { emit('follow', text, alts, node); return; }
   };
   new MutationObserver(muts => {
     for (const m of muts) {
@@ -201,7 +219,8 @@ def check_bridge(bridge: str):
 
 
 def watch(room: str, bridge: str, token: str, headless: bool, dry_run: bool, strict: bool,
-          agg_idle: float, agg_max: float, danmaku_on: bool, danmaku_flush: float, danmaku_batch: int):
+          agg_idle: float, agg_max: float, danmaku_on: bool, danmaku_flush: float,
+          danmaku_batch: int, capture_identity: bool):
     from playwright.sync_api import sync_playwright
 
     url = room if room.startswith("http") else f"https://live.douyin.com/{room}"
@@ -216,7 +235,7 @@ def watch(room: str, bridge: str, token: str, headless: bool, dry_run: bool, str
             session_started = time.time()
             try:
                 run_session(p, url, bridge, danmaku_url, token, headless, dry_run, strict,
-                            agg_idle, agg_max, danmaku_on, danmaku_flush, danmaku_batch)
+                            agg_idle, agg_max, danmaku_on, danmaku_flush, danmaku_batch, capture_identity)
                 return  # run_session 只有 KeyboardInterrupt 之外的正常退出(不存在)才到这
             except KeyboardInterrupt:
                 print("\n[页] 退出")
@@ -234,7 +253,7 @@ def watch(room: str, bridge: str, token: str, headless: bool, dry_run: bool, str
 
 def run_session(p, url: str, bridge: str, danmaku_url: str, token: str, headless: bool,
                 dry_run: bool, strict: bool, agg_idle: float, agg_max: float,
-                danmaku_on: bool, danmaku_flush: float, danmaku_batch: int):
+                danmaku_on: bool, danmaku_flush: float, danmaku_batch: int, capture_identity: bool):
     """单次浏览器会话:launch → goto(3 次重试) → 注入 → 主循环。异常上抛给 watch() 自愈重连。"""
     recent: dict[str, float] = {}  # Python 侧 1.2s 去重(仅 --agg-idle 0 直发模式下兜底)
     # 连击聚合池:(user,gift) -> {total, max_seen, first, last}。
@@ -260,6 +279,14 @@ def run_session(p, url: str, bridge: str, danmaku_url: str, token: str, headless
     def on_event(payload):
         kind = payload.get("kind") or "gift"  # 缺 kind 按 gift 兼容(旧观察器残留)
         text = payload.get("text", "")
+        if capture_identity:
+            sample = {
+                "kind": kind,
+                "text": text,
+                "hrefs": payload.get("hrefs", []),
+                "identity_attrs": payload.get("identity_attrs", []),
+            }
+            print("[身份采样] " + json.dumps(sample, ensure_ascii=False), flush=True)
         if kind == "gift":
             parsed = parse_gift(text, payload.get("alts", []), strict)
             if not parsed:
@@ -395,6 +422,8 @@ def main():
     ap.add_argument("--token", default="")
     ap.add_argument("--headless", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--capture-identity", action="store_true",
+                    help="只打印事件节点中的用户链接和 data-* 身份属性,用于校准稳定用户ID")
     ap.add_argument("--lax", action="store_true",
                     help="关闭'必须带礼物图标'防伪判(仅开播首测配 --dry-run 校准用)")
     ap.add_argument("--test", metavar="礼物名", help="直接向桥发一发测试礼物后退出")
@@ -416,7 +445,7 @@ def main():
         ap.error("缺房间号(或用 --test 礼物名 做桥连通测试)")
     watch(args.room, args.bridge, args.token, args.headless, args.dry_run, not args.lax,
           args.agg_idle, args.agg_max, not args.no_danmaku,
-          max(0.5, args.danmaku_flush), max(1, args.danmaku_batch))
+          max(0.5, args.danmaku_flush), max(1, args.danmaku_batch), args.capture_identity)
 
 
 if __name__ == "__main__":

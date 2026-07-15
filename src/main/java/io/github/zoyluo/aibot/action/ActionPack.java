@@ -22,6 +22,9 @@ public final class ActionPack {
     // NAV-OPT 两阶段寻路预算:纯步行只搜空气格(空间小,给足额度);挖穿限额更小,压住被困/地下时的 3D 体积爆搜。
     private static final int WALK_MAX_NODES = 10_000;
     private static final int DIG_MAX_NODES = 4_000;
+    // PILLAR_UP 每层成本 6，基础垂直启发每层 1.5；权重 4 才能让“主人就在正上方”
+    // 收敛到垫柱路线，而不是先横向扩散上万个普通节点后 SEARCH_LIMIT。
+    private static final double SMART_NAV_HEURISTIC_WEIGHT = 4.0D;
     // 接近原语专用大预算:接近被包裹的矿必然要挖,直接 DIG 且预算放大(挖掘邻居分支因子小,
     // 24k 节点覆盖 ~40 格穿山直达;普通 startPathTo 的小预算 DIG 仅作走路兜底,语义不变)。
     private static final int DIG_APPROACH_MAX_NODES = 24_000;
@@ -159,18 +162,18 @@ public final class ActionPack {
         from = player.getBlockPos();
         // NAV-OPT 两阶段寻路:先纯步行(禁挖,搜索空间=空气格,收敛快、不会被挖穿邻居撑爆到 SEARCH_LIMIT);
         // 纯步行无解再允许挖穿兜底(隧道/破障),挖穿预算更小以限制被困/地下时的 3D 体积爆搜。
-        PathfindingResult result =
-                new AStarPathfinder(world, from, goal, WALK_MAX_NODES, AStarPathfinder.dynamicBudgetMillis(), canPillar, false).findPath();
+        PathfindingResult result = new AStarPathfinder(world, from, goal, WALK_MAX_NODES,
+                AStarPathfinder.dynamicBudgetMillis(), canPillar, false, SMART_NAV_HEURISTIC_WEIGHT).findPath();
         if (requiresTooManyBlocks(result, buildBlocks)) {
             result = new AStarPathfinder(world, from, goal, WALK_MAX_NODES,
-                    AStarPathfinder.dynamicBudgetMillis(), false, false).findPath();
+                    AStarPathfinder.dynamicBudgetMillis(), false, false, SMART_NAV_HEURISTIC_WEIGHT).findPath();
         }
         if (!result.success()) {
-            PathfindingResult dig =
-                    new AStarPathfinder(world, from, goal, DIG_MAX_NODES, AStarPathfinder.dynamicBudgetMillis(), canPillar, true).findPath();
+            PathfindingResult dig = new AStarPathfinder(world, from, goal, DIG_MAX_NODES,
+                    AStarPathfinder.dynamicBudgetMillis(), canPillar, true, SMART_NAV_HEURISTIC_WEIGHT).findPath();
             if (requiresTooManyBlocks(dig, buildBlocks)) {
                 dig = new AStarPathfinder(world, from, goal, DIG_MAX_NODES,
-                        AStarPathfinder.dynamicBudgetMillis(), false, true).findPath();
+                        AStarPathfinder.dynamicBudgetMillis(), false, true, SMART_NAV_HEURISTIC_WEIGHT).findPath();
             }
             if (dig.success()) {
                 result = dig;
@@ -298,9 +301,12 @@ public final class ActionPack {
         return pathExecutor != null && pathExecutor.isWorkingStationary();
     }
 
-    /** True when the active path intentionally contains water traversal rather than an accidental fall. */
+    /** True while an active path owns the bot's current water movement. */
     public boolean isWaterNavigationActive() {
-        return pathExecutor != null && pathExecutor.hasWaterTraversalAhead();
+        // 到达最后一个 SWIM 节点后，剩余路径可能只含上岸 WALK。此时仍必须让执行器继续控制，
+        // 否则安全网会在岸前一格接管并把 bot 拉回出发岸。
+        return pathExecutor != null
+                && (player.isTouchingWater() || pathExecutor.hasWaterTraversalAhead());
     }
 
     public boolean isWalkToIdle() {

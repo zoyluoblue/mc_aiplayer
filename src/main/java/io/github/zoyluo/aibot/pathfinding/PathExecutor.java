@@ -299,7 +299,9 @@ public final class PathExecutor {
             pack.jumpOnce();
             return ActionResult.IN_PROGRESS;
         }
-        if (player.getY() < next.pos().getY() + 0.99D) {
+        // placeSlot 就是起跳前占用的脚格。实体底部越过该格顶部即可放置；旧条件用了
+        // nextY + 0.99（等于要求跳近两格高），普通跳跃永远达不到，只会原地循环跳。
+        if (player.getY() < placeSlot.getY() + 0.99D) {
             return ActionResult.IN_PROGRESS;
         }
         ActionResult placed = BuildAction.placeBlockAtExactly(player, placeSlot);

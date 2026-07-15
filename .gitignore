@@ -23,9 +23,13 @@ bin/
 *.md
 !README.md
 !README.zh-CN.md
+!MICX_LIVE_PLAN.md
 
 # Local reference source used during implementation.
 references/
+
+# Python runtime cache.
+scripts/__pycache__/
 
 # headless production test server (installer-generated, 含 56MB server.jar)
 run-prod/

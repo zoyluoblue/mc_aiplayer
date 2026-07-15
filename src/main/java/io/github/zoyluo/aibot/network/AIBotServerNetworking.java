@@ -5,6 +5,7 @@ import io.github.zoyluo.aibot.brain.BotRuntimeOptions;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
+import io.github.zoyluo.aibot.marker.TargetMarkerService;
 import io.github.zoyluo.aibot.goal.GoalExecutor;
 import io.github.zoyluo.aibot.memory.BotMemory;
 import io.github.zoyluo.aibot.memory.BotMemoryStore;
@@ -13,8 +14,11 @@ import io.github.zoyluo.aibot.network.payload.BotCommandC2S;
 import io.github.zoyluo.aibot.network.payload.BotItemMoveC2S;
 import io.github.zoyluo.aibot.network.payload.BotTeleportC2S;
 import io.github.zoyluo.aibot.network.payload.BotSnapshotS2C;
+import io.github.zoyluo.aibot.network.payload.BrainTraceS2C;
 import io.github.zoyluo.aibot.network.payload.SetOptionC2S;
 import io.github.zoyluo.aibot.network.payload.SubscribeBotC2S;
+import io.github.zoyluo.aibot.network.payload.TargetMarkerC2S;
+import io.github.zoyluo.aibot.network.payload.TargetMarkerS2C;
 import io.github.zoyluo.aibot.task.CraftTask;
 import io.github.zoyluo.aibot.task.EatTask;
 import io.github.zoyluo.aibot.task.MineTask;
@@ -34,6 +38,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Direction;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -64,8 +69,12 @@ public final class AIBotServerNetworking {
                 context.server().execute(() -> handleItemMove(context.player(), payload)));
         ServerPlayNetworking.registerGlobalReceiver(BotTeleportC2S.ID, (payload, context) ->
                 context.server().execute(() -> handleTeleport(context.player(), payload)));
-        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) ->
-                subscriptions.remove(handler.player.getUuid()));
+        ServerPlayNetworking.registerGlobalReceiver(TargetMarkerC2S.ID, (payload, context) ->
+                context.server().execute(() -> handleTargetMarker(context.player(), payload)));
+        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
+            subscriptions.remove(handler.player.getUuid());
+            TargetMarkerService.INSTANCE.clear(handler.player.getUuid());
+        });
     }
 
     public void tick(MinecraftServer server) {
@@ -93,11 +102,14 @@ public final class AIBotServerNetworking {
         snapshotTick = 0;
     }
 
+    public void clearTargetMarker(ServerPlayerEntity player, String message) {
+        TargetMarkerService.INSTANCE.clear(player.getUuid());
+        sendTargetMarkerState(player, null, message == null ? "标记已清除" : message);
+    }
+
     public void sendBotChat(AIPlayerEntity bot, String role, String text) {
-        if (subscriptions.isEmpty()) {
-            return;
-        }
         String normalized = normalize(bot.getGameProfile().getName());
+        java.util.Set<UUID> delivered = new java.util.HashSet<>();
         for (Map.Entry<UUID, String> entry : subscriptions.entrySet()) {
             ServerPlayerEntity viewer = bot.getServer().getPlayerManager().getPlayer(entry.getKey());
             if (viewer == null) {
@@ -112,8 +124,50 @@ public final class AIBotServerNetworking {
             if (!normalize(subscribedName).equals(normalized)) {
                 continue;
             }
-            if (viewer != null && ServerPlayNetworking.canSend(viewer, BotChatS2C.ID)) {
+            if (ServerPlayNetworking.canSend(viewer, BotChatS2C.ID)) {
                 ServerPlayNetworking.send(viewer, new BotChatS2C(bot.getGameProfile().getName(), role, text));
+                delivered.add(viewer.getUuid());
+            }
+        }
+        // 面板 close() 即退订,订阅只在面板打开期间存活;而客户端 TTS 靠 BotChatS2C 驱动,
+        // 正常游玩(面板关闭)时必须仍能收到 bot 发言,故对 owner 恒推,不依赖订阅。
+        UUID ownerUuid = AIPlayerManager.INSTANCE.ownerOf(bot).orElse(null);
+        if (ownerUuid != null) {
+            if (delivered.contains(ownerUuid)) {
+                return;
+            }
+            ServerPlayerEntity owner = bot.getServer().getPlayerManager().getPlayer(ownerUuid);
+            if (owner != null && ServerPlayNetworking.canSend(owner, BotChatS2C.ID)) {
+                ServerPlayNetworking.send(owner, new BotChatS2C(bot.getGameProfile().getName(), role, text));
+            }
+            return;
+        }
+        // 无主 bot(控制台生成/归属丢失/owner 离线):推给在线 OP,不再静默
+        for (ServerPlayerEntity op : bot.getServer().getPlayerManager().getPlayerList()) {
+            if (op.hasPermissionLevel(2) && !delivered.contains(op.getUuid())
+                    && ServerPlayNetworking.canSend(op, BotChatS2C.ID)) {
+                ServerPlayNetworking.send(op, new BotChatS2C(bot.getGameProfile().getName(), role, text));
+            }
+        }
+    }
+
+
+
+    public void sendBrainTrace(AIPlayerEntity bot, String line) {
+        if (bot.getServer() == null) {
+            return;
+        }
+        UUID ownerUuid = AIPlayerManager.INSTANCE.ownerOf(bot).orElse(null);
+        if (ownerUuid != null) {
+            ServerPlayerEntity owner = bot.getServer().getPlayerManager().getPlayer(ownerUuid);
+            if (owner != null && ServerPlayNetworking.canSend(owner, BrainTraceS2C.ID)) {
+                ServerPlayNetworking.send(owner, new BrainTraceS2C(bot.getGameProfile().getName(), line));
+            }
+            return;
+        }
+        for (ServerPlayerEntity op : bot.getServer().getPlayerManager().getPlayerList()) {
+            if (op.hasPermissionLevel(2) && ServerPlayNetworking.canSend(op, BrainTraceS2C.ID)) {
+                ServerPlayNetworking.send(op, new BrainTraceS2C(bot.getGameProfile().getName(), line));
             }
         }
     }
@@ -175,6 +229,47 @@ public final class AIBotServerNetworking {
             default -> throw new IllegalArgumentException("unknown_option: " + payload.key());
         }
         sendSystem(player, target.getGameProfile().getName(), "设置已更新: " + payload.key() + "=" + payload.value());
+    }
+
+    private void handleTargetMarker(ServerPlayerEntity player, TargetMarkerC2S payload) {
+        if (!payload.active()) {
+            clearTargetMarker(player, "标记已清除");
+            return;
+        }
+        String currentDimension = player.getServerWorld().getRegistryKey().getValue().toString();
+        if (!currentDimension.equals(payload.dimension())) {
+            sendTargetMarkerState(player, TargetMarkerService.INSTANCE.get(player.getUuid()).orElse(null),
+                    "标记失败：维度已经变化");
+            return;
+        }
+        try {
+            Direction face = Direction.byId(payload.faceId());
+            TargetMarkerService.Marker marker = TargetMarkerService.INSTANCE.set(player, payload.blockPos(), face);
+            sendTargetMarkerState(player, marker, "已标记 " + marker.clickedBlock().toShortString());
+        } catch (IllegalArgumentException exception) {
+            sendTargetMarkerState(player, TargetMarkerService.INSTANCE.get(player.getUuid()).orElse(null),
+                    "标记失败：" + exception.getMessage());
+        }
+    }
+
+    private static void sendTargetMarkerState(ServerPlayerEntity player,
+                                              TargetMarkerService.Marker marker,
+                                              String message) {
+        if (!ServerPlayNetworking.canSend(player, TargetMarkerS2C.ID)) {
+            return;
+        }
+        if (marker == null) {
+            ServerPlayNetworking.send(player, new TargetMarkerS2C(
+                    false, "", BlockPos.ORIGIN, Direction.UP.getId(), BlockPos.ORIGIN, message));
+            return;
+        }
+        ServerPlayNetworking.send(player, new TargetMarkerS2C(
+                true,
+                marker.dimensionId(),
+                marker.clickedBlock(),
+                marker.face().getId(),
+                marker.standPos(),
+                message));
     }
 
     // 面板背包:在玩家与 AI 之间移动物品。直接操作 Inventory(G3,不开 ScreenHandler);已在 server 线程(G2)。
@@ -295,6 +390,14 @@ public final class AIBotServerNetworking {
                 bot.getActionPack().stopAll();
                 sendSystem(player, bot.getGameProfile().getName(), "任务已停止。");
             }
+            case "brain_abort" -> {
+                // 快捷键"打断":停思考(在途 API 响应作废)+清目标计划+复位任务+停动作,一键全停。
+                BrainCoordinator.INSTANCE.abort(bot);
+                io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.clear(bot);
+                TaskManager.INSTANCE.resetToIdle(bot);
+                bot.getActionPack().stopAll();
+                sendSystem(player, bot.getGameProfile().getName(), "已打断:思考与任务全部停止。");
+            }
             case "chat" -> {
                 sendBotChat(bot, "user", payload.arg1());
                 BrainCoordinator.INSTANCE.handleMessage(bot, player.getGameProfile().getName(), payload.arg1());
@@ -377,10 +480,20 @@ public final class AIBotServerNetworking {
     }
 
     private Optional<AIPlayerEntity> resolveBot(ServerPlayerEntity player, String botName) {
-        if (botName == null || botName.isBlank()) {
-            return AIPlayerManager.INSTANCE.botOf(player.getUuid());
+        // 三级兜底:指名 → 自己的 bot → 世界里唯一的 bot。修"换名/换 bot 后语音与面板全部失联"
+        // (实测:aibot_voice.json 写死 targetBot=Bob,despawn Bob 换 gpt 后语音转写全部石沉大海)。
+        if (botName != null && !botName.isBlank()) {
+            Optional<AIPlayerEntity> named = AIPlayerManager.INSTANCE.getByName(botName);
+            if (named.isPresent()) {
+                return named;
+            }
         }
-        return AIPlayerManager.INSTANCE.getByName(botName);
+        Optional<AIPlayerEntity> owned = AIPlayerManager.INSTANCE.botOf(player.getUuid());
+        if (owned.isPresent()) {
+            return owned;
+        }
+        var all = AIPlayerManager.INSTANCE.all();
+        return all.size() == 1 ? Optional.of(all.iterator().next()) : Optional.empty();
     }
 
     private static int count(BotCommandC2S payload) {

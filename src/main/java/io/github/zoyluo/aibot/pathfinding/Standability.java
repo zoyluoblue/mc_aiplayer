@@ -114,6 +114,11 @@ public final class Standability {
         if (isDangerous(feet) || isDangerous(head) || isDangerous(below)) {
             return false;
         }
+        // WATER-1:深水(脚位+头位都是水)不可作为落脚点。bot 是服务端假玩家,不会玩家式按住跳游泳
+        // (WalkToController 拟人化落地单跳),入深水只会原地扑腾溺水。浅水(脚水头空气)仍可涉过。
+        if (feet.getFluidState().isIn(FluidTags.WATER) && head.getFluidState().isIn(FluidTags.WATER)) {
+            return false;
+        }
         // NAV-11:梯子/藤蔓等可攀爬方块,站在其中即可,无需下方支撑。
         if (feet.isIn(BlockTags.CLIMBABLE)) {
             return true;

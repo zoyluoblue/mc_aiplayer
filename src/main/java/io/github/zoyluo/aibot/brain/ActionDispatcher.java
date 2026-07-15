@@ -37,7 +37,7 @@ public final class ActionDispatcher {
                 result = invoke(bot, call);
             }
             BotLog.action(bot, "tool_result", "tool", call.name(), "ok", result.ok(), "message", result.message());
-            results.add(ChatMessage.toolResult(call.id(), result.toToolContent()));
+            results.add(ChatMessage.toolResult(call.id(), result.toToolContent(), call.name()));
         }
         return results;
     }

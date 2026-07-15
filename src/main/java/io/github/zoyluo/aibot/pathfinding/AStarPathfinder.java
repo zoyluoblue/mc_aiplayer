@@ -18,7 +18,8 @@ import java.util.Set;
 
 public final class AStarPathfinder {
     private static final int DEFAULT_MAX_NODES = 10_000;
-    private static final long DEFAULT_MAX_MILLIS = 50L;
+    private static final long BUDGET_MILLIS_HEALTHY = 100L;
+    private static final long BUDGET_MILLIS_DEGRADED = 50L;
     private static final int MAX_CACHE_ENTRIES = 256;
     private static final long SUCCESS_CACHE_MILLIS = 2_000L;
     private static final long FAILURE_CACHE_MILLIS = 5_000L;
@@ -42,8 +43,19 @@ public final class AStarPathfinder {
     private final long maxMillis;
     private static volatile long cacheVersion;
 
+    /**
+     * 主线程同步搜索的时间预算。50ms 时实测纯步行都频繁 TIMEOUT/SEARCH_LIMIT(24 次超时,节点中位 5046),
+     * 超时即降级"挖一格走一格"直行=观感灾难。TPS 健康时给 100ms 换更远的可解距离(单人 LAN 世界偶尔
+     * 1~2 tick 停顿可接受);TpsGuard 降级时回落 50ms 保服。
+     */
+    public static long dynamicBudgetMillis() {
+        return io.github.zoyluo.aibot.observe.TpsGuard.INSTANCE.isDegraded()
+                ? BUDGET_MILLIS_DEGRADED
+                : BUDGET_MILLIS_HEALTHY;
+    }
+
     public AStarPathfinder(ServerWorld world, BlockPos start, BlockPos goal) {
-        this(world, start, goal, DEFAULT_MAX_NODES, DEFAULT_MAX_MILLIS, false);
+        this(world, start, goal, DEFAULT_MAX_NODES, dynamicBudgetMillis(), false);
     }
 
     public AStarPathfinder(ServerWorld world, BlockPos start, BlockPos goal, int maxNodes, long maxMillis) {
@@ -52,7 +64,7 @@ public final class AStarPathfinder {
 
     // NAV-9:canPillar=true 允许垫方块越障(由有方块的调用方传入)。
     public AStarPathfinder(ServerWorld world, BlockPos start, BlockPos goal, boolean canPillar) {
-        this(world, start, goal, DEFAULT_MAX_NODES, DEFAULT_MAX_MILLIS, canPillar);
+        this(world, start, goal, DEFAULT_MAX_NODES, dynamicBudgetMillis(), canPillar);
     }
 
     public AStarPathfinder(ServerWorld world, BlockPos start, BlockPos goal, int maxNodes, long maxMillis, boolean canPillar) {

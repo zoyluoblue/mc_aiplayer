@@ -32,7 +32,8 @@ public final class StuckWatcher {
         int now = server.getTicks();
         int window = AIBotConfig.get().watchdog().stuckWindowTicks();
         Optional<Task> active = TaskManager.INSTANCE.getActive(bot);
-        if (active.isEmpty() || active.get().state() != TaskState.RUNNING || active.get().isWaiting()) {
+        if (active.isEmpty() || active.get().state() != TaskState.RUNNING || active.get().isWaiting()
+                || bot.getActionPack().isNavigationWorkingStationary()) {
             samples.remove(bot.getUuid());
             return;
         }

@@ -79,6 +79,9 @@ public final class AIBotVerifySubcommand {
             "drowning",
             "nav_obstacle",
             "nav_gap",
+            "nav_smart_dig",
+            "nav_smart_scaffold",
+            "nav_smart_descend",
             "pickup_blocked",
             "mine_to_iron",
             "mine_iron_from_scratch",
@@ -211,12 +214,15 @@ public final class AIBotVerifySubcommand {
             "real_armor",
             "real_obsidian");
 
-    // 寻路容错专项套件:/aibot verify nav_suite。四条各钉一种实操高频故障形态:
+    // 寻路容错专项套件:/aibot verify nav_suite。覆盖绕行、自动破障、铺路、下挖、垫高与干净失败。
     // 自然地形长距离绕行(real_nav_far)、被困搭柱翻墙(nav_pillar_out)、活埋窒息脱困(nav_buried_escape)、
     // 不可达目标快速认输(nav_unreachable)。前三条测"会自救",最后一条测"会认输"——
     // 空转不报错比干净失败更伤:实操里 bot 看着在干活,实际原地打转浪费整局。
     private static final List<String> NAV_SUITE = List.of(
             "real_nav_far",
+            "nav_smart_dig",
+            "nav_smart_scaffold",
+            "nav_smart_descend",
             "nav_pillar_out",
             "nav_buried_escape",
             "nav_unreachable");
@@ -367,6 +373,9 @@ public final class AIBotVerifySubcommand {
             case "drowning" -> verifyDrowning(bot);
             case "nav_obstacle" -> assignNavObstacle(bot);
             case "nav_gap" -> assignNavGap(bot);
+            case "nav_smart_dig" -> assignNavSmartDig(bot);
+            case "nav_smart_scaffold" -> assignNavSmartScaffold(bot);
+            case "nav_smart_descend" -> assignNavSmartDescend(bot);
             case "pickup_blocked" -> verifyPickupBlocked(bot);
             case "mine_to_iron" -> assignMineToIron(bot);
             case "mine_iron_from_scratch" -> assignMineIronFromScratch(bot);
@@ -590,6 +599,67 @@ public final class AIBotVerifySubcommand {
         BlockPos goal = origin.offset(Direction.NORTH, 3);
         bot.getServerWorld().setBlockState(gap.down(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
         return assignTask(bot, "nav_gap", new MoveTask(bot, goal), 400,
+                ignored -> bot.getBlockPos().getSquaredDistance(goal) <= 4.0D);
+    }
+
+    private static Result assignNavSmartDig(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        InventoryAction.giveItem(bot, new ItemStack(Items.IRON_PICKAXE, 1));
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        BlockPos goal = origin.offset(Direction.NORTH, 6);
+
+        // 三格高基岩封闭走廊，bot 与目标都在内部；中间两格高木板墙是唯一可行通路。
+        for (int z = -8; z <= 1; z++) {
+            for (int dy = 0; dy <= 2; dy++) {
+                world.setBlockState(origin.add(-1, dy, z), Blocks.BEDROCK.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(origin.add(1, dy, z), Blocks.BEDROCK.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        for (int x = -1; x <= 1; x++) {
+            for (int dy = 0; dy <= 2; dy++) {
+                world.setBlockState(origin.add(x, dy, 1), Blocks.BEDROCK.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(origin.add(x, dy, -8), Blocks.BEDROCK.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        BlockPos barrier = origin.offset(Direction.NORTH, 2);
+        world.setBlockState(barrier, Blocks.OAK_PLANKS.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(barrier.up(), Blocks.OAK_PLANKS.getDefaultState(), Block.NOTIFY_ALL);
+        return assignTask(bot, "nav_smart_dig", new MoveTask(bot, goal), 1000,
+                ignored -> bot.getBlockPos().getSquaredDistance(goal) <= 4.0D
+                        && world.getBlockState(barrier).getCollisionShape(world, barrier).isEmpty()
+                        && world.getBlockState(barrier.up()).getCollisionShape(world, barrier.up()).isEmpty());
+    }
+
+    private static Result assignNavSmartScaffold(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        InventoryAction.giveItem(bot, new ItemStack(Items.DIRT, 16));
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        BlockPos goal = origin.offset(Direction.NORTH, 6);
+
+        // 三格宽、八格深且横贯整个平台的沟，跑酷、落沟和绕行都不可用，只能逐格铺路。
+        for (BlockPos pos : BlockPos.iterate(origin.add(-16, -8, -4), origin.add(16, -1, -2))) {
+            world.setBlockState(pos, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        return assignTask(bot, "nav_smart_scaffold", new MoveTask(bot, goal), 1000,
+                ignored -> bot.getBlockPos().getSquaredDistance(goal) <= 4.0D
+                        && InventoryAction.countItem(bot, Items.DIRT) < 16);
+    }
+
+    private static Result assignNavSmartDescend(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        InventoryAction.giveItem(bot, new ItemStack(Items.IRON_PICKAXE, 1));
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        BlockPos goal = origin.offset(Direction.NORTH, 3).down(3);
+        // 只挖出地下终点房间，入口与楼梯不存在；导航必须自行斜向下挖出安全阶梯。
+        world.setBlockState(goal, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(goal.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        return assignTask(bot, "nav_smart_descend", new MoveTask(bot, goal), 1200,
                 ignored -> bot.getBlockPos().getSquaredDistance(goal) <= 4.0D);
     }
 

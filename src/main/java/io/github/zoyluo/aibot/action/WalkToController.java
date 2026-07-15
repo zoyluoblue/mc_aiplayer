@@ -6,6 +6,7 @@ import io.github.zoyluo.aibot.log.LogCategory;
 import io.github.zoyluo.aibot.log.LogFields;
 import net.minecraft.block.BlockState;
 import net.minecraft.registry.Registries;
+import net.minecraft.registry.tag.FluidTags;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
@@ -49,20 +50,37 @@ public final class WalkToController {
         }
 
         Vec3d move = new Vec3d(dx / horizontalDistance, 0.0D, dz / horizontalDistance);
+        // WATER-3:直线行走的入水熔断。A*(Standability)已拒深水,但 walkTo 是无图直线兜底
+        // (follow 追人/接近原语),会闭眼走进湖里。前探 0.9 格:前方是游泳深度的水(上下两格都是水),
+        // 或岸沿悬空、落点是深水,立即停走并以 water_ahead 失败——宁可停在岸边等,也不下水。
+        // 距目标 <1.2 格时不熔断:允许走到紧贴水边的目标点(钓鱼/打水)。
+        if (horizontalDistance > 1.2D && deepWaterAhead(current, move, world)) {
+            pack.stopMovement();
+            return ActionResult.failed("water_ahead");
+        }
         SidleCommand sidle = sidleCommand(move, nav);
         LookAction.lookHorizontallyAt(player, current.add(sidle.lookVector.multiply(4.0D)));
         pack.setForward(1.0F);
         pack.setStrafing(sidle.strafing);
 
-        JumpDecision jump = shouldJump(current, move, world, nav);
-        // 拟人化:只在"已落地 + 前方确有台阶/缺口"时点跳一次(单跳),绝不长按跳键。
-        // 旧实现 setJumping(jump.jump) 会在障碍持续存在的多 tick 里一直按住跳——bot 落地即连跳(兔子跳),
-        // 既不像正常玩家,跳跃还会拉低水平速度(实测"边跳边砍树、影响速度")。落地门控确保一台阶只跳一次。
-        if (jump.jump && player.isOnGround()) {
-            pack.jumpOnce();
+        if (player.isTouchingWater()) {
+            // WATER-4:碰水后跳跃键语义变了——MC 里 touchingWater 时 jump 输入不再是起跳(+0.42),
+            // 而是每 tick +0.04 的游泳上浮。"落地单跳"在水里等于没跳,连一格水的岸沿都翻不上去
+            // (实测:bot 掉进一格水永远出不来,卡死降级挖掘直行后开始无脑挖岸)。
+            // 正解=真人做法:在水里**持续按住跳 + 前进**,浮起后借 step-up 蹬上岸沿。
+            pack.setJumping(true);
+            pack.setSprinting(false);
+        } else {
+            JumpDecision jump = shouldJump(current, move, world, nav);
+            // 拟人化:只在"已落地 + 前方确有台阶/缺口"时点跳一次(单跳),绝不长按跳键。
+            // 旧实现 setJumping(jump.jump) 会在障碍持续存在的多 tick 里一直按住跳——bot 落地即连跳(兔子跳),
+            // 既不像正常玩家,跳跃还会拉低水平速度(实测"边跳边砍树、影响速度")。落地门控确保一台阶只跳一次。
+            if (jump.jump && player.isOnGround()) {
+                pack.jumpOnce();
+            }
+            pack.setJumping(false);
+            pack.setSprinting(shouldSprint(horizontalDistance, jump, current, move, world, nav));
         }
-        pack.setJumping(false);
-        pack.setSprinting(shouldSprint(horizontalDistance, jump, current, move, world, nav));
 
         if (lastPos != null && current.distanceTo(lastPos) < PROGRESS_EPSILON) {
             noProgressTicks++;
@@ -127,6 +145,21 @@ public final class WalkToController {
             return new JumpDecision(true, false, true);
         }
         return new JumpDecision(false, false, false);
+    }
+
+    private static boolean deepWaterAhead(Vec3d current, Vec3d move, ServerWorld world) {
+        BlockPos front = footPos(current, move, 0.9D);
+        if (isDeepWaterColumn(world, front)) {
+            return true;
+        }
+        // 岸沿悬空:前方脚位是空气但正下方就是深水(走出去=直接落水)。
+        return isClear(world, front) && isDeepWaterColumn(world, front.down());
+    }
+
+    // 游泳深度 = 该格与其下一格都是水;单格浅水(下面是实底)可涉,不算。
+    private static boolean isDeepWaterColumn(ServerWorld world, BlockPos pos) {
+        return world.getFluidState(pos).isIn(FluidTags.WATER)
+                && world.getFluidState(pos.down()).isIn(FluidTags.WATER);
     }
 
     private static boolean isGapAhead(Vec3d current, Vec3d move, ServerWorld world) {

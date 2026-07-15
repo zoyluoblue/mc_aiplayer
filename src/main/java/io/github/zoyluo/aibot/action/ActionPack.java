@@ -6,6 +6,7 @@ import io.github.zoyluo.aibot.log.LogCategory;
 import io.github.zoyluo.aibot.pathfinding.AStarPathfinder;
 import io.github.zoyluo.aibot.pathfinding.PathExecutor;
 import io.github.zoyluo.aibot.pathfinding.PathfindingResult;
+import io.github.zoyluo.aibot.pathfinding.MoveType;
 import io.github.zoyluo.aibot.pathfinding.Standability;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
@@ -24,7 +25,6 @@ public final class ActionPack {
     // 接近原语专用大预算:接近被包裹的矿必然要挖,直接 DIG 且预算放大(挖掘邻居分支因子小,
     // 24k 节点覆盖 ~40 格穿山直达;普通 startPathTo 的小预算 DIG 仅作走路兜底,语义不变)。
     private static final int DIG_APPROACH_MAX_NODES = 24_000;
-    private static final long PATHFIND_MAX_MILLIS = 50L;
 
     private final AIPlayerEntity player;
 
@@ -98,15 +98,20 @@ public final class ActionPack {
         int now = player.getServer().getTicks();
         BlockPos immutableGoal = goal.toImmutable();
         if (lastPathGoal != null && lastPathGoal.equals(immutableGoal) && now < nextPathfindTick) {
-            return ActionResult.failed("pathfinding_throttled");
+            return pathExecutor != null ? ActionResult.IN_PROGRESS : ActionResult.failed("pathfinding_throttled");
         }
         if (!snapPlayerToNearestStandable("path_start_invalid")) {
             nextPathfindTick = now + PATHFIND_FAILURE_COOLDOWN_TICKS;
             return ActionResult.failed("pathfinding_failed: NO_START");
         }
-        boolean canPillar = PathExecutor.hasPlaceableBlock(player);
+        int buildBlocks = MaterialPalette.countScaffoldBlocks(player);
+        boolean canPillar = buildBlocks > 0;
         PathfindingResult result = new AStarPathfinder(player.getServerWorld(), player.getBlockPos(), goal,
-                DIG_APPROACH_MAX_NODES, PATHFIND_MAX_MILLIS, canPillar, true, 10.0D).findPath();
+                DIG_APPROACH_MAX_NODES, AStarPathfinder.dynamicBudgetMillis(), canPillar, true, 10.0D).findPath();
+        if (requiresTooManyBlocks(result, buildBlocks)) {
+            result = new AStarPathfinder(player.getServerWorld(), player.getBlockPos(), goal,
+                    DIG_APPROACH_MAX_NODES, AStarPathfinder.dynamicBudgetMillis(), false, true, 10.0D).findPath();
+        }
         if (!result.success()) {
             lastPathGoal = immutableGoal;
             activePathGoal = null;
@@ -127,7 +132,7 @@ public final class ActionPack {
         int now = player.getServer().getTicks();
         BlockPos immutableGoal = goal.toImmutable();
         if (lastPathGoal != null && lastPathGoal.equals(immutableGoal) && now < nextPathfindTick) {
-            return ActionResult.failed("pathfinding_throttled");
+            return pathExecutor != null ? ActionResult.IN_PROGRESS : ActionResult.failed("pathfinding_throttled");
         }
         if (!snapPlayerToNearestStandable("path_start_invalid")) {
             lastPathGoal = immutableGoal;
@@ -135,16 +140,25 @@ public final class ActionPack {
             nextPathfindTick = now + PATHFIND_FAILURE_COOLDOWN_TICKS;
             return ActionResult.failed("pathfinding_failed: NO_START");
         }
-        boolean canPillar = PathExecutor.hasPlaceableBlock(player);
+        int buildBlocks = MaterialPalette.countScaffoldBlocks(player);
+        boolean canPillar = buildBlocks > 0;
         ServerWorld world = player.getServerWorld();
         BlockPos from = player.getBlockPos();
         // NAV-OPT 两阶段寻路:先纯步行(禁挖,搜索空间=空气格,收敛快、不会被挖穿邻居撑爆到 SEARCH_LIMIT);
         // 纯步行无解再允许挖穿兜底(隧道/破障),挖穿预算更小以限制被困/地下时的 3D 体积爆搜。
         PathfindingResult result =
-                new AStarPathfinder(world, from, goal, WALK_MAX_NODES, PATHFIND_MAX_MILLIS, canPillar, false).findPath();
+                new AStarPathfinder(world, from, goal, WALK_MAX_NODES, AStarPathfinder.dynamicBudgetMillis(), canPillar, false).findPath();
+        if (requiresTooManyBlocks(result, buildBlocks)) {
+            result = new AStarPathfinder(world, from, goal, WALK_MAX_NODES,
+                    AStarPathfinder.dynamicBudgetMillis(), false, false).findPath();
+        }
         if (!result.success()) {
             PathfindingResult dig =
-                    new AStarPathfinder(world, from, goal, DIG_MAX_NODES, PATHFIND_MAX_MILLIS, canPillar, true).findPath();
+                    new AStarPathfinder(world, from, goal, DIG_MAX_NODES, AStarPathfinder.dynamicBudgetMillis(), canPillar, true).findPath();
+            if (requiresTooManyBlocks(dig, buildBlocks)) {
+                dig = new AStarPathfinder(world, from, goal, DIG_MAX_NODES,
+                        AStarPathfinder.dynamicBudgetMillis(), false, true).findPath();
+            }
             if (dig.success()) {
                 result = dig;
             }
@@ -163,6 +177,16 @@ public final class ActionPack {
         this.walkTo = null;
         this.mining = null;
         return ActionResult.IN_PROGRESS;
+    }
+
+    private static boolean requiresTooManyBlocks(PathfindingResult result, int available) {
+        if (!result.success()) {
+            return false;
+        }
+        long required = result.path().stream()
+                .filter(node -> node.moveType() == MoveType.PILLAR_UP || node.moveType() == MoveType.SCAFFOLD)
+                .count();
+        return required > available;
     }
 
     public BlockPos activePathGoal() {
@@ -257,6 +281,10 @@ public final class ActionPack {
         return pathExecutor == null;
     }
 
+    public boolean isNavigationWorkingStationary() {
+        return pathExecutor != null && pathExecutor.isWorkingStationary();
+    }
+
     public boolean isWalkToIdle() {
         return walkTo == null;
     }
@@ -315,6 +343,9 @@ public final class ActionPack {
 
         if (result.isSuccess()) {
             BotLog.action(player, "walk_complete");
+        } else if ("water_ahead".equals(result.reason())) {
+            // WATER-3:被水挡路是预期停走(follow 隔水等人会每 tick 重试),记 PATH 调试级,不当错误刷屏。
+            BotLog.path(player, "walk_water_blocked");
         } else {
             BotLog.warn(LogCategory.ERROR, player, "walk_failed", "reason", result.reason());
         }

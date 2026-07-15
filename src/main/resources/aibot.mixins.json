@@ -7,9 +7,13 @@
     "ServerTickProbeMixin",
     "ClientConnectionAccessorMixin",
     "PlayerManagerFakePlayerMixin",
-    "MerchantEntityInvokerMixin"
+    "MerchantEntityInvokerMixin",
+    "BlockDirectDropsMixin"
   ],
-  "client": [],
+  "client": [
+    "GameRendererSpectatorHandMixin",
+    "MinecraftClientMarkerMixin"
+  ],
   "server": [],
   "injectors": {
     "defaultRequire": 1

@@ -22,6 +22,9 @@ public final class TaskManager {
     private final Map<UUID, TaskStatus> lastStatus = new ConcurrentHashMap<>();
     private final Map<UUID, FailureRecord> lastFailure = new ConcurrentHashMap<>();
     private final Map<UUID, FailureRecord> pendingFailure = new ConcurrentHashMap<>();
+    // 空闲池任务的失败静默登记(按实例精确匹配):失败照记 lastFailure(诊断保留)但不进 pendingFailure,
+    // 即不唤醒大脑——钓鱼没竿这类空闲小事的失败绝不烧 token。
+    private final Map<UUID, Task> silentFailureTasks = new ConcurrentHashMap<>();
 
     private TaskManager() {
     }
@@ -63,12 +66,18 @@ public final class TaskManager {
         }
         lastFailure.remove(uuid);
         pendingFailure.remove(uuid);
+        silentFailureTasks.remove(uuid);
         lastStatus.put(uuid, TaskStatus.idle());
         BotReporter.INSTANCE.onStatus(bot.getServer(), bot, TaskStatus.idle());
     }
 
     public Optional<Task> getActive(AIPlayerEntity bot) {
         return Optional.ofNullable(active.get(bot.getUuid()));
+    }
+
+    /** 登记"该任务实例失败时静默"(IdleScheduler 派完空闲任务立即调,同 tick 主线程无竞态)。 */
+    public void markSilentFailure(AIPlayerEntity bot, Task task) {
+        silentFailureTasks.put(bot.getUuid(), task);
     }
 
     public boolean hasPaused(AIPlayerEntity bot) {
@@ -166,21 +175,35 @@ public final class TaskManager {
             TaskStatus status = TaskStatus.from(task);
             lastStatus.put(uuid, status);
             BotReporter.INSTANCE.onStatus(server, player, status);
+            // P0 修复:任务完成/失败后**不再**在这里立刻恢复 follow 意图——goal 步骤完成时抢先塞回
+            // FollowTask 会让 GoalExecutor 误判 foreign_task_assigned 放弃整个目标。恢复统一由
+            // LongRunningIntentManager.tickIdleRestore(BotTickCoordinator 每 tick)在确认空闲后做。
             if (task.state() == TaskState.COMPLETED) {
                 active.remove(uuid);
+                silentFailureTasks.remove(uuid, task);
                 lastFailure.remove(uuid);
                 pendingFailure.remove(uuid);
                 BotLog.task(player, "task_completed", "name", task.name(), "elapsed_ticks", task.elapsedTicks());
+                io.github.zoyluo.aibot.brain.BrainCoordinator.INSTANCE.notifyTaskSettled(player);
             } else if (task.state() == TaskState.FAILED) {
+                boolean silent = silentFailureTasks.remove(uuid, task); // 两参 remove:按实例精确匹配
                 active.remove(uuid);
-                recordFailure(player, task.name(), task.failureReason(), server.getTicks());
+                recordFailure(player, task.name(), task.failureReason(), server.getTicks(), !silent);
                 BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.TASK, player, "task_failed",
                         "name", task.name(), "reason", task.failureReason(), "elapsed_ticks", task.elapsedTicks());
+                if (!silent) {
+                    io.github.zoyluo.aibot.brain.BrainCoordinator.INSTANCE.notifyTaskSettled(player);
+                }
             }
         }
     }
 
     public void recordFailure(AIPlayerEntity bot, String name, String reason, int tick) {
+        recordFailure(bot, name, reason, tick, true);
+    }
+
+    /** wakeBrain=false(空闲池任务):lastFailure 照写(诊断/连败计数保留),pendingFailure 不写=不唤醒大脑。 */
+    public void recordFailure(AIPlayerEntity bot, String name, String reason, int tick, boolean wakeBrain) {
         UUID uuid = bot.getUuid();
         FailureRecord previous = lastFailure.get(uuid);
         int count = previous != null && previous.name().equals(name) && previous.reason().equals(reason)
@@ -188,7 +211,9 @@ public final class TaskManager {
                 : 1;
         FailureRecord record = new FailureRecord(name, reason, count, tick);
         lastFailure.put(uuid, record);
-        pendingFailure.put(uuid, record);
+        if (wakeBrain) {
+            pendingFailure.put(uuid, record);
+        }
     }
 
     public Optional<FailureRecord> peekFailure(AIPlayerEntity bot) {
@@ -202,20 +227,24 @@ public final class TaskManager {
     public void onServerStopping(MinecraftServer server) {
         for (AIPlayerEntity bot : AIPlayerManager.INSTANCE.all()) {
             abort(bot);
+            LongRunningIntentManager.INSTANCE.clear(bot);
         }
         active.clear();
         paused.clear();
         lastFailure.clear();
         pendingFailure.clear();
+        silentFailureTasks.clear();
         BotLog.task(null, "tasks_cleared");
     }
 
     public void onBotDespawn(AIPlayerEntity bot) {
         abort(bot);
+        LongRunningIntentManager.INSTANCE.clear(bot);
         paused.remove(bot.getUuid());
         lastStatus.remove(bot.getUuid());
         lastFailure.remove(bot.getUuid());
         pendingFailure.remove(bot.getUuid());
+        silentFailureTasks.remove(bot.getUuid());
         BotReporter.INSTANCE.onCleared(bot);
     }
 

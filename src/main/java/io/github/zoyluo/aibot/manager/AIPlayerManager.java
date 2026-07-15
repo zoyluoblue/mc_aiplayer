@@ -46,30 +46,138 @@ public final class AIPlayerManager {
     private final Map<UUID, String> roles = new ConcurrentHashMap<>();
     private final Map<UUID, UUID> ownerIndex = new ConcurrentHashMap<>();
     private final Map<UUID, UUID> botOwners = new ConcurrentHashMap<>();
+    // 无限死亡熔断:同名 bot UUID 不变,60s 内死 ≥3 次改去世界出生点重生(脱离刷怪点/坠落点)
+    private final Map<UUID, java.util.ArrayDeque<Integer>> recentDeathTicks = new ConcurrentHashMap<>();
 
     private AIPlayerManager() {
     }
 
     /**
-     * SAFE-DEAD:bot 死亡(hp<=0)后停在原地无限收到 evade,不会自动重生(假玩家无客户端发重生包,
-     * ServerPlayerEntity 死后也不会被移除)。这里满血复活并传送到地表安全点,清空残留死亡状态。
-     * 返回 true=已复活。
+     * SAFE-DEAD:假玩家没有客户端,死后既不会发重生包也不会被移除。旧方案"原地缝尸"
+     * (setHealth+teleport)只能骗过服务端——客户端侧的死亡姿势/deathTime/红色渲染不会因
+     * 血量元数据复位而重置,结果就是"死后一直红色抽搐"的僵尸观感。
+     * 唯一干净的做法:整只 despawn(客户端收到实体销毁包)再全新 spawn(全新实体+全新跟踪)。
+     * 名字不变 → OfflineProfile UUID 不变 → 记忆/榜单/归属身份连续;despawn 内部已清任务/大脑。
+     * 返回全新实体,调用方必须换用新引用(旧引用已从世界移除)。
      */
-    public boolean respawnDeadBot(AIPlayerEntity bot) {
+    private static final class PendingRespawn {
+        final String name;
+        final String role;
+        final UUID ownerUuid;
+        final float yaw;
+        final ServerWorld world;
+        final BlockPos deathPos;
+        final long deathTick;
+        final Vec3d spawnPos;
+        final boolean movedToSpawn;
+        int dueTick;
+        int attempts;
+
+        PendingRespawn(String name, String role, UUID ownerUuid, float yaw, ServerWorld world,
+                       BlockPos deathPos, long deathTick, Vec3d spawnPos, boolean movedToSpawn, int dueTick) {
+            this.name = name;
+            this.role = role;
+            this.ownerUuid = ownerUuid;
+            this.yaw = yaw;
+            this.world = world;
+            this.deathPos = deathPos;
+            this.deathTick = deathTick;
+            this.spawnPos = spawnPos;
+            this.movedToSpawn = movedToSpawn;
+            this.dueTick = dueTick;
+        }
+    }
+
+    private final java.util.List<PendingRespawn> pendingRespawns = new java.util.ArrayList<>();
+
+    /**
+     * 死亡处理第一步:**当 tick 立刻销毁尸体**(客户端死亡姿势/红色抽搐只有实体销毁包能重置),
+     * 重生排队 10 tick 后执行——不再与销毁同 tick,避免对同名同 UUID 玩家"先拆后建"的报文竞争
+     * (实测:despawn+respawn 同 tick 仍偶发客户端卡死亡特效鬼畜)。幂等,可每 tick 重复调。
+     */
+    public void handleDeath(MinecraftServer server, AIPlayerEntity bot) {
+        if (!players.containsKey(bot.getUuid())) {
+            return; // 已处理过(快速路径与危险扫描都会调)
+        }
         ServerWorld world = bot.getServerWorld();
-        // 情景记忆:死亡入流(用死亡位置=当前位置,在传送地表之前记)。蒸馏规则:同区两死 → 危险区。
+        String name = bot.getGameProfile().getName();
+        String role = role(bot);
+        UUID ownerUuid = botOwners.get(bot.getUuid());
+        float yaw = bot.getYaw();
+        BlockPos deathPos = bot.getBlockPos();
+        // 情景记忆:死亡入流(用死亡位置,在移除实体之前记)。蒸馏规则:同区两死 → 危险区。
         io.github.zoyluo.aibot.memory.EpisodeLog.INSTANCE.record(bot,
-                io.github.zoyluo.aibot.memory.EpisodeLog.Type.DEATH, bot.getBlockPos(),
+                io.github.zoyluo.aibot.memory.EpisodeLog.Type.DEATH, deathPos,
                 bot.getRecentDamageSource() == null ? "unknown" : bot.getRecentDamageSource().getName());
-        BlockPos surface = world.getTopPosition(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, bot.getBlockPos());
-        bot.setHealth(20.0F);
-        bot.deathTime = 0;
-        bot.getHungerManager().setFoodLevel(20);
-        bot.teleport(world, surface.getX() + 0.5D, surface.getY(), surface.getZ() + 0.5D,
-                Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
-        bot.extinguish();
-        BotLog.danger(bot, "bot_respawned_after_death", "pos", LogFields.pos(surface));
-        return true;
+        // 无限死亡熔断:60s 内第 3 次死,原地重生只会被同一批怪/环境再杀——改去世界出生点。
+        int nowTick = server.getTicks();
+        java.util.ArrayDeque<Integer> deaths = recentDeathTicks.computeIfAbsent(bot.getUuid(), ignored -> new java.util.ArrayDeque<>());
+        deaths.addLast(nowTick);
+        while (!deaths.isEmpty() && deaths.peekFirst() < nowTick - 1200) {
+            deaths.removeFirst();
+        }
+        boolean deathLoop = deaths.size() >= 3;
+        ServerWorld respawnWorld = deathLoop ? server.getOverworld() : world;
+        BlockPos anchor = deathLoop ? respawnWorld.getSpawnPos() : deathPos;
+        BlockPos surface = respawnWorld.getTopPosition(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, anchor);
+        despawn(server, name);
+        pendingRespawns.add(new PendingRespawn(name, role, ownerUuid, yaw, respawnWorld, deathPos, nowTick,
+                new Vec3d(surface.getX() + 0.5D, surface.getY(), surface.getZ() + 0.5D), deathLoop, nowTick + 10));
+        BotLog.lifecycle("bot_corpse_removed", "name", name, "death_pos", LogFields.pos(deathPos));
+    }
+
+    /** 死亡处理第二步(每 tick 由 AIBotMod 调):到期的重生排队项落地。 */
+    public void tickRespawns(MinecraftServer server) {
+        if (pendingRespawns.isEmpty()) {
+            return;
+        }
+        int now = server.getTicks();
+        java.util.Iterator<PendingRespawn> it = pendingRespawns.iterator();
+        while (it.hasNext()) {
+            PendingRespawn pending = it.next();
+            if (now < pending.dueTick) {
+                continue;
+            }
+            Optional<AIPlayerEntity> fresh = spawn(server, pending.name, pending.world, pending.spawnPos,
+                    pending.yaw, 0.0F, GameMode.SURVIVAL, pending.ownerUuid);
+            if (fresh.isEmpty()) {
+                if (++pending.attempts >= 5) {
+                    it.remove();
+                    BotLog.lifecycle("bot_respawn_gave_up", "name", pending.name);
+                } else {
+                    pending.dueTick = now + 20;
+                }
+                continue;
+            }
+            it.remove();
+            AIPlayerEntity newBot = fresh.get();
+            setRole(newBot, pending.role);
+            // 重生保护:5s 抗性 V(免疫全部伤害)+回复 II,打破"重生秒死"循环
+            newBot.addStatusEffect(new net.minecraft.entity.effect.StatusEffectInstance(
+                    net.minecraft.entity.effect.StatusEffects.RESISTANCE, 100, 4, false, false));
+            newBot.addStatusEffect(new net.minecraft.entity.effect.StatusEffectInstance(
+                    net.minecraft.entity.effect.StatusEffects.REGENERATION, 100, 1, false, false));
+            if (pending.movedToSpawn) {
+                io.github.zoyluo.aibot.brain.BrainCoordinator.INSTANCE.sendPanelChat(newBot, "system",
+                        pending.name + " 短时间内连续死亡 3 次,已撤到世界出生点休整(带 5 秒重生保护)。");
+            }
+            // 死亡找回反射:装备掉在死亡点(5 分钟 despawn),真实玩家第一反应就是跑尸。
+            // 两个闸:①重生点离死亡点 ≤160;②死亡点不在危险区(同区两死记忆立牌,听劝别送死)。
+            boolean nearEnough = newBot.getBlockPos().isWithinDistance(pending.deathPos, 160.0D);
+            boolean dangerous = io.github.zoyluo.aibot.memory.KnowledgeBase.INSTANCE
+                    .isDanger(newBot.getUuid(), pending.deathPos);
+            if (nearEnough && !dangerous) {
+                io.github.zoyluo.aibot.task.TaskManager.INSTANCE.assign(newBot,
+                        new io.github.zoyluo.aibot.task.RecoverDropsTask(pending.deathPos, pending.deathTick));
+                io.github.zoyluo.aibot.brain.BrainCoordinator.INSTANCE.sendPanelChat(newBot, "system",
+                        pending.name + " 死亡后已复活,正赶回 " + pending.deathPos.toShortString() + " 找回掉落装备。");
+            } else {
+                io.github.zoyluo.aibot.brain.BrainCoordinator.INSTANCE.sendPanelChat(newBot, "system",
+                        pending.name + " 死亡后已自动复活到地面。" + (dangerous ? "(死亡点已是危险区,放弃跑尸)" : ""));
+            }
+            BotLog.danger(newBot, "bot_respawned_after_death",
+                    "pos", LogFields.pos(newBot.getBlockPos()), "death_loop", pending.movedToSpawn);
+        }
     }
 
     public Optional<AIPlayerEntity> spawn(MinecraftServer server,

@@ -25,14 +25,20 @@ public final class CostModel {
             case DIG_THROUGH -> 8.0D;
             // 垫方块上升:代价高(消耗方块 + 慢),仅在地形无法翻越时 A* 才会选它。
             case PILLAR_UP -> 6.0D;
+            // 缺口铺路:消耗方块,但比绕很远或挖隧道便宜。
+            case SCAFFOLD -> 4.0D;
+            // 平跳越沟:比绕路(每格 1.0)贵、比挖穿便宜——2 格沟直跳 2.5 vs 绕 5+ 格,A* 自然选跳。
+            case PARKOUR -> 2.5D;
         };
     }
 
     public static double stepCost(Node current, NeighborCandidate neighbor, ServerWorld world) {
         double cost = stepCost(neighbor.moveType(), neighbor.fallHeight());
         cost += turnPenalty(current, neighbor.pos());
+        // WATER-1 配套:深水节点已被 Standability 整个拒掉,能进图的只剩浅水(可涉)。
+        // 涉水减速且有被推离路线的风险,×4 让 A* 只在没有干路时才蹚水,而不是抄水路近道。
         if (world.getFluidState(neighbor.pos()).isIn(FluidTags.WATER)) {
-            cost *= 1.5D;
+            cost *= 4.0D;
         }
         return cost;
     }

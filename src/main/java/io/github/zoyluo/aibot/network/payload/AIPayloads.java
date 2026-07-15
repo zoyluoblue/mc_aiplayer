@@ -18,7 +18,10 @@ public final class AIPayloads {
         PayloadTypeRegistry.playC2S().register(SetOptionC2S.ID, SetOptionC2S.CODEC);
         PayloadTypeRegistry.playC2S().register(BotItemMoveC2S.ID, BotItemMoveC2S.CODEC);
         PayloadTypeRegistry.playC2S().register(BotTeleportC2S.ID, BotTeleportC2S.CODEC);
+        PayloadTypeRegistry.playC2S().register(TargetMarkerC2S.ID, TargetMarkerC2S.CODEC);
         PayloadTypeRegistry.playS2C().register(BotSnapshotS2C.ID, BotSnapshotS2C.CODEC);
         PayloadTypeRegistry.playS2C().register(BotChatS2C.ID, BotChatS2C.CODEC);
+        PayloadTypeRegistry.playS2C().register(BrainTraceS2C.ID, BrainTraceS2C.CODEC);
+        PayloadTypeRegistry.playS2C().register(TargetMarkerS2C.ID, TargetMarkerS2C.CODEC);
     }
 }

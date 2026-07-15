@@ -6,29 +6,32 @@ import io.github.zoyluo.aibot.action.ActionResult;
 import io.github.zoyluo.aibot.action.BuildAction;
 import io.github.zoyluo.aibot.action.InventoryAction;
 import io.github.zoyluo.aibot.action.LookAction;
+import io.github.zoyluo.aibot.action.MaterialPalette;
 import io.github.zoyluo.aibot.action.MiningController;
 import io.github.zoyluo.aibot.action.WalkToController;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.log.LogCategory;
 import io.github.zoyluo.aibot.log.LogFields;
-import net.minecraft.block.Blocks;
-import net.minecraft.item.BlockItem;
-import net.minecraft.item.ItemStack;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 
 import java.util.List;
+import java.util.OptionalInt;
 
 public final class PathExecutor {
     private static final int STUCK_TICKS_LIMIT = 60;
     private static final int REPLAN_COOLDOWN_TICKS = 40;
+    private static final int DIG_APPROACH_TICKS_LIMIT = 80;
 
     private List<Node> path;
     private int index = 1;
     private final BlockPos originalGoal;
     private WalkToController subWalker;
+    private WalkToController approachWalker;
+    private int approachTicks;
+    private int parkourTicks;
     private MiningController subMiner;
     private boolean digWalking;
     private boolean replanTried;
@@ -38,6 +41,8 @@ public final class PathExecutor {
     private int lastReplanTick = -REPLAN_COOLDOWN_TICKS;
     private int activeWalkTargetIndex = -1;
     private int nodeRetry;
+    private int buildRetries;
+    private int nodeActionTicks;
 
     public PathExecutor(List<Node> path, BlockPos originalGoal) {
         this.path = List.copyOf(path);
@@ -69,9 +74,17 @@ public final class PathExecutor {
             case WALK, DIAGONAL, JUMP_UP, DROP_DOWN -> tickWalk(pack, next);
             case DIG_THROUGH -> tickDigThrough(pack, next);
             case PILLAR_UP -> tickPillar(pack, next);
+            case SCAFFOLD -> tickScaffold(pack, next);
+            case PARKOUR -> tickParkour(pack, next);
         };
         if (!result.isInProgress()) {
             return result;
+        }
+        if (next.moveType() == MoveType.DIG_THROUGH
+                || next.moveType() == MoveType.PILLAR_UP
+                || next.moveType() == MoveType.SCAFFOLD) {
+            // 挖掘和施工本来就会原地停留数秒，不能按位移判 stuck；各动作有自己的超时与重试上限。
+            return ActionResult.IN_PROGRESS;
         }
         Node progressNode = activeWalkTargetIndex >= index && activeWalkTargetIndex < path.size()
                 ? path.get(activeWalkTargetIndex)
@@ -88,7 +101,15 @@ public final class PathExecutor {
     }
 
     public static boolean hasPlaceableBlock(AIPlayerEntity player) {
-        return findPlaceableBlock(player) >= 0;
+        return MaterialPalette.pickScaffoldBlockSlot(player).isPresent();
+    }
+
+    public boolean isWorkingStationary() {
+        if (index >= path.size()) {
+            return false;
+        }
+        MoveType type = path.get(index).moveType();
+        return type == MoveType.DIG_THROUGH || type == MoveType.PILLAR_UP || type == MoveType.SCAFFOLD;
     }
 
     private ActionResult tickWalk(ActionPack pack, Node next) {
@@ -124,7 +145,46 @@ public final class PathExecutor {
     }
 
     private ActionResult tickDigThrough(ActionPack pack, Node next) {
+        if (++nodeActionTicks > 800) {
+            return handleStuck(pack, "dig_node_timeout");
+        }
+        // WATER-5:湿身不挖(同 DigNav)。在水里执行挖掘节点=沿水位线无限啃岸/挖穿放水,
+        // 先交给 handleStuck 走一次替代路线重规划,不行就把失败上抛给任务层。
+        if (pack.player().isTouchingWater()) {
+            if (subMiner != null) {
+                subMiner.abort(pack.player());
+                subMiner = null;
+            }
+            return handleStuck(pack, "dig_in_water");
+        }
         if (!digWalking) {
+            // 头号实测卡死根因(81/90 次 path_stuck 全是 out_of_reach):路径拉直/推进后挖掘节点常离身位
+            // >reach,直接建 MiningController 立即失败 → replan 常拿同一条路 → replan_throttled 任务挂。
+            // 修法与真人一致:先走到够得着的地方再抡镐。每 tick 先判 reach,一进范围立刻转挖。
+            if (subMiner == null && !withinDigReach(pack, next.pos())) {
+                if (approachWalker == null) {
+                    approachWalker = new WalkToController(Vec3d.ofCenter(next.pos()));
+                    approachTicks = 0;
+                }
+                approachTicks++;
+                if (approachTicks > DIG_APPROACH_TICKS_LIMIT) {
+                    approachWalker = null;
+                    return handleStuck(pack, "dig_approach_timeout");
+                }
+                ActionResult walk = approachWalker.tick(pack);
+                if (walk.isFailed()) {
+                    // 贴墙走不到方块中心是常态(目标就是要挖的实心块,walker 必然 stuck_blocked/timeout 收场)
+                    // ——只要人已经贴进 reach 就算接近成功;真够不到才交给 replan。
+                    approachWalker = null;
+                    if (!withinDigReach(pack, next.pos())) {
+                        return handleStuck(pack, "dig_approach_failed: " + walk.reason());
+                    }
+                } else if (!withinDigReach(pack, next.pos())) {
+                    return ActionResult.IN_PROGRESS;
+                }
+                approachWalker = null;
+                pack.stopMovement();
+            }
             if (subMiner == null) {
                 Direction face = faceFromPlayer(pack, next.pos());
                 LookAction.lookAtBlock(pack.player(), next.pos(), face);
@@ -162,50 +222,118 @@ public final class PathExecutor {
         return ActionResult.IN_PROGRESS;
     }
 
+    /**
+     * 助跑平跳越沟:面向落点 → 全速前进 + 冲刺预蓄(起跳前的水平速度决定跳距,旧执行器上台阶跳
+     * 强制关 sprint 的结构性抑制不适用于本节点)→ 走到沿边(脚下前方无支撑)瞬间点跳 → 落地判定推进。
+     */
+    private ActionResult tickParkour(ActionPack pack, Node next) {
+        AIPlayerEntity player = pack.player();
+        BlockPos landing = next.pos();
+        if (player.isOnGround() && arrivedAt(player.getBlockPos(), landing)
+                && Math.abs(player.getBlockY() - landing.getY()) <= 1) {
+            pack.setSprinting(false);
+            advance();
+            return ActionResult.IN_PROGRESS;
+        }
+        parkourTicks++;
+        if (parkourTicks > 40) {
+            pack.stopMovement();
+            return handleStuck(pack, "parkour_timeout");
+        }
+        Vec3d landingCenter = Vec3d.ofCenter(landing);
+        LookAction.lookAt(player, landingCenter.add(0.0D, 1.0D, 0.0D)); // 瞄准要精确,走瞬时不走平滑
+        pack.setForward(1.0F);
+        pack.setSprinting(true);
+        if (player.isOnGround() && parkourTicks >= 3) {
+            // 沿边判定:前方 0.6 格的脚下已无支撑 → 到沿了,点跳(jumpOnce 单跳,不长按)
+            Vec3d dir = landingCenter.subtract(player.getPos());
+            double len = Math.max(1.0E-3D, Math.sqrt(dir.x * dir.x + dir.z * dir.z));
+            BlockPos aheadBelow = BlockPos.ofFloored(
+                    player.getX() + dir.x / len * 0.6D,
+                    player.getY() - 0.5D,
+                    player.getZ() + dir.z / len * 0.6D);
+            if (player.getServerWorld().getBlockState(aheadBelow)
+                    .getCollisionShape(player.getServerWorld(), aheadBelow).isEmpty()) {
+                pack.jumpOnce();
+            }
+        }
+        return ActionResult.IN_PROGRESS;
+    }
+
     // NAV-9:垫方块上升一格。看向脚下→起跳→升空瞬间在原脚位放支撑方块→落到其上。
     private ActionResult tickPillar(ActionPack pack, Node next) {
+        if (++nodeActionTicks > 200) {
+            return handleStuck(pack, "pillar_node_timeout");
+        }
         AIPlayerEntity player = pack.player();
         BlockPos placeSlot = next.pos().down(); // 当前脚位,支撑方块放这里
         if (player.getBlockY() >= next.pos().getY() && player.isOnGround()) {
             advance();
             return ActionResult.IN_PROGRESS;
         }
-        int slot = findPlaceableBlock(player);
-        if (slot < 0) {
+        OptionalInt slot = MaterialPalette.pickScaffoldBlockSlot(player);
+        if (slot.isEmpty()) {
             return handleStuck(pack, "pillar_no_block");
         }
-        InventoryAction.equipFromSlot(player, slot);
+        InventoryAction.equipFromSlot(player, slot.getAsInt());
         LookAction.lookAtBlock(player, placeSlot, Direction.UP);
         pack.setForward(0.0F);
         pack.setJumping(true);
         pack.jumpOnce();
         double rise = player.getY() - placeSlot.getY();
-        if (rise > 0.5D && rise < 1.2D && player.getServerWorld().getBlockState(placeSlot).isAir()) {
-            BuildAction.placeBlockAt(player, placeSlot);
+        if (rise > 0.5D && rise < 1.2D && player.getServerWorld().getBlockState(placeSlot).isReplaceable()) {
+            ActionResult placed = BuildAction.placeBlockAt(player, placeSlot);
+            if (!placed.isSuccess() || !isSupportingBlock(player.getServerWorld(), placeSlot)) {
+                if (++buildRetries > 12) {
+                    return handleStuck(pack, "pillar_place_failed: " + placed.reason());
+                }
+            } else {
+                buildRetries = 0;
+                BotLog.path(player, "path_pillar_placed", "pos", LogFields.pos(placeSlot));
+            }
         }
         return ActionResult.IN_PROGRESS;
     }
 
-    private static int findPlaceableBlock(AIPlayerEntity player) {
-        var main = player.getInventory().main;
-        for (int i = 0; i < main.size(); i++) {
-            ItemStack stack = main.get(i);
-            if (stack.isEmpty() || !(stack.getItem() instanceof BlockItem blockItem)) {
-                continue;
-            }
-            var block = blockItem.getBlock();
-            if (isPathFillerBlock(block)) {
-                return i;
-            }
+    private ActionResult tickScaffold(ActionPack pack, Node next) {
+        if (++nodeActionTicks > 200) {
+            return handleStuck(pack, "scaffold_node_timeout");
         }
-        return -1;
+        AIPlayerEntity player = pack.player();
+        if (arrivedAt(player.getBlockPos(), next.pos()) && isSupportingBlock(player.getServerWorld(), next.pos().down())) {
+            advance();
+            return ActionResult.IN_PROGRESS;
+        }
+        BlockPos floor = next.pos().down();
+        var floorState = player.getServerWorld().getBlockState(floor);
+        if (floorState.isReplaceable()) {
+            OptionalInt slot = MaterialPalette.pickScaffoldBlockSlot(player);
+            if (slot.isEmpty()) {
+                return handleStuck(pack, "scaffold_no_block");
+            }
+            pack.stopMovement();
+            InventoryAction.equipFromSlot(player, slot.getAsInt());
+            LookAction.lookAtBlock(player, floor, Direction.UP);
+            ActionResult placed = BuildAction.placeBlockAt(player, floor);
+            if (!placed.isSuccess() || !isSupportingBlock(player.getServerWorld(), floor)) {
+                if (++buildRetries > 12) {
+                    return handleStuck(pack, "scaffold_place_failed: " + placed.reason());
+                }
+                return ActionResult.IN_PROGRESS;
+            }
+            buildRetries = 0;
+            BotLog.path(player, "path_scaffold_placed", "pos", LogFields.pos(floor));
+            return ActionResult.IN_PROGRESS;
+        }
+        if (!isSupportingBlock(player.getServerWorld(), floor)) {
+            return handleStuck(pack, "scaffold_support_invalid: " + compact(floor));
+        }
+        return tickWalk(pack, next);
     }
 
-    private static boolean isPathFillerBlock(net.minecraft.block.Block block) {
-        return block == Blocks.COBBLESTONE || block == Blocks.DIRT || block == Blocks.STONE
-                || block == Blocks.COBBLED_DEEPSLATE || block == Blocks.DEEPSLATE
-                || block == Blocks.NETHERRACK || block == Blocks.ANDESITE
-                || block == Blocks.DIORITE || block == Blocks.GRANITE;
+    private static boolean isSupportingBlock(net.minecraft.server.world.ServerWorld world, BlockPos pos) {
+        var state = world.getBlockState(pos);
+        return !state.isReplaceable() && !state.getCollisionShape(world, pos).isEmpty();
     }
 
     private ActionResult checkProgress(ActionPack pack, Node next) {
@@ -231,13 +359,24 @@ public final class PathExecutor {
         BotLog.path(null, "path_advance", "index", index, "total", path.size(), "move_type", next.moveType(), "pos", LogFields.pos(next.pos()));
         index = Math.max(index + 1, Math.min(nextIndex, path.size()));
         subWalker = null;
+        approachWalker = null;
+        approachTicks = 0;
+        parkourTicks = 0;
         subMiner = null;
         digWalking = false;
         stuckTicks = 0;
         lastPos = null;
         activeWalkTargetIndex = -1;
         nodeRetry = 0;
+        buildRetries = 0;
+        nodeActionTicks = 0;
         replanTried = false;
+    }
+
+    /** 与 MiningController 的 reach 判定同源,留 0.3 格余量:接近到这里再开挖,绝不会秒失败 out_of_reach。 */
+    private static boolean withinDigReach(ActionPack pack, BlockPos pos) {
+        double reach = pack.player().getAttributeValue(net.minecraft.entity.attribute.EntityAttributes.BLOCK_INTERACTION_RANGE);
+        return pack.player().getEyePos().distanceTo(pos.toCenterPos()) <= reach + 0.2D;
     }
 
     private int chooseWalkTargetIndex(ActionPack pack) {
@@ -347,8 +486,13 @@ public final class PathExecutor {
                 path = fresh.path();
                 index = 1;
                 subWalker = null;
+                approachWalker = null;
+                approachTicks = 0;
+                parkourTicks = 0;
                 subMiner = null;
                 digWalking = false;
+                buildRetries = 0;
+                nodeActionTicks = 0;
                 stuckTicks = 0;
                 lastPos = null;
                 replanTried = false;
@@ -366,6 +510,9 @@ public final class PathExecutor {
             subMiner = null;
         }
         subWalker = null;
+        approachWalker = null;
+        approachTicks = 0;
+        parkourTicks = 0;
         digWalking = false;
         pack.stopMovement();
     }

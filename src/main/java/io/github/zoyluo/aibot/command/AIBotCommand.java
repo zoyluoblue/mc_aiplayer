@@ -2,7 +2,12 @@ package io.github.zoyluo.aibot.command;
 
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import io.github.zoyluo.aibot.action.MovementAction;
+import io.github.zoyluo.aibot.brain.BrainCoordinator;
+import io.github.zoyluo.aibot.goal.GoalExecutor;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
+import io.github.zoyluo.aibot.task.LongRunningIntentManager;
+import io.github.zoyluo.aibot.task.TaskManager;
 import net.minecraft.command.CommandRegistryAccess;
 import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
@@ -38,6 +43,9 @@ public final class AIBotCommand {
                 .then(literal("despawn")
                         .then(argument("name", StringArgumentType.word())
                                 .executes(context -> despawn(context.getSource(), StringArgumentType.getString(context, "name")))))
+                .then(literal("stop")
+                        .then(argument("name", StringArgumentType.word())
+                                .executes(context -> stop(context.getSource(), StringArgumentType.getString(context, "name")))))
                 .then(literal("list")
                         .executes(context -> list(context.getSource())))
                 .then(AIBotBrainSubcommand.build())
@@ -52,6 +60,7 @@ public final class AIBotCommand {
                 .then(AIBotTaskSubcommand.build())
                 .then(AIBotVerifySubcommand.build())
                 .then(AIBotDeplintSubcommand.build())
+                .then(AIBotCameraSubcommand.build())
                 .then(AIBotSnapshotSubcommand.build()));
     }
 
@@ -104,6 +113,21 @@ public final class AIBotCommand {
 
         source.sendError(Text.literal("[AIBot] No such bot: " + name));
         return 0;
+    }
+
+    private static int stop(ServerCommandSource source, String name) {
+        var bot = AIPlayerManager.INSTANCE.getByName(name);
+        if (bot.isEmpty()) {
+            source.sendError(Text.literal("[AIBot] No such bot: " + name));
+            return 0;
+        }
+        LongRunningIntentManager.INSTANCE.clear(bot.get());
+        GoalExecutor.INSTANCE.clear(bot.get());
+        TaskManager.INSTANCE.resetToIdle(bot.get());
+        MovementAction.stopAll(bot.get());
+        BrainCoordinator.INSTANCE.reset(bot.get());
+        source.sendFeedback(() -> Text.literal("[AIBot] stopped " + name), true);
+        return 1;
     }
 
     private static int list(ServerCommandSource source) {

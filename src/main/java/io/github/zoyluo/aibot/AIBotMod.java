@@ -4,6 +4,10 @@ import io.github.zoyluo.aibot.brain.BrainCoordinator;
 import io.github.zoyluo.aibot.brain.ChatCaptureListener;
 import io.github.zoyluo.aibot.command.AIBotCommand;
 import io.github.zoyluo.aibot.command.AIBotVerifySubcommand;
+import io.github.zoyluo.aibot.gift.GiftCelebrator;
+import io.github.zoyluo.aibot.gift.GiftDispatcher;
+import io.github.zoyluo.aibot.gift.GiftHttpBridge;
+import io.github.zoyluo.aibot.gift.GiftLedger;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.log.BotLogWriter;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
@@ -17,6 +21,7 @@ import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
+import net.fabricmc.fabric.api.entity.event.v1.ServerEntityWorldChangeEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,6 +34,8 @@ public class AIBotMod implements ModInitializer {
     public void onInitialize() {
         AIBotConfig config = AIBotConfig.load();
         BotLogWriter.INSTANCE.start(config);
+        io.github.zoyluo.aibot.log.ConversationLogger.INSTANCE.start(config);
+        GiftDispatcher.INSTANCE.reload();
         BotLog.lifecycle("mod_loaded", "version", getModVersion());
         BotLog.config("config_loaded",
                 "deepseek_model", config.deepseek().model(),
@@ -44,34 +51,57 @@ public class AIBotMod implements ModInitializer {
 
         BrainCoordinator.INSTANCE.configure(config);
         ChatCaptureListener.register();
+        io.github.zoyluo.aibot.brain.OwnerEventListener.INSTANCE.register();
         AIPayloads.register();
         AIBotServerNetworking.INSTANCE.register();
+        ServerEntityWorldChangeEvents.AFTER_PLAYER_CHANGE_WORLD.register((player, origin, destination) ->
+                AIBotServerNetworking.INSTANCE.clearTargetMarker(player, "切换维度，标记已清除"));
 
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
             BotLog.lifecycle("server_started", "motd", server.getServerMotd());
-            // 知识层数据驱动:扫 RecipeManager 建运行时配方索引(含模组配方,手写表的兜底层);
-            // 知识库挂 server(落盘路径)。
             io.github.zoyluo.aibot.craft.RuntimeRecipeIndex.rebuild(server);
             io.github.zoyluo.aibot.memory.KnowledgeBase.INSTANCE.attachServer(server);
             int restored = BotPersistence.INSTANCE.loadAndRespawn(server);
             if (restored > 0) {
                 BotLog.lifecycle("bot_persist_restored", "count", restored);
             }
+            GiftHttpBridge.INSTANCE.start(server);
+            GiftLedger.INSTANCE.load();
         });
         ServerLifecycleEvents.SERVER_STOPPING.register(server ->
                 BotLog.lifecycle("server_stopping"));
+        ServerLifecycleEvents.SERVER_STOPPING.register(server -> GiftHttpBridge.INSTANCE.stop());
+        ServerLifecycleEvents.SERVER_STOPPING.register(server -> GiftCelebrator.INSTANCE.clear());
+        ServerLifecycleEvents.SERVER_STOPPING.register(server -> io.github.zoyluo.aibot.brain.OwnerEventListener.INSTANCE.clear());
+        ServerLifecycleEvents.SERVER_STOPPING.register(server -> io.github.zoyluo.aibot.action.IdleLookController.INSTANCE.clear());
+        ServerLifecycleEvents.SERVER_STOPPING.register(server -> io.github.zoyluo.aibot.gift.DanmakuService.INSTANCE.clear());
+        ServerLifecycleEvents.SERVER_STOPPING.register(server -> io.github.zoyluo.aibot.gift.IdleScheduler.INSTANCE.clear());
+        ServerLifecycleEvents.SERVER_STOPPING.register(server -> io.github.zoyluo.aibot.camera.CameraMirror.INSTANCE.clear());
+        ServerLifecycleEvents.SERVER_STOPPING.register(server -> io.github.zoyluo.aibot.overlay.OverlayService.INSTANCE.clear());
+        ServerLifecycleEvents.SERVER_STOPPING.register(server -> GiftLedger.INSTANCE.saveNow());
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> AIBotServerNetworking.INSTANCE.clear());
+        ServerLifecycleEvents.SERVER_STOPPING.register(server -> io.github.zoyluo.aibot.marker.TargetMarkerService.INSTANCE.clearAll());
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> BotPersistence.INSTANCE.saveAll(server));
         ServerLifecycleEvents.SERVER_STOPPING.register(AIPlayerManager.INSTANCE::onServerStopping);
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> BrainCoordinator.INSTANCE.shutdown());
         ServerLifecycleEvents.SERVER_STOPPING.register(TaskManager.INSTANCE::onServerStopping);
+        ServerLifecycleEvents.SERVER_STOPPING.register(server -> io.github.zoyluo.aibot.log.ConversationLogger.INSTANCE.shutdown());
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> BotLogWriter.INSTANCE.shutdown(3000));
         ServerTickEvents.END_SERVER_TICK.register(server -> {
             TpsGuard.INSTANCE.tick(server);
+            AIPlayerManager.INSTANCE.tickRespawns(server);
             TaskManager.INSTANCE.tickAll(server);
             BotTickCoordinator.INSTANCE.tick(server);
             AIBotVerifySubcommand.tick(server);
             AIBotServerNetworking.INSTANCE.tick(server);
+            GiftCelebrator.INSTANCE.tick(server);
+            GiftLedger.INSTANCE.tick(server);
+            io.github.zoyluo.aibot.gift.DanmakuService.INSTANCE.tick(server);
+            io.github.zoyluo.aibot.gift.IdleScheduler.INSTANCE.tick(server);
+            io.github.zoyluo.aibot.camera.CameraMirror.INSTANCE.tick(server);
+            if (server.getTicks() % 20 == 0) {
+                io.github.zoyluo.aibot.overlay.OverlayService.INSTANCE.refresh(server);
+            }
             io.github.zoyluo.aibot.log.DiagnosticLogger.INSTANCE.tick(server);
             if (server.getTicks() > 0 && server.getTicks() % 6000 == 0) {
                 BotPersistence.INSTANCE.saveAllAsync(server);

@@ -91,6 +91,23 @@ public final class GuardTask extends AbstractTask {
         }
     }
 
+    /**
+     * 主人被打事件的确定性直报(OwnerEventListener 调):守卫半径外/视线外的偷袭者立即锁定,
+     * 零 API 延迟——不等 WATCH 相位的半径扫描撞见。已在交战不换目标。
+     */
+    public void noticeThreat(AIPlayerEntity bot, LivingEntity attacker) {
+        if (attacker == null || !attacker.isAlive()) {
+            return;
+        }
+        if (target != null && target.isAlive()) {
+            return;
+        }
+        target = attacker;
+        CombatCore.equipMelee(bot);
+        phase = Phase.APPROACH;
+        CombatCore.startApproach(bot, attacker);
+    }
+
     private void watch(AIPlayerEntity bot) {
         target = CombatCore.nearestHostileAround(bot, guardPoint, GUARD_RADIUS).orElse(null);
         if (target != null) {

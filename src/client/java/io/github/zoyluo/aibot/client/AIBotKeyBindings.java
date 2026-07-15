@@ -10,6 +10,9 @@ import org.lwjgl.glfw.GLFW;
 public final class AIBotKeyBindings {
     private static KeyBinding openPanel;
     private static KeyBinding openActions;
+    private static KeyBinding pushToTalk;
+    private static KeyBinding brainInterrupt;
+    private static KeyBinding traceHudToggle;
     private static boolean altZeroDown;
     private static boolean altNineDown;
 
@@ -27,6 +30,29 @@ public final class AIBotKeyBindings {
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_UNKNOWN,
                 "key.categories.aibot"));
+        pushToTalk = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.aibot.push_to_talk",
+                InputUtil.Type.KEYSYM,
+                GLFW.GLFW_KEY_V,
+                "key.categories.aibot"));
+        brainInterrupt = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.aibot.brain_interrupt",
+                InputUtil.Type.KEYSYM,
+                GLFW.GLFW_KEY_BACKSPACE,
+                "key.categories.aibot"));
+        traceHudToggle = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.aibot.trace_hud_toggle",
+                InputUtil.Type.KEYSYM,
+                GLFW.GLFW_KEY_H,
+                "key.categories.aibot"));
+    }
+
+    public static boolean interruptPressed() {
+        return brainInterrupt != null && brainInterrupt.wasPressed();
+    }
+
+    public static boolean traceTogglePressed() {
+        return traceHudToggle != null && traceHudToggle.wasPressed();
     }
 
     public static BotPanelScreen.Mode pollToggle(MinecraftClient client) {
@@ -59,5 +85,13 @@ public final class AIBotKeyBindings {
             return BotPanelScreen.Mode.CHAT_STATUS;
         }
         return null;
+    }
+
+    public static boolean pushToTalkDown(MinecraftClient client) {
+        if (client == null || client.getWindow() == null) {
+            return false;
+        }
+        // Use the physical key state so a held key is not lost by KeyBinding's press queue.
+        return InputUtil.isKeyPressed(client.getWindow().getHandle(), GLFW.GLFW_KEY_V);
     }
 }

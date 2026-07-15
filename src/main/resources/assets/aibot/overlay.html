@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>AIBot 直播浮层</title>
+<style>
+  /* OBS 浏览器源:透明背景,所有文字白字+四向深色描边保证任何画面上可读 */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 1920px; height: 1080px;
+    background: transparent;
+    overflow: hidden;
+    pointer-events: none;
+    font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: #fff;
+  }
+  .stroke {
+    text-shadow: -2px 0 2px rgba(0,0,0,.85), 2px 0 2px rgba(0,0,0,.85),
+                 0 -2px 2px rgba(0,0,0,.85), 0 2px 2px rgba(0,0,0,.85);
+  }
+  .panel {
+    background: rgba(10, 12, 22, .55);
+    border: 1px solid rgba(255,255,255,.18);
+    border-radius: 12px;
+    backdrop-filter: blur(4px);
+  }
+
+  /* 顶部:任务 + goal 进度 + 血量/饥饿 */
+  #top {
+    position: absolute; top: 18px; left: 50%; transform: translateX(-50%);
+    min-width: 640px; max-width: 1100px;
+    padding: 12px 22px;
+    display: none;
+  }
+  #top .row1 { display: flex; align-items: baseline; gap: 16px; }
+  #botName { font-size: 26px; font-weight: 700; color: #7ec8ff; }
+  #taskLine { font-size: 22px; }
+  #vitals { margin-left: auto; font-size: 20px; white-space: nowrap; }
+  #goalLine { margin-top: 6px; font-size: 18px; color: #ffd97e; }
+  #goalBarWrap {
+    margin-top: 8px; height: 10px; border-radius: 5px;
+    background: rgba(255,255,255,.15); overflow: hidden; display: none;
+  }
+  #goalBar {
+    height: 100%; width: 0%;
+    background: linear-gradient(90deg, #4d9fff, #7ee8a2);
+    border-radius: 5px; transition: width .6s ease;
+  }
+  #taskBarWrap {
+    margin-top: 8px; height: 6px; border-radius: 3px;
+    background: rgba(255,255,255,.12); overflow: hidden;
+  }
+  #taskBar {
+    height: 100%; width: 0%;
+    background: #9aa7ff; border-radius: 3px; transition: width .6s ease;
+  }
+
+  /* 右侧:礼物滚动 */
+  #gifts {
+    position: absolute; top: 140px; right: 24px; width: 400px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .gift {
+    padding: 8px 14px; font-size: 20px;
+    border-left: 5px solid #888;
+    transition: background .4s ease, transform .3s ease;
+  }
+  .gift .who { font-weight: 700; }
+  .gift .what { color: #ffd97e; }
+  .gift.t2 { border-left-color: #4d9fff; }
+  .gift.t3 { border-left-color: #c77dff; }
+  .gift.t4 { border-left-color: #ff5d73; }
+  .gift.fresh {
+    background: rgba(255, 210, 90, .35);
+    transform: translateX(-6px);
+  }
+
+  /* 左下:DeepSeek 最新一句气泡 */
+  #speech {
+    position: absolute; left: 24px; bottom: 120px; max-width: 620px;
+    padding: 14px 20px; font-size: 22px; line-height: 1.5;
+    display: none;
+  }
+  #speech::before { content: "🤖 "; }
+
+  /* 底部:今日榜 top5 */
+  #board {
+    position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
+    padding: 8px 24px; font-size: 20px;
+    display: none; white-space: nowrap;
+  }
+  #board .title { color: #ffd97e; font-weight: 700; margin-right: 14px; }
+  #board .item { margin-right: 18px; }
+  #board .item .rank { color: #7ec8ff; font-weight: 700; }
+  #board .item:nth-child(2) .rank { color: #ffd700; }
+  #board .item:nth-child(3) .rank { color: #c0c0c0; }
+  #board .item:nth-child(4) .rank { color: #cd7f32; }
+</style>
+</head>
+<body>
+  <div id="top" class="panel stroke">
+    <div class="row1">
+      <span id="botName">Bob</span>
+      <span id="taskLine"></span>
+      <span id="vitals"></span>
+    </div>
+    <div id="taskBarWrap"><div id="taskBar"></div></div>
+    <div id="goalLine"></div>
+    <div id="goalBarWrap"><div id="goalBar"></div></div>
+  </div>
+  <div id="gifts" class="stroke"></div>
+  <div id="speech" class="panel stroke"></div>
+  <div id="board" class="panel stroke"></div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const FRESH_MS = 2000;   // 新礼物高亮时长
+  let lastGiftKey = "";
+
+  function hearts(hp, max) {
+    const full = Math.round(hp / 2), total = Math.round(max / 2);
+    return "❤".repeat(Math.max(0, Math.min(full, total))) + ` ${hp.toFixed(0)}/${max.toFixed(0)}`;
+  }
+
+  function render(data) {
+    const bot = data.bot;
+    if (bot) {
+      $("top").style.display = "block";
+      $("botName").textContent = bot.name || "Bob";
+      const desc = bot.taskDesc && bot.taskDesc !== "No active task" ? bot.taskDesc : "待机中…";
+      $("taskLine").textContent = desc;
+      $("vitals").textContent =
+        `${hearts(bot.health, bot.maxHealth)}  🍗${bot.food}/20  📍${bot.x},${bot.y},${bot.z}`;
+      $("taskBar").style.width = Math.round(Math.max(0, Math.min(1, bot.taskProgress)) * 100) + "%";
+      if (bot.goalTitle) {
+        $("goalLine").textContent =
+          `🎯 ${bot.goalTitle}` +
+          (bot.goalTotal > 0 ? `（${Math.min(bot.goalIndex + 1, bot.goalTotal)}/${bot.goalTotal}）` : "") +
+          (bot.goalStep ? ` · ${bot.goalStep}` : "");
+        $("goalLine").style.display = "block";
+        if (bot.goalTotal > 0) {
+          $("goalBarWrap").style.display = "block";
+          $("goalBar").style.width = Math.round(Math.min(bot.goalIndex, bot.goalTotal) / bot.goalTotal * 100) + "%";
+        } else {
+          $("goalBarWrap").style.display = "none";
+        }
+      } else {
+        $("goalLine").style.display = "none";
+        $("goalBarWrap").style.display = "none";
+      }
+    } else {
+      $("top").style.display = "none";
+    }
+
+    // 礼物流水:最新在前;最新一条 2s 内高亮
+    const gifts = data.gifts || [];
+    const now = Date.now();
+    $("gifts").innerHTML = gifts.map((g, i) => {
+      const fresh = i === 0 && now - g.ts < FRESH_MS ? " fresh" : "";
+      return `<div class="gift panel t${g.tier}${fresh}">` +
+        `<span class="who">${esc(g.user)}</span> 送出 ` +
+        `<span class="what">${esc(g.gift)} ×${g.count}</span></div>`;
+    }).join("");
+    if (gifts.length) {
+      lastGiftKey = gifts[0].user + "|" + gifts[0].gift + "|" + gifts[0].ts;
+    }
+
+    const speech = (data.speech || "").trim();
+    if (speech) {
+      $("speech").textContent = speech.length > 120 ? speech.slice(0, 120) + "…" : speech;
+      $("speech").style.display = "block";
+    } else {
+      $("speech").style.display = "none";
+    }
+
+    const top = data.topToday || [];
+    if (top.length) {
+      $("board").innerHTML = `<span class="title">🏆 今日送礼榜</span>` +
+        top.map(t => `<span class="item"><span class="rank">No.${t.rank}</span> ${esc(t.user)}</span>`).join("");
+      $("board").style.display = "block";
+    } else {
+      $("board").style.display = "none";
+    }
+  }
+
+  function esc(s) {
+    return String(s ?? "").replace(/[&<>"']/g,
+      c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  async function poll() {
+    try {
+      const resp = await fetch("/status", { cache: "no-store" });
+      if (resp.ok) render(await resp.json());
+    } catch (e) { /* 服务端未起/重启中,静默重试 */ }
+  }
+
+  poll();
+  setInterval(poll, 1000);
+})();
+</script>
+</body>
+</html>

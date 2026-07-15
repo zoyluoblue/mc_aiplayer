@@ -77,10 +77,18 @@ public final class MineTask extends AbstractTask {
     }
 
     private void search(AIPlayerEntity bot) {
-        HarvestCore.TargetChoice choice = HarvestCore.nearestReachableBlock(bot, targetBlock, 8, 4, 6);
+        // 半径 8 固定不扩是实测"附近没有就秒失败"的根源:递进 8→16→24 再认输(gather 同款翻倍思路)。
+        // 扫描只在 SEARCHING 相位跑到结果为止,大半径是一次性成本,不是每 tick。
+        HarvestCore.TargetChoice choice = null;
+        for (int radius : new int[]{8, 16, 24}) {
+            choice = HarvestCore.nearestReachableBlock(bot, targetBlock, radius, 4, 6);
+            if (choice != null) {
+                break;
+            }
+        }
         if (choice == null) {
             if (OreScan.isOreBlock(targetBlock)) {
-                fail("no_exposed_ore:use_strip_mine:" + Registries.BLOCK.getId(targetBlock));
+                fail("no_exposed_ore:use_mine_ore:" + Registries.BLOCK.getId(targetBlock));
                 return;
             }
             fail("no_reachable_target_block_in_range");

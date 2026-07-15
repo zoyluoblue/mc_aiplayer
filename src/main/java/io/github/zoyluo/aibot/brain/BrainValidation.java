@@ -20,7 +20,8 @@ public final class BrainValidation {
                 current.temperature(),
                 current.timeoutSeconds(),
                 0,
-                current.retryBackoffMs());
+                current.retryBackoffMs(),
+                current.disableThinking());
         try {
             new DeepSeekApiClient(invalid).chat(List.of(ChatMessage.user("validation ping")), List.of());
             return unexpected(bot, "api_failure", "request unexpectedly succeeded");

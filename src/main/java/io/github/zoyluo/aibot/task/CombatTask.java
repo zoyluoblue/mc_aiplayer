@@ -35,6 +35,8 @@ public final class CombatTask extends AbstractTask {
     private final EntityType<?> targetType;
     private final int targetKills;
     private final float retreatHpThreshold;
+    private final java.util.UUID leashOwner;   // 非 null = 追击牵引:离主人超过 leashRadius 就放弃当前怪、回主人身边
+    private final double leashRadius;
     private Phase phase = Phase.ACQUIRE;
     private LivingEntity target;
     private int kills;
@@ -44,11 +46,20 @@ public final class CombatTask extends AbstractTask {
     private int healTicks;
     private boolean eating;
     private int lostSightTicks; // 目标连续无视线(被墙挡)的 tick 数
+    private int returningTicks;  // 牵引触发后往主人身边走的 tick 数
 
     public CombatTask(EntityType<?> targetType, int targetKills, float retreatHpThreshold) {
+        this(targetType, targetKills, retreatHpThreshold, null, 0.0D);
+    }
+
+    /** leashOwner 非 null 时启用追击牵引:bot 追怪离主人超过 leashRadius 就放弃、走回主人身边再结束。 */
+    public CombatTask(EntityType<?> targetType, int targetKills, float retreatHpThreshold,
+                      java.util.UUID leashOwner, double leashRadius) {
         this.targetType = targetType;
         this.targetKills = Math.max(1, targetKills);
         this.retreatHpThreshold = retreatHpThreshold;
+        this.leashOwner = leashOwner;
+        this.leashRadius = leashRadius;
     }
 
     @Override
@@ -79,14 +90,17 @@ public final class CombatTask extends AbstractTask {
             fail("combat_timeout");
             return;
         }
-        // 目标被方块挡住够不到(隔墙/隔隧道)→ 结束战斗,别傻打/空追到 timeout(实测 bug:被阻隔的怪
-        // 让 bot 一直"正在战斗"、中断正常挖矿)。瞬间遮挡不算,持续无视线 2.5s 才收手;够不到即安全,
-        // 用 complete 干净结束让原任务 resume,不 fail 惊动大脑。
+        // 追击牵引:直播里 bot 追怪跑出画面是大忌(主人被围、观众看不到)。离主人超过 leashRadius →
+        // 立刻放弃当前怪,走回主人身边,到位(或 5s 兜底)后 complete 干净收场,不 fail 惊动大脑。
+        if (leashTick(bot)) {
+            return;
+        }
+        // 失去视线不等于目标不可达。继续进入接近阶段，让统一导航绕行、挖开遮挡或自动施工。
         if (target != null && target.isAlive() && !CombatCore.hasLineOfSight(bot, target)) {
-            if (++lostSightTicks > LOST_SIGHT_LIMIT) {
-                lostSightTicks = 0;
-                complete();
-                return;
+            lostSightTicks++;
+            if (phase != Phase.APPROACH) {
+                bot.stopUsingItem();
+                phase = Phase.APPROACH;
             }
         } else {
             lostSightTicks = 0;
@@ -264,6 +278,39 @@ public final class CombatTask extends AbstractTask {
         }
     }
 
+    /**
+     * 追击牵引一拍:返回 true 表示本 tick 已被牵引逻辑接管(调用方直接 return,不走战斗相位)。
+     * 逻辑:未启用牵引 / 主人不在线 → 放行(false)。一旦离主人超过 leashRadius,进入"回撤"模式:
+     * 抛弃当前目标,走回主人身边;回到 leashRadius*0.6 内(或回撤超 100 tick 兜底)即 complete。
+     */
+    private boolean leashTick(AIPlayerEntity bot) {
+        if (leashOwner == null) {
+            return false;
+        }
+        net.minecraft.server.network.ServerPlayerEntity owner =
+                bot.getServer() == null ? null : bot.getServer().getPlayerManager().getPlayer(leashOwner);
+        if (owner == null || owner.getServerWorld() != bot.getServerWorld()) {
+            return false; // 主人离线或不同世界:不牵引(避免站着不动),按普通战斗跑
+        }
+        double distToOwner = bot.distanceTo(owner);
+        if (returningTicks == 0 && distToOwner <= leashRadius) {
+            return false; // 还在绳长内:正常战斗
+        }
+        // 已触发回撤(returningTicks>0)或刚越界:走回主人身边
+        returningTicks++;
+        target = null;
+        double comeBackWithin = leashRadius * 0.6D;
+        if (distToOwner <= comeBackWithin || returningTicks > 100) {
+            bot.getActionPack().stopMovement();
+            complete(); // 已经回到主人身边(或兜底超时):干净结束,让 follow/guard 等背景任务 resume
+            return true;
+        }
+        if (bot.getActionPack().isPathExecutorIdle()) {
+            bot.getActionPack().startPathTo(owner.getBlockPos());
+        }
+        return true;
+    }
+
     private void startApproach(AIPlayerEntity bot) {
         CombatCore.startApproach(bot, target);
     }
@@ -281,6 +328,7 @@ public final class CombatTask extends AbstractTask {
         return target != null
                 && target.isAlive()
                 && bot.distanceTo(target) > RANGED_MIN_DISTANCE
+                && CombatCore.hasLineOfSight(bot, target)
                 && EquipAction.bestRangedSlot(bot).isPresent();
     }
 

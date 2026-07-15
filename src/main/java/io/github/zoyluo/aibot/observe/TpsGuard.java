@@ -7,7 +7,9 @@ public final class TpsGuard {
     public static final TpsGuard INSTANCE = new TpsGuard();
 
     private static final double DEGRADED_TICK_MS = 55.0D;
-    private static final int NORMAL_CONTINUATION_SECONDS = 3;
+    // 3s 固定续航是"回合制感"的主源之一(任务完成→开口最长白等 3s)。1s 起步 + BrainCoordinator 的
+    // notifyTaskSettled 事件抢跑,把任务完成→大脑接手压到 API 延迟本身;降级 8s 保守不变。
+    private static final int NORMAL_CONTINUATION_SECONDS = 1;
     private static final int DEGRADED_CONTINUATION_SECONDS = 8;
     private static final int NORMAL_SCAN_INTERVAL = 1;
     private static final int DEGRADED_SCAN_INTERVAL = 20;
@@ -51,6 +53,11 @@ public final class TpsGuard {
 
     public synchronized int continuationDelaySeconds() {
         return lastDegraded ? DEGRADED_CONTINUATION_SECONDS : NORMAL_CONTINUATION_SECONDS;
+    }
+
+    /** 无 server 上下文的降级查询(寻路预算等调用点用):读最近一次 tick 判定的状态。 */
+    public synchronized boolean isDegraded() {
+        return lastDegraded;
     }
 
     public synchronized int scanInterval() {

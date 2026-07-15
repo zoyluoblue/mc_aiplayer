@@ -21,6 +21,7 @@ public final class NeighborEnumerator {
 
     private final boolean canPillar;
     private final boolean allowDig;
+    private final boolean parkour; // nav.parkour:平跳越沟邻居开关(feature flag,误跳可一键关)
     private BlockPos pathGoal; // 终点格:岩浆预检豁免用(终点贴岩浆由任务层封堵处理,不该让唯一入口无解)
 
     public NeighborEnumerator() {
@@ -39,6 +40,7 @@ public final class NeighborEnumerator {
     public NeighborEnumerator(boolean canPillar, boolean allowDig) {
         this.canPillar = canPillar;
         this.allowDig = allowDig;
+        this.parkour = AIBotConfig.get().nav().parkourEnabled();
     }
 
     public void setPathGoal(BlockPos goal) {
@@ -76,6 +78,12 @@ public final class NeighborEnumerator {
             if (allowDig && digEnterable(world, upTarget) && collisionEmpty(world, current.up(2))) {
                 result.add(new NeighborCandidate(upTarget, MoveType.DIG_THROUGH, 0));
             }
+            // 斜向下挖成楼梯。目标脚位低一格、头位就是相邻列当前高度；挖开两格后走下去，
+            // 比原地竖直下挖更安全，也让 follow/chase 能追到地下房间或矿道。
+            BlockPos downTarget = target.down();
+            if (allowDig && digEnterable(world, downTarget)) {
+                result.add(new NeighborCandidate(downTarget, MoveType.DIG_THROUGH, 0));
+            }
         }
         // 垂直向下挖落(DIG 垂直分量之下行):挖开脚下一格掉下去站稳。治 geo_deep/埋矿族:
         // 矿在正下方若干格,水平 DIG 在本层泛洪永远够不到(实测 ore_dig_buried/deep 同源)。
@@ -86,8 +94,63 @@ public final class NeighborEnumerator {
             }
         }
         addDiagonals(current, world, result);
+        addParkour(current, world, result);
         addPillar(current, world, result);
+        addScaffold(current, world, result);
         return result;
+    }
+
+    /**
+     * 平跳越沟(治"遇 1~2 格小沟只能绕远/掉坑"):规划器此前没有任何跨 gap 节点,执行器只能
+     * 走路时凑巧反应式跳单格窄沟。真沟判定=gap 列脚/头/头上/脚下全空(有支撑就是 WALK/DROP 领域);
+     * 落点=同高或低一格且可站。执行由 PathExecutor.tickParkour 预蓄冲刺后沿边起跳。
+     */
+    private void addParkour(BlockPos current, ServerWorld world, List<NeighborCandidate> result) {
+        if (!parkour || !canJumpFrom(world, current)) {
+            return;
+        }
+        for (Direction direction : HORIZONTAL) {
+            BlockPos gap1 = current.offset(direction);
+            if (!gapColumn(world, gap1)) {
+                continue;
+            }
+            BlockPos landing = parkourLanding(world, current.offset(direction, 2));
+            if (landing != null) {
+                result.add(new NeighborCandidate(landing, MoveType.PARKOUR, 0));
+                continue; // 1 格沟已可跳,同方向不再嗅 2 格
+            }
+            BlockPos gap2 = current.offset(direction, 2);
+            if (!gapColumn(world, gap2)) {
+                continue;
+            }
+            landing = parkourLanding(world, current.offset(direction, 3));
+            if (landing != null) {
+                result.add(new NeighborCandidate(landing, MoveType.PARKOUR, 0));
+            }
+        }
+    }
+
+    /** 真沟列:脚/头/头上净空(跳跃弧线)+ 脚下也空;沟底 1~2 格内有岩浆的沟不跳(跳空即死)。 */
+    private static boolean gapColumn(ServerWorld world, BlockPos feet) {
+        if (!collisionEmpty(world, feet) || !collisionEmpty(world, feet.up())
+                || !collisionEmpty(world, feet.up(2)) || !collisionEmpty(world, feet.down())) {
+            return false;
+        }
+        return !world.getFluidState(feet.down()).isIn(net.minecraft.registry.tag.FluidTags.LAVA)
+                && !world.getFluidState(feet.down(2)).isIn(net.minecraft.registry.tag.FluidTags.LAVA);
+    }
+
+    /** 落点解析:同高可站优先;否则允许低一格(跳下沿)。落点头上两格需净空(带着跳跃弧线落地)。 */
+    private static BlockPos parkourLanding(ServerWorld world, BlockPos same) {
+        if (Standability.isStandable(world, same) && collisionEmpty(world, same.up(2))) {
+            return same;
+        }
+        BlockPos lower = same.down();
+        if (collisionEmpty(world, same) && collisionEmpty(world, same.up())
+                && Standability.isStandable(world, lower)) {
+            return lower;
+        }
+        return null;
     }
 
     // NAV-3:同高对角移动。仅当目标格可站、且两个正交相邻格都"可穿过"(不切墙角)时才允许。
@@ -123,6 +186,30 @@ public final class NeighborEnumerator {
         // up1 = 新脚位(当前头位,应为空);up2 = 新头位,需净空
         if (collisionEmpty(world, up1) && collisionEmpty(world, up2) && !Standability.isDangerous(world.getBlockState(up1))) {
             result.add(new NeighborCandidate(up1, MoveType.PILLAR_UP, 0));
+        }
+    }
+
+    // 无支撑的相邻空气列:先在目标脚位下一格铺实体方块,再走过去。规划阶段允许连续生成这种
+    // 虚拟落脚点,执行器会逐格落块并在每次放置后使路径缓存失效。
+    private void addScaffold(BlockPos current, ServerWorld world, List<NeighborCandidate> result) {
+        if (!canPillar) {
+            return;
+        }
+        for (Direction direction : HORIZONTAL) {
+            BlockPos target = current.offset(direction);
+            BlockPos floor = target.down();
+            if (!collisionEmpty(world, target) || !collisionEmpty(world, target.up())) {
+                continue;
+            }
+            BlockState floorState = world.getBlockState(floor);
+            if (!floorState.isReplaceable() || !floorState.getCollisionShape(world, floor).isEmpty()) {
+                continue;
+            }
+            if (Standability.isDangerous(world.getBlockState(target))
+                    || Standability.isDangerous(world.getBlockState(target.up()))) {
+                continue;
+            }
+            result.add(new NeighborCandidate(target, MoveType.SCAFFOLD, 0));
         }
     }
 
@@ -229,20 +316,8 @@ public final class NeighborEnumerator {
         if (!state.getFluidState().isEmpty() || Standability.isDangerous(state)) {
             return false;
         }
-        // 矿石本身可挖(终点豁免的配套:目标矿格要能进路径;OreScan 含模组 _ore 后缀)。
-        if (io.github.zoyluo.aibot.mining.OreScan.isOreBlock(state.getBlock())) {
-            return true;
-        }
-        return state.isIn(BlockTags.STONE_ORE_REPLACEABLES)
-                || state.isIn(BlockTags.DEEPSLATE_ORE_REPLACEABLES)
-                || state.isIn(BlockTags.DIRT)
-                || state.isOf(Blocks.STONE)
-                || state.isOf(Blocks.COBBLESTONE)
-                || state.isOf(Blocks.GRANITE)
-                || state.isOf(Blocks.DIORITE)
-                || state.isOf(Blocks.ANDESITE)
-                || state.isOf(Blocks.SAND)
-                || state.isOf(Blocks.RED_SAND)
-                || state.isOf(Blocks.GRAVEL);
+        // 导航破障不应只认识天然石土。木板、玻璃、门等普通可破坏方块同样可能挡住跟随或追击；
+        // 方块实体(箱子/熔炉等)、流体、危险块和不可破坏块仍在上面明确排除。
+        return true;
     }
 }

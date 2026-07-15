@@ -15,19 +15,47 @@ import io.github.zoyluo.aibot.coordination.Job;
 import io.github.zoyluo.aibot.coordination.TaskBoard;
 import io.github.zoyluo.aibot.craft.AcquisitionHints;
 import io.github.zoyluo.aibot.craft.CraftingHelper;
+import io.github.zoyluo.aibot.craft.InstantCrafter;
+import io.github.zoyluo.aibot.entity.AIPlayerEntity;
+import io.github.zoyluo.aibot.gift.GiftCelebrator;
+import io.github.zoyluo.aibot.gift.GiftDispatcher;
 import io.github.zoyluo.aibot.goal.Goal;
 import io.github.zoyluo.aibot.goal.GoalExecutor;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
 import io.github.zoyluo.aibot.memory.BotMemory;
 import io.github.zoyluo.aibot.memory.BotMemoryStore;
+import io.github.zoyluo.aibot.mining.OreProspector;
 import io.github.zoyluo.aibot.mining.OreScan;
+import io.github.zoyluo.aibot.pathfinding.Standability;
 import io.github.zoyluo.aibot.task.BlueprintLoader;
 import io.github.zoyluo.aibot.task.BreedTask;
+import io.github.zoyluo.aibot.task.CreateObsidianTask;
+import io.github.zoyluo.aibot.task.DescendToYTask;
+import io.github.zoyluo.aibot.task.EmergencyShelterTask;
+import io.github.zoyluo.aibot.task.EvadeTask;
+import io.github.zoyluo.aibot.task.PickupDropsTask;
+import io.github.zoyluo.aibot.task.PillarUpTask;
+import io.github.zoyluo.aibot.task.PlantSaplingTask;
+import io.github.zoyluo.aibot.task.ResupplyTask;
+import io.github.zoyluo.aibot.task.RideTask;
+import io.github.zoyluo.aibot.task.ShearSheepTask;
+import io.github.zoyluo.aibot.task.BuildGolemTask;
+import io.github.zoyluo.aibot.task.BuildWallTask;
+import io.github.zoyluo.aibot.task.FlattenAreaTask;
+import io.github.zoyluo.aibot.task.PatrolTask;
+import io.github.zoyluo.aibot.task.PlaceBoatTask;
+import io.github.zoyluo.aibot.task.ScaffoldWalkTask;
+import io.github.zoyluo.aibot.task.ThrowAtTask;
+import io.github.zoyluo.aibot.task.TameTask;
+import io.github.zoyluo.aibot.task.Threat;
 import io.github.zoyluo.aibot.task.BuildTask;
+import io.github.zoyluo.aibot.task.ChaseAttackTask;
 import io.github.zoyluo.aibot.task.CombatTask;
 import io.github.zoyluo.aibot.task.ContainerTask;
 import io.github.zoyluo.aibot.task.CraftTask;
 import io.github.zoyluo.aibot.task.EatTask;
+import io.github.zoyluo.aibot.task.EmoteTask;
+import io.github.zoyluo.aibot.task.MilkCowTask;
 import io.github.zoyluo.aibot.task.FishTask;
 import io.github.zoyluo.aibot.task.FarmTask;
 import io.github.zoyluo.aibot.task.GatherQuotaTask;
@@ -35,6 +63,7 @@ import io.github.zoyluo.aibot.task.FollowTask;
 import io.github.zoyluo.aibot.task.GuardTask;
 import io.github.zoyluo.aibot.task.HoldTask;
 import io.github.zoyluo.aibot.task.LightAreaTask;
+import io.github.zoyluo.aibot.task.LongRunningIntentManager;
 import io.github.zoyluo.aibot.task.MineTask;
 import io.github.zoyluo.aibot.task.MoveTask;
 import io.github.zoyluo.aibot.task.SleepTask;
@@ -47,14 +76,28 @@ import io.github.zoyluo.aibot.task.TaskManager;
 import io.github.zoyluo.aibot.task.TaskStatus;
 import io.github.zoyluo.aibot.task.TradeTask;
 import net.minecraft.block.Block;
+import net.minecraft.block.BlockState;
+import net.minecraft.block.Blocks;
+import net.minecraft.block.CropBlock;
+import net.minecraft.block.SaplingBlock;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
+import net.minecraft.entity.mob.HostileEntity;
+import net.minecraft.entity.passive.TameableEntity;
 import net.minecraft.item.Item;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
 import net.minecraft.registry.Registries;
+import net.minecraft.registry.tag.BlockTags;
+import net.minecraft.registry.tag.FluidTags;
+import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.world.ServerWorld;
+import net.minecraft.util.Hand;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.Heightmap;
 
 import java.util.Comparator;
 import java.util.HashSet;
@@ -66,6 +109,10 @@ import java.util.Set;
 import java.util.UUID;
 
 public final class ToolRegistry {
+    /** run_command 永久黑名单:即使主人门禁放行也绝不执行的服务器级危险指令。 */
+    private static final Set<String> BLOCKED_COMMANDS = Set.of(
+            "stop", "ban", "ban-ip", "pardon", "pardon-ip", "op", "deop", "whitelist", "kick", "save-off", "reload");
+
     private final Map<String, ToolDefinition> tools = new LinkedHashMap<>();
 
     public ToolRegistry() {
@@ -88,10 +135,16 @@ public final class ToolRegistry {
         return tools(config, exposeLowLevelTools, config.memoryToolsEnabled(), config.coordinationToolsEnabled());
     }
 
+    // 弱模型误选诱饵:strip_mine/mine_vein 是脆逻辑旧任务(硬失败多、与 C1 引导相悖),set_goal 让模型
+    // 自由编步骤字符串=「自信地做错」高发口。默认不暴露给模型(exposeAdvancedTools=false),高层入口
+    // gather/mine_ore/achieve_goal 全覆盖;/aibot 命令行与 verify 直连任务层,不受影响。
+    private static final java.util.Set<String> ADVANCED_ONLY_TOOLS = java.util.Set.of("strip_mine", "mine_vein", "set_goal");
+
     public List<ToolDefinition> tools(AIBotConfig.Brain config,
                                       boolean exposeLowLevelTools,
                                       boolean memoryToolsEnabled,
                                       boolean coordinationToolsEnabled) {
+        boolean advanced = config.advancedToolsExposed();
         return tools.values().stream()
                 .filter(tool -> switch (tool.group()) {
                     case CORE -> true;
@@ -99,6 +152,7 @@ public final class ToolRegistry {
                     case COORDINATION -> coordinationToolsEnabled;
                     case LOW_LEVEL -> exposeLowLevelTools;
                 })
+                .filter(tool -> advanced || !ADVANCED_ONLY_TOOLS.contains(tool.name()))
                 .toList();
     }
 
@@ -117,17 +171,11 @@ public final class ToolRegistry {
             return ok("looked");
         });
 
-        register("move_to", "Pathfind to a coordinate. Falls back to straight-line walking if pathfinding fails.", xyzSchema(), ToolDefinition.Group.LOW_LEVEL, (bot, args) -> {
+        register("move_to", "智能移动到坐标:自动绕路、挖开普通遮挡、垫高和跨缺口铺路。", xyzSchema(), ToolDefinition.Group.LOW_LEVEL, (bot, args) -> {
             BlockPos goal = blockPos(args);
-            io.github.zoyluo.aibot.action.ActionResult pathResult = MovementAction.startPathTo(bot, goal);
-            if (pathResult.isInProgress() || pathResult.isSuccess()) {
-                return ok("pathfinding_started");
-            }
-            io.github.zoyluo.aibot.action.ActionResult fallback = MovementAction.startWalkTo(bot, Vec3d.ofCenter(goal));
-            if (fallback.isInProgress() || fallback.isSuccess()) {
-                return ok("fallback_walk_started: " + pathResult.reason());
-            }
-            return fail("path_and_walk_both_failed: " + pathResult.reason());
+            Task task = new MoveTask(bot, goal);
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: smart_move -> " + goal.toShortString());
         });
 
         register("mine_block", "Low-level single-block break at given coords. Bot must already be within reach. For gathering materials or mining counts, prefer assign_task with task_type mine.", xyzSchema(), ToolDefinition.Group.LOW_LEVEL, (bot, args) -> {
@@ -163,14 +211,14 @@ public final class ToolRegistry {
                 .required("item")
                 .build(), (bot, args) -> ok(craftPlanJson(CraftingHelper.plan(bot, requiredItem(args, "item"), optionalInt(args, "count", 1)))));
 
-        register("craft", "Craft an item using known survival recipes. It resolves planks and sticks recursively, so prefer crafting the target tool/item directly instead of crafting planks or sticks as separate steps. It does not gather, smelt, or open GUIs. For 3x3 recipes, craft minecraft:crafting_table first; after that this task can use a nearby table or place a held table automatically. Do not use select_hotbar/place_block for the crafting table unless the human asks. Fails with need: <item> xN when base materials are missing.", objectSchema()
+        register("craft", "INSTANT crafting: automatically checks materials and crafts immediately in this same call — no crafting table, no walking, no waiting. Resolves intermediates such as planks and sticks recursively, so craft the target item directly. If base materials are missing it returns need: <item> xN — obtain exactly those (mine_ore/gather/smelt or achieve_goal), then call craft again.", objectSchema()
                 .property("item", stringSchema("item id, for example minecraft:stone_pickaxe"))
                 .property("count", integerSchema("desired count"))
                 .required("item")
                 .build(), (bot, args) -> {
-            Task task = new CraftTask(requiredItem(args, "item"), optionalInt(args, "count", 1));
-            TaskManager.INSTANCE.assign(bot, task);
-            return ok("assigned: " + task.name());
+            // 瞬时合成:直播取舍——免工作台免走路,一次调用一轮出结果,省掉模型多轮空转。
+            String result = InstantCrafter.craft(bot, requiredItem(args, "item"), optionalInt(args, "count", 1));
+            return result.startsWith("need:") ? fail(result) : ok(result);
         });
 
         register("eat", "Eat available food from inventory", objectSchema().build(), (bot, args) -> {
@@ -194,7 +242,7 @@ public final class ToolRegistry {
             return ok("assigned: " + task.name());
         });
 
-        register("gather", "Gather an item until the inventory contains the requested quota. Use this for requests like collect 64 cobblestone; it loops survey, move, harvest, and pickup without assigning child tasks.", objectSchema()
+        register("gather", "Gather an item until the inventory contains the requested quota. USE FOR: logs/wood(木头), stone(石头), cobblestone(圆石), dirt, sand, seeds — e.g. collect 64 cobblestone. It loops survey, move, harvest, pickup automatically. NOT FOR real ores (iron/gold/diamond/coal ore) — use mine_ore for those.", objectSchema()
                 .property("item", stringSchema("target item id, for example minecraft:cobblestone"))
                 .property("count", integerSchema("desired inventory count"))
                 .required("item")
@@ -235,7 +283,7 @@ public final class ToolRegistry {
             return ok("assigned: " + task.name());
         });
 
-        register("strip_mine", "Mine a 2-high branch tunnel in a direction. Use this for ore blocks such as minecraft:iron_ore, not assign_task mine. If started above the target ore layer and no exposed ore is nearby, it first digs a descending stair shaft to the ore layer, then branches, follows veins, places torches, and can return to a depot chest when nearly full.", objectSchema()
+        register("strip_mine", "ADVANCED manual branch-tunnel mining (2-high tunnel, stair shaft, torches, depot returns). For obtaining ores DO NOT use this — use mine_ore instead (it auto-prepares the pickaxe and is safer). Only for explicit manual tunneling requests.", objectSchema()
                 .property("direction", stringSchema("north, south, east, or west"))
                 .property("length", integerSchema("main tunnel length"))
                 .property("spacing", integerSchema("branch spacing and branch depth"))
@@ -254,7 +302,7 @@ public final class ToolRegistry {
             return ok("assigned: " + task.name());
         });
 
-        register("mine_vein", "Mine the nearest visible ore vein in range using bounded BFS. Optional target_ores is a comma separated list of ore block ids.", objectSchema()
+        register("mine_vein", "ADVANCED: mine the nearest visible ore vein in range (radius only 6, fails fast). Prefer mine_ore for any ore request. Optional target_ores is a comma separated list of ore block ids.", objectSchema()
                 .property("target_ores", stringSchema("optional comma separated ore block ids; default is common ores"))
                 .build(), (bot, args) -> {
             Task task = StripMineTask.mineNearbyVein(optionalBlocksCsv(args, "target_ores"));
@@ -262,7 +310,7 @@ public final class ToolRegistry {
             return ok("assigned: " + task.name());
         });
 
-        register("mine_ore", "PREFERRED way to obtain ores (e.g. minecraft:iron_ore or raw item minecraft:raw_iron). Starts a deterministic goal plan: prepare the required pickaxe first, then mine the ore. Do not manually break this into gather/craft/mine steps.", objectSchema()
+        register("mine_ore", "PREFERRED way to obtain ORES / RAW drops ONLY (e.g. minecraft:iron_ore -> raw_iron 生铁, coal, diamond). Auto-prepares the pickaxe then mines. NOT FOR finished items: 铁锭 iron_ingot / tools / armor need smelting+crafting — use achieve_goal for those. Do not manually break this into gather/craft/mine steps.", objectSchema()
                 .property("ore", stringSchema("ore block id or raw item, e.g. minecraft:iron_ore or minecraft:raw_iron"))
                 .property("count", integerSchema("how many ore blocks to mine"))
                 .required("ore")
@@ -277,7 +325,7 @@ public final class ToolRegistry {
             return started ? ok("goal_assigned: mine_ore") : fail("goal_plan_failed");
         });
 
-        register("achieve_goal", "Achieve an item/tool inventory goal with deterministic planning. Use this for requests like make an iron pickaxe or obtain 10 iron ingots; do not manually decompose the steps.", objectSchema()
+        register("achieve_goal", "Achieve ANY FINISHED item goal with one call — ingots(锭, auto-smelts), tools, weapons, armor, blocks. E.g. iron_pickaxe or 10 iron_ingot: it runs the whole chain (wood->pickaxe->mine->smelt->craft) automatically. NEVER manually decompose into move/mine/craft steps (that wastes all your turns); NEVER use mine_ore for 锭/成品 (raw_iron is NOT iron_ingot).", objectSchema()
                 .property("item", stringSchema("target item/tool id, for example minecraft:iron_pickaxe or minecraft:iron_ingot"))
                 .property("count", integerSchema("desired inventory count"))
                 .required("item")
@@ -411,17 +459,125 @@ public final class ToolRegistry {
             return ok("equipped_armor_pieces: " + equipped);
         });
 
-        register("attack", "Start a deterministic combat task against nearby entities of a type. The bot equips armor and weapon, attacks on cooldown, and retreats at low health.", objectSchema()
+        register("drop_item", "Drop N of an item from the inventory onto the ground in front of the bot. Use for 丢掉/扔掉/丢地上/不要了. ALWAYS pass count when the user says a number (丢5个 -> count=5); omitting count drops ALL of that item. Note: N items land as ONE stacked pile, not N piles.", objectSchema()
+                .property("item", stringSchema("item id, for example minecraft:cobblestone"))
+                .property("count", integerSchema("how many to drop; omit or 999 = drop all of that item"))
+                .required("item")
+                .build(), (bot, args) -> {
+            Item item = requiredItem(args, "item");
+            int dropped = dropFromInventory(bot, item, optionalInt(args, "count", 999), null);
+            return dropped > 0
+                    ? ok("dropped: " + Registries.ITEM.getId(item) + " x" + dropped)
+                    : fail("not_in_inventory: " + Registries.ITEM.getId(item));
+        });
+
+        register("give_item", "Toss N of an item to a nearby player: the bot turns to face them and throws the items over. Works within 8 blocks — if farther away, come_here or move_to first, then give. Use for 给我/递给我/把X给我. Omit player to use the owner. ALWAYS pass count when the user says a number (给我10个 -> count=10); 都/全部/所有 -> count=999.", objectSchema()
+                .property("player", stringSchema("player name; omit to use the bot's owner or nearest player"))
+                .property("item", stringSchema("item id, for example minecraft:iron_ingot"))
+                .property("count", integerSchema("how many to give, default 1; use 999 for all"))
+                .required("item")
+                .build(), (bot, args) -> {
+            ServerPlayerEntity target = resolveTossTarget(bot, optionalString(args, "player", ""));
+            if (target == null) {
+                return fail("player_not_found");
+            }
+            if (bot.distanceTo(target) > 8.0F) {
+                return fail("too_far: " + (int) bot.distanceTo(target) + " blocks away, come_here first then give_item again");
+            }
+            Item item = requiredItem(args, "item");
+            int given = dropFromInventory(bot, item, optionalInt(args, "count", 1), target);
+            return given > 0
+                    ? ok("tossed: " + Registries.ITEM.getId(item) + " x" + given + " to " + target.getGameProfile().getName())
+                    : fail("not_in_inventory: " + Registries.ITEM.getId(item));
+        });
+
+        register("scan_surroundings", "God-view scan of surroundings: nearest lava/water/ores/trees/chests/furnaces/beds, hostile mobs and ground items with coordinates and distances (blocks radius 12, entities 24). ALWAYS call this FIRST before answering any question about what is nearby (附近有没有X/周围有什么/跳进旁边的X) — never claim something is not nearby without scanning.", objectSchema().build(), (bot, args) ->
+                ok(io.github.zoyluo.aibot.perception.PerceptionCollector.scanReport(bot)));
+
+        register("speak", "让观众听到你说的话(触发语音 TTS)。每次一句短话(≤30中文字),超长自动截断。需要说话给观众/主人听时用它:回复、吐槽、庆祝、挑衅、互动等。plain text 短句也会自动 TTS,但 speak 是显式控制,效果更好。", objectSchema()
+                .property("message", stringSchema("要说什么,一句短话"))
+                .required("message")
+                .build(), (bot, args) -> {
+            String message = requiredString(args, "message");
+            if (message.length() > 100) {
+                message = message.substring(0, 97) + "...";
+            }
+            if (message.isBlank()) {
+                return fail("empty_message");
+            }
+            BrainCoordinator.INSTANCE.triggerSpeech(bot, message);
+            return ok("said");
+        });
+
+        register("finish", "End your current turn. Call ONCE after all tool calls for this step are done, with a one-line summary spoken to the audience. Until finish() is called, your turn is not considered complete and the player cannot send a new instruction — so do not skip it. NEVER call finish as your first action — only after at least one other tool (speak/come_here/gather/etc).", objectSchema()
+                .property("summary", stringSchema("one-line summary of what just happened, ≤30 Chinese chars, spoken to audience"))
+                .required("summary")
+                .build(), (bot, args) -> {
+            String summary = requiredString(args, "summary");
+            if (summary == null || summary.isBlank()) {
+                summary = "Done";
+            }
+            if (summary.length() > 100) {
+                summary = summary.substring(0, 97) + "...";
+            }
+            // 先触发 TTS 让观众听到总结
+            BrainCoordinator.INSTANCE.triggerSpeech(bot, summary);
+            // 标记 turn 完成 → BrainCoordinator 允许下一条用户消息
+            BrainCoordinator.INSTANCE.markTurnFinished(bot);
+            return ok("finished: " + summary);
+        });
+
+        register("run_command", "Execute ONE server command with OP permission (leading slash optional), e.g. command=\"tp <your_name> <owner_name>\". HARD-LOCKED: only works when the OWNER's current message explicitly demands it; rejected for gift/viewer instructions and self-initiative.", objectSchema()
+                .property("command", stringSchema("the full command, for example: tp Bob ImMICx"))
+                .required("command")
+                .build(), (bot, args) -> {
+            if (!BrainCoordinator.INSTANCE.currentRequestFromOwner(bot)) {
+                return fail("forbidden: run_command only works when the owner directly asked for it in this request");
+            }
+            String command = requiredString(args, "command").trim();
+            while (command.startsWith("/")) {
+                command = command.substring(1);
+            }
+            if (command.isBlank()) {
+                return fail("empty_command");
+            }
+            String root = command.split("\\s+")[0].toLowerCase(java.util.Locale.ROOT);
+            if (BLOCKED_COMMANDS.contains(root)) {
+                return fail("blocked_command: " + root + " is never allowed");
+            }
+            net.minecraft.server.MinecraftServer server = bot.getServer();
+            if (server == null) {
+                return fail("no_server");
+            }
+            server.getCommandManager().executeWithPrefix(bot.getCommandSource().withLevel(4), command);
+            io.github.zoyluo.aibot.log.BotLog.comm(bot, "run_command_executed", "command", command);
+            return ok("executed: /" + command);
+        });
+
+        register("attack", "KILL N entities of a type — the ONLY correct tool for 杀/击杀/杀死/kill requests. Deterministic combat task: equips armor and weapon, fights until exactly N are killed, then completes. Example: 杀一只牛 -> entity_type=minecraft:cow, count=1.", objectSchema()
                 .property("entity_type", stringSchema("entity type, for example minecraft:zombie"))
                 .property("count", integerSchema("number of kills"))
                 .required("entity_type")
                 .build(), (bot, args) -> {
+            // 追击牵引:有主人时默认拴 16 格——追怪跑出这个半径就放弃、回主人身边。
+            // 直播里 bot 追怪脱离画面是大忌(主人被围/观众看不到),这是"像傻子走来走去"的真凶。
+            java.util.UUID leashOwner = io.github.zoyluo.aibot.manager.AIPlayerManager.INSTANCE.ownerOf(bot).orElse(null);
             Task task = new CombatTask(
                     requiredEntityType(args, "entity_type"),
                     optionalInt(args, "count", 1),
-                    io.github.zoyluo.aibot.AIBotConfig.get().combat().retreatHp());
+                    io.github.zoyluo.aibot.AIBotConfig.get().combat().retreatHp(),
+                    leashOwner, 16.0D);
             TaskManager.INSTANCE.assign(bot, task);
             return ok("assigned: " + task.name());
+        });
+
+        register("chase_attack", "持续追杀主人本人(直播反水/礼物追杀节目效果)。会自动绕路、挖开普通遮挡、垫高和跨缺口铺路,无需再调用移动或施工工具。用于主人说\"一直追杀我/从现在开始追着打我/反水干我\"。仅追主人自己,需服务端 pvp=true 才真掉血。", objectSchema().build(), (bot, args) -> {
+            Optional<ChaseAttackTask> task = ChaseAttackTask.ownerTarget(bot);
+            if (task.isEmpty()) {
+                return fail("no_owner: 这个 bot 没有主人,无法追杀");
+            }
+            TaskManager.INSTANCE.assign(bot, task.get());
+            return ok("assigned: chase_attack");
         });
 
         register("sleep", "Find or place a bed, sleep through night, and wake up in the morning", objectSchema().build(), (bot, args) -> {
@@ -439,12 +595,839 @@ public final class ToolRegistry {
             return ok("assigned: " + task.name());
         });
 
-        register("follow", "Follow a player while keeping roughly 2-4 blocks of distance. Omit player_name to follow this bot's owner.", objectSchema()
+        register("come_here", "Move once to a player, then stop when near them. Use this for 过来/来我身边/come here. Do not use follow unless the human explicitly asks to keep following.", objectSchema()
                 .property("player_name", stringSchema("optional player name; defaults to owner"))
                 .build(), (bot, args) -> {
-            Task task = new FollowTask(optionalString(args, "player_name", ""));
+            ServerPlayerEntity target = targetPlayer(bot, optionalString(args, "player_name", ""))
+                    .orElseThrow(() -> new IllegalArgumentException("target_player_not_found"));
+            Task task = new MoveTask(bot, target.getBlockPos());
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: come_here");
+        });
+
+        register("emote", "直播卖萌/表演/庆祝的肢体动作,给观众一点看头。style: wave(挥手打招呼) / nod(点头) / shake(摇头) / jump(蹦跳) / spin(转圈) / bow(鞠躬行礼) / look_around(东张西望) / dance(尬舞,默认) / celebrate(放烟花+转圈庆祝). 纯表演,1~3 秒做完,不影响也不需要材料。适合:主人夸你、完成一件事、观众刷礼物/弹幕活跃、开场收场时来一个。", objectSchema()
+                .property("style", stringSchema("wave/nod/shake/jump/spin/bow/look_around/dance/celebrate,默认 dance"))
+                .build(), (bot, args) -> {
+            String style = optionalString(args, "style", "dance");
+            String s = style.toLowerCase();
+            if (s.contains("celebrat") || s.contains("firework") || style.contains("庆祝") || style.contains("烟花") || style.contains("礼花")) {
+                GiftCelebrator.INSTANCE.celebrate(bot, 4,
+                        new GiftDispatcher.GiftEvent("直播间", "emote", 1, bot.getGameProfile().getName()));
+                return ok("emote: 🎆庆祝");
+            }
+            Task task = new EmoteTask(style);
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: emote");
+        });
+
+        register("milk_cow", "挤牛奶:走到附近的牛旁边,用背包里的空桶(bucket)挤奶。喝牛奶能立刻解除中毒/虚弱等负面效果,也能当食物。没有空桶会失败——先 craft minecraft:bucket 或让主人给。count = 挤几桶(默认 1)。", objectSchema()
+                .property("count", integerSchema("挤几桶牛奶,默认 1"))
+                .build(), (bot, args) -> {
+            Task task = new MilkCowTask(optionalInt(args, "count", 1));
             TaskManager.INSTANCE.assign(bot, task);
             return ok("assigned: " + task.name());
+        });
+
+        // ================= §17.16 真人工具链大扩容(24 个) =================
+
+        register("pillar_up", "原地垫方块升高 N 格(上去/上树/上墙头/垫高)。竖直方向用它;水平过河用 scaffold_walk。需背包有可放方块。", objectSchema()
+                .property("height", integerSchema("升高几格,默认 5", 2, 32))
+                .build(), (bot, args) -> {
+            Task task = new PillarUpTask(optionalInt(args, "height", 5));
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: " + task.name());
+        });
+
+        register("go_surface", "回到地面/地表(从矿洞、地下上来)。自动找最近的地表落点走/挖过去。", objectSchema().build(), (bot, args) -> {
+            ServerWorld world = bot.getServerWorld();
+            BlockPos feet = bot.getBlockPos();
+            int topY = world.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, feet.getX(), feet.getZ());
+            if (feet.getY() >= topY - 2) {
+                return ok("already_on_surface");
+            }
+            BlockPos target = surfaceStandable(world, feet.getX(), feet.getZ(), 16);
+            if (target == null) {
+                return fail("no_surface_spot");
+            }
+            Task task = new MoveTask(bot, target);
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: go_surface -> " + target.toShortString());
+        });
+
+        register("descend_to_y", "挖竖井下到指定 Y 层(挖钻石先到 y=-58)。遇岩浆自动停;到层后再 mine_ore。", objectSchema()
+                .property("y", integerSchema("目标 Y 层,例如 -58", -59, 100))
+                .required("y")
+                .build(), (bot, args) -> {
+            Task task = new DescendToYTask(Math.max(-59, Math.min(100, requiredInt(args, "y"))));
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: " + task.name());
+        });
+
+        register("explore", "朝一个方向出发探索一段距离(去北边看看/往那边走走)。", objectSchema()
+                .property("direction", stringSchema("north/south/east/west;省略=当前朝向"))
+                .property("distance", integerSchema("走多远,默认 32", 8, 64))
+                .build(), (bot, args) -> {
+            Direction dir = optionalDirection(args, "direction", bot.getHorizontalFacing());
+            int dist = Math.max(8, Math.min(64, optionalInt(args, "distance", 32)));
+            BlockPos target = surfaceStandable(bot.getServerWorld(),
+                    bot.getBlockX() + dir.getOffsetX() * dist,
+                    bot.getBlockZ() + dir.getOffsetZ() * dist, 8);
+            if (target == null) {
+                return fail("no_standable_target");
+            }
+            Task task = new MoveTask(bot, target);
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: explore -> " + target.toShortString());
+        });
+
+        register("wander", "附近随便逛逛(没事干时的活人感,随机 8~N 格)。", objectSchema()
+                .property("distance", integerSchema("最远几格,默认 16", 8, 32))
+                .build(), (bot, args) -> {
+            BlockPos target = randomWanderTarget(bot, optionalInt(args, "distance", 16));
+            if (target == null) {
+                return fail("wander_no_target");
+            }
+            Task task = new MoveTask(bot, target);
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: wander");
+        });
+
+        register("pickup_items", "把附近地上的掉落物全捡起来(打完怪/砍完树的散落物,别浪费)。", objectSchema()
+                .property("radius", integerSchema("搜多远,默认 16", 4, 32))
+                .build(), (bot, args) -> {
+            Task task = new PickupDropsTask(optionalInt(args, "radius", 16));
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: " + task.name());
+        });
+
+        register("flee", "立刻逃离最近的敌对怪(快跑/撤退),冲刺拉开 20 格再停。", objectSchema().build(), (bot, args) -> {
+            HostileEntity hostile = bot.getServerWorld()
+                    .getEntitiesByClass(HostileEntity.class, bot.getBoundingBox().expand(24.0D), Entity::isAlive)
+                    .stream()
+                    .min(Comparator.comparingDouble(bot::distanceTo))
+                    .orElse(null);
+            if (hostile == null) {
+                return fail("no_hostile_nearby: 附近没怪,不用逃");
+            }
+            Task task = new EvadeTask(new Threat(Threat.Type.HOSTILE, Threat.Severity.HIGH,
+                    hostile, hostile.getBlockPos()));
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: flee");
+        });
+
+        register("shelter_now", "就地用方块把自己围起来应急自保(半夜被围/血少快死时)。", objectSchema().build(), (bot, args) -> {
+            Task task = new EmergencyShelterTask();
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: " + task.name());
+        });
+
+        register("resupply", "回基地箱子补给:不带参数=补吃的;给 item=取那件工具。需要之前 set_base 过。", objectSchema()
+                .property("item", stringSchema("要取的工具 id,如 minecraft:iron_pickaxe;省略=补食物"))
+                .build(), (bot, args) -> {
+            Item item = optionalItem(args, "item");
+            Task task = item != null ? ResupplyTask.tool(item) : ResupplyTask.food();
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: " + task.name());
+        });
+
+        register("irrigate", "在身前挖 2x2 无限水源池(浇地/取水点)。需背包 ≥2 桶水。", objectSchema().build(), (bot, args) -> {
+            Task task = new io.github.zoyluo.aibot.task.IrrigateTask(
+                    bot.getBlockPos().offset(bot.getHorizontalFacing(), 2).down());
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: " + task.name());
+        });
+
+        register("raid_crops", "收割附近已成熟的庄稼(村庄的也收=偷菜,节目效果)。", objectSchema()
+                .property("count", integerSchema("收几个,默认 8"))
+                .build(), (bot, args) -> {
+            Task task = new io.github.zoyluo.aibot.task.RaidCropsTask(optionalInt(args, "count", 8));
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: " + task.name());
+        });
+
+        register("create_obsidian", "水浇岩浆造黑曜石并挖走(去下界/做附魔台必备)。需水桶+钻石镐。", objectSchema()
+                .property("count", integerSchema("造几块,默认 4"))
+                .build(), (bot, args) -> {
+            Task task = new CreateObsidianTask(optionalInt(args, "count", 4));
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: " + task.name());
+        });
+
+        register("ride", "走过去坐上附近的船/矿车/已驯服的马(坐船划船/骑马)。下来用 dismount。", objectSchema()
+                .property("target", stringSchema("boat/minecart/horse;省略=最近的可骑之物"))
+                .build(), (bot, args) -> {
+            Task task = new RideTask(optionalString(args, "target", ""));
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: " + task.name());
+        });
+
+        register("dismount", "从船/矿车/马上下来。", objectSchema().build(), (bot, args) -> {
+            if (!bot.hasVehicle()) {
+                return fail("not_riding");
+            }
+            bot.stopRiding();
+            return ok("dismounted");
+        });
+
+        register("shear_sheep", "剪羊毛并捡走(做床/旗帜的羊毛来源)。需剪刀 shears(2 铁锭 craft)。", objectSchema()
+                .property("count", integerSchema("剪几只,默认 1"))
+                .build(), (bot, args) -> {
+            Task task = new ShearSheepTask(optionalInt(args, "count", 1));
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: " + task.name());
+        });
+
+        register("tame", "驯服宠物归自己:wolf 狼(要骨头)/cat 猫(生鳕鱼)/parrot 鹦鹉(种子)/horse 马(反复骑到服)。缺料会告诉你缺什么。", objectSchema()
+                .property("animal", stringSchema("wolf/cat/parrot/horse"))
+                .required("animal")
+                .build(), (bot, args) -> {
+            Task task = new TameTask(requiredString(args, "animal"));
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: " + task.name());
+        });
+
+        register("plant_sapling", "把背包里的树苗种到附近草地上(砍树后补种,环保人设;树苗=打树叶掉落)。", objectSchema()
+                .property("count", integerSchema("种几棵,默认 4"))
+                .build(), (bot, args) -> {
+            Task task = new PlantSaplingTask(optionalInt(args, "count", 4));
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: " + task.name());
+        });
+
+        register("bone_meal", "对身边 4 格内的庄稼/树苗撒骨粉催熟(骨头 craft 成 bone_meal)。", objectSchema()
+                .property("count", integerSchema("撒几次,默认 4"))
+                .build(), (bot, args) -> {
+            int want = Math.max(1, Math.min(16, optionalInt(args, "count", 4)));
+            ServerWorld world = bot.getServerWorld();
+            BlockPos feet = bot.getBlockPos();
+            int applied = 0;
+            for (int i = 0; i < want; i++) {
+                if (InventoryAction.countItem(bot, Items.BONE_MEAL) <= 0) {
+                    break;
+                }
+                var slot = InventoryAction.findItem(bot, Items.BONE_MEAL);
+                if (slot.isEmpty()) {
+                    break;
+                }
+                InventoryAction.equipFromSlot(bot, slot.getAsInt());
+                BlockPos fertilizable = null;
+                for (BlockPos pos : BlockPos.iterate(feet.add(-4, -1, -4), feet.add(4, 2, 4))) {
+                    BlockState stateHere = world.getBlockState(pos);
+                    if (stateHere.getBlock() instanceof CropBlock crop && !crop.isMature(stateHere)) {
+                        fertilizable = pos.toImmutable();
+                        break;
+                    }
+                    if (stateHere.getBlock() instanceof SaplingBlock) {
+                        fertilizable = pos.toImmutable();
+                        break;
+                    }
+                }
+                if (fertilizable == null) {
+                    break;
+                }
+                if (!InteractAction.useItemOnBlock(bot, fertilizable, Direction.UP, Hand.MAIN_HAND).isSuccess()) {
+                    break;
+                }
+                applied++;
+            }
+            if (applied > 0) {
+                return ok("bone_meal_applied: " + applied);
+            }
+            return fail(InventoryAction.countItem(bot, Items.BONE_MEAL) <= 0
+                    ? "need_bone_meal: 没骨粉,骨头可 craft"
+                    : "no_growable_crop_or_sapling_nearby");
+        });
+
+        register("use_bucket", "用桶:action=fill 从身边水源舀一桶水;action=pour 把水倒在身前(灭火/浇地/造水路)。", objectSchema()
+                .property("action", stringSchema("fill(舀水) 或 pour(倒水)"))
+                .required("action")
+                .build(), (bot, args) -> {
+            String action = requiredString(args, "action").toLowerCase(java.util.Locale.ROOT);
+            ServerWorld world = bot.getServerWorld();
+            if (action.startsWith("fill") || action.contains("舀")) {
+                BlockPos feet = bot.getBlockPos();
+                for (BlockPos pos : BlockPos.iterate(feet.add(-3, -2, -3), feet.add(3, 1, 3))) {
+                    if (FarmAction.isWaterSource(world, pos)) {
+                        return result(FarmAction.fillBucket(bot, pos.toImmutable()));
+                    }
+                }
+                return fail("no_water_source_nearby");
+            }
+            if (action.startsWith("pour") || action.contains("倒")) {
+                return result(FarmAction.placeWater(bot, bot.getBlockPos().offset(bot.getHorizontalFacing())));
+            }
+            return fail("unknown_action: fill|pour");
+        });
+
+        register("toggle_door", "开/关最近的门·活板门·栅栏门,或拉拉杆·按按钮(给坐标则操作那格)。铁门除外(要红石)。", objectSchema()
+                .property("x", integerSchema("可选 目标 x"))
+                .property("y", integerSchema("可选 目标 y"))
+                .property("z", integerSchema("可选 目标 z"))
+                .build(), (bot, args) -> {
+            ServerWorld world = bot.getServerWorld();
+            BlockPos targetPos = optionalBlockPos(args, "x", "y", "z");
+            if (targetPos == null) {
+                BlockPos feet = bot.getBlockPos();
+                double best = Double.MAX_VALUE;
+                for (BlockPos pos : BlockPos.iterate(feet.add(-4, -1, -4), feet.add(4, 2, 4))) {
+                    if (!isToggleable(world.getBlockState(pos))) {
+                        continue;
+                    }
+                    double dist = pos.getSquaredDistance(feet);
+                    if (dist < best) {
+                        best = dist;
+                        targetPos = pos.toImmutable();
+                    }
+                }
+            }
+            if (targetPos == null) {
+                return fail("no_door_or_switch_nearby");
+            }
+            if (!isToggleable(world.getBlockState(targetPos))) {
+                return fail("not_toggleable: " + Registries.BLOCK.getId(world.getBlockState(targetPos).getBlock()));
+            }
+            return result(InteractAction.useItemOnBlock(bot, targetPos, Direction.UP, Hand.MAIN_HAND));
+        });
+
+        register("hold_item", "把指定物品拿在手上展示/备用(offhand=true 放副手,如盾牌/火把/图腾)。", objectSchema()
+                .property("item", stringSchema("item id, 例如 minecraft:shield"))
+                .property("offhand", booleanSchema("true=放副手"))
+                .required("item")
+                .build(), (bot, args) -> {
+            Item item = requiredItem(args, "item");
+            var slot = InventoryAction.findItem(bot, item);
+            if (slot.isEmpty()) {
+                return fail("not_in_inventory: " + Registries.ITEM.getId(item));
+            }
+            if (optionalBoolean(args, "offhand", false)) {
+                var inventory = bot.getInventory();
+                ItemStack moving = inventory.main.get(slot.getAsInt());
+                ItemStack old = inventory.offHand.get(0);
+                inventory.offHand.set(0, moving);
+                inventory.main.set(slot.getAsInt(), old);
+                inventory.markDirty();
+                return ok("held_offhand: " + Registries.ITEM.getId(item));
+            }
+            int hotbar = InventoryAction.equipFromSlot(bot, slot.getAsInt());
+            return hotbar >= 0 ? ok("held: " + Registries.ITEM.getId(item)) : fail("equip_failed");
+        });
+
+        register("use_held_item", "使用(右键)主手物品一次:扔雪球/末影珍珠/鸡蛋、喝药水/奶桶等。先 hold_item 拿好再用。", objectSchema().build(), (bot, args) ->
+                result(InteractAction.useItemInAir(bot, Hand.MAIN_HAND)));
+
+        register("world_info", "查世界信息:坐标/维度/群系/时间/天气/是否在地下。回答几点了/在哪/什么群系/下雨吗之前先调它。", objectSchema().build(), (bot, args) -> {
+            ServerWorld world = bot.getServerWorld();
+            BlockPos feet = bot.getBlockPos();
+            long timeOfDay = world.getTimeOfDay() % 24000L;
+            String phase = timeOfDay < 1000 ? "清晨" : timeOfDay < 6000 ? "上午" : timeOfDay < 9000 ? "中午"
+                    : timeOfDay < 12000 ? "下午" : timeOfDay < 13000 ? "黄昏" : "夜晚";
+            String weather = world.isThundering() ? "雷暴" : world.isRaining() ? "下雨" : "晴";
+            int topY = world.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, feet.getX(), feet.getZ());
+            String biome = world.getBiome(feet).getKey().map(key -> key.getValue().toString()).orElse("unknown");
+            return ok("{\"pos\":\"" + feet.toShortString()
+                    + "\",\"dimension\":\"" + world.getRegistryKey().getValue()
+                    + "\",\"biome\":\"" + biome
+                    + "\",\"time\":\"" + phase + "(" + timeOfDay + ")\",\"weather\":\"" + weather
+                    + "\",\"underground\":" + (feet.getY() < topY - 3) + "}");
+        });
+
+        register("shoot_bow", "朝最近的某类实体拉满弓射 N 箭(远程点名/表演/骚扰,不保证射死)。要弓+箭;真要杀怪用 attack(它自己会切弓)。", objectSchema()
+                .property("entity_type", stringSchema("目标实体, 例如 minecraft:zombie"))
+                .property("count", integerSchema("射几箭,默认 1", 1, 5))
+                .required("entity_type")
+                .build(), (bot, args) -> {
+            Task task = new io.github.zoyluo.aibot.task.ShootBowTask(
+                    requiredString(args, "entity_type"), optionalInt(args, "count", 1));
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: " + task.name());
+        });
+
+        register("roll_dice", "掷骰子/抽签(直播互动小游戏):公屏播报 1~sides 的随机数。", objectSchema()
+                .property("sides", integerSchema("几面骰,默认 6", 2, 1000))
+                .build(), (bot, args) -> {
+            int sides = Math.max(2, Math.min(1000, optionalInt(args, "sides", 6)));
+            int rolled = java.util.concurrent.ThreadLocalRandom.current().nextInt(1, sides + 1);
+            BrainCoordinator.INSTANCE.sendPanelChat(bot, "bot", "掷骰子(1~" + sides + "):" + rolled + " 点!");
+            return ok("rolled: " + rolled + " / " + sides);
+        });
+
+        // ================= §17.17 第二批真人工具链(25 个) =================
+
+        register("get_marked_target", "读取主人用 Shift+中键设置的唯一空间标记,返回命中方块、命中面和推荐脚位坐标。主人说那里/那边/对面/那个位置/标记处时先用它;没有标记就让主人先 Shift+中键标一下,禁止猜成主人当前位置。", objectSchema()
+                .build(), (bot, args) -> {
+            var marker = io.github.zoyluo.aibot.marker.TargetMarkerService.INSTANCE.forBot(bot)
+                    .orElseThrow(() -> new IllegalArgumentException("no_active_marker: 请主人先 Shift+中键标记目标"));
+            String botDimension = bot.getServerWorld().getRegistryKey().getValue().toString();
+            if (!botDimension.equals(marker.dimensionId())) {
+                return fail("marker_in_other_dimension: " + marker.dimensionId());
+            }
+            double distance = Math.sqrt(marker.standPos().getSquaredDistance(bot.getBlockPos()));
+            return ok("marked_target: dimension=" + marker.dimensionId()
+                    + ", clicked=" + marker.clickedBlock().toShortString()
+                    + ", face=" + marker.face().asString()
+                    + ", stand=" + marker.standPos().toShortString()
+                    + ", distance=" + String.format(java.util.Locale.ROOT, "%.1f", distance));
+        });
+
+        register("scaffold_walk", "显式修路工具:主人明确要求搭桥/修一条永久道路时使用。普通移动、跟随和追击已会自动跨缺口施工,不要为了帮助其他移动任务二次调用本工具。主人说标记处时传 use_marker=true。", objectSchema()
+                .property("use_marker", booleanSchema("true=走向主人 Shift+中键标记的地点"))
+                .property("player_name", stringSchema("走向谁(默认主人)"))
+                .property("x", integerSchema("或:目标 x"))
+                .property("z", integerSchema("或:目标 z"))
+                .property("direction", stringSchema("或:固定方向 north/south/east/west"))
+                .property("length", integerSchema("方向模式铺多远,默认 16", 1, 256))
+                .property("max_blocks", integerSchema("最多消耗几块,省略时按距离自动计算", 8, 512))
+                .build(), (bot, args) -> {
+            boolean useMarker = optionalBoolean(args, "use_marker", false);
+            boolean hasX = args.has("x");
+            boolean hasZ = args.has("z");
+            String playerName = optionalString(args, "player_name", "").trim();
+            String directionName = optionalString(args, "direction", "").trim();
+            int selectedModes = (useMarker ? 1 : 0) + ((hasX || hasZ) ? 1 : 0)
+                    + (!playerName.isEmpty() ? 1 : 0) + (!directionName.isEmpty() ? 1 : 0);
+            if (selectedModes > 1) {
+                return fail("conflicting_target: use_marker/x+z/direction/player_name 只能选一种");
+            }
+            if (hasX != hasZ) {
+                return fail("bad_target: x 和 z 必须同时提供");
+            }
+
+            Task task;
+            if (useMarker) {
+                var marker = io.github.zoyluo.aibot.marker.TargetMarkerService.INSTANCE.forBot(bot)
+                        .orElseThrow(() -> new IllegalArgumentException("no_active_marker: 请主人先 Shift+中键标记目标"));
+                String botDimension = bot.getServerWorld().getRegistryKey().getValue().toString();
+                if (!botDimension.equals(marker.dimensionId())) {
+                    return fail("marker_in_other_dimension: " + marker.dimensionId());
+                }
+                int budget = scaffoldBudget(bot, marker.standPos(), args);
+                task = new ScaffoldWalkTask(marker.standPos().getX(), marker.standPos().getZ(), budget);
+            } else if (!directionName.isEmpty()) {
+                Direction direction = optionalDirection(args, "direction", Direction.NORTH);
+                int length = Math.max(1, Math.min(256, optionalInt(args, "length", 16)));
+                BlockPos target = bot.getBlockPos().offset(direction, length);
+                int budget = args.has("max_blocks") ? optionalInt(args, "max_blocks", length + 8) : length + 8;
+                task = new ScaffoldWalkTask(target.getX(), target.getZ(), budget);
+            } else if (hasX) {
+                BlockPos target = new BlockPos(requiredInt(args, "x"), bot.getBlockY(), requiredInt(args, "z"));
+                task = new ScaffoldWalkTask(target.getX(), target.getZ(), scaffoldBudget(bot, target, args));
+            } else {
+                Optional<ServerPlayerEntity> target = targetPlayer(bot, playerName);
+                if (target.isEmpty()) {
+                    return fail("player_not_found");
+                }
+                int budget = scaffoldBudget(bot, target.get().getBlockPos(), args);
+                task = new ScaffoldWalkTask(target.get().getGameProfile().getName(), target.get().getBlockPos(), budget);
+            }
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: " + task.name());
+        });
+
+        register("throw_at", "扔雪球/鸡蛋砸人或砸怪(纯整活不疼):player_name 砸玩家(默认主人),或 entity_type 砸最近的那类怪。要背包有雪球/鸡蛋;扔珍珠须显式 item=minecraft:ender_pearl(会把自己传送过去)。", objectSchema()
+                .property("player_name", stringSchema("砸谁(玩家名,默认主人)"))
+                .property("entity_type", stringSchema("或:砸最近的某类实体, 例如 minecraft:zombie"))
+                .property("item", stringSchema("投掷物 id(默认自动选雪球/鸡蛋)"))
+                .property("count", integerSchema("扔几个,默认 3", 1, 16))
+                .build(), (bot, args) -> {
+            String entityType = optionalString(args, "entity_type", "").trim();
+            String explicitPlayer = optionalString(args, "player_name", "").trim();
+            // 语义:显式给了玩家名→砸他;只给实体→砸实体;啥都没给→砸主人。
+            String playerName = !explicitPlayer.isEmpty() ? explicitPlayer : (entityType.isEmpty() ? "" : null);
+            Task task = new ThrowAtTask(playerName, entityType, optionalItem(args, "item"), optionalInt(args, "count", 3));
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: " + task.name());
+        });
+
+        register("build_wall", "在面前沿指定方向砌一道直墙(挡怪/围地/圈羊):length 列 × height 高。需背包有方块(木板/圆石/泥土)。", objectSchema()
+                .property("direction", stringSchema("north/south/east/west,默认面朝方向"))
+                .property("length", integerSchema("长度(列数),默认 5", 1, 16))
+                .property("height", integerSchema("高度,默认 2", 1, 3))
+                .build(), (bot, args) -> {
+            Direction dir = optionalDirection(args, "direction", bot.getHorizontalFacing());
+            Task task = new BuildWallTask(dir, optionalInt(args, "length", 5), optionalInt(args, "height", 2));
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: " + task.name());
+        });
+
+        register("patrol", "绕当前位置巡逻几圈(守家/看场子/来回走位巡视)。", objectSchema()
+                .property("radius", integerSchema("巡逻半径,默认 8", 4, 16))
+                .property("laps", integerSchema("圈数,默认 3", 1, 10))
+                .build(), (bot, args) -> {
+            Task task = new PatrolTask(optionalInt(args, "radius", 8), optionalInt(args, "laps", 3));
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: " + task.name());
+        });
+
+        register("build_golem", "造傀儡守家:type=iron 铁傀儡(4 铁块+雕刻南瓜,会帮忙打怪)或 snow 雪傀儡(2 雪块+雕刻南瓜)。材料不够会报缺什么。", objectSchema()
+                .property("type", stringSchema("iron 或 snow,默认 iron"))
+                .build(), (bot, args) -> {
+            boolean iron = !"snow".equalsIgnoreCase(optionalString(args, "type", "iron"));
+            Task task = new BuildGolemTask(iron);
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: " + task.name());
+        });
+
+        register("flatten_area", "推平脚下场地:把周围半径 N 格、高出地面 3 格内的方块全挖掉(盖房前平地/拆土包),不往下挖坑。", objectSchema()
+                .property("radius", integerSchema("半径,默认 2(=5x5)", 1, 4))
+                .build(), (bot, args) -> {
+            Task task = new FlattenAreaTask(optionalInt(args, "radius", 2));
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: " + task.name());
+        });
+
+        register("place_boat", "把背包里的船放到旁边水面并坐上去(过湖/划船)。没船先 craft minecraft:oak_boat(5 木板);下船用 dismount。", objectSchema().build(), (bot, args) -> {
+            Task task = new PlaceBoatTask();
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("assigned: " + task.name());
+        });
+
+        register("sneak", "潜行开/关(on=true 蹲下:防摔下边缘/卖萌打招呼;false 站起)。", objectSchema()
+                .property("on", booleanSchema("true=蹲下, false=站起,默认 true"))
+                .build(), (bot, args) ->
+                result(MovementAction.setSneaking(bot, optionalBoolean(args, "on", true))));
+
+        register("sprint", "疾跑开/关(赶路快 30%,费饱食度;走路移动时生效)。", objectSchema()
+                .property("on", booleanSchema("true=开跑, false=停,默认 true"))
+                .build(), (bot, args) -> {
+            boolean on = optionalBoolean(args, "on", true);
+            bot.getActionPack().setSprinting(on);
+            return ok(on ? "sprinting" : "sprint_off");
+        });
+
+        register("face", "转头面向:player_name 看那个玩家(默认主人=看镜头),或 entity_type 看最近的那类实体。纯转头不移动。", objectSchema()
+                .property("player_name", stringSchema("看谁(默认主人)"))
+                .property("entity_type", stringSchema("或:看最近的某类实体, 例如 minecraft:cow"))
+                .build(), (bot, args) -> {
+            String entityType = optionalString(args, "entity_type", "").replace("minecraft:", "").trim();
+            if (!entityType.isEmpty()) {
+                Entity target = bot.getServerWorld()
+                        .getOtherEntities(bot, bot.getBoundingBox().expand(24.0D),
+                                e -> e.isAlive() && Registries.ENTITY_TYPE.getId(e.getType()).getPath().equals(entityType))
+                        .stream().min(Comparator.comparingDouble(bot::distanceTo)).orElse(null);
+                if (target == null) {
+                    return fail("entity_not_found: " + entityType);
+                }
+                LookAction.lookAt(bot, target.getEyePos());
+                return ok("facing: " + entityType);
+            }
+            Optional<ServerPlayerEntity> player = targetPlayer(bot, optionalString(args, "player_name", ""));
+            if (player.isEmpty()) {
+                return fail("player_not_found");
+            }
+            LookAction.lookAt(bot, player.get().getEyePos());
+            return ok("facing: " + player.get().getGameProfile().getName());
+        });
+
+        register("compact_inventory", "整理背包腾格子:把铁/金/铜/钻石/绿宝石/红石/煤/青金石(锭·宝石·原矿)每 9 个压成 1 块,直接在背包完成。", objectSchema().build(), (bot, args) -> {
+            Item[][] pairs = {
+                    {Items.IRON_INGOT, Items.IRON_BLOCK}, {Items.GOLD_INGOT, Items.GOLD_BLOCK},
+                    {Items.COPPER_INGOT, Items.COPPER_BLOCK}, {Items.DIAMOND, Items.DIAMOND_BLOCK},
+                    {Items.EMERALD, Items.EMERALD_BLOCK}, {Items.REDSTONE, Items.REDSTONE_BLOCK},
+                    {Items.COAL, Items.COAL_BLOCK}, {Items.LAPIS_LAZULI, Items.LAPIS_BLOCK},
+                    {Items.RAW_IRON, Items.RAW_IRON_BLOCK}, {Items.RAW_GOLD, Items.RAW_GOLD_BLOCK},
+                    {Items.RAW_COPPER, Items.RAW_COPPER_BLOCK}};
+            StringBuilder done = new StringBuilder();
+            for (Item[] pair : pairs) {
+                int crafts = InventoryAction.countItem(bot, pair[0]) / 9;
+                if (crafts <= 0 || !InventoryAction.removeItems(bot, pair[0], crafts * 9)) {
+                    continue;
+                }
+                // 分堆给付(单堆 ≤maxCount,防超堆叠存档崩);背包满则落脚下,绝不凭空消失。
+                int remaining = crafts;
+                int max = Math.max(1, new ItemStack(pair[1]).getMaxCount());
+                while (remaining > 0) {
+                    int chunk = Math.min(remaining, max);
+                    ItemStack out = new ItemStack(pair[1], chunk);
+                    if (InventoryAction.giveItem(bot, out).isFailed() && !out.isEmpty()) {
+                        bot.dropItem(out, false, true);
+                    }
+                    remaining -= chunk;
+                }
+                done.append(Registries.ITEM.getId(pair[1]).getPath()).append(" x").append(crafts).append("; ");
+            }
+            return done.isEmpty() ? ok("nothing_to_compact: 没有攒够 9 个的可压缩材料") : ok("compacted: " + done);
+        });
+
+        register("pet_command", "指挥自己驯的宠物(狼/猫/鹦鹉):action=sit 全部坐下原地待命 / stand 全部起来跟着走。", objectSchema()
+                .property("action", stringSchema("sit 或 stand"))
+                .required("action")
+                .build(), (bot, args) -> {
+            boolean sit = !"stand".equalsIgnoreCase(requiredString(args, "action"));
+            var pets = bot.getServerWorld().getEntitiesByClass(TameableEntity.class,
+                    bot.getBoundingBox().expand(16.0D), pet -> pet.isAlive() && pet.isTamed() && pet.isOwner(bot));
+            if (pets.isEmpty()) {
+                return fail("no_pets_nearby: 附近没有自己驯的宠物(先 tame)");
+            }
+            int changed = 0;
+            for (TameableEntity pet : pets) {
+                if (pet.isSitting() != sit) {
+                    pet.setSitting(sit);
+                    pet.setInSittingPose(sit);
+                    changed++;
+                }
+            }
+            bot.swingHand(Hand.MAIN_HAND);
+            return ok((sit ? "pets_sitting: " : "pets_standing: ") + changed + "/" + pets.size());
+        });
+
+        register("feed_pet", "喂受伤的自家宠物回血:狼喂肉(生熟牛猪鸡羊/腐肉),猫喂生鳕鱼/生鲑鱼。喂最近一只受伤的。", objectSchema().build(), (bot, args) -> {
+            var pets = bot.getServerWorld().getEntitiesByClass(TameableEntity.class,
+                    bot.getBoundingBox().expand(16.0D),
+                    pet -> pet.isAlive() && pet.isTamed() && pet.isOwner(bot) && pet.getHealth() < pet.getMaxHealth());
+            if (pets.isEmpty()) {
+                return fail("no_injured_pets: 附近没有受伤的自家宠物");
+            }
+            TameableEntity pet = pets.stream().min(Comparator.comparingDouble(bot::distanceTo)).orElseThrow();
+            if (bot.distanceTo(pet) > 4.0F) {
+                return fail("pet_too_far: 先 move_to " + pet.getBlockPos().toShortString());
+            }
+            String type = Registries.ENTITY_TYPE.getId(pet.getType()).getPath();
+            Item[] menu = "cat".equals(type) || "ocelot".equals(type)
+                    ? new Item[]{Items.COD, Items.SALMON}
+                    : new Item[]{Items.COOKED_BEEF, Items.BEEF, Items.COOKED_PORKCHOP, Items.PORKCHOP,
+                            Items.COOKED_CHICKEN, Items.CHICKEN, Items.COOKED_MUTTON, Items.MUTTON, Items.ROTTEN_FLESH};
+            for (Item food : menu) {
+                var slot = InventoryAction.findItem(bot, food);
+                if (slot.isEmpty()) {
+                    continue;
+                }
+                InventoryAction.equipFromSlot(bot, slot.getAsInt());
+                LookAction.lookAt(bot, pet.getEyePos());
+                if (InteractAction.useItemOnEntity(bot, pet, Hand.MAIN_HAND).isSuccess()) {
+                    return ok(String.format(java.util.Locale.ROOT, "fed_%s: hp=%.0f/%.0f",
+                            type, pet.getHealth(), pet.getMaxHealth()));
+                }
+            }
+            return fail("no_pet_food: 狼要肉/猫要生鱼,背包里没有");
+        });
+
+        register("gear_check", "查装备耐久:主手/副手/盔甲各剩百分之几(回答\"镐还能用多久/装备什么情况\",快坏提前换)。", objectSchema().build(), (bot, args) -> {
+            StringBuilder sb = new StringBuilder("{");
+            appendGear(sb, "main_hand", bot.getMainHandStack());
+            appendGear(sb, "off_hand", bot.getOffHandStack());
+            String[] armorNames = {"boots", "leggings", "chestplate", "helmet"};
+            var armor = bot.getInventory().armor;
+            for (int i = 0; i < armor.size() && i < 4; i++) {
+                appendGear(sb, armorNames[i], armor.get(i));
+            }
+            if (sb.length() > 1 && sb.charAt(sb.length() - 1) == ',') {
+                sb.setLength(sb.length() - 1);
+            }
+            sb.append("}");
+            return ok(sb.length() <= 2 ? "{\"empty\":\"手上盔甲全空\"}" : sb.toString());
+        });
+
+        register("find_block", "找最近的某种方块并报坐标(附近哪有钻石矿/箱子/岩浆):按 id 或关键词匹配,报最近一处的坐标和距离。想去就接 move_to。", objectSchema()
+                .property("block", stringSchema("方块 id 或关键词, 例如 diamond_ore / chest / lava"))
+                .property("radius", integerSchema("搜索半径,默认 16", 4, 24))
+                .required("block")
+                .build(), (bot, args) -> {
+            String query = requiredString(args, "block").replace("minecraft:", "").trim().toLowerCase(java.util.Locale.ROOT);
+            int radius = Math.max(4, Math.min(24, optionalInt(args, "radius", 16)));
+            BlockPos feet = bot.getBlockPos();
+            // OreProspector 有 section 级 hasAny 快速跳过,大半径不卡主线程;绝不手写 49^3 暴力遍历。
+            BlockPos found = OreProspector.nearest(bot.getServerWorld(), feet, radius,
+                    state -> !state.isAir() && Registries.BLOCK.getId(state.getBlock()).getPath().contains(query));
+            if (found == null) {
+                return fail("not_found: " + query + "(半径 " + radius + " 内没有)");
+            }
+            return ok("found " + query + ": " + found.toShortString()
+                    + " 距" + (int) Math.sqrt(found.getSquaredDistance(feet)) + "格");
+        });
+
+        register("find_entity", "找最近的某种实体并报坐标(附近有没有村民/牛/僵尸):关键词匹配,报最近 3 个。", objectSchema()
+                .property("entity", stringSchema("实体 id 或关键词, 例如 villager / cow"))
+                .property("radius", integerSchema("搜索半径,默认 24", 8, 48))
+                .required("entity")
+                .build(), (bot, args) -> {
+            String query = requiredString(args, "entity").replace("minecraft:", "").trim().toLowerCase(java.util.Locale.ROOT);
+            int radius = Math.max(8, Math.min(48, optionalInt(args, "radius", 24)));
+            var matches = bot.getServerWorld().getOtherEntities(bot, bot.getBoundingBox().expand(radius),
+                    e -> e.isAlive() && Registries.ENTITY_TYPE.getId(e.getType()).getPath().contains(query));
+            if (matches.isEmpty()) {
+                return fail("not_found: " + query + "(半径 " + radius + " 内没有)");
+            }
+            matches.sort(Comparator.comparingDouble(bot::distanceTo));
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < Math.min(3, matches.size()); i++) {
+                Entity e = matches.get(i);
+                sb.append(Registries.ENTITY_TYPE.getId(e.getType()).getPath())
+                        .append("@").append(e.getBlockPos().toShortString())
+                        .append(" 距").append((int) bot.distanceTo(e)).append("格; ");
+            }
+            return ok("found: " + sb);
+        });
+
+        register("firework", "放烟花庆祝(想庆祝就放,不用等礼物):scale 1~4 越大越隆重(4=八连环绕+原地转圈)。", objectSchema()
+                .property("scale", integerSchema("规模 1~4,默认 3", 1, 4))
+                .build(), (bot, args) -> {
+            int scale = Math.max(1, Math.min(4, optionalInt(args, "scale", 3)));
+            // 第 4 档会 pauseFor+强制转圈 3s:濒危/着火/怪贴脸时降到 3,防转圈覆盖逃生任务的朝向。
+            if (scale == 4 && (bot.getHealth() < 10.0F || bot.isOnFire()
+                    || !bot.getServerWorld().getEntitiesByClass(HostileEntity.class,
+                            bot.getBoundingBox().expand(8.0D), e -> e.isAlive()).isEmpty())) {
+                scale = 3;
+            }
+            GiftCelebrator.INSTANCE.celebrate(bot, scale,
+                    new GiftDispatcher.GiftEvent("自嗨", "烟花", 1, bot.getGameProfile().getName()));
+            return ok("fireworks: scale=" + scale);
+        });
+
+        register("ring_bell", "敲响附近的钟(村庄集合/报时整活)。8 格内要有钟,太远会报坐标让你先过去。", objectSchema().build(), (bot, args) -> {
+            ServerWorld world = bot.getServerWorld();
+            BlockPos feet = bot.getBlockPos();
+            BlockPos bell = null;
+            double bestDist = Double.MAX_VALUE;
+            for (BlockPos pos : BlockPos.iterate(feet.add(-8, -3, -8), feet.add(8, 3, 8))) {
+                if (!Registries.BLOCK.getId(world.getBlockState(pos).getBlock()).getPath().equals("bell")) {
+                    continue;
+                }
+                double dist = pos.getSquaredDistance(feet);
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    bell = pos.toImmutable();
+                }
+            }
+            if (bell == null) {
+                return fail("no_bell_nearby: 8 格内没有钟");
+            }
+            if (bot.getEyePos().distanceTo(bell.toCenterPos()) > 4.5D) {
+                return fail("bell_too_far: 先 move_to " + bell.toShortString());
+            }
+            Direction face = Direction.getFacing(bot.getX() - bell.getX(), 0.0D, bot.getZ() - bell.getZ());
+            return result(InteractAction.useItemOnBlock(bot, bell, face, Hand.MAIN_HAND));
+        });
+
+        register("extinguish_fire", "灭火:扑灭自己身上的火 + 打掉周围 6 格内的火焰方块(着火了/房子着火/雷劈起火)。", objectSchema().build(), (bot, args) -> {
+            bot.setFireTicks(0);
+            ServerWorld world = bot.getServerWorld();
+            BlockPos feet = bot.getBlockPos();
+            int put = 0;
+            for (BlockPos pos : BlockPos.iterate(feet.add(-6, -2, -6), feet.add(6, 3, 6))) {
+                if (world.getBlockState(pos).isIn(BlockTags.FIRE)) {
+                    world.breakBlock(pos.toImmutable(), false, bot);
+                    put++;
+                }
+            }
+            return ok("extinguished: 自己身上 + " + put + " 处火焰");
+        });
+
+        register("collect_lava", "用空桶舀岩浆(顶级燃料一桶炼 100 个/造黑曜石原料):4.5 格内要有岩浆源;只伸手舀,不会走进岩浆。", objectSchema().build(), (bot, args) -> {
+            if (InventoryAction.countItem(bot, Items.BUCKET) < 1) {
+                return fail("missing_bucket: 先 craft minecraft:bucket(3 铁锭)");
+            }
+            ServerWorld world = bot.getServerWorld();
+            BlockPos feet = bot.getBlockPos();
+            BlockPos lava = null;
+            double bestDist = Double.MAX_VALUE;
+            for (BlockPos pos : BlockPos.iterate(feet.add(-4, -2, -4), feet.add(4, 2, 4))) {
+                var fluid = world.getFluidState(pos);
+                if (!fluid.isIn(FluidTags.LAVA) || !fluid.isStill()) {
+                    continue;
+                }
+                double dist = pos.getSquaredDistance(feet);
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    lava = pos.toImmutable();
+                }
+            }
+            if (lava == null) {
+                return fail("no_lava_source_nearby: 附近没有静止岩浆源");
+            }
+            if (bot.getEyePos().distanceTo(lava.toCenterPos()) > 4.5D) {
+                return fail("lava_too_far: 岩浆在 " + lava.toShortString() + ",小心走近点(别掉进去)");
+            }
+            if (!InventoryAction.removeItems(bot, Items.BUCKET, 1)) {
+                return fail("missing_bucket");
+            }
+            world.setBlockState(lava, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+            ItemStack filled = new ItemStack(Items.LAVA_BUCKET, 1);
+            if (InventoryAction.giveItem(bot, filled).isFailed() && !filled.isEmpty()) {
+                bot.dropItem(filled, false, true); // 背包满:岩浆桶落脚下,绝不凭空消失
+            }
+            bot.swingHand(Hand.MAIN_HAND);
+            return ok("lava_bucket_filled: " + lava.toShortString());
+        });
+
+        register("list_places", "列出记过的所有地点(mark_place 存的家/矿点/农场),含坐标和维度。", objectSchema().build(), ToolDefinition.Group.MEMORY, (bot, args) -> {
+            var places = BotMemoryStore.INSTANCE.of(bot.getUuid()).placesView();
+            if (places.isEmpty()) {
+                return ok("no_places: 还没记过地点(mark_place 可以记)");
+            }
+            StringBuilder sb = new StringBuilder();
+            places.forEach((name, place) -> sb.append(name).append(" = ").append(place.pos().toShortString())
+                    .append("(").append(place.dimension().replace("minecraft:", "")).append("); "));
+            return ok(sb.toString());
+        });
+
+        register("drop_junk", "清背包垃圾腾格子:把多余的圆石/泥土/沙/沙砾/花岗岩闪长岩安山岩/凝灰岩扔地上,每样最多留 keep_each 个。", objectSchema()
+                .property("keep_each", integerSchema("每样保留几个,默认 32", 0, 320))
+                .build(), (bot, args) -> {
+            boolean dropped = InventoryAction.dropJunk(bot, Math.max(0, optionalInt(args, "keep_each", 32)));
+            return ok(dropped ? "junk_dropped" : "no_junk: 没有超量的垃圾方块");
+        });
+
+        register("swap_hands", "主手副手物品互换(像按 F 键):把火把/食物换去副手备用,或把副手的东西拿回主手。", objectSchema().build(), (bot, args) -> {
+            var inventory = bot.getInventory();
+            ItemStack main = inventory.main.get(inventory.selectedSlot);
+            ItemStack off = inventory.offHand.get(0);
+            inventory.main.set(inventory.selectedSlot, off);
+            inventory.offHand.set(0, main);
+            inventory.markDirty();
+            return ok("swapped: main=" + describeStack(off) + " off=" + describeStack(main));
+        });
+
+        register("unstuck", "卡住自救:停掉一切动作,跳一下并朝随机方向挪两三格(被卡在缝里/原地转圈打摆子时用)。", objectSchema().build(), (bot, args) -> {
+            bot.getActionPack().stopAll();
+            bot.getActionPack().jumpOnce();
+            double angle = java.util.concurrent.ThreadLocalRandom.current().nextDouble(Math.PI * 2.0D);
+            double dist = 2.0D + java.util.concurrent.ThreadLocalRandom.current().nextDouble(1.5D);
+            bot.getActionPack().startWalkTo(bot.getPos().add(Math.cos(angle) * dist, 0.0D, Math.sin(angle) * dist));
+            return ok("nudged: 已随机挪位");
+        });
+
+        register("make_path", "用铲子把脚下周围的草地/泥土铲成小路方块(修门前路/院子装饰)。要背包有任意铲子。", objectSchema()
+                .property("radius", integerSchema("半径,默认 1(=3x3)", 1, 3))
+                .build(), (bot, args) -> {
+            int radius = Math.max(1, Math.min(3, optionalInt(args, "radius", 1)));
+            int shovel = -1;
+            var main = bot.getInventory().main;
+            for (int i = 0; i < main.size(); i++) {
+                ItemStack stack = main.get(i);
+                if (!stack.isEmpty() && Registries.ITEM.getId(stack.getItem()).getPath().endsWith("_shovel")) {
+                    shovel = i;
+                    break;
+                }
+            }
+            if (shovel < 0) {
+                return fail("no_shovel: 先 craft minecraft:wooden_shovel");
+            }
+            InventoryAction.equipFromSlot(bot, shovel);
+            ServerWorld world = bot.getServerWorld();
+            BlockPos under = bot.getBlockPos().down();
+            int converted = 0;
+            for (BlockPos pos : BlockPos.iterate(under.add(-radius, 0, -radius), under.add(radius, 0, radius))) {
+                Block block = world.getBlockState(pos).getBlock();
+                boolean pathable = block == Blocks.GRASS_BLOCK || block == Blocks.DIRT
+                        || block == Blocks.PODZOL || block == Blocks.COARSE_DIRT || block == Blocks.MYCELIUM;
+                if (!pathable || !world.getBlockState(pos.up()).isReplaceable()) {
+                    continue;
+                }
+                if (InteractAction.useItemOnBlock(bot, pos.toImmutable(), Direction.UP, Hand.MAIN_HAND).isSuccess()) {
+                    converted++;
+                }
+            }
+            return converted > 0 ? ok("path_made: " + converted + " 格") : fail("no_convertible_ground: 脚下周围没有草地/泥土");
+        });
+
+        register("follow", "持续跟随玩家并保持约 2-4 格距离。内置智能导航,会自动绕路、挖开普通遮挡、垫高和跨缺口铺路,无需二次调用移动/垫高/铺路工具。只用于一直跟着/持续跟随,一次性过来请用 come_here。", objectSchema()
+                .property("player_name", stringSchema("optional player name; defaults to owner"))
+                .build(), (bot, args) -> {
+            String playerName = optionalString(args, "player_name", "");
+            LongRunningIntentManager.INSTANCE.setFollow(bot, playerName);
+            Task task = new FollowTask(playerName);
+            TaskManager.INSTANCE.assign(bot, task);
+            return ok("long_intent_assigned: follow");
         });
 
         register("hold", "Hold the current position until another task is assigned. DangerWatcher can still interrupt for survival threats.", objectSchema().build(), (bot, args) -> {
@@ -453,7 +1436,7 @@ public final class ToolRegistry {
             return ok("assigned: " + task.name());
         });
 
-        register("guard", "Guard the current point, a coordinate, or a named player. Hostiles near the guard point are fought inline, then the bot returns.", objectSchema()
+        register("guard", "护卫/保护主人的唯一正确工具(用于 保护我/守着我/别让怪碰我/在我身边打怪). Guard a named player (pass player_name), a coordinate, or the current point. The bot STAYS next to the guard target and only fights hostiles that come close, then returns — it will NEVER chase a mob off across the map. For 保护我 pass player_name = the owner. Prefer this over attack whenever the human wants protection rather than hunting a specific mob far away.", objectSchema()
                 .property("player_name", stringSchema("optional player name to guard"))
                 .property("x", integerSchema("optional guard x"))
                 .property("y", integerSchema("optional guard y"))
@@ -514,7 +1497,7 @@ public final class ToolRegistry {
             return ok("assigned: " + task.name());
         });
 
-        register("attack_entity", "Attack a nearby entity by type", objectSchema()
+        register("attack_entity", "ONE manual sword swing at the nearest entity of a type (single hit, does NOT kill). Only for a one-off poke/provocation (拍一下/敲一下/挑衅). NEVER use for kill requests — for 杀/击杀 use the attack tool which fights to the kill and completes.", objectSchema()
                 .property("entity_type", stringSchema("entity type, for example minecraft:cow"))
                 .required("entity_type")
                 .build(), ToolDefinition.Group.LOW_LEVEL, (bot, args) -> {
@@ -530,7 +1513,10 @@ public final class ToolRegistry {
             return result(InteractAction.attackEntity(bot, target.get()));
         });
 
-        register("stop", "Stop all ongoing actions", objectSchema().build(), (bot, args) -> {
+        register("stop", "Stop all ongoing goals, tasks, and movement immediately, then return to idle", objectSchema().build(), (bot, args) -> {
+            LongRunningIntentManager.INSTANCE.clear(bot);
+            GoalExecutor.INSTANCE.clear(bot);
+            TaskManager.INSTANCE.resetToIdle(bot);
             MovementAction.stopAll(bot);
             return ok("stopped");
         });
@@ -745,6 +1731,13 @@ public final class ToolRegistry {
                     return started ? ok("goal_assigned: mine_ore") : fail("goal_plan_failed");
                 }
             }
+            if ("follow".equals(taskType)) {
+                String playerName = optionalString(params, "player_name", "");
+                LongRunningIntentManager.INSTANCE.setFollow(bot, playerName);
+                Task task = new FollowTask(playerName);
+                TaskManager.INSTANCE.assign(bot, task);
+                return ok("long_intent_assigned: follow");
+            }
             Task task = createTask(bot, taskType, params);
             TaskManager.INSTANCE.assign(bot, task);
             return ok("assigned: " + task.name());
@@ -909,6 +1902,71 @@ public final class ToolRegistry {
         return fail(actionResult.reason());
     }
 
+    /**
+     * 从背包(主+副手)扣走 item×count 并作为掉落物抛出;target 非空时先转身面向再抛(实物飞向玩家)。
+     * 返回实际抛出数量(0=背包里没有)。
+     */
+    private static int dropFromInventory(AIPlayerEntity bot, Item item, int count, ServerPlayerEntity target) {
+        int want = Math.max(1, count);
+        var inventory = bot.getInventory();
+        int removed = 0;
+        for (int slot = 0; slot < inventory.main.size() && removed < want; slot++) {
+            net.minecraft.item.ItemStack stack = inventory.main.get(slot);
+            if (!stack.isEmpty() && stack.getItem() == item) {
+                int take = Math.min(stack.getCount(), want - removed);
+                stack.decrement(take);
+                removed += take;
+            }
+        }
+        for (int slot = 0; slot < inventory.offHand.size() && removed < want; slot++) {
+            net.minecraft.item.ItemStack stack = inventory.offHand.get(slot);
+            if (!stack.isEmpty() && stack.getItem() == item) {
+                int take = Math.min(stack.getCount(), want - removed);
+                stack.decrement(take);
+                removed += take;
+            }
+        }
+        if (removed == 0) {
+            return 0;
+        }
+        if (target != null) {
+            // dropItem 的抛出方向跟随 bot 视角:先面向目标(含俯仰),抛出物自然飞向玩家。
+            double dx = target.getX() - bot.getX();
+            double dz = target.getZ() - bot.getZ();
+            double dy = target.getEyeY() - bot.getEyeY();
+            float yaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0D);
+            float pitch = (float) (-Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz))));
+            LookAction.setYawPitch(bot, yaw, pitch);
+        }
+        int remaining = removed;
+        while (remaining > 0) {
+            int amount = Math.min(remaining, Math.max(1, item.getMaxCount()));
+            bot.dropItem(new net.minecraft.item.ItemStack(item, amount), false, false);
+            remaining -= amount;
+        }
+        return removed;
+    }
+
+    /** give_item 目标:指名玩家 → owner → 16 格内最近的真人玩家。 */
+    private static ServerPlayerEntity resolveTossTarget(AIPlayerEntity bot, String name) {
+        net.minecraft.server.MinecraftServer server = bot.getServer();
+        if (server == null) {
+            return null;
+        }
+        if (name != null && !name.isBlank()) {
+            return server.getPlayerManager().getPlayer(name.trim());
+        }
+        ServerPlayerEntity owner = AIPlayerManager.INSTANCE.ownerOf(bot)
+                .map(uuid -> server.getPlayerManager().getPlayer(uuid))
+                .orElse(null);
+        if (owner != null) {
+            return owner;
+        }
+        net.minecraft.entity.player.PlayerEntity nearest =
+                bot.getServerWorld().getClosestPlayer(bot, 16.0D);
+        return nearest instanceof ServerPlayerEntity sp && !(nearest instanceof AIPlayerEntity) ? sp : null;
+    }
+
     private static ToolDefinition.ToolResult ok(String message) {
         return new ToolDefinition.ToolResult(true, message);
     }
@@ -949,7 +2007,11 @@ public final class ToolRegistry {
         if (!args.has(name) || !args.get(name).isJsonPrimitive()) {
             return defaultValue;
         }
-        return args.get(name).getAsInt();
+        try {
+            return args.get(name).getAsInt();
+        } catch (NumberFormatException e) {
+            return defaultValue; // 模型偶发传非数字字符串("全部"),回退默认而不是炸掉整轮工具调用
+        }
     }
 
     private static boolean optionalBoolean(JsonObject args, String name, boolean defaultValue) {
@@ -1091,6 +2153,89 @@ public final class ToolRegistry {
             }
         }
         return OreScan.COMMON_ORES;
+    }
+
+    /** 目标水平坐标附近(本列优先,环形外扩到 ring)找第一个地表可站、脚下无水的落点。 */
+    private static BlockPos surfaceStandable(ServerWorld world, int x, int z, int ring) {
+        for (int r = 0; r <= ring; r++) {
+            for (int dx = -r; dx <= r; dx++) {
+                for (int dz = -r; dz <= r; dz++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dz)) != r) {
+                        continue; // 只扫当前环周,近处优先
+                    }
+                    int cx = x + dx;
+                    int cz = z + dz;
+                    int y = world.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, cx, cz);
+                    BlockPos candidate = new BlockPos(cx, y, cz);
+                    if (Standability.isStandable(world, candidate) && world.getFluidState(candidate.down()).isEmpty()) {
+                        return candidate;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /** 随机方向 8~max 格的地表可站点(≤8 次尝试),与 GiftDispatcher.pickWanderTarget 同款。 */
+    private static BlockPos randomWanderTarget(AIPlayerEntity bot, int max) {
+        ServerWorld world = bot.getServerWorld();
+        double span = Math.max(1, Math.min(32, max) - 8);
+        for (int attempt = 0; attempt < 8; attempt++) {
+            double angle = java.util.concurrent.ThreadLocalRandom.current().nextDouble(Math.PI * 2.0D);
+            double dist = 8.0D + java.util.concurrent.ThreadLocalRandom.current().nextDouble(span);
+            int x = (int) Math.floor(bot.getX() + Math.cos(angle) * dist);
+            int z = (int) Math.floor(bot.getZ() + Math.sin(angle) * dist);
+            int y = world.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, x, z);
+            BlockPos candidate = new BlockPos(x, y, z);
+            if (Standability.isStandable(world, candidate) && world.getFluidState(candidate.down()).isEmpty()) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    /** 手动可开关:木门/活板门/栅栏门/拉杆/按钮;铁门铁活板门要红石,排除。 */
+    private static boolean isToggleable(BlockState state) {
+        String path = Registries.BLOCK.getId(state.getBlock()).getPath();
+        if (path.startsWith("iron_")) {
+            return false;
+        }
+        return path.endsWith("_door") || path.endsWith("_trapdoor") || path.endsWith("_fence_gate")
+                || path.equals("lever") || path.endsWith("_button");
+    }
+
+    /** gear_check 用:非空物品追加 "槽位":"物品 剩余耐久%",(无耐久物品只报名字)。 */
+    private static void appendGear(StringBuilder sb, String slot, ItemStack stack) {
+        if (stack.isEmpty()) {
+            return;
+        }
+        sb.append("\"").append(slot).append("\":\"").append(Registries.ITEM.getId(stack.getItem()).getPath());
+        if (stack.isDamageable()) {
+            int left = (stack.getMaxDamage() - stack.getDamage()) * 100 / Math.max(1, stack.getMaxDamage());
+            sb.append(" ").append(left).append("%");
+        }
+        sb.append("\",");
+    }
+
+    private static String describeStack(ItemStack stack) {
+        return stack.isEmpty() ? "empty" : Registries.ITEM.getId(stack.getItem()).getPath() + " x" + stack.getCount();
+    }
+
+    private static Optional<ServerPlayerEntity> targetPlayer(AIPlayerEntity bot, String playerName) {
+        if (playerName != null && !playerName.isBlank()) {
+            return Optional.ofNullable(bot.getServer().getPlayerManager().getPlayer(playerName.trim()));
+        }
+        return AIPlayerManager.INSTANCE.ownerOf(bot)
+                .map(uuid -> bot.getServer().getPlayerManager().getPlayer(uuid));
+    }
+
+    private static int scaffoldBudget(AIPlayerEntity bot, BlockPos target, JsonObject args) {
+        if (args.has("max_blocks")) {
+            return Math.max(8, Math.min(512, optionalInt(args, "max_blocks", 96)));
+        }
+        double distance = Math.hypot(target.getX() - bot.getX(), target.getZ() - bot.getZ());
+        // A diagonal step may need the forward cell plus two corner supports.
+        return Math.max(8, Math.min(512, (int) Math.ceil(distance * 3.0D) + 8));
     }
 
     private static String escape(String value) {

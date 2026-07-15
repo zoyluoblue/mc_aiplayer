@@ -4,6 +4,7 @@ import io.github.zoyluo.aibot.brain.BrainCoordinator;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
 import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.util.math.BlockPos;
 
 import java.util.Optional;
 
@@ -58,18 +59,20 @@ public final class FollowTask extends AbstractTask {
             return;
         }
         double distance = bot.distanceTo(target);
-        if (distance <= STOP_DISTANCE) {
-            bot.getActionPack().stopMovement();
+        boolean visible = CombatCore.hasLineOfSight(bot, target);
+        if (distance <= STOP_DISTANCE && visible) {
+            bot.getActionPack().stopAll();
             waiting = true;
             return;
         }
         waiting = false;
-        if (distance >= START_DISTANCE && elapsed >= nextRepathTick) {
+        BlockPos targetPos = target.getBlockPos();
+        BlockPos activeGoal = bot.getActionPack().activePathGoal();
+        boolean targetMoved = activeGoal == null || activeGoal.getSquaredDistance(targetPos) > 4.0D;
+        if ((distance >= START_DISTANCE || !visible) && elapsed >= nextRepathTick
+                && (bot.getActionPack().isPathExecutorIdle() || targetMoved)) {
             bot.getActionPack().startPathTo(target.getBlockPos());
             nextRepathTick = elapsed + REPATH_TICKS;
-        }
-        if (bot.getActionPack().isPathExecutorIdle() && distance >= START_DISTANCE) {
-            bot.getActionPack().startWalkTo(target.getPos());
         }
     }
 

@@ -131,10 +131,7 @@ public final class HarvestCore {
         nearestDropAnyOf(bot, items, radius).ifPresent(drop -> {
             if (bot.distanceTo(drop) > 1.3F) {
                 if (bot.getActionPack().isPathExecutorIdle() && bot.getActionPack().isWalkToIdle()) {
-                    ActionResult result = bot.getActionPack().startPathTo(pickupStandPos(bot, drop.getBlockPos()));
-                    if (result.isFailed()) {
-                        bot.getActionPack().startWalkTo(drop.getPos());
-                    }
+                    bot.getActionPack().startPathTo(pickupStandPos(bot, drop.getBlockPos()));
                 }
             } else {
                 bot.getActionPack().stopMovement();
@@ -159,10 +156,7 @@ public final class HarvestCore {
         }
         nearestDropAnyOf(bot, items, radius).ifPresent(drop -> {
             if (bot.getActionPack().isPathExecutorIdle() && bot.getActionPack().isWalkToIdle()) {
-                ActionResult result = bot.getActionPack().startPathTo(pickupStandPos(bot, drop.getBlockPos()));
-                if (result.isFailed()) {
-                    bot.getActionPack().startWalkTo(drop.getPos());
-                }
+                bot.getActionPack().startPathTo(pickupStandPos(bot, drop.getBlockPos()));
             }
         });
         return 0;

@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AIBot 礼物规则面板</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #12141c; color: #e6e8ef;
+    font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 14px; line-height: 1.5;
+    padding-bottom: 80px;
+  }
+  a { color: #7ec8ff; }
+  #topbar {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 20px; background: #1a1d29; border-bottom: 1px solid #2b2f40;
+  }
+  #topbar h1 { font-size: 17px; margin-right: auto; }
+  #topbar h1 small { color: #8b90a5; font-weight: 400; font-size: 12px; margin-left: 8px; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 16px 20px; }
+  section { margin-bottom: 22px; }
+  h2 { font-size: 15px; color: #ffd97e; margin-bottom: 10px; }
+  h2 .hint { font-size: 12px; color: #8b90a5; font-weight: 400; margin-left: 10px; }
+  .card {
+    background: #1a1d29; border: 1px solid #2b2f40; border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 12px;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
+  label.f { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: #8b90a5; }
+  input[type=text], input[type=number], select, textarea {
+    background: #12141c; color: #e6e8ef; border: 1px solid #363b52;
+    border-radius: 6px; padding: 6px 9px; font-size: 13px; font-family: inherit;
+  }
+  input[type=text]:focus, input[type=number]:focus, select:focus, textarea:focus {
+    outline: none; border-color: #4d9fff;
+  }
+  input[type=number] { width: 84px; }
+  textarea { width: 100%; resize: vertical; min-height: 40px; }
+  input[type=checkbox] { accent-color: #4d9fff; width: 16px; height: 16px; }
+  label.c { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  button {
+    background: #2b3050; color: #e6e8ef; border: 1px solid #3d4368;
+    border-radius: 6px; padding: 6px 12px; font-size: 13px; cursor: pointer; font-family: inherit;
+  }
+  button:hover { background: #363d63; }
+  button.primary { background: #2456a8; border-color: #3a76d8; font-weight: 600; }
+  button.primary:hover { background: #2c66c4; }
+  button.danger { background: #5a2330; border-color: #8a3548; }
+  button.danger:hover { background: #6e2a3b; }
+  button.mini { padding: 2px 8px; font-size: 12px; }
+  .gift-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+  .gift-name { font-size: 16px; font-weight: 700; color: #7ec8ff; }
+  .tierchip { font-size: 11px; padding: 1px 8px; border-radius: 10px; border: 1px solid; }
+  .t1 { color: #b9becf; border-color: #4a4f66; }
+  .t2 { color: #7ec8ff; border-color: #2f6ea8; }
+  .t3 { color: #d7a5ff; border-color: #8a55c9; }
+  .t4 { color: #ff8798; border-color: #c04458; }
+  .action {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start;
+    background: #12141c; border: 1px solid #2b2f40; border-radius: 8px;
+    padding: 8px 10px; margin-bottom: 6px;
+  }
+  .action.brain-row { border-color: #7a5c1e; background: #1c180f; }
+  .action .grow { flex: 1 1 260px; }
+  .action .tag { font-size: 11px; color: #c9963a; width: 100%; }
+  .btns { margin-left: auto; display: flex; gap: 4px; }
+  #savebar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+    display: flex; gap: 10px; align-items: center; justify-content: center;
+    padding: 12px; background: #1a1d29ee; border-top: 1px solid #2b2f40;
+    backdrop-filter: blur(6px);
+  }
+  #msg { font-size: 13px; min-height: 18px; }
+  #msg.ok { color: #7ee8a2; } #msg.err { color: #ff8798; }
+  #rawwrap textarea { min-height: 320px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  .note { font-size: 12px; color: #8b90a5; margin-top: 6px; }
+  .note b { color: #c9963a; }
+  .presetbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<div id="topbar">
+  <h1>🎁 AIBot 礼物规则面板 <small>改完点保存,立刻热生效,无需重启</small></h1>
+  <label class="f">token(配了才填)
+    <input type="text" id="token" placeholder="留空=未启用" size="14">
+  </label>
+  <span id="conn">…</span>
+</div>
+
+<div class="wrap">
+  <section>
+    <h2>全局设置 <span class="hint">enabled/host/port/overlayEnabled 改动需重启 MC 服务端,其余保存即生效</span></h2>
+    <div class="card"><div class="row" id="globals"></div>
+      <div class="note">连击提档:数量 ≥ 第1阈值提1档,≥ 第2阈值提2档(档位=烟花庆祝规格,封顶4)。任务量=动作基数×数量,封顶「任务量上限」。</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>礼物规则 <span class="hint">「发指令给 DeepSeek」动作 = 把文本喂给大脑,它自己决定怎么演;占位符 {user} {gift} {count} 可用</span></h2>
+    <div class="presetbar">
+      <button data-act="add-gift">＋ 新礼物</button>
+      <button data-act="preset-betray">＋ 预设:反水攻击主人</button>
+      <button data-act="preset-drama">＋ 预设:DeepSeek 自由发挥</button>
+    </div>
+    <div id="gifts"></div>
+  </section>
+
+  <section>
+    <h2>随机池 <span class="hint">「随机」动作从指定池子里抽一个执行</span></h2>
+    <button data-act="add-pool" style="margin-bottom:10px">＋ 新池子</button>
+    <div id="pools"></div>
+  </section>
+
+  <section id="rawwrap">
+    <h2>原始 JSON <span class="hint">高级模式:直接编辑整份配置</span></h2>
+    <div class="card">
+      <textarea id="raw" spellcheck="false"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button data-act="raw-load">表单 → JSON</button>
+        <button data-act="raw-apply">JSON → 表单</button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div id="savebar">
+  <button class="primary" data-act="save">💾 保存并热加载</button>
+  <button data-act="reload">↻ 重新读取</button>
+  <label class="f" style="flex-direction:row;align-items:center;gap:6px">试发送礼人
+    <input type="text" id="testuser" value="面板测试" size="8">
+  </label>
+  <span id="msg"></span>
+</div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  let cfg = null;
+
+  const ACTION_TYPES = {
+    say:         { label: "说话(面板+TTS)",      fields: ["text"] },
+    brain:       { label: "发指令给 DeepSeek ★", fields: ["text"] },
+    come_here:   { label: "过来身边",            fields: [] },
+    follow:      { label: "长期跟随",            fields: [] },
+    stop:        { label: "全部停止",            fields: [] },
+    gather:      { label: "采集物品",            fields: ["item", "count"] },
+    mine:        { label: "挖方块",              fields: ["block", "count"] },
+    goal:        { label: "目标(自动规划)",      fields: ["item", "count"] },
+    build_house: { label: "盖房子",              fields: [] },
+    random:      { label: "随机(从池子抽)",      fields: ["pool"] },
+    wander:      { label: "闲逛(随机走走)",      fields: [] },
+    fish:        { label: "钓鱼",                fields: ["count"] },
+  };
+  const FIELD_HINT = {
+    text: "文本({user}/{gift}/{count} 占位符)",
+    item: "物品 id(minecraft:oak_log)",
+    block: "方块 id(minecraft:stone)",
+    count: "数量",
+    pool: "池子名",
+  };
+  const GLOBALS = [
+    ["defaultBot", "text", "默认 Bot"],
+    ["thanksTemplate", "text", "公屏感谢模板", 34],
+    ["broadcastThanks", "check", "公屏感谢"],
+    ["hourlyThanks", "check", "整点谢榜"],
+    ["cooldownMs", "num", "冷却 ms(软门控)"],
+    ["dedupMs", "num", "去重 ms(须<聚合窗2000)"],
+    ["countScaleCap", "num", "任务量上限"],
+    ["tierUp0", "num", "提1档阈值"],
+    ["tierUp1", "num", "提2档阈值"],
+    ["overlayEnabled", "check", "OBS 浮层(重启生效)"],
+    ["danmakuEnabled", "check", "弹幕互动"],
+    ["danmakuMinIntervalSec", "num", "弹幕合批间隔 s"],
+    ["danmakuBatchMax", "num", "每批弹幕条数"],
+    ["danmakuNamedCooldownSec", "num", "点名回复冷却 s/人"],
+    ["followThanksEnabled", "check", "关注感谢"],
+    ["followThanksTemplate", "text", "关注感谢模板({user})", 24],
+    ["idleEnabled", "check", "空闲自主找事(抽 idle 池)"],
+    ["idleAfterSec", "num", "空闲多少秒后找事"],
+    ["idleChatterIntervalSec", "num", "空闲唠嗑间隔 s(0=关)"],
+  ];
+
+  // ---------- 数据规整 ----------
+  function parseCompact(raw) {  // 与 mod 端 GiftAction.parseCompact 对齐(容错命名空间冒号)
+    const p = String(raw).split(":");
+    const t = p[0];
+    if (t === "say" || t === "brain") return { type: t, text: p.slice(1).join(":") };
+    if (t === "gather" || t === "mine" || t === "goal") {
+      // 兼容 "gather:oak_log:8" 与 "gather:minecraft:oak_log:8":末段是数字算数量,其余拼回 id
+      let rest = p.slice(1), count = 0;
+      if (rest.length && /^\d+$/.test(rest[rest.length - 1])) count = +rest.pop();
+      const ident = rest.join(":");
+      if (t === "gather") return { type: t, item: ident || "minecraft:oak_log", count: count || 4 };
+      if (t === "mine") return { type: t, block: ident || "minecraft:stone", count: count || 8 };
+      return count ? { type: t, item: ident || "minecraft:crafting_table", count }
+                   : { type: t, item: ident || "minecraft:crafting_table" };
+    }
+    if (t === "random") return { type: t, pool: p[1] || "big" };
+    return { type: t };
+  }
+  function normActions(arr) {
+    return (Array.isArray(arr) ? arr : []).map(a => typeof a === "string" ? parseCompact(a) : { ...a });
+  }
+  function normalize(c) {
+    c.gifts = c.gifts || {};
+    for (const k of Object.keys(c.gifts)) {
+      const v = c.gifts[k];
+      c.gifts[k] = Array.isArray(v)
+        ? { tier: 1, actions: normActions(v) }
+        : { tier: v.tier || 1, actions: normActions(v.actions) };
+    }
+    c.pools = c.pools || {};
+    for (const k of Object.keys(c.pools)) c.pools[k] = normActions(c.pools[k]);
+    if (!Array.isArray(c.tierUpAt) || c.tierUpAt.length < 2) c.tierUpAt = [10, 30];
+    return c;
+  }
+
+  // ---------- 渲染 ----------
+  const esc = s => String(s ?? "").replace(/[&<>"']/g,
+    c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  function renderGlobals() {
+    $("globals").innerHTML = GLOBALS.map(([key, kind, label, size]) => {
+      let val = key === "tierUp0" ? cfg.tierUpAt[0] : key === "tierUp1" ? cfg.tierUpAt[1] : cfg[key];
+      if (kind === "check") {
+        return `<label class="c"><input type="checkbox" data-g="${key}" ${val ? "checked" : ""}>${label}</label>`;
+      }
+      const type = kind === "num" ? "number" : "text";
+      return `<label class="f">${label}<input type="${type}" data-g="${key}" value="${esc(val ?? "")}"${size ? ` size="${size}"` : ""}></label>`;
+    }).join("");
+  }
+
+  function actionRow(a, scope, owner, i, total) {
+    const def = ACTION_TYPES[a.type] || { label: a.type, fields: [] };
+    const opts = Object.entries(ACTION_TYPES).map(([t, d]) =>
+      `<option value="${t}" ${t === a.type ? "selected" : ""}>${d.label}</option>`).join("");
+    const fields = (def.fields || []).map(f => {
+      if (f === "text") {
+        return `<textarea class="grow" data-s="${scope}" data-o="${esc(owner)}" data-ai="${i}" data-field="text"
+          placeholder="${FIELD_HINT.text}">${esc(a.text || "")}</textarea>`;
+      }
+      if (f === "count") {
+        return `<input type="number" min="1" data-s="${scope}" data-o="${esc(owner)}" data-ai="${i}" data-field="count" value="${a.count || 1}" title="${FIELD_HINT.count}">`;
+      }
+      if (f === "pool") {
+        const pools = Object.keys(cfg.pools);
+        return `<select data-s="${scope}" data-o="${esc(owner)}" data-ai="${i}" data-field="pool">
+          ${pools.map(p => `<option ${p === (a.pool || "big") ? "selected" : ""}>${esc(p)}</option>`).join("")}</select>`;
+      }
+      return `<input type="text" size="22" data-s="${scope}" data-o="${esc(owner)}" data-ai="${i}" data-field="${f}"
+        value="${esc(a[f] || "")}" placeholder="${FIELD_HINT[f]}">`;
+    }).join("");
+    const brainTag = a.type === "brain"
+      ? `<div class="tag">★ 这段文本会直接发给 DeepSeek 大脑,它自己决定说什么/做什么(可调用攻击/跟随/挖矿等全部工具)</div>` : "";
+    return `<div class="action ${a.type === "brain" ? "brain-row" : ""}">
+      <select data-s="${scope}" data-o="${esc(owner)}" data-ai="${i}" data-field="type">${opts}</select>
+      ${fields}${brainTag}
+      <div class="btns">
+        <button class="mini" data-act="act-up" data-s="${scope}" data-o="${esc(owner)}" data-ai="${i}" ${i === 0 ? "disabled" : ""}>↑</button>
+        <button class="mini" data-act="act-down" data-s="${scope}" data-o="${esc(owner)}" data-ai="${i}" ${i === total - 1 ? "disabled" : ""}>↓</button>
+        <button class="mini danger" data-act="act-del" data-s="${scope}" data-o="${esc(owner)}" data-ai="${i}">✕</button>
+      </div>
+    </div>`;
+  }
+
+  function renderGifts() {
+    $("gifts").innerHTML = Object.entries(cfg.gifts).map(([name, rule]) => `
+      <div class="card">
+        <div class="gift-head">
+          <span class="gift-name">${esc(name)}</span>
+          <span class="tierchip t${rule.tier}">tier ${rule.tier} · ${["", "粒子", "单发烟花", "三连发", "环绕齐射+转圈"][rule.tier]}</span>
+          <label class="f" style="flex-direction:row;align-items:center;gap:6px">档位
+            <select data-s="gift" data-o="${esc(name)}" data-field="tier">
+              ${[1, 2, 3, 4].map(t => `<option value="${t}" ${t === rule.tier ? "selected" : ""}>${t}</option>`).join("")}
+            </select>
+          </label>
+          <div class="btns">
+            <button class="mini" data-act="test" data-o="${esc(name)}">🧪 试一发</button>
+            <button class="mini" data-act="rename-gift" data-o="${esc(name)}">改名</button>
+            <button class="mini danger" data-act="del-gift" data-o="${esc(name)}">删除</button>
+          </div>
+        </div>
+        ${rule.actions.map((a, i) => actionRow(a, "gift", name, i, rule.actions.length)).join("")}
+        <button class="mini" data-act="add-action" data-o="${esc(name)}">＋ 动作</button>
+      </div>`).join("") || `<div class="note">还没有礼物规则,点上面「＋ 新礼物」。</div>`;
+  }
+
+  function renderPools() {
+    $("pools").innerHTML = Object.entries(cfg.pools).map(([name, actions]) => `
+      <div class="card">
+        <div class="gift-head">
+          <span class="gift-name">${esc(name)}</span>
+          <div class="btns"><button class="mini danger" data-act="del-pool" data-o="${esc(name)}">删除</button></div>
+        </div>
+        ${actions.map((a, i) => actionRow(a, "pool", name, i, actions.length)).join("")}
+        <button class="mini" data-act="add-pool-action" data-o="${esc(name)}">＋ 动作</button>
+      </div>`).join("") || `<div class="note">没有池子。</div>`;
+  }
+
+  function renderAll() { renderGlobals(); renderGifts(); renderPools(); }
+
+  // ---------- 事件 ----------
+  function actionsOf(scope, owner) {
+    return scope === "gift" ? cfg.gifts[owner].actions : cfg.pools[owner];
+  }
+
+  document.body.addEventListener("change", e => {
+    const el = e.target;
+    if (el.dataset.g) {  // 全局字段
+      const k = el.dataset.g;
+      const v = el.type === "checkbox" ? el.checked : el.type === "number" ? +el.value : el.value;
+      if (k === "tierUp0") cfg.tierUpAt[0] = v;
+      else if (k === "tierUp1") cfg.tierUpAt[1] = v;
+      else cfg[k] = v;
+      return;
+    }
+    if (el.dataset.s && el.dataset.field === "tier") {
+      cfg.gifts[el.dataset.o].tier = +el.value; renderGifts(); return;
+    }
+    if (el.dataset.s && el.dataset.ai != null) {
+      const a = actionsOf(el.dataset.s, el.dataset.o)[+el.dataset.ai];
+      const f = el.dataset.field;
+      if (f === "type") {
+        const nt = el.value;
+        const keep = { type: nt };
+        if ((ACTION_TYPES[nt].fields).includes("text")) keep.text = a.text || "";
+        if ((ACTION_TYPES[nt].fields).includes("count")) keep.count = a.count || 1;
+        actionsOf(el.dataset.s, el.dataset.o)[+el.dataset.ai] = keep;
+        renderGifts(); renderPools();
+      } else {
+        a[f] = f === "count" ? Math.max(1, +el.value || 1) : el.value;
+      }
+    }
+  });
+
+  document.body.addEventListener("click", async e => {
+    const btn = e.target.closest("button[data-act]");
+    if (!btn) return;
+    const act = btn.dataset.act, o = btn.dataset.o, s = btn.dataset.s, ai = +btn.dataset.ai;
+    const rerender = () => { renderGifts(); renderPools(); };
+    switch (act) {
+      case "add-gift": {
+        const name = prompt("礼物名(与抖音礼物名一致,支持包含匹配):");
+        if (!name) return;
+        cfg.gifts[name] = { tier: 1, actions: [{ type: "say", text: `谢谢 {user} 送的${name}！` }] };
+        rerender(); break;
+      }
+      case "preset-betray": {
+        cfg.gifts["反水"] = { tier: 3, actions: [
+          { type: "say", text: "什么？{user} 居然花钱买通我反水？！" },
+          { type: "brain", text: "观众 {user} 送出{gift}×{count},出钱买通你背叛主人!你现在是叛徒:先说一句戏剧性的挑衅,然后用 attack_entity 攻击 minecraft:player(就是你的主人),打上一小会儿后停手(stop),真诚道歉说自己被金钱蒙蔽了,恢复正常。全程要有综艺感,别真把主人打死。" },
+        ]};
+        rerender(); msg("已加「反水」预设,礼物名可点改名换成真实礼物名", "ok"); break;
+      }
+      case "preset-drama": {
+        cfg.gifts["点歌"] = { tier: 2, actions: [
+          { type: "brain", text: "观众 {user} 送出{gift}×{count}。自由发挥:结合你现在正在做的事,说一段有趣的话感谢 TA,再顺手做一件应景的小事(比如放个方块、跳一跳、看向天空)。" },
+        ]};
+        rerender(); msg("已加「点歌」自由发挥预设", "ok"); break;
+      }
+      case "del-gift": if (confirm(`删除礼物「${o}」?`)) { delete cfg.gifts[o]; rerender(); } break;
+      case "rename-gift": {
+        const name = prompt("新礼物名:", o);
+        if (!name || name === o) return;
+        const entries = Object.entries(cfg.gifts).map(([k, v]) => [k === o ? name : k, v]);
+        cfg.gifts = Object.fromEntries(entries);
+        rerender(); break;
+      }
+      case "add-action": cfg.gifts[o].actions.push({ type: "say", text: "" }); rerender(); break;
+      case "add-pool": {
+        const name = prompt("池子名:");
+        if (!name) return;
+        cfg.pools[name] = [{ type: "say", text: "" }];
+        rerender(); break;
+      }
+      case "del-pool": if (confirm(`删除池子「${o}」?`)) { delete cfg.pools[o]; rerender(); } break;
+      case "add-pool-action": cfg.pools[o].push({ type: "say", text: "" }); rerender(); break;
+      case "act-del": actionsOf(s, o).splice(ai, 1); rerender(); break;
+      case "act-up": { const arr = actionsOf(s, o); [arr[ai - 1], arr[ai]] = [arr[ai], arr[ai - 1]]; rerender(); break; }
+      case "act-down": { const arr = actionsOf(s, o); [arr[ai + 1], arr[ai]] = [arr[ai], arr[ai + 1]]; rerender(); break; }
+      case "save": await save(); break;
+      case "reload": await load(); msg("已重新读取", "ok"); break;
+      case "test": await testGift(o); break;
+      case "raw-load": $("raw").value = JSON.stringify(cfg, null, 2); msg("已导出到 JSON 框", "ok"); break;
+      case "raw-apply": {
+        try { cfg = normalize(JSON.parse($("raw").value)); renderAll(); msg("JSON 已应用到表单(还没保存)", "ok"); }
+        catch (err) { msg("JSON 解析失败: " + err.message, "err"); }
+        break;
+      }
+    }
+  });
+
+  // ---------- 网络 ----------
+  function headers(json) {
+    const h = json ? { "Content-Type": "application/json" } : {};
+    const t = $("token").value.trim();
+    if (t) h["Authorization"] = "Bearer " + t;
+    return h;
+  }
+  function msg(text, cls) {
+    const el = $("msg");
+    el.textContent = text; el.className = cls || "";
+    if (cls === "ok") setTimeout(() => { if (el.textContent === text) el.textContent = ""; }, 4000);
+  }
+  async function load() {
+    const resp = await fetch("/config", { headers: headers(false), cache: "no-store" });
+    if (!resp.ok) { msg(`读取失败 HTTP ${resp.status}(token 对吗?)`, "err"); return; }
+    cfg = normalize(await resp.json());
+    renderAll();
+    $("raw").value = JSON.stringify(cfg, null, 2);
+  }
+  async function save() {
+    const resp = await fetch("/config", { method: "POST", headers: headers(true), body: JSON.stringify(cfg, null, 2) });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok) msg(`✅ 已保存并热加载(${data.gifts} 个礼物生效)。${data.note || ""}`, "ok");
+    else msg(`保存失败: ${data.error || resp.status}`, "err");
+  }
+  async function testGift(name) {
+    const resp = await fetch("/gift", { method: "POST", headers: headers(true),
+      body: JSON.stringify({ user: $("testuser").value.trim() || "面板测试", gift: name, count: 1 }) });
+    const text = await resp.text();
+    if (resp.status === 429) msg(`🧪 ${name}: 被去重/冷却拦了(${text}),等 2 秒再试`, "err");
+    else if (resp.ok) msg(`🧪 ${name}: 已投递,看游戏里反应`, "ok");
+    else msg(`🧪 ${name}: HTTP ${resp.status} ${text}`, "err");
+  }
+  async function health() {
+    try {
+      const resp = await fetch("/health", { cache: "no-store" });
+      $("conn").textContent = resp.ok ? "🟢 已连接" : "🔴 异常";
+    } catch { $("conn").textContent = "🔴 未连接"; }
+  }
+
+  $("token").value = localStorage.getItem("aibot_admin_token") || "";
+  $("token").addEventListener("change", () => localStorage.setItem("aibot_admin_token", $("token").value.trim()));
+  health(); setInterval(health, 5000);
+  load().catch(err => msg("初始化失败: " + err.message, "err"));
+})();
+</script>
+</body>
+</html>

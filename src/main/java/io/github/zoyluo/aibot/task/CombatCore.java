@@ -46,7 +46,7 @@ public final class CombatCore {
     }
 
     public static boolean inMeleeRange(AIPlayerEntity bot, LivingEntity target) {
-        return bot.distanceTo(target) <= ATTACK_RANGE;
+        return bot.distanceTo(target) <= ATTACK_RANGE && hasLineOfSight(bot, target);
     }
 
     // 视线/可达判定:bot 眼睛 → 目标眼睛之间做一次方块 raycast,中间被实心方块挡住(非 MISS)即视为
@@ -67,10 +67,7 @@ public final class CombatCore {
     }
 
     public static void startApproach(AIPlayerEntity bot, LivingEntity target) {
-        ActionResult result = bot.getActionPack().startPathTo(target.getBlockPos());
-        if (result.isFailed()) {
-            bot.getActionPack().startWalkTo(target.getPos());
-        }
+        bot.getActionPack().startPathTo(target.getBlockPos());
     }
 
     public static boolean strikeIfReady(AIPlayerEntity bot, LivingEntity target) {

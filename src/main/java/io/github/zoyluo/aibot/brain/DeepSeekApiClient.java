@@ -45,6 +45,15 @@ public final class DeepSeekApiClient {
         body.addProperty("max_tokens", config.maxTokens());
         body.addProperty("temperature", config.temperature());
         body.addProperty("stream", false);
+        if (config.thinkingDisabled()) {
+            // 双通道兼容: DeepSeek 官方用 {"thinking":{"type":"disabled"}};
+            // StepFun step-3.7-flash 用 {"reasoning_effort":"low"}。实测 Step 模型即使
+            // low 仍会把正文写进 reasoning_content(不会写 content),故 parseResponse 里需做 fallback。
+            JsonObject thinking = new JsonObject();
+            thinking.addProperty("type", "disabled");
+            body.add("thinking", thinking);
+            body.addProperty("reasoning_effort", "low");
+        }
         BotLog.api(null, "api_request",
                 "model", config.model(),
                 "msg_count", history.size(),
@@ -59,14 +68,33 @@ public final class DeepSeekApiClient {
                 .POST(HttpRequest.BodyPublishers.ofString(body.toString(), StandardCharsets.UTF_8))
                 .build();
 
-        HttpResponse<String> response = sendWithRetry(request);
-        if (response.statusCode() != 200) {
-            throw new DeepSeekApiException(classifyStatus(response.statusCode(), response.body()));
+        long t0 = System.currentTimeMillis();
+        String responseBody = null;
+        int statusCode = 0;
+        String error = null;
+        try {
+            HttpResponse<String> response = sendWithRetry(request);
+            statusCode = response.statusCode();
+            responseBody = response.body();
+            if (statusCode != 200) {
+                error = classifyStatus(statusCode, responseBody);
+                throw new DeepSeekApiException(error);
+            }
+            if (responseBody == null || responseBody.isBlank()) {
+                throw new DeepSeekApiException("empty_response");
+            }
+        } catch (DeepSeekApiException e) {
+            io.github.zoyluo.aibot.log.ConversationLogger.INSTANCE.onApiCall(
+                    "?", config.model(), normalizedBaseUrl() + "/v1/chat/completions",
+                    body.toString(), responseBody, System.currentTimeMillis() - t0, 0, 0, e.getMessage());
+            throw e;
         }
-        if (response.body() == null || response.body().isBlank()) {
-            throw new DeepSeekApiException("empty_response");
-        }
-        return parseResponse(response.body());
+        ChatResponse parsed = parseResponse(responseBody);
+        io.github.zoyluo.aibot.log.ConversationLogger.INSTANCE.onApiCall(
+                "?", config.model(), normalizedBaseUrl() + "/v1/chat/completions",
+                body.toString(), responseBody, System.currentTimeMillis() - t0,
+                parsed.promptTokens(), parsed.completionTokens(), null);
+        return parsed;
     }
 
     private HttpResponse<String> sendWithRetry(HttpRequest request) throws DeepSeekApiException {
@@ -171,7 +199,9 @@ public final class DeepSeekApiClient {
             if (message.toolCallId() != null) {
                 object.addProperty("tool_call_id", message.toolCallId());
             }
-            if (message.name() != null) {
+            // name 仅对 legacy function-role 有意义;tool-role 上带 name 会被挑剔的网关(StepFun)拒(400)。
+            // 我们内部用 ChatMessage.name 携带工具名做 finish 识别,但绝不让它进 tool 消息的线格式。
+            if (message.name() != null && !"tool".equals(message.role())) {
                 object.addProperty("name", message.name());
             }
             messages.add(object);
@@ -205,8 +235,18 @@ public final class DeepSeekApiClient {
             }
             JsonObject choice = choices.get(0).getAsJsonObject();
             JsonObject message = choice.getAsJsonObject("message");
+            // Step 模型把正文放 reasoning_content 而不是 content。
+            // 关键防范:reasoning_content 是完整思考流(几百~几千字),全部当正文 → 触发 TTS 把思考全念出来,非常烦人。
+            // 策略:(1) tool_calls 时 reasoning_content 是纯思考,不进 content;(2) finish_reason=stop 且 content 为空时,
+            //         取 reasoning_content 末尾 ≤200 字符(Step 倾向于把结论写末尾),超出截断。
             String content = nullableString(message.get("content"));
             String finishReason = nullableString(choice.get("finish_reason"));
+            if ((content == null || content.isBlank()) && "stop".equals(finishReason)) {
+                String reasoning = nullableString(message.get("reasoning_content"));
+                if (reasoning != null && !reasoning.isBlank()) {
+                    content = conclusionTail(reasoning, 200);
+                }
+            }
             List<ChatToolCall> toolCalls = new ArrayList<>();
             if (message.has("tool_calls") && message.get("tool_calls").isJsonArray()) {
                 for (JsonElement element : message.getAsJsonArray("tool_calls")) {
@@ -239,6 +279,29 @@ public final class DeepSeekApiClient {
 
     private static String nullableString(JsonElement element) {
         return element == null || element.isJsonNull() ? null : element.getAsString();
+    }
+
+    /**
+     * 从 reasoning_content 里取"结论段":Step 把结论写在末尾,但盲取 substring(len-max) 会从半句/半词
+     * 切断,读起来是残句。改为:先截末尾 max 字符,再从其中**第一个句末标点之后**开始,保证以完整句起头。
+     * 找不到句界(整段一句话)就回退整段末尾。
+     */
+    static String conclusionTail(String reasoning, int max) {
+        String text = reasoning.strip();
+        if (text.length() <= max) {
+            return text;
+        }
+        String tail = text.substring(text.length() - max);
+        int cut = -1;
+        for (int i = 0; i < tail.length() - 1; i++) {
+            char c = tail.charAt(i);
+            if (c == '。' || c == '.' || c == '!' || c == '?' || c == '！' || c == '？' || c == '\n') {
+                cut = i;
+                break;
+            }
+        }
+        String result = cut >= 0 ? tail.substring(cut + 1).strip() : tail.strip();
+        return result.isBlank() ? tail.strip() : result;
     }
 
     private static int intField(JsonObject object, String name) {

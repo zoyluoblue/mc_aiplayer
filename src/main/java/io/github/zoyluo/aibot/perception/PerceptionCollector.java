@@ -48,7 +48,7 @@ public final class PerceptionCollector {
         BlockScan blockScan = collectBlocks(world, center, Math.min(config.radius(), 8), config.maxBlocks());
         List<PerceptionSnapshot.NearbyEntity> entities = collectEntities(bot, world, config.radius(), config.maxEntities());
         List<PerceptionSnapshot.NearbyItem> items = collectItems(bot, world, config.radius(), config.maxItems());
-        PerceptionSnapshot.Highlights highlights = buildHighlights(blockScan.highlights(), entities);
+        PerceptionSnapshot.Highlights highlights = buildHighlights(bot, blockScan.highlights(), entities);
         List<PerceptionSnapshot.NearbyBlock> blocks = config.includeRawLists() ? blockScan.blocks() : List.of();
         List<PerceptionSnapshot.NearbyEntity> rawEntities = config.includeRawLists() ? entities : List.of();
         List<PerceptionSnapshot.NearbyItem> rawItems = config.includeRawLists() ? items : List.of();
@@ -159,6 +159,9 @@ public final class PerceptionCollector {
         if (water) {
             addHighlight(highlights, "nearest_water", "minecraft:water", pos, distance);
         }
+        if (state.getFluidState().isIn(FluidTags.LAVA)) {
+            addHighlight(highlights, "nearest_lava", "minecraft:lava", pos, distance);
+        }
         if (state.isIn(BlockTags.LOGS)) {
             addHighlight(highlights, "nearest_tree", Registries.BLOCK.getId(state.getBlock()).toString(), pos, distance);
         }
@@ -192,22 +195,86 @@ public final class PerceptionCollector {
                 .add(new PerceptionSnapshot.NearbyBlock(id, pos.getX(), pos.getY(), pos.getZ(), distance));
     }
 
-    private static PerceptionSnapshot.Highlights buildHighlights(Map<String, List<PerceptionSnapshot.NearbyBlock>> blockHighlights,
+    private static PerceptionSnapshot.Highlights buildHighlights(AIPlayerEntity bot,
+                                                                 Map<String, List<PerceptionSnapshot.NearbyBlock>> blockHighlights,
                                                                  List<PerceptionSnapshot.NearbyEntity> entities) {
         List<PerceptionSnapshot.NearbyEntity> hostiles = entities.stream()
                 .filter(PerceptionSnapshot.NearbyEntity::hostile)
                 .limit(2)
+                .toList();
+        // 治"感知瞎":中立生物(牛羊猪村民)≤3 只进快照,杀牛/繁殖前不用先 scan 才知道身边有牛。
+        List<PerceptionSnapshot.NearbyEntity> passive = entities.stream()
+                .filter(entity -> !entity.hostile() && !"minecraft:player".equals(entity.type()))
+                .limit(3)
                 .toList();
         return new PerceptionSnapshot.Highlights(
                 blockHighlights.getOrDefault("nearest_tree", List.of()),
                 blockHighlights.getOrDefault("nearest_stone", List.of()),
                 blockHighlights.getOrDefault("nearest_ore", List.of()),
                 blockHighlights.getOrDefault("nearest_water", List.of()),
+                blockHighlights.getOrDefault("nearest_lava", List.of()),
                 blockHighlights.getOrDefault("nearest_furnace", List.of()),
                 blockHighlights.getOrDefault("nearest_chest", List.of()),
                 blockHighlights.getOrDefault("nearest_bed", List.of()),
                 blockHighlights.getOrDefault("nearest_crafting_table", List.of()),
-                hostiles);
+                hostiles,
+                ownerInfo(bot),
+                passive,
+                nearestOtherPlayer(bot));
+    }
+
+    /** 主人状态(不限半径——"主人在 80 格外"本身就是关键信息):位置/血量/5s 内是否被打+被谁打。 */
+    private static PerceptionSnapshot.OwnerInfo ownerInfo(AIPlayerEntity bot) {
+        return io.github.zoyluo.aibot.manager.AIPlayerManager.INSTANCE.ownerOf(bot)
+                .map(uuid -> bot.getServer().getPlayerManager().getPlayer(uuid))
+                .filter(owner -> owner != null && owner.getServerWorld() == bot.getServerWorld())
+                .map(owner -> new PerceptionSnapshot.OwnerInfo(
+                        owner.getGameProfile().getName(),
+                        round(owner.getX()),
+                        round(owner.getY()),
+                        round(owner.getZ()),
+                        round(bot.distanceTo(owner)),
+                        owner.getHealth(),
+                        io.github.zoyluo.aibot.brain.OwnerEventListener.INSTANCE.recentlyHurt(owner.getUuid()),
+                        io.github.zoyluo.aibot.brain.OwnerEventListener.INSTANCE.lastAttacker(owner.getUuid())))
+                .orElse(null);
+    }
+
+    /** 最近的非主人真人玩家(24 格内):有生人靠近 bot 该知道。排除其它 bot。 */
+    private static PerceptionSnapshot.NearbyEntity nearestOtherPlayer(AIPlayerEntity bot) {
+        java.util.UUID ownerUuid = io.github.zoyluo.aibot.manager.AIPlayerManager.INSTANCE.ownerOf(bot).orElse(null);
+        return bot.getServerWorld().getPlayers().stream()
+                .filter(player -> player != bot && !(player instanceof AIPlayerEntity))
+                .filter(player -> ownerUuid == null || !player.getUuid().equals(ownerUuid))
+                .filter(player -> bot.distanceTo(player) <= 24.0D)
+                .min(Comparator.comparingDouble(bot::distanceTo))
+                .map(player -> toNearbyEntity(bot, player))
+                .orElse(null);
+    }
+
+    /**
+     * scan_surroundings 工具的"上帝视角"报告:比常规快照更大的半径(方块 12/实体 24),
+     * 一次性给出附近岩浆/水/矿/树/容器/敌对生物/掉落物的坐标与距离。key 缺席=范围内没有。
+     */
+    public static String scanReport(AIPlayerEntity bot) {
+        ServerWorld world = bot.getServerWorld();
+        BlockPos center = bot.getBlockPos();
+        BlockScan blockScan = collectBlocks(world, center, 12, 0);
+        List<PerceptionSnapshot.NearbyEntity> entities = collectEntities(bot, world, 24, 16);
+        List<PerceptionSnapshot.NearbyItem> items = collectItems(bot, world, 16, 10);
+        Map<String, Object> report = new java.util.LinkedHashMap<>();
+        report.put("center", center.getX() + "," + center.getY() + "," + center.getZ());
+        report.put("scan_radius_blocks", 12);
+        report.put("scan_radius_entities", 24);
+        report.put("biome", world.getBiome(center).getKey()
+                .map(key -> key.getValue().toString()).orElse("unknown"));
+        report.put("light", world.getLightLevel(center));
+        report.put("is_day", world.isDay());
+        report.put("nearby", blockScan.highlights());
+        report.put("entities", entities);
+        report.put("ground_items", items);
+        report.put("note", "absent keys mean none found within scan radius");
+        return new com.google.gson.Gson().toJson(report);
     }
 
     private static double round(double value) {

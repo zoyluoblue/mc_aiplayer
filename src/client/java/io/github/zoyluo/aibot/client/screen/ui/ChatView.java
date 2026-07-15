@@ -115,13 +115,13 @@ public final class ChatView implements PanelComponent {
     private void drawBubble(DrawContext context, TextRenderer renderer, RenderLine line, int by) {
         int border = switch (line.role()) {
             case "user" -> 0xFF73AEFF;
-            case "bot" -> 0xFF8BE896;
+            case "bot", "bot_text" -> 0xFF8BE896;
             case "system" -> 0xFFEBC35D;
             default -> Theme.BORDER;
         };
         int bg = switch (line.role()) {
             case "user" -> 0xF022416A;
-            case "bot" -> 0xF01F3B2A;
+            case "bot", "bot_text" -> 0xF01F3B2A;
             case "system" -> 0xF03A3019;
             default -> 0xF0242830;
         };
@@ -176,7 +176,7 @@ public final class ChatView implements PanelComponent {
     private static String roleLabel(String role) {
         return switch (role) {
             case "user" -> Theme.tr("screen.aibot.role.user");
-            case "bot" -> Theme.tr("screen.aibot.role.bot");
+            case "bot", "bot_text" -> Theme.tr("screen.aibot.role.bot");
             case "system" -> Theme.tr("screen.aibot.role.system");
             default -> role == null || role.isBlank() ? Theme.tr("screen.aibot.role.system") : role;
         };

@@ -29,7 +29,6 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class NavSafetyNet {
     public static final NavSafetyNet INSTANCE = new NavSafetyNet();
 
-    private static final int AIR_SURFACE_THRESHOLD = 120; // 满 300;低于此且在水下→上浮换气
     private static final int EMERGENCY_AIR = 60;           // 低于此且上浮无望→紧急传送到可呼吸落点
     private static final int BREATHE_SCAN_UP = 5;          // 头顶向上找空气的格数
     private static final int RESCUE_RADIUS_H = 16;
@@ -70,8 +69,14 @@ public final class NavSafetyNet {
         }
 
         // 2) 溺水/水危机:触发后持续接管到上岸(见 waterRescueShore 注释)。
+        // WATER-2:入水即救,不再等氧气告急。旧条件 submerged && air<120 = 潜水 9 秒后才接管,
+        // 之前每 tick 任务层还在用拟人化"落地单跳"(WalkToController)扑腾——假玩家不会游泳,
+        // 观感=进水变智障。现在只要悬浮在水里(touching water 且不着地=在游/在沉)或头已没入水,
+        // 立即进入危机态:持续按住 jump 上浮 + 朝最近岸点游,脚踩干地才释放。
+        // 浅水站立(脚湿头干、踩着底)不触发,涉水过河照常。
         boolean inCrisis = waterRescueShore.containsKey(bot.getUuid());
-        if (!inCrisis && bot.isSubmergedInWater() && bot.getAir() < AIR_SURFACE_THRESHOLD) {
+        if (!inCrisis && (bot.isSubmergedInWater()
+                || (bot.isTouchingWater() && !bot.isOnGround()))) {
             inCrisis = true; // 新触发
         }
         if (inCrisis) {

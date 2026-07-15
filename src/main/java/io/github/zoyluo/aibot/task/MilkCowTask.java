@@ -78,10 +78,7 @@ public final class MilkCowTask extends AbstractTask {
         }
         // 走向牛(牛会移动,持续重定向;A* 失败则退化为直线 walk)。
         if (bot.getActionPack().isPathExecutorIdle()) {
-            ActionResult path = bot.getActionPack().startPathTo(cow.getBlockPos());
-            if (path.isFailed()) {
-                bot.getActionPack().startWalkTo(cow.getPos());
-            }
+            bot.getActionPack().startPathTo(cow.getBlockPos());
         }
     }
 

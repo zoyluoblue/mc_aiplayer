@@ -48,31 +48,34 @@ public final class BuildAction {
     }
 
     public static ActionResult placeBlockAt(AIPlayerEntity player, BlockPos pos) {
-        ActionResult lastFailure = ActionResult.failed("no_adjacent_block");
-        BlockPos below = pos.down();
-        if (!player.getServerWorld().getBlockState(below).isAir()) {
-            ActionResult result = placeBlock(player, below, Direction.UP, Hand.MAIN_HAND);
-            if (result.isSuccess()) {
-                return result;
-            }
-            lastFailure = result;
+        var world = player.getServerWorld();
+        if (!world.getBlockState(pos).isReplaceable()) {
+            return ActionResult.failed("target_not_replaceable");
         }
-
-        for (Direction direction : Direction.values()) {
+        ActionResult lastFailure = ActionResult.failed("no_adjacent_block");
+        Direction[] placementFaces = {
+                Direction.UP, Direction.NORTH, Direction.SOUTH,
+                Direction.EAST, Direction.WEST, Direction.DOWN};
+        for (Direction direction : placementFaces) {
             BlockPos against = pos.offset(direction.getOpposite());
-            if (!player.getServerWorld().getBlockState(against).isAir()) {
+            var anchor = world.getBlockState(against);
+            // Fluids and plants are non-air but replaceable. Clicking them makes ItemPlacementContext
+            // replace the anchor itself, silently placing one layer below/aside the requested target.
+            if (!anchor.isReplaceable() && !anchor.getCollisionShape(world, against).isEmpty()) {
                 ActionResult result = placeBlock(player, against, direction, Hand.MAIN_HAND);
-                if (result.isSuccess()) {
+                if (result.isSuccess() && !world.getBlockState(pos).isReplaceable()) {
                     return result;
                 }
-                lastFailure = result;
+                lastFailure = result.isSuccess()
+                        ? ActionResult.failed("accepted_without_target_block")
+                        : result;
             }
         }
         ActionResult fallback = directPlaceFallback(player, pos, Hand.MAIN_HAND);
-        if (fallback.isSuccess()) {
+        if (fallback.isSuccess() && !world.getBlockState(pos).isReplaceable()) {
             return fallback;
         }
-        return lastFailure;
+        return fallback.isSuccess() ? ActionResult.failed("fallback_without_target_block") : lastFailure;
     }
 
     private static ActionResult directPlaceFallback(AIPlayerEntity player, BlockPos pos, Hand hand) {
@@ -86,7 +89,9 @@ public final class BuildAction {
         if (!existing.isAir() && !existing.isReplaceable()) {
             return ActionResult.failed("target_not_air");
         }
-        player.getServerWorld().setBlockState(pos, blockItem.getBlock().getDefaultState(), 3);
+        if (!player.getServerWorld().setBlockState(pos, blockItem.getBlock().getDefaultState(), 3)) {
+            return ActionResult.failed("set_block_state_rejected");
+        }
         if (!player.getAbilities().creativeMode) {
             stack.decrement(1);
         }

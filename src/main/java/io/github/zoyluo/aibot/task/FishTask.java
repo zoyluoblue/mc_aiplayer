@@ -126,10 +126,7 @@ public final class FishTask extends AbstractTask {
             transition(Phase.CAST);
             return;
         }
-        ActionResult result = bot.getActionPack().startPathTo(standPos);
-        if (result.isFailed()) {
-            bot.getActionPack().startWalkTo(Vec3d.ofCenter(standPos));
-        }
+        bot.getActionPack().startPathTo(standPos);
         transition(Phase.MOVE_TO_WATER);
     }
 
@@ -140,10 +137,7 @@ public final class FishTask extends AbstractTask {
             return;
         }
         if (bot.getActionPack().isPathExecutorIdle() && phaseTicks > 20) {
-            ActionResult result = bot.getActionPack().startPathTo(standPos);
-            if (result.isFailed()) {
-                bot.getActionPack().startWalkTo(Vec3d.ofCenter(standPos));
-            }
+            bot.getActionPack().startPathTo(standPos);
         }
         phaseTicks++;
     }

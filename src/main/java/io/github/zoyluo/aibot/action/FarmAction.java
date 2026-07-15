@@ -73,7 +73,10 @@ public final class FarmAction {
             return ActionResult.failed("missing_water_bucket");
         }
         world.setBlockState(pos, Blocks.WATER.getDefaultState(), Block.NOTIFY_ALL);
-        InventoryAction.giveItem(bot, new ItemStack(Items.BUCKET, 1));
+        ItemStack empty = new ItemStack(Items.BUCKET, 1);
+        if (InventoryAction.giveItem(bot, empty).isFailed() && !empty.isEmpty()) {
+            bot.dropItem(empty, false, true); // 背包满:空桶落地,别凭空消失
+        }
         BotLog.action(bot, "place_water", "pos", pos);
         return ActionResult.SUCCESS;
     }
@@ -88,7 +91,10 @@ public final class FarmAction {
             return ActionResult.failed("missing_bucket");
         }
         world.setBlockState(pos, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
-        InventoryAction.giveItem(bot, new ItemStack(Items.WATER_BUCKET, 1));
+        ItemStack filled = new ItemStack(Items.WATER_BUCKET, 1);
+        if (InventoryAction.giveItem(bot, filled).isFailed() && !filled.isEmpty()) {
+            bot.dropItem(filled, false, true); // 背包满:水桶落地,别凭空消失
+        }
         BotLog.action(bot, "fill_bucket", "pos", pos);
         return ActionResult.SUCCESS;
     }

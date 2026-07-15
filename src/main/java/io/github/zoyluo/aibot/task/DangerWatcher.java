@@ -61,29 +61,10 @@ public final class DangerWatcher {
     }
 
     public boolean scanBot(MinecraftServer server, AIPlayerEntity bot) {
-        // SAFE-DEAD:死亡的 bot 不再无限派 evade(僵尸循环)。满血复活到地表,清任务/计划,中文告知。
+        // SAFE-DEAD:死亡处理全部移入 AIPlayerManager.handleDeath(当 tick 销毁尸体+10 tick 后重生+
+        // 熔断+跑尸)。BotTickCoordinator 的每 tick 快速路径通常先到,这里是危险扫描的兜底,幂等。
         if (bot.getHealth() <= 0.0F || !bot.isAlive()) {
-            BlockPos deathPos = bot.getBlockPos();
-            long deathTick = server.getTicks();
-            AIPlayerManager.INSTANCE.respawnDeadBot(bot);
-            TaskManager.INSTANCE.abort(bot);
-            io.github.zoyluo.aibot.goal.GoalExecutor.INSTANCE.clear(bot);
-            // 死亡找回反射:装备掉在死亡点(5 分钟 despawn),真实玩家第一反应就是跑尸。
-            // 自动出发的两个闸:①重生点离死亡点 ≤160(太远赶不上白跑);②死亡点不在危险区
-            // (同区两死记忆会立牌——记忆劝阻就听劝,别第三次送死,装备认亏)。
-            boolean nearEnough = bot.getBlockPos().isWithinDistance(deathPos, 160.0D);
-            boolean dangerous = io.github.zoyluo.aibot.memory.KnowledgeBase.INSTANCE
-                    .isDanger(bot.getUuid(), deathPos);
-            if (nearEnough && !dangerous) {
-                TaskManager.INSTANCE.assign(bot, new RecoverDropsTask(deathPos, deathTick));
-                BrainCoordinator.INSTANCE.sendPanelChat(bot, "system",
-                        bot.getGameProfile().getName() + " 死亡后已复活,正赶回 "
-                                + deathPos.toShortString() + " 找回掉落装备。");
-            } else {
-                BrainCoordinator.INSTANCE.sendPanelChat(bot, "system",
-                        bot.getGameProfile().getName() + " 死亡后已自动复活到地面。"
-                                + (dangerous ? "(死亡点已是危险区,放弃跑尸)" : ""));
-            }
+            AIPlayerManager.INSTANCE.handleDeath(server, bot);
             return true;
         }
         Optional<Threat> threat = collectTopThreat(bot);
@@ -108,10 +89,11 @@ public final class DangerWatcher {
         // EvadeTask 修为 fail)。这里主动兜底:头顶不见天(地下)且正在挨打(hurtTime>0)→ 不等濒死直接封墙,
         // 因为地下逃跑无效、拖到 ≤4 心才入土往往已死(real_diamond 深层挖矿 evade/guard_low_hp 送命主因)。
         boolean cannotFlee = !bot.getServerWorld().isSkyVisible(bot.getBlockPos());
-        boolean entombNow = bot.getHealth() <= EMERGENCY_SHELTER_HP || (cannotFlee && bot.hurtTime > 0);
-        // 死亡螺旋修复(self-inflicted 倒挂):collectTopThreat 在血<6 时把 top 改写成 LOW_HP/entity=null,
-        // 使本闸的 type==HOSTILE 判定恰在最该入土时失效(血越低越筑不了墙,正是上面注释想治的螺旋)。
-        // 补:LOW_HP 抢占时独立扫一次近处可达 hostile,有则照样入土。不动威胁分类早返回,避免误伤 DROWNING/LAVA。
+        // 直播决策:彻底关闭"自我封闭/入土保命"(emergency_entomb)。用户反馈:一遇怪就把自己用石头
+        // 封成一根柱子当缩头乌龟,极其难看且违背护卫/追杀节目效果。低血遇怪一律死磕战斗(反正能重生,
+        // 直播要热血)。原逻辑本为治"深洞挖矿被怪海围歼送命的死亡螺旋",现按用户明确要求牺牲存活换观感。
+        // 保留 entomb 相关工具/任务实现(可能其它路径复用),仅在此危险决策处不再主动触发。
+        boolean entombNow = false;
         boolean topIsHostile = threat.isPresent() && threat.get().type() == Threat.Type.HOSTILE;
         boolean lowHpUnderHostile = threat.isPresent() && threat.get().type() == Threat.Type.LOW_HP
                 && hasReachableHostile(bot);
@@ -283,12 +265,8 @@ public final class DangerWatcher {
         if (canFight(bot, threat, combat) && !combatStuck(bot)) {
             return new CombatTask(threat.entity().getType(), 1, combat.retreatHp());
         }
-        if (!bot.getServerWorld().isDay()
-                && threat.type() == Threat.Type.HOSTILE
-                && !SleepTask.hasBedAccess(bot)
-                && EmergencyShelterTask.hasShelterBlock(bot)) {
-            return new EmergencyShelterTask();
-        }
+        // 直播决策:去掉夜间"自我封闭"回退(缩头乌龟难看)。打得过就战斗(上面),真打不过(combat 困死/
+        // 够不到)就逃跑,绝不把自己封起来。用户明确要求死磕战斗、宁死不当乌龟。
         return new EvadeTask(threat);
     }
 
@@ -422,8 +400,15 @@ public final class DangerWatcher {
         }
         var world = bot.getServerWorld();
         BlockPos feet = bot.getBlockPos();
+        // 实测误判(2026-07-11):夜里任务做完站在树冠/屋檐下发呆 = 天空不可见+黑暗+静止,被当成
+        // "困死矿洞"teleport 上浮到树顶——观感即"任务结束后莫名其妙瞬移到当前 XZ 最高点"。
+        // 真·地下必须同时满足:天空光为 0(树冠/屋檐下漫射天空光>0) 且 脚下距地表高度图 ≥8 格(民房只有 4-6)。
+        int surfaceY = world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES,
+                feet.getX(), feet.getZ());
         boolean darkUnderground = !world.isSkyVisible(feet)
-                && world.getLightLevel(net.minecraft.world.LightType.BLOCK, feet) < 8;
+                && world.getLightLevel(net.minecraft.world.LightType.BLOCK, feet) < 8
+                && world.getLightLevel(net.minecraft.world.LightType.SKY, feet) == 0
+                && feet.getY() <= surfaceY - 8;
         if (!darkUnderground) {
             darkStuckRecords.remove(bot.getUuid());
             return false;
@@ -461,8 +446,13 @@ public final class DangerWatcher {
         int top = world.getBottomY() + world.getHeight();
         for (int dy = 1; feet.getY() + dy < top - 1 && dy <= 120; dy++) {
             BlockPos cand = feet.up(dy);
+            // 不落在树冠上(站树顶下不来);林下地面天空光 ≥8 也算安全露天
+            if (world.getBlockState(cand.down()).isIn(net.minecraft.registry.tag.BlockTags.LEAVES)) {
+                continue;
+            }
             if (io.github.zoyluo.aibot.pathfinding.Standability.isStandable(world, cand)
-                    && world.isSkyVisible(cand)) {
+                    && (world.isSkyVisible(cand)
+                        || world.getLightLevel(net.minecraft.world.LightType.SKY, cand) >= 8)) {
                 bot.getActionPack().stopAll();
                 bot.teleport(world, cand.getX() + 0.5D, cand.getY(), cand.getZ() + 0.5D,
                         java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);

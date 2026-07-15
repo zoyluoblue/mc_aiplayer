@@ -92,10 +92,7 @@ public final class TradeTask extends AbstractTask {
             transition(Phase.TRADE);
             return;
         }
-        ActionResult result = bot.getActionPack().startPathTo(villager.getBlockPos());
-        if (result.isFailed()) {
-            bot.getActionPack().startWalkTo(villager.getPos());
-        }
+        bot.getActionPack().startPathTo(villager.getBlockPos());
         transition(Phase.MOVE_TO_VILLAGER);
     }
 
@@ -111,10 +108,7 @@ public final class TradeTask extends AbstractTask {
             return;
         }
         if (bot.getActionPack().isPathExecutorIdle() && phaseTicks > 20) {
-            ActionResult result = bot.getActionPack().startPathTo(villager.getBlockPos());
-            if (result.isFailed()) {
-                bot.getActionPack().startWalkTo(villager.getPos());
-            }
+            bot.getActionPack().startPathTo(villager.getBlockPos());
         }
         phaseTicks++;
     }

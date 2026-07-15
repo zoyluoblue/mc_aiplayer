@@ -44,6 +44,11 @@ public final class BotMemory {
         return Optional.ofNullable(places.get(cleanKey(name)));
     }
 
+    /** 全部已记地点的只读视图(保持记录顺序),供 list_places 工具枚举。 */
+    public Map<String, Place> placesView() {
+        return java.util.Collections.unmodifiableMap(places);
+    }
+
     public Optional<BlockPos> placeIn(ServerWorld world, String... names) {
         String dimension = world.getRegistryKey().getValue().toString();
         for (String name : names) {

@@ -26,6 +26,26 @@ public final class InteractAction {
         return result.isAccepted() ? ActionResult.SUCCESS : ActionResult.failed("interact_entity_" + result.getClass().getSimpleName());
     }
 
+    /** 右键方块本体(开门/拉杆/按钮/撒骨粉):hit 打在目标格被点面的面心(与 BuildAction.placeBlock 语义一致),原版 onUse 语义(双开门同步/音效都对)。 */
+    public static ActionResult useItemOnBlock(AIPlayerEntity player, net.minecraft.util.math.BlockPos pos, net.minecraft.util.math.Direction face, Hand hand) {
+        LookAction.lookAtBlock(player, pos, face);
+        Vec3d hitPos = Vec3d.ofCenter(pos).add(
+                face.getOffsetX() * 0.5D, face.getOffsetY() * 0.5D, face.getOffsetZ() * 0.5D);
+        net.minecraft.util.hit.BlockHitResult hit = new net.minecraft.util.hit.BlockHitResult(hitPos, face, pos, false);
+        net.minecraft.util.ActionResult result = player.interactionManager.interactBlock(
+                player,
+                player.getServerWorld(),
+                player.getStackInHand(hand),
+                hand,
+                hit);
+        if (result.isAccepted()) {
+            player.swingHand(hand);
+            player.updateLastActionTime();
+            return ActionResult.SUCCESS;
+        }
+        return ActionResult.failed("interact_block_" + result.getClass().getSimpleName());
+    }
+
     public static ActionResult useItemInAir(AIPlayerEntity player, Hand hand) {
         net.minecraft.util.ActionResult result = player.interactionManager.interactItem(
                 player,

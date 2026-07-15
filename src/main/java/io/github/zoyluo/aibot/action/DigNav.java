@@ -24,6 +24,12 @@ public final class DigNav {
      */
     public static boolean digStep(AIPlayerEntity bot, BlockMiner miner, BlockPos target) {
         ServerWorld world = bot.getServerWorld();
+        // WATER-5:湿身不挖。站在水里挖掘=灾难循环:挖开岸沿→水漫进新格→前方又是"实心"→
+        // 沿水位线无限啃岸(实测:掉进一格水出不来后,就是这个"一直挖前面的方块"观感)。
+        // 水中脱困交给 WalkToController 的按住跳(WATER-4),这里直接受阻返回,调用方改道/失败。
+        if (bot.isTouchingWater()) {
+            return false;
+        }
         BlockPos feet = bot.getBlockPos();
         BlockPos step = stepToward(feet, target);
         if (step == null) {
@@ -31,6 +37,12 @@ public final class DigNav {
         }
         if (adjacentLava(world, step)) {
             return false; // 朝向格挨着岩浆 → 不挖,交还调用方
+        }
+        // 朝向格(脚位/头位)带水 → 不挖:水不是空气,firstSolid 会把水当可挖方块喂给 BlockMiner
+        // (挖不动死循环);就算是实心墙,挖穿也等于把水放进隧道。
+        if (world.getBlockState(step).getFluidState().isIn(FluidTags.WATER)
+                || world.getBlockState(step.up()).getFluidState().isIn(FluidTags.WATER)) {
+            return false;
         }
         BlockPos solid = firstSolid(world, step, step.up());
         if (solid == null) {

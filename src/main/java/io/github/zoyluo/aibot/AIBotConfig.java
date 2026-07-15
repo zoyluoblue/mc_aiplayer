@@ -92,10 +92,12 @@ public record AIBotConfig(
 
     public static AIBotConfig defaults() {
         return new AIBotConfig(
-                new DeepSeek("", "https://api.deepseek.com", "deepseek-chat", 2048, 0.3D, 60, 3, 500),
+                // StepFun step-3.7-flash: ~1s 有 structured tool_calls + 识图,正文在 reasoning_content(需 fallback)。
+                // max_tokens=768: 直播短句足够,且 Step reasoning 吃 token 预算,留余量给正文。
+                new DeepSeek("", "https://api.stepfun.com/step_plan", "step-3.7-flash", 768, 0.3D, 60, 3, 500, false),
                 new Perception(16, 20, 10, 10, false),
-                new Brain(36, 6, 12, false, true, false, 3, true), // 优化4:maxTurns 24→12——挖矿失败后大脑手动逐格挖会瞬间耗轮,早止损早复位(善后已有 clear+resetIdle)
-                new Watchdog(200),
+                new Brain(36, 6, 12, false, true, false, 3, true, false, true), // maxTurns 24→12(早止损);advancedTools 默认藏;ownerEventPush 默认开
+                new Watchdog(120), // 200t(10s)发呆才判卡太钝,120t(6s)更快触发恢复(实例 config 里的旧值 200 部署时须同步改)
                 new Logging(true, "logs/aibot", true, "daily", 50, 30, true, Map.of(
                         "LIFECYCLE", "INFO",
                         "COMM", "INFO",
@@ -112,7 +114,7 @@ public record AIBotConfig(
                 new Night(true, 8),
                 new Mining(2, 0.10D, true),
                 new Goal(24, true, true), // S7:配方补全后链更深(熟食/盾/钻装备等),16→24 留余量
-                new Nav(1.0D, 12, 60, 30, 4, 2, 3.0D, 3),
+                new Nav(1.0D, 12, 60, 30, 4, 2, 3.0D, 3, true),
                 new Pickup(2.75D, 2.5D, 8.0D)); // 实测 1.5/1.0 太小:砍树掉落物垂直差>1 就吸不到→countSoFar=0 死循环
     }
 
@@ -124,10 +126,11 @@ public record AIBotConfig(
             double temperature,
             int timeoutSeconds,
             int retryCount,
-            int retryBackoffMs
+            int retryBackoffMs,
+            Boolean disableThinking
     ) {
         DeepSeek withApiKey(String apiKey) {
-            return new DeepSeek(apiKey, baseUrl, model, maxTokens, temperature, timeoutSeconds, retryCount, retryBackoffMs);
+            return new DeepSeek(apiKey, baseUrl, model, maxTokens, temperature, timeoutSeconds, retryCount, retryBackoffMs, disableThinking);
         }
 
         DeepSeek withDefaults(DeepSeek defaults) {
@@ -139,7 +142,12 @@ public record AIBotConfig(
                     temperature,
                     positiveOrDefault(timeoutSeconds, defaults.timeoutSeconds),
                     Math.max(0, retryCount),
-                    positiveOrDefault(retryBackoffMs, defaults.retryBackoffMs));
+                    positiveOrDefault(retryBackoffMs, defaults.retryBackoffMs),
+                    boolOrDefault(disableThinking, defaults.disableThinking));
+        }
+
+        public boolean thinkingDisabled() {
+            return Boolean.TRUE.equals(disableThinking);
         }
     }
 
@@ -162,7 +170,9 @@ public record AIBotConfig(
             Boolean enableMemoryTools,
             Boolean enableCoordinationTools,
             int maxTaskRetries,
-            Boolean verboseReports
+            Boolean verboseReports,
+            Boolean exposeAdvancedTools, // false(默认)=strip_mine/mine_vein/set_goal 不暴露给模型(弱模型误选诱饵),命令行不受影响
+            Boolean ownerEventPush       // true(默认)=主人被打且 bot 未在护卫时,节流喂大脑一条警报事件
     ) {
         Brain withDefaults(Brain defaults) {
             return new Brain(
@@ -173,7 +183,9 @@ public record AIBotConfig(
                     boolOrDefault(enableMemoryTools, defaults.enableMemoryTools),
                     boolOrDefault(enableCoordinationTools, defaults.enableCoordinationTools),
                     positiveOrDefault(maxTaskRetries, defaults.maxTaskRetries),
-                    boolOrDefault(verboseReports, defaults.verboseReports));
+                    boolOrDefault(verboseReports, defaults.verboseReports),
+                    boolOrDefault(exposeAdvancedTools, defaults.exposeAdvancedTools),
+                    boolOrDefault(ownerEventPush, defaults.ownerEventPush));
         }
 
         public boolean exposesLowLevelTools() {
@@ -190,6 +202,14 @@ public record AIBotConfig(
 
         public boolean verboseReportsEnabled() {
             return Boolean.TRUE.equals(verboseReports);
+        }
+
+        public boolean advancedToolsExposed() {
+            return Boolean.TRUE.equals(exposeAdvancedTools);
+        }
+
+        public boolean ownerEventPushEnabled() {
+            return Boolean.TRUE.equals(ownerEventPush);
         }
     }
 
@@ -248,7 +268,8 @@ public record AIBotConfig(
                       int lookahead,
                       int nodeRetry,
                       double sprintMinDist,
-                      int maxSafeFall) {
+                      int maxSafeFall,
+                      Boolean parkour) {
         Nav withDefaults(Nav defaults) {
             return new Nav(
                     positiveDoubleOrDefault(jumpReach, defaults.jumpReach),
@@ -258,7 +279,13 @@ public record AIBotConfig(
                     positiveOrDefault(lookahead, defaults.lookahead),
                     positiveOrDefault(nodeRetry, defaults.nodeRetry),
                     positiveDoubleOrDefault(sprintMinDist, defaults.sprintMinDist),
-                    positiveOrDefault(maxSafeFall, defaults.maxSafeFall));
+                    positiveOrDefault(maxSafeFall, defaults.maxSafeFall),
+                    boolOrDefault(parkour, defaults.parkour));
+        }
+
+        /** feature flag:平跳越沟(1~2 格)+ 助跑跳。误跳出问题时改 false 一键回退。 */
+        public boolean parkourEnabled() {
+            return Boolean.TRUE.equals(parkour);
         }
     }
 

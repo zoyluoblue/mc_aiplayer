@@ -73,6 +73,104 @@ public final class ActionPackPhysicalSnapGameTests implements FabricGameTest {
     }
 
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
+    public void standableBodySnapPreservesSafeOffsetAndRecentersRealCornerOverlap(
+            TestContext context) {
+        var world = context.getWorld();
+        BlockPos anchor = context.getAbsolutePos(new BlockPos(7, 3, 7));
+        world.setBlockState(anchor.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(anchor, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(anchor.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(anchor.north(),
+                Blocks.GRASS_BLOCK.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(anchor.north().west(),
+                Blocks.GRASS_BLOCK.getDefaultState(), Block.NOTIFY_ALL);
+
+        String name = "BodySnapCornerGT";
+        AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
+                        world.getServer(), name, world, Vec3d.ofBottomCenter(anchor),
+                        0.0F, 0.0F, GameMode.SURVIVAL)
+                .orElseThrow(() -> new IllegalStateException("failed to spawn " + name));
+
+        // A collision-free fractional pose is legitimate physical state and must not be
+        // normalized merely because it is off centre.
+        bot.teleport(world, anchor.getX() + 0.65D, anchor.getY(),
+                anchor.getZ() + 0.5D, Set.of(), 0.0F, 0.0F, true);
+        Vec3d safeOffset = bot.getPos();
+        require(context, FakePlayerMotion.isBlockCollisionFree(bot),
+                "safe-offset fixture unexpectedly collided");
+        require(context, bot.getActionPack().snapPlayerToNearestStandable(
+                        "gametest_safe_fractional_pose"),
+                "safe fractional stand was rejected");
+        require(context, bot.getPos().squaredDistanceTo(safeOffset) < 1.0E-12D,
+                "safe fractional stand was unnecessarily recentered");
+
+        // Seed-3000 equivalent: the lower corner still floors to the standable anchor column, but
+        // the player's width crosses north/west into raised full blocks.
+        bot.teleport(world, anchor.getX(), anchor.getY(), anchor.getZ(),
+                Set.of(), 0.0F, 0.0F, true);
+        Standability.clearCache();
+        require(context, Standability.isStandable(world, anchor),
+                "corner fixture logical column was not standable");
+        require(context, !FakePlayerMotion.isBlockCollisionFree(bot),
+                "corner fixture did not produce a real body collision");
+        require(context, bot.getActionPack().snapPlayerToNearestStandable(
+                        "gametest_corner_overlap"),
+                "standable corner overlap did not recover physically");
+        Vec3d centered = Vec3d.ofBottomCenter(anchor);
+        require(context, bot.getPos().squaredDistanceTo(centered) < 1.0E-12D
+                        && FakePlayerMotion.isBlockCollisionFree(bot),
+                "corner snap returned before reaching a collision-free centre");
+
+        Vec3d after = bot.getPos();
+        require(context, bot.getActionPack().snapPlayerToNearestStandable(
+                        "gametest_corner_overlap_idempotent"),
+                "already-cleared centre was rejected");
+        require(context, bot.getPos().squaredDistanceTo(after) < 1.0E-12D,
+                "idempotent snap moved an already-cleared centre");
+
+        AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
+        context.complete();
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
+    public void centerReturnRejectsLivingEntityOccupyingLanding(TestContext context) {
+        var world = context.getWorld();
+        BlockPos anchor = context.getAbsolutePos(new BlockPos(12, 3, 12));
+        world.setBlockState(anchor.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(anchor, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(anchor.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+
+        String name = "CenterOccupiedGT";
+        AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
+                        world.getServer(), name, world, Vec3d.ofBottomCenter(anchor),
+                        0.0F, 0.0F, GameMode.SURVIVAL)
+                .orElseThrow(() -> new IllegalStateException("failed to spawn " + name));
+        bot.teleport(world, anchor.getX() + 0.95D, anchor.getY(),
+                anchor.getZ() + 0.95D, Set.of(), 0.0F, 0.0F, true);
+        Vec3d before = bot.getPos();
+
+        var cow = EntityType.COW.create(world, SpawnReason.COMMAND);
+        require(context, cow != null, "failed to create centre-occupying cow");
+        cow.refreshPositionAndAngles(
+                anchor.getX(), anchor.getY(), anchor.getZ(), 0.0F, 0.0F);
+        require(context, world.spawnEntity(cow), "failed to spawn centre-occupying cow");
+        require(context, !bot.getBoundingBox().intersects(cow.getBoundingBox()),
+                "fixture cow already overlapped the off-centre bot");
+
+        require(context, !FakePlayerMotion.returnToBlockCenter(
+                        bot, anchor, "gametest_occupied_center"),
+                "centre return entered a living entity");
+        require(context, bot.getPos().squaredDistanceTo(before) < 1.0E-12D,
+                "rejected occupied centre return still moved the bot");
+        require(context, cow.isAlive(),
+                "rejected centre return removed the occupying entity");
+
+        cow.discard();
+        AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
+        context.complete();
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
     public void consecutiveHorizontalJumpsPublishEachVerifiedLanding(TestContext context) {
         var world = context.getWorld();
         BlockPos start = context.getAbsolutePos(new BlockPos(3, 3, 3));

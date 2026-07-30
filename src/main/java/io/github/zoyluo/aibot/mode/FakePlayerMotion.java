@@ -20,7 +20,22 @@ import java.util.Collections;
 
 /** Validated adjacent fake-client step; distinct from privileged long-distance teleportation. */
 public final class FakePlayerMotion {
+    private static final double BODY_COLLISION_EPSILON = 1.0E-7D;
+
     private FakePlayerMotion() {
+    }
+
+    /**
+     * Returns whether the player's current body is free of block collision.
+     *
+     * <p>The tiny contraction ignores an exact support-face touch while preserving meaningful
+     * overlap with a neighbouring raised block. Cell-level standability alone cannot prove this:
+     * an off-centre player can occupy an otherwise standable air column while its 0.6-wide body
+     * intersects terrain in the next column.</p>
+     */
+    public static boolean isBlockCollisionFree(AIPlayerEntity bot) {
+        Box interior = bot.getBoundingBox().contract(BODY_COLLISION_EPSILON);
+        return bot.getServerWorld().isBlockSpaceEmpty(bot, interior);
     }
 
     public static boolean stepTo(AIPlayerEntity bot, BlockPos target, String reason) {
@@ -178,6 +193,18 @@ public final class FakePlayerMotion {
                 || !world.getBlockState(anchorFeet.up()).getCollisionShape(world, anchorFeet.up()).isEmpty()) {
             bot.getActionPack().setSneaking(false);
             BotLog.action(bot, "fake_player_center_return_rejected", "reason", reason,
+                    "from", bot.getBlockPos(), "anchor", anchorFeet);
+            return false;
+        }
+        Box landingBox = bot.getBoundingBox().offset(
+                centerX - bot.getX(),
+                anchorFeet.getY() - bot.getY(),
+                centerZ - bot.getZ());
+        if (!world.isSpaceEmpty(bot, landingBox)
+                || hasLandingEntityCollision(bot, landingBox)) {
+            bot.getActionPack().setSneaking(false);
+            BotLog.action(bot, "fake_player_center_return_rejected",
+                    "reason", "occupied:" + reason,
                     "from", bot.getBlockPos(), "anchor", anchorFeet);
             return false;
         }

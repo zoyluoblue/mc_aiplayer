@@ -1,5 +1,6 @@
 package io.github.zoyluo.aibot.task;
 
+import io.github.zoyluo.aibot.action.HarvestCore;
 import io.github.zoyluo.aibot.action.InventoryAction;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
@@ -108,6 +109,171 @@ public final class GatherPickupGameTests implements FabricGameTest {
             require(context, !task.describe().contains("phase=ROAM")
                             && !task.describe().contains("phase=EXPLORE"),
                     "local retry entered regional roaming before its second harvest settled");
+            finish(context, fixture);
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "gatherPickupLive", tickLimit = 300)
+    public void reachableHarvestRestartsImmediatelyAfterSafetyPause(TestContext context) {
+        Fixture fixture = fixture(context, "GatherResumeHarvestGT", new BlockPos(2, 2, 2), 5);
+        AIPlayerEntity bot = fixture.bot();
+        BlockPos log = fixture.start().east(3);
+        bot.getServerWorld().setBlockState(log, Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
+
+        GatherQuotaTask task = new GatherQuotaTask(Items.OAK_LOG, 1);
+        task.start(bot);
+        AtomicBoolean resumed = new AtomicBoolean();
+
+        context.runAtEveryTick(() -> {
+            tickOrFail(context, task, bot);
+            if (!resumed.get()) {
+                if (!task.describe().contains("phase=HARVEST")) {
+                    return;
+                }
+                require(context, !bot.getActionPack().isMiningIdle(),
+                        "fixture entered HARVEST without a live mining controller");
+                task.pause(bot);
+                require(context, task.state() == TaskState.PAUSED
+                                && bot.getActionPack().isMiningIdle(),
+                        "pause did not release the atomic harvest");
+                task.resume(bot);
+                require(context, task.state() == TaskState.RUNNING
+                                && task.describe().contains("phase=HARVEST"),
+                        "reachable harvest did not preserve its transaction on resume");
+                require(context, !bot.getActionPack().isMiningIdle(),
+                        "reachable harvest waited for the 200-tick retry boundary after resume");
+                resumed.set(true);
+                return;
+            }
+            if (!bot.getServerWorld().getBlockState(log).isAir()) {
+                return;
+            }
+            require(context, task.state() == TaskState.RUNNING
+                            || task.state() == TaskState.COMPLETED,
+                    "resumed harvest did not settle normally: "
+                            + task.state() + ":" + task.failureReason());
+            finish(context, fixture);
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "gatherPickupLive", tickLimit = 300)
+    public void safetyDisplacementReselectsInsteadOfMiningRemoteTarget(TestContext context) {
+        Fixture fixture = fixture(context, "GatherResumeReselectGT", new BlockPos(2, 2, 2), 5);
+        AIPlayerEntity bot = fixture.bot();
+        BlockPos log = fixture.start().east(3);
+        bot.getServerWorld().setBlockState(log, Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
+
+        GatherQuotaTask task = new GatherQuotaTask(Items.OAK_LOG, 1);
+        task.start(bot);
+
+        context.runAtEveryTick(() -> {
+            tickOrFail(context, task, bot);
+            if (!task.describe().contains("phase=HARVEST")) {
+                return;
+            }
+            task.pause(bot);
+            BlockPos displaced = fixture.start().west(2);
+            bot.teleport(bot.getServerWorld(),
+                    displaced.getX() + 0.5D, displaced.getY(), displaced.getZ() + 0.5D,
+                    Set.of(), bot.getYaw(), bot.getPitch(), true);
+            require(context, !HarvestCore.canReach(bot, log),
+                    "fixture displacement left the old harvest inside interaction reach");
+            task.resume(bot);
+
+            require(context, task.state() == TaskState.RUNNING
+                            && task.describe().contains("phase=SURVEY"),
+                    "displaced resume retained stale HARVEST: " + task.describe());
+            require(context, bot.getActionPack().isMiningIdle(),
+                    "displaced resume started an out-of-reach mining controller");
+            require(context, bot.getServerWorld().getBlockState(log).isOf(Blocks.OAK_LOG),
+                    "resume fixture unexpectedly consumed the remote target");
+            finish(context, fixture);
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "gatherPickupLive", tickLimit = 400)
+    public void outOfReachRetryCannotRenewHarvestDeadline(TestContext context) {
+        Fixture fixture = fixture(context, "GatherHarvestLeaseGT", new BlockPos(2, 2, 2), 5);
+        AIPlayerEntity bot = fixture.bot();
+        BlockPos log = fixture.start().east(3);
+        bot.getServerWorld().setBlockState(log, Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
+
+        GatherQuotaTask task = new GatherQuotaTask(Items.OAK_LOG, 1);
+        task.start(bot);
+        AtomicBoolean displaced = new AtomicBoolean();
+        int[] ticksAfterDisplacement = {0};
+
+        context.runAtEveryTick(() -> {
+            tickOrFail(context, task, bot);
+            if (!displaced.get()) {
+                if (!task.describe().contains("phase=HARVEST")) {
+                    return;
+                }
+                BlockPos remote = fixture.start().west(2);
+                bot.teleport(bot.getServerWorld(),
+                        remote.getX() + 0.5D, remote.getY(), remote.getZ() + 0.5D,
+                        Set.of(), bot.getYaw(), bot.getPitch(), true);
+                require(context, !HarvestCore.canReach(bot, log),
+                        "fixture displacement left the target reachable");
+                displaced.set(true);
+                return;
+            }
+            ticksAfterDisplacement[0]++;
+            if (task.describe().contains("phase=HARVEST")) {
+                require(context, ticksAfterDisplacement[0] <= 260,
+                        "periodic retry renewed HARVEST beyond its local deadline");
+                return;
+            }
+            require(context, task.state() == TaskState.RUNNING
+                            && task.describe().contains("phase=SURVEY"),
+                    "expired atomic harvest did not return to survey: " + task.describe());
+            require(context, bot.getServerWorld().getBlockState(log).isOf(Blocks.OAK_LOG),
+                    "out-of-reach fixture unexpectedly broke the target");
+            finish(context, fixture);
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "gatherPickupLive", tickLimit = 400)
+    public void repeatedSafetyResumeCannotRenewHarvestDeadline(TestContext context) {
+        Fixture fixture = fixture(context, "GatherResumeLeaseGT", new BlockPos(2, 2, 2), 5);
+        AIPlayerEntity bot = fixture.bot();
+        BlockPos log = fixture.start().east(3);
+        bot.getServerWorld().setBlockState(log, Blocks.OAK_LOG.getDefaultState(), Block.NOTIFY_ALL);
+
+        GatherQuotaTask task = new GatherQuotaTask(Items.OAK_LOG, 1);
+        task.start(bot);
+        AtomicBoolean interrupting = new AtomicBoolean();
+        int[] interruptions = {0};
+
+        context.runAtEveryTick(() -> {
+            tickOrFail(context, task, bot);
+            if (!interrupting.get()) {
+                if (!task.describe().contains("phase=HARVEST")) {
+                    return;
+                }
+                interrupting.set(true);
+            }
+            if (task.describe().contains("phase=HARVEST")) {
+                task.pause(bot);
+                task.resume(bot);
+                bot.getActionPack().stopAll();
+                interruptions[0]++;
+                require(context, interruptions[0] <= 260,
+                        "repeated safety resume renewed HARVEST beyond its local deadline");
+                return;
+            }
+
+            require(context, interruptions[0] >= 230,
+                    "fixture did not exercise the original HARVEST lease");
+            require(context, task.state() == TaskState.RUNNING
+                            && task.describe().contains("phase=SURVEY"),
+                    "interrupted atomic harvest did not expire into survey: " + task.describe());
+            require(context, bot.getServerWorld().getBlockState(log).isOf(Blocks.OAK_LOG),
+                    "interrupted fixture unexpectedly broke the target");
             finish(context, fixture);
         });
     }

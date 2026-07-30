@@ -87,8 +87,11 @@ public final class NavSafetyNet {
         ServerWorld world = bot.getServerWorld();
         BlockPos feet = bot.getBlockPos();
 
-        // 0) 窒息/卡方块:脚位或头位有实体碰撞体时,优先**向上**钻出地表(修"越救越深")。
-        if (blockedColumn(world, feet) && escapeSuffocation(bot, world, feet)) {
+        // 0) 窒息/卡方块:玩家身体盒真实侵入实体碰撞体时,优先**向上**钻出地表。
+        // 不能只看 getBlockPos() 所在整格：dirt_path/slab 等低矮支撑会让正常站立玩家的
+        // floored BlockPos 落在支撑格内，但实体 AABB 仅与其顶面接触，并没有被活埋。
+        if (!FakePlayerMotion.isBlockCollisionFree(bot)
+                && escapeSuffocation(bot, world, feet)) {
             throttledLog(server, bot, "navsafe_suffocation_snap", feet);
             return true;
         }
@@ -483,14 +486,6 @@ public final class NavSafetyNet {
     private static boolean inLava(ServerWorld world, BlockPos pos) {
         BlockState state = world.getBlockState(pos);
         return state.getFluidState().isIn(FluidTags.LAVA);
-    }
-
-    private static boolean blockedColumn(ServerWorld world, BlockPos feet) {
-        return hasCollision(world, feet) || hasCollision(world, feet.up());
-    }
-
-    private static boolean hasCollision(ServerWorld world, BlockPos pos) {
-        return !world.getBlockState(pos).getCollisionShape(world, pos).isEmpty();
     }
 
     private void throttledLog(MinecraftServer server, AIPlayerEntity bot, String event, BlockPos pos) {

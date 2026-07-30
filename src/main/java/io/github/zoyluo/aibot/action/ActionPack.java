@@ -216,8 +216,22 @@ public final class ActionPack {
         ServerWorld world = player.getServerWorld();
         BlockPos current = player.getBlockPos();
         Standability.clearCache();
-        if (Standability.isStandable(world, current)) {
+        boolean currentCellStandable = Standability.isStandable(world, current);
+        if (currentCellStandable && FakePlayerMotion.isBlockCollisionFree(player)) {
             return true;
+        }
+        // A floored air column can be standable while an off-centre 0.6-wide player body overlaps
+        // raised terrain in a neighbouring column. Dedicated-server console commands spawn at the
+        // lower corner of the world-spawn BlockPos, which reproduced this exact condition on seed
+        // 3000. Re-centre only the collided pose; collision-free fractional positions are valid
+        // physical state and must be preserved for edge/pickup transactions.
+        if (currentCellStandable
+                && FakePlayerMotion.returnToBlockCenter(
+                        player, current, "path_start_body_collision:" + reason)) {
+            Standability.clearCache();
+            if (FakePlayerMotion.isBlockCollisionFree(player)) {
+                return true;
+            }
         }
         // A fake player can end a jump/drop fractionally inside the neighbouring cell even though
         // an adjacent legal landing exists. Recover that one-cell movement physically before asking

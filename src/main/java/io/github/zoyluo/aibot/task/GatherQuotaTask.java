@@ -156,6 +156,43 @@ public final class GatherQuotaTask extends AbstractTask {
     }
 
     @Override
+    protected void onResume(AIPlayerEntity bot) {
+        countSoFar = countAccepted(bot);
+        if (countSoFar >= targetCount) {
+            clearPickupLedger();
+            phase = Phase.DONE;
+            return;
+        }
+        if (phase != Phase.HARVEST || targetPos == null || !isHarvestBlock(bot, targetPos)) {
+            return;
+        }
+        // pause() releases the MiningController, so a still-reachable atomic harvest must be
+        // restarted immediately. Keep the original local deadline monotonic: repeated safety
+        // preemption must not renew one stale target forever. The physical pickup ledger and the
+        // task-wide 6000-tick budget remain monotonic for the same reason.
+        if (HarvestCore.canReach(bot, targetPos)) {
+            HarvestCore.startMining(bot, targetPos);
+            BotLog.action(bot, "gather_harvest_resumed", "pos", targetPos.toShortString());
+            return;
+        }
+
+        // Evade/shelter may finish at a different physical cell. Keeping HARVEST here would issue
+        // out-of-reach mining every 200 ticks while never rebuilding a path. Re-survey from the
+        // factual recovery pose; the still-live block remains eligible and can be selected again.
+        BotLog.action(bot, "gather_harvest_resume_reselect",
+                "pos", targetPos.toShortString(), "from", bot.getBlockPos().toShortString());
+        targetPos = null;
+        clearPickupLedger();
+        searchRadius = SEARCH_RADIUS;
+        lastGotoTarget = null;
+        gotoFailStreak = 0;
+        treeDigTried = false;
+        gotoStuckPos = null;
+        resetSurveyWatchdog();
+        phase = Phase.SURVEY;
+    }
+
+    @Override
     protected void onTick(AIPlayerEntity bot) {
         // 工作记忆:记录走过的轨迹(4 格去抖),roam 选点避开已搜过的区域(不再盲目转圈)。
         EpisodeMemory.INSTANCE.recordTrail(bot.getUuid(), "gather", bot.getBlockPos());
@@ -765,7 +802,10 @@ public final class GatherQuotaTask extends AbstractTask {
             return;
         }
         if (bot.getActionPack().isMiningIdle() && elapsed % 200 == 0) {
-            startHarvest(bot);
+            // A controller retry is part of the same atomic attempt. Calling startHarvest() here
+            // used to renew harvestStartedTick every 200 ticks, permanently outrunning the
+            // 240-tick deadline whenever the target had become out of reach.
+            HarvestCore.startMining(bot, targetPos);
         }
     }
 

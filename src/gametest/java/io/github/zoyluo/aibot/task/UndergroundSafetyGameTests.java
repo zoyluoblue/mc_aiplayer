@@ -797,6 +797,102 @@ public final class UndergroundSafetyGameTests implements FabricGameTest {
     }
 
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
+    public void standableCornerOverlapRecentersOnceAndRetiresStaleRoute(
+            TestContext context) {
+        BlockPos start = context.getAbsolutePos(new BlockPos(5, 12, 5));
+        preparePlatform(context, start, 3);
+        AIPlayerEntity bot = spawn(context, "CornerOverlapSuffocationGT", start);
+        var staleRoute = bot.getActionPack().startSurfacePathTo(start.east(2));
+        require(context, !staleRoute.isFailed() && !bot.getActionPack().isPathExecutorIdle(),
+                "fixture did not open the route that must be retired after body recovery");
+
+        // Dedicated-server console commands use the lower corner of the world-spawn BlockPos.
+        // Reproduce seed 3000: the logical current column remains air/air/solid-support, while the
+        // 0.6-wide player body at the exact integer corner intrudes into two raised north cells.
+        BlockPos north = start.north();
+        BlockPos northWest = north.west();
+        context.getWorld().setBlockState(
+                north, Blocks.GRASS_BLOCK.getDefaultState(), Block.NOTIFY_ALL);
+        context.getWorld().setBlockState(
+                northWest, Blocks.GRASS_BLOCK.getDefaultState(), Block.NOTIFY_ALL);
+        bot.teleport(context.getWorld(), start.getX(), start.getY(), start.getZ(),
+                Set.of(), 0.0F, 0.0F, true);
+        bot.setVelocity(Vec3d.ZERO);
+        bot.setOnGround(true);
+        Standability.clearCache();
+
+        require(context, bot.getBlockPos().equals(start)
+                        && Standability.isStandable(context.getWorld(), start),
+                "fixture current column must remain logically standable");
+        require(context, !FakePlayerMotion.isBlockCollisionFree(bot),
+                "fixture exact-corner body did not overlap the raised north terrain");
+
+        boolean handled = NavSafetyNet.INSTANCE.tickBot(
+                context.getWorld().getServer(), bot);
+
+        Vec3d centered = Vec3d.ofBottomCenter(start);
+        require(context, handled,
+                "real corner overlap was not handled by the safety net");
+        require(context, bot.getBlockPos().equals(start)
+                        && bot.getPos().squaredDistanceTo(centered) < 1.0E-12D,
+                "same-cell recovery did not physically recenter the body: " + bot.getPos());
+        require(context, FakePlayerMotion.isBlockCollisionFree(bot),
+                "same-cell recovery reported success before clearing the body collision");
+        require(context, context.getWorld().getBlockState(north).isOf(Blocks.GRASS_BLOCK)
+                        && context.getWorld().getBlockState(northWest).isOf(Blocks.GRASS_BLOCK),
+                "corner recovery removed the neighbouring terrain");
+        require(context, bot.getActionPack().isPathExecutorIdle()
+                        && bot.getActionPack().isWalkToIdle()
+                        && bot.getActionPack().isMiningIdle(),
+                "corner recovery left the stale route active");
+
+        Vec3d after = bot.getPos();
+        require(context, !NavSafetyNet.INSTANCE.tickBot(
+                        context.getWorld().getServer(), bot),
+                "cleared corner overlap triggered a second false suffocation recovery");
+        require(context, bot.getPos().squaredDistanceTo(after) < 1.0E-12D,
+                "idempotent safety tick moved the already-cleared body");
+
+        NavSafetyNet.INSTANCE.clear(bot);
+        finish(context, bot, "CornerOverlapSuffocationGT");
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
+    public void partialHeightDirtPathTopDoesNotTriggerSuffocation(TestContext context) {
+        BlockPos support = context.getAbsolutePos(new BlockPos(5, 12, 12));
+        clearVolume(context, support.up(), 3);
+        context.getWorld().setBlockState(
+                support, Blocks.DIRT_PATH.getDefaultState(), Block.NOTIFY_ALL);
+        context.getWorld().setBlockState(
+                support.east(), Blocks.DIRT_PATH.getDefaultState(), Block.NOTIFY_ALL);
+        AIPlayerEntity bot = spawn(context, "DirtPathSuffocationGT", support.up());
+        double landingY = support.getY() + 15.0D / 16.0D;
+        bot.teleport(context.getWorld(), support.getX() + 0.5D, landingY,
+                support.getZ() + 0.5D, Set.of(), 0.0F, 0.0F, true);
+        bot.setVelocity(Vec3d.ZERO);
+        bot.setOnGround(true);
+
+        require(context, bot.getBlockPos().equals(support),
+                "fixture must reproduce partial-height support flooring: "
+                        + bot.getBlockPos().toShortString());
+        require(context, FakePlayerMotion.isBlockCollisionFree(bot),
+                "fixture body actually intersects dirt_path instead of merely touching its top");
+        Vec3d before = bot.getPos();
+
+        for (int tick = 0; tick < 3; tick++) {
+            require(context, !NavSafetyNet.INSTANCE.tickBot(
+                            context.getWorld().getServer(), bot),
+                    "normal dirt_path landing was misclassified as suffocation on tick " + tick);
+            require(context, bot.getPos().squaredDistanceTo(before) < 1.0E-12D,
+                    "false suffocation recovery moved across adjacent dirt paths: "
+                            + before + " -> " + bot.getPos());
+        }
+
+        NavSafetyNet.INSTANCE.clear(bot);
+        finish(context, bot, "DirtPathSuffocationGT");
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
     public void strictSuffocationDenialFallsBackToAdjacentPhysicalExit(TestContext context) {
         BlockPos start = context.getAbsolutePos(new BlockPos(12, 12, 12));
         clearVolume(context, start, 4);
@@ -818,6 +914,8 @@ public final class UndergroundSafetyGameTests implements FabricGameTest {
                 "strict_survival unexpectedly allowed emergency teleport");
         require(context, Standability.isStandable(context.getWorld(), start.up(2)),
                 "fixture must expose the upward standable candidate that triggers denied teleport");
+        require(context, !FakePlayerMotion.isBlockCollisionFree(bot),
+                "fixture gravel did not actually overlap the player's body");
         float healthBefore = bot.getHealth();
 
         boolean handled = NavSafetyNet.INSTANCE.tickBot(context.getWorld().getServer(), bot);

@@ -10,12 +10,15 @@ import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.log.LogCategory;
 import io.github.zoyluo.aibot.mining.MiningChain;
+import io.github.zoyluo.aibot.mining.MiningBudget;
+import io.github.zoyluo.aibot.mining.MiningFoodReserve;
 import io.github.zoyluo.aibot.mining.OreProspector;
 import io.github.zoyluo.aibot.mining.OreScan;
 import io.github.zoyluo.aibot.mining.ToolTier;
 import io.github.zoyluo.aibot.task.BlueprintLoader;
 import io.github.zoyluo.aibot.task.BlueprintSchema;
 import io.github.zoyluo.aibot.task.HuntTask;
+import io.github.zoyluo.aibot.task.MiningServiceTask;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
@@ -25,6 +28,7 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
+import net.minecraft.world.Heightmap;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -48,13 +52,18 @@ public final class GoalPlanner {
     private static final int TORCH_TARGET = 8;
     private static final EquipmentSlot[] ARMOR_SLOTS = {
             EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET};
-    // 第4层 备粮:达标只认"熟食/面包"(高饱食、安全);生肉是中间品,需烤(见 ensureFood 闭环)。
-    private static final List<Item> COOKED_FOOD_ITEMS = List.of(
-            Items.COOKED_BEEF, Items.COOKED_PORKCHOP, Items.COOKED_MUTTON, Items.COOKED_CHICKEN,
-            Items.COOKED_RABBIT, Items.COOKED_COD, Items.COOKED_SALMON, Items.BAKED_POTATO, Items.BREAD);
+    // 第4层 备粮:安全储备口径统一由 MiningFoodReserve 维护；生肉只是待加工中间品。
     private static final List<Item> RAW_MEAT_ITEMS = List.of(
             Items.BEEF, Items.PORKCHOP, Items.MUTTON, Items.CHICKEN, Items.RABBIT);
     private static final int FOOD_TARGET = 4;
+    /** Matches DescendToYTask's dark-shaft placement cadence. */
+    private static final int DESCEND_TORCH_EVERY = 6;
+    // 半组黑曜石是一次长途深层远征：这些补给是进入取水/钻石链前的硬门槛。
+    // Prepared runs consumed no food at all, while the old 24-item gate dominated from-zero startup
+    // (46 logs and 5,284 ticks on seed 3000). Eight cooked items are the bounded initial reserve;
+    // long mining then rechecks supplies at service checkpoints instead of front-loading a farm.
+    private static final int OBSIDIAN_EXPEDITION_FOOD = 8;
+    private static final int OBSIDIAN_EXPEDITION_STONE_PICKS = 4;
     private static final int DESCEND_THRESHOLD = 8; // bot 高于矿层超过这么多格,先下竖井到矿层再挖
     private static final int SPARE_IRON_INGOTS = 3; // 深潜挖矿前多备 1 把铁镐的料(3 铁锭),镐磨穿时深处背包直接合新镐
     private static final int FOOD_GRASS_SCAN = 32;  // Goal.Food 择源:扫这个半径内有无草(种植面包链的种子来源)
@@ -74,10 +83,22 @@ public final class GoalPlanner {
     }
 
     public static GoalPlan plan(AIPlayerEntity bot, Goal goal) {
-        return plan(bot, goal, null);
+        return plan(bot, goal, null, null);
     }
 
     public static GoalPlan plan(AIPlayerEntity bot, Goal goal, GoalSnapshotCollector.Context resumeContext) {
+        return plan(bot, goal, resumeContext, null);
+    }
+
+    /**
+     * Mission-aware live planning. The mission id is deliberately absent from the synthetic
+     * planFromState entry points: an inventory-shaped unit fixture cannot attest ownership of a
+     * physical mission depot and therefore must always retain the descent-kit service step.
+     */
+    static GoalPlan plan(AIPlayerEntity bot,
+                         Goal goal,
+                         GoalSnapshotCollector.Context resumeContext,
+                         String missionId) {
         // Goal.Food 感知择源:规划时扫一眼周围实际有什么,据此选打猎/种植(见 ensureFoodTo),不再绑死打猎
         //(没动物的地形硬派打猎只会抓瞎)。其余目标不受这两个标志影响。
         boolean hasPrey = HuntTask.hasPreyNearby(bot);
@@ -106,8 +127,113 @@ public final class GoalPlanner {
             }
             return false;
         };
-        Planner planner = new Planner(bot, inventoryCounts(bot), Math.max(1, AIBotConfig.get().goal().maxPlanDepth()),
-                bot.getBlockPos().getY(), hasPrey, hasGrass, hasBerries, oreNearby, resumeContext);
+        return planFromState(bot, goal, inventoryCounts(bot), toolUsableDurability(bot),
+                Math.max(1, AIBotConfig.get().goal().maxPlanDepth()), bot.getBlockPos().getY(),
+                hasPrey, hasGrass, hasBerries, canAcquireSurfaceResources(bot),
+                oreNearby, resumeContext, missionId);
+    }
+
+    /**
+     * Surface-only work (trees, animals and crops) may be planned only while the bot is actually
+     * near the terrain surface. Y alone is not sufficient: mountains and deep ravines make a fixed
+     * threshold lie in both directions. The no-leaves heightmap gives a cheap, deterministic fact
+     * and tolerates a small shelter/overhang without classifying a Y=16 mine as surface.
+     */
+    private static boolean canAcquireSurfaceResources(AIPlayerEntity bot) {
+        net.minecraft.util.math.BlockPos origin = bot.getBlockPos();
+        // Even an open ravine or isolated test canvas at deepslate height has sky visibility but
+        // no trees, animals or crops at the work face. Keep the heightmap test, with a conservative
+        // lower bound that only rules out unequivocal deep-mine positions.
+        if (origin.getY() < 32) {
+            return false;
+        }
+        for (int dx = -8; dx <= 8; dx += 4) {
+            for (int dz = -8; dz <= 8; dz += 4) {
+                int topY = bot.getServerWorld().getTopY(
+                        Heightmap.Type.MOTION_BLOCKING_NO_LEAVES,
+                        origin.getX() + dx,
+                        origin.getZ() + dz);
+                if (Math.abs(topY - origin.getY()) <= 8) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Planning entry point once world perception has been reduced to facts. Keeping this boundary separate makes
+     * non-build dependency-chain regressions testable without constructing a live server player.
+     */
+    static GoalPlan planFromState(AIPlayerEntity bot,
+                                  Goal goal,
+                                  Map<Item, Integer> inventory,
+                                  int maxDepth,
+                                  int botY,
+                                  boolean hasPrey,
+                                  boolean hasGrass,
+                                  boolean hasBerries,
+                                  java.util.function.Predicate<Set<Block>> oreNearby,
+                                  GoalSnapshotCollector.Context resumeContext) {
+        return planFromState(bot, goal, inventory, maxDepth, botY,
+                hasPrey, hasGrass, hasBerries, botY >= 48, oreNearby, resumeContext);
+    }
+
+    static GoalPlan planFromState(AIPlayerEntity bot,
+                                  Goal goal,
+                                  Map<Item, Integer> inventory,
+                                  int maxDepth,
+                                  int botY,
+                                  boolean hasPrey,
+                                  boolean hasGrass,
+                                  boolean hasBerries,
+                                  boolean surfaceAcquisitionAllowed,
+                                  java.util.function.Predicate<Set<Block>> oreNearby,
+                                  GoalSnapshotCollector.Context resumeContext) {
+        return planFromState(bot, goal, inventory,
+                assumedFreshToolUsableDurability(inventory), maxDepth, botY,
+                hasPrey, hasGrass, hasBerries, surfaceAcquisitionAllowed,
+                oreNearby, resumeContext);
+    }
+
+    static GoalPlan planFromState(AIPlayerEntity bot,
+                                  Goal goal,
+                                  Map<Item, Integer> inventory,
+                                  Map<Item, Integer> toolUsableDurability,
+                                  int maxDepth,
+                                  int botY,
+                                  boolean hasPrey,
+                                  boolean hasGrass,
+                                  boolean hasBerries,
+                                  boolean surfaceAcquisitionAllowed,
+                                  java.util.function.Predicate<Set<Block>> oreNearby,
+                                  GoalSnapshotCollector.Context resumeContext) {
+        return planFromState(bot, goal, inventory, toolUsableDurability,
+                maxDepth, botY, hasPrey, hasGrass, hasBerries,
+                surfaceAcquisitionAllowed, oreNearby, resumeContext, null);
+    }
+
+    private static GoalPlan planFromState(AIPlayerEntity bot,
+                                          Goal goal,
+                                          Map<Item, Integer> inventory,
+                                          Map<Item, Integer> toolUsableDurability,
+                                          int maxDepth,
+                                          int botY,
+                                          boolean hasPrey,
+                                          boolean hasGrass,
+                                          boolean hasBerries,
+                                          boolean surfaceAcquisitionAllowed,
+                                          java.util.function.Predicate<Set<Block>> oreNearby,
+                                          GoalSnapshotCollector.Context resumeContext,
+                                          String missionId) {
+        boolean restrictSurfaceAcquisition = !surfaceAcquisitionAllowed
+                && (goal instanceof Goal.MineOre
+                || goal instanceof Goal.HaveItem haveItem
+                && (haveItem.item() == Items.DIAMOND || haveItem.item() == Items.OBSIDIAN));
+        Planner planner = new Planner(bot, new HashMap<>(inventory), Math.max(1, maxDepth), botY,
+                hasPrey, hasGrass, hasBerries, surfaceAcquisitionAllowed,
+                restrictSurfaceAcquisition, oreNearby, resumeContext,
+                toolUsableDurability, missionId);
         planner.ensureGoal(goal, 0, new HashSet<>());
         return new GoalPlan(goal, List.copyOf(mergeGathers(planner.steps)), List.copyOf(planner.unresolved));
     }
@@ -118,43 +244,59 @@ public final class GoalPlanner {
                 || state.isOf(Blocks.FERN) || state.isOf(Blocks.LARGE_FERN);
     }
 
-    // 第A层 集中采集(挖钻石失败根因修复):把所有 GATHER 同类需求合并并**提到计划最前**,
-    // 让 bot 先在地表一次砍够全部木头(GATHER 无前置依赖,后续 CRAFT 都在其后,依赖不破)。
-    // 否则计划会交错"地下挖矿(把 bot 带到 y≈59)"与"地表砍树(够不到地表树)"→ no_resource_nearby → goal_failed。
+    // 第A层 集中采集(挖钻石失败根因修复):没有地表局部任务时,把所有 GATHER 同类需求合并并提到
+    // 计划最前。HUNT 是例外:动物会移动/消失,从零链必须先采最小木料做剑并就地完成首个 bounded
+    // 捕猎批次，再批量采后续原木；否则先砍几十根燃料会把 bot 带离出生点羊群(seed 3000 实测)。
+    // 但不能等最后一个 HUNT 批次：第二轮猎食可能远征数百格，把 bot 带到无林草原后才要求 18 根
+    // 燃料木。首轮 HUNT 后的 GATHER 立即集中，剩余 HUNT/COOK 保持原顺序。
     // 深层贵重矿的最佳挖掘高度(1.18+ 地形);非深层矿返回 MAX_VALUE(不触发"先下矿层")。
     private static int bestMiningY(Set<Block> ores) {
         return MiningChain.bestY(ores); // S2:推荐挖掘 Y 层收敛到 MiningChain 单一数据源(混合矿取最深层)
     }
 
     private static List<GoalStep> mergeGathers(List<GoalStep> steps) {
-        // GATHER:无前置依赖 → 合并并提到计划最前(一次在地表砍够)。
-        // S9:同物 MINE(如圆石)合并数量到**首次出现位置**——不提最前,因 MINE 依赖镐,提前会无镐空挖。
-        Map<Item, Integer> gatherTotals = new LinkedHashMap<>();
-        Map<Block, Integer> mineTotals = new LinkedHashMap<>();
-        for (GoalStep step : steps) {
-            if (step.kind() == GoalStep.Kind.GATHER) {
-                gatherTotals.merge(step.item(), step.count(), Integer::sum);
-            } else if (step.kind() == GoalStep.Kind.MINE) {
-                mineTotals.merge(step.block(), step.count(), Integer::sum);
+        int huntIndex = -1;
+        for (int i = 0; i < steps.size(); i++) {
+            if (steps.get(i).kind() == GoalStep.Kind.HUNT) {
+                huntIndex = i;
+                break;
             }
         }
-        if (gatherTotals.isEmpty() && mineTotals.isEmpty()) {
-            return steps;
+        if (huntIndex < 0) {
+            return mergeGatherSegment(steps, 0);
+        }
+
+        // Preserve the exact prerequisite prefix through the first bounded HUNT batch
+        // (minimal logs → table/sticks/sword → one local hunt). Every later GATHER remains
+        // dependency-free, so batch that suffix before any second hunt can leave the forest.
+        List<GoalStep> result = new ArrayList<>(steps.subList(0, huntIndex + 1));
+        result.addAll(mergeGatherSegment(steps.subList(huntIndex + 1, steps.size()), 0));
+        return result;
+    }
+
+    private static List<GoalStep> mergeGatherSegment(List<GoalStep> steps, int insertAt) {
+        // GATHER:无前置依赖 → 同段合并并前移。MINE 不跨步骤合并：它可能横跨
+        // “木镐挖首批 3 石→合石镐→石镐挖大批石料”的工具升级边界。
+        record GatherKey(Item item, boolean bestEffort) {}
+        Map<GatherKey, Integer> gatherTotals = new LinkedHashMap<>();
+        for (GoalStep step : steps) {
+            if (step.kind() == GoalStep.Kind.GATHER) {
+                gatherTotals.merge(new GatherKey(step.item(), step.bestEffort()), step.count(), Integer::sum);
+            }
+        }
+        if (gatherTotals.isEmpty()) {
+            return new ArrayList<>(steps);
         }
         List<GoalStep> result = new ArrayList<>();
-        for (Map.Entry<Item, Integer> entry : gatherTotals.entrySet()) {
-            result.add(GoalStep.gather(entry.getKey(), entry.getValue()));
+        result.addAll(steps.subList(0, Math.min(insertAt, steps.size())));
+        for (Map.Entry<GatherKey, Integer> entry : gatherTotals.entrySet()) {
+            GoalStep gathered = GoalStep.gather(entry.getKey().item(), entry.getValue());
+            result.add(entry.getKey().bestEffort() ? gathered.asBestEffort() : gathered);
         }
-        HashSet<Block> emittedMine = new HashSet<>();
-        for (GoalStep step : steps) {
+        for (int i = Math.min(insertAt, steps.size()); i < steps.size(); i++) {
+            GoalStep step = steps.get(i);
             if (step.kind() == GoalStep.Kind.GATHER) {
                 continue; // 已提到最前
-            }
-            if (step.kind() == GoalStep.Kind.MINE) {
-                if (emittedMine.add(step.block())) {
-                    result.add(GoalStep.mine(step.block(), mineTotals.get(step.block()))); // 首次出现:并入总量
-                }
-                continue; // 后续同物 MINE 已合并,跳过
             }
             result.add(step);
         }
@@ -194,32 +336,100 @@ public final class GoalPlanner {
         counts.merge(stack.getItem(), stack.getCount(), Integer::sum);
     }
 
+    private static Map<Item, Integer> toolUsableDurability(AIPlayerEntity bot) {
+        Map<Item, Integer> durability = new HashMap<>();
+        for (ItemStack stack : bot.getInventory().main) {
+            addToolUsableDurability(durability, stack);
+        }
+        for (ItemStack stack : bot.getInventory().offHand) {
+            addToolUsableDurability(durability, stack);
+        }
+        return durability;
+    }
+
+    private static void addToolUsableDurability(Map<Item, Integer> durability, ItemStack stack) {
+        if (stack == null || stack.isEmpty() || !stack.isDamageable()) {
+            return;
+        }
+        durability.merge(stack.getItem(), MiningServiceTask.usableDurability(stack),
+                GoalPlanner::saturatedAdd);
+    }
+
+    private static Map<Item, Integer> assumedFreshToolUsableDurability(
+            Map<Item, Integer> inventory) {
+        Map<Item, Integer> durability = new HashMap<>();
+        inventory.forEach((item, count) -> {
+            int fresh = freshUsableDurability(item);
+            if (fresh > 0 && count > 0) {
+                durability.put(item, saturatedMultiply(fresh, count));
+            }
+        });
+        return durability;
+    }
+
+    private static int freshUsableDurability(Item item) {
+        ItemStack stack = new ItemStack(item);
+        return stack.isDamageable() ? Math.max(0, stack.getMaxDamage() - 1) : 0;
+    }
+
+    private static int saturatedAdd(int left, int right) {
+        return (int) Math.min(Integer.MAX_VALUE, (long) left + Math.max(0, right));
+    }
+
+    private static int saturatedMultiply(int left, int right) {
+        return (int) Math.min(Integer.MAX_VALUE,
+                (long) Math.max(0, left) * Math.max(0, right));
+    }
+
     private static final class Planner {
         private final AIPlayerEntity bot;
         private final Map<Item, Integer> counts;
+        private final Map<Item, Integer> initialCounts;
+        private final Map<Item, Integer> initialToolUsableDurability;
         private final int maxDepth;
-        private final int botY; // 规划时 bot 的 Y,用于判断深层矿是否需先下竖井到矿层
+        // Planning changes the bot's physical layer. In particular ACQUIRE_WATER returns a deep
+        // worker to the mission origin before the next dependency is executed, so a fixed initial
+        // Y can incorrectly schedule a Y16 iron mine directly after the surface return.
+        private int plannedY;
+        private final int waterReturnY;
+        private boolean initialOrePerceptionValid = true;
         private final boolean hasPreyNearby;  // 周围有可猎动物(食物择源:有→打猎)
         private final boolean hasGrassNearby; // 周围有草(食物择源:无动物但有草→种植面包)
         private final boolean hasBerriesNearby; // 周围有甜浆果丛(食物择源:无动物无现成粮→采浆果兜底)
+        private final boolean surfaceAcquisitionAllowed;
+        private final boolean restrictSurfaceAcquisition;
         private final java.util.function.Predicate<Set<Block>> oreNearby; // 目标矿是否已在身边(48格)→跳过下潜
         private final GoalSnapshotCollector.Context resumeContext;
+        private final String missionId;
         private final List<GoalStep> steps = new ArrayList<>();
         private final List<String> unresolved = new ArrayList<>();
+        private int bestEffortDepth;
+        private int suppressOrdinaryTorchProvisionDepth;
 
         private Planner(AIPlayerEntity bot, Map<Item, Integer> counts, int maxDepth, int botY,
                         boolean hasPreyNearby, boolean hasGrassNearby, boolean hasBerriesNearby,
+                        boolean surfaceAcquisitionAllowed,
+                        boolean restrictSurfaceAcquisition,
                         java.util.function.Predicate<Set<Block>> oreNearby,
-                        GoalSnapshotCollector.Context resumeContext) {
+                        GoalSnapshotCollector.Context resumeContext,
+                        Map<Item, Integer> toolUsableDurability,
+                        String missionId) {
             this.bot = bot;
             this.counts = counts;
+            this.initialCounts = Map.copyOf(counts);
+            this.initialToolUsableDurability = toolUsableDurability == null
+                    ? Map.of() : Map.copyOf(toolUsableDurability);
             this.maxDepth = maxDepth;
-            this.botY = botY;
+            this.plannedY = botY;
+            this.waterReturnY = resumeContext == null ? botY : resumeContext.origin().getY();
             this.hasPreyNearby = hasPreyNearby;
             this.hasGrassNearby = hasGrassNearby;
             this.hasBerriesNearby = hasBerriesNearby;
+            this.surfaceAcquisitionAllowed = surfaceAcquisitionAllowed;
+            this.restrictSurfaceAcquisition = restrictSurfaceAcquisition;
             this.oreNearby = oreNearby;
             this.resumeContext = resumeContext;
+            this.missionId = missionId == null ? "" : missionId;
         }
 
         private boolean ensureGoal(Goal goal, int depth, Set<String> visiting) {
@@ -288,22 +498,6 @@ public final class GoalPlanner {
                     || counts.getOrDefault(Items.NETHERITE_SWORD, 0) > 0;
         }
 
-        // 背包是否已有现成木料够做一把木剑(2 木板 + 1 木棍;1 原木→4 木板足够)。无料则不专程砍树(避免无树发呆)。
-        private boolean hasSwordMaterial() {
-            int logs = 0;
-            for (Item l : RecipeRegistry.LOGS) {
-                logs += counts.getOrDefault(l, 0);
-            }
-            if (logs >= 1) {
-                return true;
-            }
-            int planks = 0;
-            for (Item p : RecipeRegistry.PLANKS) {
-                planks += counts.getOrDefault(p, 0);
-            }
-            return planks >= 2;
-        }
-
         private boolean ensurePickaxeTier(int tier, int depth, Set<String> visiting) {
             if (bestPickaxeTier() >= tier) {
                 return true;
@@ -324,8 +518,119 @@ public final class GoalPlanner {
                 return true;
             }
             int tier = ToolTier.requiredPickaxeTier(expanded);
+            boolean rareOre = expanded.contains(Blocks.DIAMOND_ORE)
+                    || expanded.contains(Blocks.DEEPSLATE_DIAMOND_ORE)
+                    || expanded.contains(Blocks.EMERALD_ORE)
+                    || expanded.contains(Blocks.DEEPSLATE_EMERALD_ORE);
+            boolean coalOre = expanded.contains(Blocks.COAL_ORE)
+                    || expanded.contains(Blocks.DEEPSLATE_COAL_ORE);
+            MiningBudget budget = MiningBudget.forQuota(remaining, rareOre, tier);
+            // Mission identity is the requested total, not the current deficit. A 64-diamond
+            // expedition with 63 already collected must retain its service/tool contract instead
+            // of silently degrading into a one-off local mine after resume.
+            MiningBudget missionBudget = MiningBudget.forQuota(count, rareOre, tier);
+            boolean expedition = count >= MiningBudget.EXPEDITION_THRESHOLD;
+            boolean longRareExpedition = expedition && rareOre;
+            int mineY = bestMiningY(expanded);
+            // A long rare-ore expedition owns a stable optimal layer. One exposed ore must not keep
+            // a 64-item mission branch-mining at the surface; small requests retain the local shortcut.
+            // oreNearby is a fact about the position at which this plan was created. Once an
+            // earlier planned step has changed layers, reusing it can suppress a required descent.
+            boolean knownOreNearby = initialOrePerceptionValid && oreNearby.test(expanded);
+            boolean willDescend = plannedY - mineY > DESCEND_THRESHOLD
+                    && (longRareExpedition || !knownOreNearby);
+            boolean ordinaryChannelMission = !rareOre
+                    && budget.ordinaryChannelPickaxes() > 0;
+            // An ordinary expedition owns the same four-pick service horizon after a mine-layer
+            // replan. Tying this flag to willDescend made a resumed coal/iron batch silently lose
+            // channel maintenance as soon as it was already standing at the target Y.
+            boolean maintainTunnelingTools = longRareExpedition || ordinaryChannelMission;
+            // A live descent-kit attestation is valid only if no dependency is appended after this
+            // snapshot. Coal/iron/torch provisioning can consume slots or reserved materials even
+            // when the inventory happened to satisfy the kit at the beginning of this plan.
+            int rareBootstrapStart = longRareExpedition ? steps.size() : -1;
+
+            if (longRareExpedition) {
+                // Surface readiness is a hard gate before descent. During an underground resume,
+                // only the fail-closed deep-mine reserve is checked; Hunt/Cook/Gather must never be
+                // emitted from the mine bottom.
+                int unresolvedBefore = unresolved.size();
+                if (!ensureMiningFoodReserveTo(
+                        missionBudget.cookedFoodTarget(),
+                        MiningBudget.RARE_SERVICE_FOOD_FLOOR,
+                        depth + 1, visiting)
+                        || unresolved.size() > unresolvedBefore) {
+                    return false;
+                }
+            }
+            if (longRareExpedition && tier == ToolTier.IRON) {
+                // Acquire the complete iron contract once. The old sequential chain first made one
+                // pick (3 ingots), then two more (6), then the six-ingot spare. Those three small
+                // OreDig missions each fell below the ordinary-channel threshold and reused one
+                // increasingly damaged stone pick. One >=15 from-zero acquisition owns one finite
+                // ordinary pool/service horizon and one smelt transaction.
+                int missingTargetPicks = Math.max(0,
+                        missionBudget.initialPickaxes()
+                                - counts.getOrDefault(Items.IRON_PICKAXE, 0));
+                int aggregatedIronTarget = saturatedAdd(
+                        saturatedMultiply(missingTargetPicks, 3),
+                        missionBudget.spareToolIngots());
+                boolean ironReady;
+                suppressOrdinaryTorchProvisionDepth++;
+                try {
+                    ironReady = ensureItem(Items.IRON_INGOT,
+                            aggregatedIronTarget, depth + 1, visiting);
+                } finally {
+                    suppressOrdinaryTorchProvisionDepth--;
+                }
+                if (!ironReady) {
+                    return false;
+                }
+            }
             if (!ensurePickaxeTier(tier, depth + 1, visiting)) {
                 return false;
+            }
+            if (expedition) {
+                // 首趟按配额准备多把镐；批次间 service 会回仓/就地补给，避免一次性把整趟远征
+                // 的所有消耗都塞进 bootstrap。钻石目标所需的是铁镐，不会消耗目标钻石。
+                Item expeditionPickaxe = pickaxeForTier(tier);
+                if (expeditionPickaxe != Items.AIR
+                        && !ensureItem(expeditionPickaxe, missionBudget.initialPickaxes(), depth + 1, visiting)) {
+                    return false;
+                }
+                if (missionBudget.spareToolIngots() > 0
+                        && !ensureItem(Items.IRON_INGOT, missionBudget.spareToolIngots(), depth + 1, visiting)) {
+                    return false;
+                }
+                // 火把和封堵块只在地表 bootstrap 补齐。地下恢复时重放这两个目标会把
+                // 已消耗的储备翻译成 DigDown/砍树前置，反而阻塞下一批；地下不足由 service
+                // checkpoint 从仓点补给或明确 fail-closed。
+                if (surfaceAcquisitionAllowed || willDescend) {
+                    if (longRareExpedition) {
+                        int descentTorchReserve = willDescend
+                                ? descendTorchBudget(plannedY, mineY) : 0;
+                        int requiredTorches = roundUpToTorchRecipe(
+                                saturatedAdd(missionBudget.torchTarget(), descentTorchReserve));
+                        if (missionBudget.targetCount() >= 64) {
+                            requiredTorches = Math.max(requiredTorches,
+                                    MiningBudget.DIAMOND_STACK_MIN_BOOTSTRAP_TORCHES);
+                        }
+                        if (!ensureTorchesTo(requiredTorches, depth + 1, visiting)) {
+                            return false;
+                        }
+                    } else {
+                        // Coal is the torch ingredient. Asking a coal expedition to provision its
+                        // own normal torch target recursively emitted coal8 -> coal12 -> coal96,
+                        // each with another independent unstackable channel pool. Mine the bounded
+                        // target coal once; the parent torch craft immediately follows it.
+                        if (!coalOre && suppressOrdinaryTorchProvisionDepth == 0) {
+                            bestEffortProvision(() -> ensureTorchesTo(
+                                    missionBudget.torchTarget(), depth + 1, visiting));
+                        }
+                        bestEffortProvision(() -> ensureItem(
+                                Items.COBBLESTONE, missionBudget.emergencyBlocks(), depth + 1, visiting));
+                    }
+                }
             }
             // 大批量挖矿备足镐(治本·real_armor 26铁挖到9超时):石镐~131耐久,挖24+铁含掘进要磨断多把。
             // 途中磨穿→resupply 就地合会打断大配额单 mine_ore、丢挖矿进度→ore_dig_timeout。按量预备(含掘进≈1把/12块)
@@ -342,40 +647,262 @@ public final class GoalPlanner {
                     ensureItem(pickaxeForTier(tier), stoneNeeded, depth + 1, visiting);
                 }
             }
-            // 精简速降(用户选·治本):深危矿(钻石/金/红石/绿宝石,Y<0 岩浆+怪多)**只备最小必需**——
-            // 火把(廉价:煤+棍;照明=从源头少刷怪,性价比最高)。**砍掉铁甲/铁剑/盾/烤肉**——它们要先挖
-            // 5+ 铁+熔炼+合成,把"挖钻"变成又长又险的地表远征(跨昼夜撞尽夜间怪海/淹死/崖壁,real_diamond
-            // 实测全栽在这段而非挖矿本身)。深层危险改靠**反应式生存**兜底:濒死封墙(emergency_entomb)、
-            // 岩浆封堵(ore_dig_fluid_seal)、黑暗撤离——遇险才花代价,不提前过度武装。暴露时间砍一个数量级。
-            if (tier >= ToolTier.IRON) {
-                ensureTorches(depth + 1, visiting); // 唯一保留的主动备货:火把(best-effort,缺也不阻断)
+            // 小配额深矿沿用轻量快速链，只补火把；长期稀有矿远征已在上方走硬食物 readiness，
+            // 但仍不强制铁甲/盾牌，避免把矿前 bootstrap 扩成另一条重型装备任务。
+            if (tier >= ToolTier.IRON && remaining < MiningBudget.EXPEDITION_THRESHOLD) {
+                ensureTorches(depth + 1, visiting); // 小配额沿用轻量快速链
             }
             // 挖深层矿重构 P1:bot 远高于矿层 → 先下竖井到矿层,再挖。否则在错误高度(实测 Y=48)
             // 反复"锁定斜下方够不到的矿→水平掘隧道→dist 卡死→no_progress",卡死 11 分钟。
-            int mineY = bestMiningY(expanded);
-            // 附近已有目标矿 → 不下潜直接挖(站在矿旁先挖竖井到矿层是蠢的,且竖井穿天然地形
-            // 极易 blocked;实操"带 bot 到矿边让它挖"也走这条捷径)。
-            boolean willDescend = botY - mineY > DESCEND_THRESHOLD && !oreNearby.test(expanded);
             // 深潜耐久兜底(治本·real_diamond 手测死因):深处铁镐磨穿后无法就地补给——深层没树做熔炉/燃料,
             // resupply 倒推"采橡木→合熔炉→熔炼铁锭"在 Y<0 必败(96 格无树)→ 反复 replan 卡死被怪杀。
             // 解法:深潜前多备 3 铁锭备料(地表一次性多挖/熔炼好)。镐磨穿时深处直接用备料+背包工作台+棍合新镐
             //(只需 craft,无需树/熔炉/熔炼),不被困死深处。仅深潜才备(就近挖在地表附近,坏了能正常补)。
-            if (tier >= ToolTier.IRON && willDescend) {
+            if (tier >= ToolTier.IRON && willDescend
+                    && remaining < MiningBudget.EXPEDITION_THRESHOLD) {
                 ensureItem(Items.IRON_INGOT, SPARE_IRON_INGOTS, depth + 1, visiting);
                 // 【实验回退】带铁套加成回攻钻石实测净拖累(real_diamond 0/6 vs 精简基线3/6):深潜前备头胸甲(13铁)
                 // 把链拉太长——bot 在36000t内多挖13铁+熔炼+合甲、还没下潜挖钻就超时(5/6 timeout),且铁甲一次没穿上
                 // (前段就败、根本没走到深潜)。survival收益=0、代价=链翻倍。故撤回备甲,深潜survival改靠反应式
                 // (入浆自救/濒死入土/点火把,遇险才花代价)。下潜穿甲(DescendToYTask.onStart equipBestArmor)保留:零成本,有甲就穿。
             }
-            if (willDescend) {
-                addStep(GoalStep.descendToY(mineY));
+            if (ordinaryChannelMission
+                    && !ensureFreshOrdinaryChannelKit(budget, depth + 1, visiting)) {
+                return false;
             }
-            addStep(GoalStep.mineOre(expanded, remaining));
+            // Dependency planning above can itself move the simulated worker. Coal is the concrete
+            // case: provisioning torches for a larger coal batch recursively mines an initial coal
+            // batch and already descends to Y=48. Reusing the pre-dependency willDescend decision
+            // then emitted a second Y=48 hand-off; a vein ending at Y=47 made that redundant task
+            // fail as an overshoot even though the worker was already in the correct layer band.
+            // Keep DescendToYTask fail-closed for real pose drift and only suppress this stale step.
+            if (willDescend && plannedY - mineY > DESCEND_THRESHOLD) {
+                if (longRareExpedition) {
+                    boolean exactLiveKit = count == 64
+                            && bot != null
+                            && !missionId.isBlank()
+                            && steps.size() == rareBootstrapStart
+                            && MiningServiceTask.rareDescentKitReady(bot)
+                            && MiningServiceTask.ownedMissionDepot(bot, missionId);
+                    if (!exactLiveKit) {
+                        boolean kitReady = count == 64
+                                ? ensureRareDescentKit(expanded, count,
+                                missionBudget, depth + 1, visiting)
+                                : ensureDirectRareDescentKit(missionBudget,
+                                depth + 1, visiting);
+                        if (!kitReady) {
+                            return false;
+                        }
+                    }
+                }
+                // DescendToY may place one torch at the dark starting face and then every six
+                // vertical levels. Debit that worst-case use now so a later dependency cannot treat
+                // already-promised torches as its inventory baseline.
+                int descentTorches = descendTorchBudget(plannedY, mineY);
+                addStep(GoalStep.descendToY(mineY));
+                consumeItem(Items.TORCH, descentTorches);
+                plannedY = mineY;
+                initialOrePerceptionValid = false;
+            }
+            int rareBatchOffset = longRareExpedition
+                    ? Math.floorMod(owned, budget.batchSize()) : 0;
+            if (longRareExpedition && rareBatchOffset == 0) {
+                // The first rare batch always owns a boundary service after the final descent.
+                // From-zero missions use boundary 0 and a synthetic cursor supplied by Executor;
+                // completed-batch resumes use their exact eight-item boundary. A partial open
+                // batch must resume its existing cursor/resource ledgers before the next boundary;
+                // servicing at owned=4 would silently split one logical batch into two.
+                steps.add(GoalStep.rareOreService(
+                        expanded, owned, count));
+            }
+            if (longRareExpedition) {
+                int cumulative = 0;
+                int firstBatchTarget = rareBatchOffset == 0
+                        ? budget.batchSize() : budget.batchSize() - rareBatchOffset;
+                while (cumulative < remaining) {
+                    int batchTarget = Math.min(
+                            cumulative == 0 ? firstBatchTarget : budget.batchSize(),
+                            remaining - cumulative);
+                    // Direct append is intentional: addStep would merge adjacent ore steps and
+                    // erase the durable eight-item service boundaries.
+                    steps.add(GoalStep.mineOre(expanded, batchTarget));
+                    cumulative += batchTarget;
+                    if (cumulative < remaining) {
+                        steps.add(GoalStep.rareOreService(
+                                expanded, owned + cumulative, count));
+                    }
+                }
+            } else if (remaining >= MiningBudget.EXPEDITION_THRESHOLD) {
+                int cumulative = 0;
+                for (int batchIndex = 0; batchIndex < budget.batchCount(); batchIndex++) {
+                    int batchTarget = budget.batchTarget(batchIndex);
+                    if (batchTarget <= 0) {
+                        continue;
+                    }
+                    // 直接 append，不能走 addStep：相邻同矿种步骤会被合并回一个 64 配额巨型 Task。
+                    steps.add(GoalStep.mineOre(expanded, batchTarget));
+                    cumulative += batchTarget;
+                    if (batchIndex + 1 < budget.batchCount()) {
+                        steps.add(GoalStep.miningService(
+                                expanded, cumulative, maintainTunnelingTools));
+                    }
+                }
+            } else {
+                addStep(GoalStep.mineOre(expanded, remaining));
+            }
             for (Item drop : drops) {
                 counts.merge(drop, remaining, Integer::sum);
                 break;
             }
+            if (ordinaryChannelMission) {
+                // These items remain physically carried for this ordinary mission, but they are no
+                // longer available to later coal/iron/rare dependencies in the symbolic plan. This
+                // is the ownership boundary that prevents the final rare kit from borrowing an
+                // earlier ordinary service horizon.
+                consumeItem(Items.STONE_PICKAXE, budget.ordinaryChannelPickaxes());
+                consumeItem(Items.STICK, budget.ordinaryChannelRepairSticks());
+                consumeItem(Items.COBBLESTONE, budget.ordinaryChannelRepairStoneLike());
+                // Inter-batch service protects the next OreDig batch, but the final ordinary
+                // batch hands control back to a parent craft/smelt/descent. Its unpredictable
+                // spoil mix can occupy every main slot even when the target drop itself stacks.
+                // Seal that runtime boundary explicitly without charging another four-pick
+                // rebuild. The stone reserve is the symbolic inventory after this ordinary
+                // mission's exact debit; preserving it keeps the downstream obsidian/rare plan
+                // truthful while surplus mining spoil remains disposable.
+                steps.add(GoalStep.miningHandoffService(
+                        expanded, owned + remaining, plannedStoneLikeCount()));
+            }
             return true;
+        }
+
+        private int plannedStoneLikeCount() {
+            return saturatedAdd(counts.getOrDefault(Items.COBBLESTONE, 0),
+                    saturatedAdd(counts.getOrDefault(Items.COBBLED_DEEPSLATE, 0),
+                            counts.getOrDefault(Items.BLACKSTONE, 0)));
+        }
+
+        /**
+         * Provisions one finite ordinary channel mission. Four fresh picks cover the initial
+         * descent/working face. The remaining raw materials fund the exact bounded contract from
+         * {@link MiningBudget}: one one-pick physical resupply per open batch and one four-pick
+         * rebuild at every inter-batch service. The incremental craft is deliberate; item count
+         * alone cannot prove that five carried picks have usable durability.
+         */
+        private boolean ensureFreshOrdinaryChannelKit(MiningBudget budget,
+                                                      int depth,
+                                                      Set<String> visiting) {
+            int freshPickaxes = budget.ordinaryChannelPickaxes();
+            if (freshPickaxes <= 0) {
+                return true;
+            }
+            int requiredUsable = saturatedMultiply(
+                    freshPickaxes, MiningBudget.STONE_PICKAXE_USABLE_DURABILITY);
+            boolean currentPoolAttested = counts.getOrDefault(Items.STONE_PICKAXE, 0)
+                    >= freshPickaxes
+                    && initialToolUsableDurability.getOrDefault(Items.STONE_PICKAXE, 0)
+                    >= requiredUsable;
+            int craftCount = currentPoolAttested ? 0 : freshPickaxes;
+            int craftSticks = saturatedMultiply(
+                    craftCount, MiningBudget.STONE_PICKAXE_STICK_COST);
+            int craftStone = saturatedMultiply(
+                    craftCount, MiningBudget.STONE_PICKAXE_HEAD_COST);
+            int requiredSticks = saturatedAdd(
+                    budget.ordinaryChannelRepairSticks(), craftSticks);
+            int requiredStone = saturatedAdd(
+                    budget.ordinaryChannelRepairStoneLike(), craftStone);
+            if (!ensureItem(Items.CRAFTING_TABLE, 1, depth + 1, visiting)
+                    // Mine every stone-like dependency before sealing the handle reserve. Stone
+                    // acquisition can itself open a bounded channel repair and spend sticks; doing
+                    // it afterwards would let that nested mission borrow the final handle pool.
+                    || !ensureItem(Items.COBBLESTONE, requiredStone, depth + 1, visiting)
+                    || !ensureItem(Items.STICK, requiredSticks, depth + 1, visiting)) {
+                return false;
+            }
+            if (craftCount > 0) {
+                appendFreshStonePickaxeCraft(craftCount, craftSticks, craftStone);
+            }
+            return true;
+        }
+
+        /**
+         * Final sealed hand-off for a target64 rare expedition. All coal, iron, torch and
+         * target-tool dependencies have already emitted their work. Provisioning 238 sticks, 77
+         * stone-like and a mission chest lets runtime atomically retire old tools, craft five fresh
+         * picks, and leave the exact 228/60 reserve immediately before final descent.
+         */
+        private boolean ensureRareDescentKit(Set<Block> ores,
+                                             int missionTarget,
+                                             MiningBudget budget,
+                                             int depth,
+                                             Set<String> visiting) {
+            if (missionTarget != 64) {
+                unresolved.add("rare_descent_kit_requires_target64:" + missionTarget);
+                return false;
+            }
+            int freshPickaxes = budget.tunnelingPickaxes();
+            int craftSticks = saturatedMultiply(
+                    freshPickaxes, MiningBudget.STONE_PICKAXE_STICK_COST);
+            int craftStone = saturatedMultiply(
+                    freshPickaxes, MiningBudget.STONE_PICKAXE_HEAD_COST);
+            int requiredSticks = saturatedAdd(budget.spareToolSticks(), craftSticks);
+            int requiredStone = saturatedAdd(
+                    saturatedAdd(budget.emergencyBlocks(), craftStone), 2);
+            boolean ownedDepotReady = bot != null && !missionId.isBlank()
+                    && MiningServiceTask.ownedMissionDepot(bot, missionId);
+            if (freshPickaxes <= 0
+                    || (!ownedDepotReady
+                    && !ensureItem(Items.CHEST, 1, depth + 1, visiting))
+                    || !ensureItem(Items.CRAFTING_TABLE, 1, depth + 1, visiting)
+                    // The rare handle pool is the final sealed resource. Any stone acquisition
+                    // (including its own ordinary channel service) must finish before this top-up.
+                    || !ensureItem(Items.COBBLESTONE, requiredStone, depth + 1, visiting)
+                    || !ensureItem(Items.STICK, requiredSticks, depth + 1, visiting)) {
+                return false;
+            }
+            steps.add(GoalStep.rareDescentKitService(ores, missionTarget));
+            // Runtime service atomically consumes one chest, five pick heads/handles and at most
+            // two blocks for the sealed retirement pocket. Mirror that promise so downstream
+            // symbolic planning cannot borrow resources that no longer remain in inventory.
+            if (!ownedDepotReady) {
+                consumeItem(Items.CHEST, 1);
+            }
+            consumeItem(Items.COBBLESTONE, saturatedAdd(craftStone, 2));
+            consumeItem(Items.STICK, craftSticks);
+            counts.merge(Items.STONE_PICKAXE, freshPickaxes, Integer::sum);
+            return true;
+        }
+
+        /**
+         * Targets below one full stack retain the established direct hand-off: provision the
+         * bounded reserve and craft five fresh channel picks immediately before descent. They do
+         * not own the target64 mission-local depot/schema contract.
+         */
+        private boolean ensureDirectRareDescentKit(MiningBudget budget,
+                                                   int depth,
+                                                   Set<String> visiting) {
+            int freshPickaxes = budget.tunnelingPickaxes();
+            int craftSticks = saturatedMultiply(
+                    freshPickaxes, MiningBudget.STONE_PICKAXE_STICK_COST);
+            int craftStone = saturatedMultiply(
+                    freshPickaxes, MiningBudget.STONE_PICKAXE_HEAD_COST);
+            int requiredSticks = saturatedAdd(budget.spareToolSticks(), craftSticks);
+            int requiredStone = saturatedAdd(budget.emergencyBlocks(), craftStone);
+            if (freshPickaxes <= 0
+                    || !ensureItem(Items.CRAFTING_TABLE, 1, depth + 1, visiting)
+                    || !ensureItem(Items.COBBLESTONE, requiredStone, depth + 1, visiting)
+                    || !ensureItem(Items.STICK, requiredSticks, depth + 1, visiting)) {
+                return false;
+            }
+            appendFreshStonePickaxeCraft(freshPickaxes, craftSticks, craftStone);
+            return true;
+        }
+
+        /** Adds a runtime-incremental craft instead of an absolute item-count ensure. */
+        private void appendFreshStonePickaxeCraft(int pickaxes, int sticks, int stone) {
+            steps.add(GoalStep.craft(Items.STONE_PICKAXE, pickaxes));
+            consumeItem(Items.STICK, sticks);
+            consumeItem(Items.COBBLESTONE, stone);
+            counts.merge(Items.STONE_PICKAXE, pickaxes, Integer::sum);
         }
 
         // 装备前置:库存或已穿都算(inventoryCounts 已计入装备槽)。
@@ -424,10 +951,42 @@ public final class GoalPlanner {
         // 规避加固:挖深矿(凶险)前备一批火把,供 DangerWatcher 在地下黑暗处点亮防刷怪。
         // best-effort:能倒推出火把(挖煤+棍)就加进计划;不阻断挖矿目标(有铁镐即能挖煤,基本必成)。
         private void ensureTorches(int depth, Set<String> visiting) {
-            if (counts.getOrDefault(Items.TORCH, 0) >= TORCH_TARGET) {
+            ensureTorchesTo(TORCH_TARGET, depth, visiting);
+        }
+
+        private boolean ensureTorchesTo(int target, int depth, Set<String> visiting) {
+            if (target <= 0 || counts.getOrDefault(Items.TORCH, 0) >= target) {
+                return true;
+            }
+            return ensureItem(Items.TORCH, target, depth + 1, visiting);
+        }
+
+        /**
+         * Roll back an optional provisioning branch if planning cannot resolve it. If planning
+         * succeeds, mark every emitted step so a world-time miss cannot fail the parent mining Goal.
+         */
+        private void bestEffortProvision(Runnable provision) {
+            int stepsBefore = steps.size();
+            int unresolvedBefore = unresolved.size();
+            Map<Item, Integer> countsBefore = new HashMap<>(counts);
+            bestEffortDepth++;
+            try {
+                provision.run();
+            } finally {
+                bestEffortDepth--;
+            }
+            if (unresolved.size() <= unresolvedBefore) {
+                for (int i = stepsBefore; i < steps.size(); i++) {
+                    steps.set(i, steps.get(i).asBestEffort());
+                }
                 return;
             }
-            ensureItem(Items.TORCH, TORCH_TARGET, depth + 1, visiting);
+            rollbackSteps(stepsBefore);
+            while (unresolved.size() > unresolvedBefore) {
+                unresolved.remove(unresolved.size() - 1);
+            }
+            counts.clear();
+            counts.putAll(countsBefore);
         }
 
         // Phase2:基建——备齐工作台/熔炉/箱子各一,再下放置步(PlaceStationsTask 摆到 bot 周围)。
@@ -620,17 +1179,69 @@ public final class GoalPlanner {
             return ensureFoodTo(FOOD_TARGET, depth, visiting);
         }
 
+        private boolean ensureMiningFoodReserveTo(int surfaceTarget,
+                                                  int depth,
+                                                  Set<String> visiting) {
+            return ensureMiningFoodReserveTo(surfaceTarget,
+                    MiningFoodReserve.MIN_DEEP_MINE_UNITS, depth, visiting, false);
+        }
+
+        private boolean ensureMiningFoodReserveTo(int surfaceTarget,
+                                                  int depth,
+                                                  Set<String> visiting,
+                                                  boolean bootstrapStonePickBeforeFurnace) {
+            return ensureMiningFoodReserveTo(surfaceTarget,
+                    MiningFoodReserve.MIN_DEEP_MINE_UNITS, depth, visiting,
+                    bootstrapStonePickBeforeFurnace);
+        }
+
+        private boolean ensureMiningFoodReserveTo(int surfaceTarget,
+                                                  int deepMineFloor,
+                                                  int depth,
+                                                  Set<String> visiting) {
+            return ensureMiningFoodReserveTo(surfaceTarget, deepMineFloor,
+                    depth, visiting, false);
+        }
+
+        private boolean ensureMiningFoodReserveTo(int surfaceTarget,
+                                                  int deepMineFloor,
+                                                  int depth,
+                                                  Set<String> visiting,
+                                                  boolean bootstrapStonePickBeforeFurnace) {
+            int have = MiningFoodReserve.units(counts);
+            if (!surfaceAcquisitionAllowed) {
+                int required = Math.max(MiningFoodReserve.MIN_DEEP_MINE_UNITS,
+                        deepMineFloor);
+                if (have < required) {
+                    unresolved.add("deep_mining_food_reserve_depleted:have=" + have
+                            + ":required=" + required);
+                    return false;
+                }
+                return true;
+            }
+            return ensureFoodTo(surfaceTarget, depth, visiting,
+                    bootstrapStonePickBeforeFurnace);
+        }
+
         // 猎→烤闭环:凑够 target 个熟食/面包(高饱食、安全)。挖矿备粮用 FOOD_TARGET;
         // "去打猎/去搞点吃的"口语入口(Goal.Food)用指定量。
         // 没动物/没熔炉/没燃料时 GoalExecutor 跳过相应 best-effort 步(见 handleStepFailure),不阻断主目标。
         private boolean ensureFoodTo(int target, int depth, Set<String> visiting) {
-            int cooked = 0;
-            for (Item f : COOKED_FOOD_ITEMS) {
-                cooked += counts.getOrDefault(f, 0);
-            }
-            cooked += counts.getOrDefault(Items.SWEET_BERRIES, 0) / 2; // 浆果按 2:1 折算(饱食低,2 颗≈1 份)
+            return ensureFoodTo(target, depth, visiting, false);
+        }
+
+        private boolean ensureFoodTo(int target,
+                                     int depth,
+                                     Set<String> visiting,
+                                     boolean bootstrapStonePickBeforeFurnace) {
+            int cooked = MiningFoodReserve.units(counts);
             if (cooked >= target) {
                 return true;
+            }
+            if (restrictSurfaceAcquisition) {
+                unresolved.add("surface_food_acquisition_unavailable:have=" + cooked
+                        + ":required=" + target);
+                return false;
             }
             int needCooked = target - cooked;
             // 感知驱动择源:没动物但有草 → 种植面包,但**仅当已有快路径材料**(足量小麦只差合成 / 足量种子只差种收)。
@@ -655,6 +1266,34 @@ public final class GoalPlanner {
                 raw += counts.getOrDefault(m, 0);
             }
             int huntNeed = Math.max(0, needCooked - raw);
+            // Raw food is a surface acquisition. Provision the cheap wooden weapon and hunt before
+            // any furnace bootstrap can dig a stone staircase; otherwise the next HUNT starts at
+            // the mine bottom and strict_survival correctly refuses the old teleport-to-surface
+            // escape hatch.
+            if (huntNeed > 0) {
+                if (!hasAnySword() && !ensureItem(Items.WOODEN_SWORD, 1, depth + 1, visiting)) {
+                    return false;
+                }
+                int remainingHunt = huntNeed;
+                int batch = 1;
+                while (remainingHunt > 0) {
+                    int batchTarget = Math.min(4, remainingHunt);
+                    addStep(GoalStep.huntBatch(batchTarget, batch++));
+                    remainingHunt -= batchTarget;
+                }
+            }
+            // A from-zero obsidian expedition used to open the furnace's eight-cobblestone shaft
+            // with its only wooden pick, let background resupply consume another handle, then open
+            // the four-pick readiness shaft with wood and consume a third.  Preserve the established
+            // hunt-first surface ordering, but cross the normal three-cobblestone upgrade boundary
+            // before any furnace or bulk-stone work.  The later four-pick target can count this
+            // physical stone pick; all remaining stone acquisition then uses the renewable tier.
+            if (bootstrapStonePickBeforeFurnace
+                    && counts.getOrDefault(Items.FURNACE, 0) <= 0
+                    && bestPickaxeTier() < ToolTier.STONE
+                    && !ensurePickaxeTier(ToolTier.STONE, depth + 1, visiting)) {
+                return false;
+            }
             // 烤肉需熔炉:没炉则确定性倒推一座(8 圆石 → 挖石 → 需镐 → 木板/木棍 → 原木 → 砍树),
             // 让"砍树 + 做基本工具"作为底层能力按正确顺序自动展开;而非 best-effort 跳过后丢给大脑乱凑
             //(实测:大脑直接 gather 圆石、没先做镐,挖不动)。整条 Food best-effort 兜底,缺料环境降级不卡死。
@@ -665,20 +1304,22 @@ public final class GoalPlanner {
             // 与矿石熔炼 smeltItem 一致:已有煤/炭各≈烤 8 个;不够用原木补(1 原木≈烤 1.5 个),优先已有树种、
             // best-effort 砍树(无树则 unresolved,执行期 COOK_FOOD 缺燃料再降级,不卡死)。
             int coalLike = counts.getOrDefault(Items.COAL, 0) + counts.getOrDefault(Items.CHARCOAL, 0);
-            // 燃料按 2 倍需求备:COOK_FOOD 是 cookAll 模式(背包所有生肉一起烤,猎获常超 needCooked),
-            // 且烤途中断火重启有损耗——按精确需求备实测 out_of_fuel(地狱 seed R9)。宁多备一根木。
-            int fuelDeficit = needCooked * 2 - coalLike * 8;
+            // SmeltTask.remainingToQueue 严格封顶 targetCount，按实际熟食目标备燃料即可；旧的 2 倍
+            // 预算会把 24 份 readiness 放大成 32 根燃料木，seed 3000 实测只是在开工前过度砍树。
+            int fuelDeficit = needCooked - coalLike * 8;
             if (fuelDeficit > 0) {
                 Item fuelLog = preferredFuelLog();
                 int logsForFuel = Math.max(1, (int) Math.ceil(fuelDeficit / 1.5));
-                ensureItem(fuelLog, counts.getOrDefault(fuelLog, 0) + logsForFuel, depth + 1, visiting);
-            }
-            if (huntNeed > 0) {
-                // 没剑且手头已有现成木料 → 顺手做把木剑;没料不专程砍树(避免无树发呆),空手/现有工具直接猎。
-                if (!hasAnySword() && hasSwordMaterial()) {
-                    ensureItem(Items.WOODEN_SWORD, 1, depth + 1, visiting);
+                int availableLogs = countItems(RecipeRegistry.LOGS);
+                int missingLogs = Math.max(0, logsForFuel - availableLogs);
+                if (missingLogs > 0 && !ensureItem(fuelLog,
+                        counts.getOrDefault(fuelLog, 0) + missingLogs, depth + 1, visiting)) {
+                    return false;
                 }
-                addStep(GoalStep.hunt(huntNeed));
+                // Fuel is a real future consumption. Reserve it across every usable log species so
+                // a later replan neither asks for 32 new oak logs beside a stack of birch nor spends
+                // the same logs again on underground tool handles.
+                consumeItems(RecipeRegistry.LOGS, logsForFuel);
             }
             addStep(GoalStep.cookFood(needCooked)); // 烤成熟肉(背包已有生肉也一并烤)
             return true;
@@ -717,19 +1358,21 @@ public final class GoalPlanner {
         private boolean craftItem(Item item, int missing, RecipeRegistry.Recipe recipe, int depth, Set<String> visiting) {
             int crafts = divideRoundUp(missing, recipe.outputCount());
             int stepsBefore = steps.size(); // S7:本配方失败时回滚已下发的中间步骤
+            Map<Item, Integer> countsBefore = new HashMap<>(counts);
             if (recipe.needsCraftingTable() && item != Items.CRAFTING_TABLE) {
                 if (!ensureItem(Items.CRAFTING_TABLE, 1, depth + 1, visiting)) {
+                    counts.clear();
+                    counts.putAll(countsBefore);
                     rollbackSteps(stepsBefore);
                     return false;
                 }
             }
             for (RecipeRegistry.Ingredient ingredient : recipe.ingredients()) {
                 int need = ingredient.count() * crafts;
-                Item candidate = chooseIngredient(ingredient);
-                // 只补缺口:ensureItem 内部按 desired-available 计算,传 need 即可。
-                // (原写 counts+need = 已有量也再凑一份 → 背包已有材料还重复采/挖,实测有 8 石料做炉仍去挖石。)
-                if (candidate == null || !ensureItem(candidate, need, depth + 1, visiting)) {
+                if (!ensureIngredient(ingredient, need, depth + 1, visiting)) {
                     unresolved.add("missing:" + ingredient.anyOf() + " x" + need + " for " + id(item));
+                    counts.clear();
+                    counts.putAll(countsBefore);
                     rollbackSteps(stepsBefore);
                     return false;
                 }
@@ -748,6 +1391,10 @@ public final class GoalPlanner {
         }
 
         private boolean acquireBaseItem(Item item, int missing, int depth, Set<String> visiting) {
+            if (restrictSurfaceAcquisition && isSurfaceOnlyResource(item)) {
+                unresolved.add("underground_surface_resource_unavailable:" + id(item));
+                return false;
+            }
             if (RecipeRegistry.LOGS.contains(item)) {
                 addStep(GoalStep.gather(item, missing));
                 counts.merge(item, missing, Integer::sum);
@@ -789,25 +1436,38 @@ public final class GoalPlanner {
                 return true;
             }
             if (item == Items.OBSIDIAN) {
-                // 黑曜石:需钻石镐(ToolTier 已映射 DIAMOND,否则破坏无掉落)。15 块远超自然矿脉——
-                // 真实玩家靠"水浇岩浆源现造"。倒推:钻石镐 + 几个空桶(软放水,缺桶时任务直接确定性成型)
-                // + MAKE_OBSIDIAN 步循环造够数。比原"假设世界已有 N 块黑曜石"(mine 步)对任意有岩浆环境
-                // 都鲁棒;无岩浆时 CreateObsidianTask 干净失败(create_obsidian_no_lava)交大脑换策略。
-                if (!ensurePickaxeTier(ToolTier.DIAMOND, depth + 1, visiting)) {
+                // 黑曜石远征顺序是硬契约：先在地表备足食物、廉价掘进镐、封堵块和备用木棍；
+                // 再为桶单独取得 3 铁并物理返回地表找可见水源；最后才进入钻石镐深潜链。
+                // bucket recipe 会消费自己的 3 铁，后续铁镐/备用铁因此会被独立倒推，不能挪用桶铁。
+                ObsidianToolProvision toolProvision = obsidianToolProvision(missing);
+                ObsidianTorchProvision torchProvision =
+                        obsidianTorchProvision(toolProvision);
+                if (!ensureObsidianExpeditionReadiness(
+                        missing, toolProvision, torchProvision, depth + 1, visiting)) {
                     return false;
                 }
-                // 附近有现成黑曜石(自然矿脉/预放)→ 直接挖;扫不到才水浇岩浆现造(凑 15 块的真实手段)。
-                // 二分支兼顾:既不丢"挖现成黑曜石"(achieve_obsidian 等),又补"无现成时现造"的新能力。
-                if (oreNearby.test(java.util.Set.of(Blocks.OBSIDIAN))) {
-                    addStep(GoalStep.mine(Blocks.OBSIDIAN, missing));
-                } else {
-                    // 备空桶(3 铁/个),保守封顶 4 个免把铁需求顶到天(15 桶=45 铁);软放水不强求,缺桶不阻断。
-                    int buckets = Math.min(missing, 4);
-                    if (!ensureItem(Items.BUCKET, buckets, depth + 1, visiting)) {
-                        unresolved.add("obsidian_buckets_best_effort:" + buckets);
+                if (counts.getOrDefault(Items.WATER_BUCKET, 0) <= 0) {
+                    if (counts.getOrDefault(Items.BUCKET, 0) <= 0
+                            && !ensureItem(Items.BUCKET, 1, depth + 1, visiting)) {
+                        return false;
                     }
-                    addStep(GoalStep.makeObsidian(missing));
+                    addStep(GoalStep.acquireWater());
+                    plannedY = waterReturnY;
+                    initialOrePerceptionValid = false;
+                    consumeItem(Items.BUCKET, 1);
+                    counts.merge(Items.WATER_BUCKET, 1, Integer::sum);
                 }
+                // Provision the ore-acquisition tool first. A raw-remaining=2 diamond/netherite
+                // pick is a valid tier but cannot mine the three diamonds needed for its own
+                // replacement. The immutable provision computed before readiness binds both this
+                // dependency and the exact stick reserve to the same resource calculation.
+                if (!ensureObsidianAcquisitionTool(toolProvision, depth + 1, visiting)
+                        || !ensureObsidianTargetToolDurability(
+                        toolProvision, depth + 1, visiting)) {
+                    return false;
+                }
+                steps.add(GoalStep.obsidianPreflight(missing));
+                addStep(GoalStep.makeObsidian(missing));
                 counts.merge(Items.OBSIDIAN, missing, Integer::sum);
                 return true;
             }
@@ -815,7 +1475,11 @@ public final class GoalPlanner {
             // ensureMineOre 内部会先 ensurePickaxeTier 自动补齐镐链(如钻石需铁镐 → 先倒推铁镐)。
             Block oreOf = oreBlockFor(item);
             if (oreOf != null) {
-                return ensureMineOre(Set.of(oreOf), missing, depth + 1, visiting);
+                // ensureItem 已把 desiredCount 换算成 missing；ensureMineOre 内部还会再减一次
+                // 当前掉落物库存，因此这里必须传“当前 + 缺口”的总目标。传 missing 会在 64
+                // 钻石完成首批 8 后得到 count=8/owned=8，错误规划成空步骤并结束为 PARTIAL。
+                int desiredTotal = counts.getOrDefault(item, 0) + missing;
+                return ensureMineOre(Set.of(oreOf), desiredTotal, depth + 1, visiting);
             }
             SmeltRecipe smelt = smeltRecipeFor(item);
             if (smelt != null) {
@@ -857,6 +1521,317 @@ public final class GoalPlanner {
             return false;
         }
 
+        private boolean isSurfaceOnlyResource(Item item) {
+            return RecipeRegistry.LOGS.contains(item)
+                    || RAW_MEAT_ITEMS.contains(item)
+                    || item == Items.WHEAT_SEEDS
+                    || item == Items.SWEET_BERRIES
+                    || item == Items.MELON_SLICE
+                    || item == Items.SUGAR_CANE
+                    || item == Items.MILK_BUCKET
+                    || cropSpecForProduce(item) != null;
+        }
+
+        private boolean ensureObsidianExpeditionReadiness(int targetCount,
+                                                          ObsidianToolProvision toolProvision,
+                                                          ObsidianTorchProvision torchProvision,
+                                                          int depth,
+                                                          Set<String> visiting) {
+            int unresolvedBefore = unresolved.size();
+            if (!ensureMiningFoodReserveTo(OBSIDIAN_EXPEDITION_FOOD,
+                    depth + 1, visiting, true)
+                    || unresolved.size() > unresolvedBefore) {
+                return false;
+            }
+            // Keep the tool-upgrade boundary explicit: four stone picks are cheap tunnel tools;
+            // diamond/iron durability remains reserved for target blocks and later replacement.
+            int stoneLikeTarget = MiningServiceTask.ServicePolicy
+                    .bootstrapStoneLikeTarget(targetCount)
+                    + MiningBudget.OBSIDIAN_BOOTSTRAP_CHANNEL_RETRY_STONE_LIKE;
+            int serviceStickTarget = MiningServiceTask.ServicePolicy
+                    .bootstrapStickTarget(targetCount)
+                    + MiningBudget.OBSIDIAN_BOOTSTRAP_CHANNEL_RETRY_STICKS;
+            boolean needsStoneSword = counts.getOrDefault(Items.STONE_SWORD, 0) <= 0;
+            int postReadinessStickTarget = serviceStickTarget
+                    + toolProvision.postReadinessSticks()
+                    + torchProvision.recipeSticks();
+            if (!ensureItem(Items.CRAFTING_TABLE, 1, depth + 1, visiting)
+                    || !ensureItem(Items.STONE_PICKAXE, OBSIDIAN_EXPEDITION_STONE_PICKS,
+                    depth + 1, visiting)
+                    // The weapon is a safety prerequisite for the long stone reserve shaft, not a
+                    // reward after it. Craft its independent +2 stone/+1 stick margin first, then
+                    // replenish the untouched service ledgers below.
+                    || (needsStoneSword && !ensureItem(Items.STONE_SWORD, 1,
+                    depth + 1, visiting))
+                    || !ensureItem(Items.COBBLESTONE,
+                    stoneLikeTarget,
+                    depth + 1, visiting)
+                    // Readiness runs before the acquisition + target-pick chain. Keep its exact
+                    // handle/torch cost separate from all preflight + 8/16/24 repair windows.
+                    || !ensureItem(Items.STICK,
+                    postReadinessStickTarget,
+                    depth + 1, visiting)
+                    // Torch recipes consume their coal before the bucket/tool/spare-iron smelts.
+                    // Provision both ledgers together so an underground replan cannot arrive at
+                    // the first furnace with every carried fuel item already converted to light.
+                    || !ensureItem(Items.COAL, torchProvision.recipeSticks()
+                            + torchProvision.futureSmeltFuelItems(),
+                    depth + 1, visiting)
+                    || !ensureItem(Items.TORCH, torchProvision.targetCount(),
+                    depth + 1, visiting)) {
+                return false;
+            }
+            return unresolved.size() == unresolvedBefore;
+        }
+
+        /**
+         * Computes one immutable post-readiness tool contract. Existing iron durability is spent
+         * first because the mining-channel selector chooses the lowest sufficient tier. Target-tier
+         * durability may safely acquire replacement diamonds only when doing so still leaves the
+         * final obsidian break budget intact; otherwise a renewable iron pick is provisioned.
+         */
+        private ObsidianToolProvision obsidianToolProvision(int targetCount) {
+            int targetUsable = plannedObsidianToolUsableDurability();
+            int missingTargetDurability = Math.max(0, targetCount - targetUsable);
+            int freshDiamondDurability = freshUsableDurability(Items.DIAMOND_PICKAXE);
+            int replacementPicks = missingTargetDurability == 0 ? 0
+                    : divideRoundUpSafe(missingTargetDurability, freshDiamondDurability);
+            int replacementDiamonds = saturatedMultiply(replacementPicks, 3);
+            int diamondsToMine = Math.max(0,
+                    replacementDiamonds - counts.getOrDefault(Items.DIAMOND, 0));
+
+            int ironUsable = plannedToolUsableDurability(Items.IRON_PICKAXE);
+            int targetToolSpend = Math.max(0, diamondsToMine - ironUsable);
+            boolean acquisitionCapacitySufficient = saturatedAdd(ironUsable, targetUsable)
+                    >= diamondsToMine;
+            long finalTargetUsableWithoutIron = (long) targetUsable
+                    - Math.min(targetUsable, targetToolSpend)
+                    + (long) replacementPicks * freshDiamondDurability;
+            boolean acquisitionIronRequired = diamondsToMine > 0
+                    && (!acquisitionCapacitySufficient
+                    || finalTargetUsableWithoutIron < targetCount);
+            int missingIronUsable = acquisitionIronRequired
+                    ? Math.max(0, diamondsToMine - ironUsable) : 0;
+            int freshIronDurability = freshUsableDurability(Items.IRON_PICKAXE);
+            int acquisitionIronPicks = missingIronUsable == 0 ? 0
+                    : divideRoundUpSafe(missingIronUsable, freshIronDurability);
+
+            int required = saturatedMultiply(replacementPicks, 2);
+            required = saturatedAdd(required, saturatedMultiply(acquisitionIronPicks, 2));
+            return new ObsidianToolProvision(
+                    counts.getOrDefault(Items.DIAMOND_PICKAXE, 0),
+                    counts.getOrDefault(Items.IRON_PICKAXE, 0),
+                    replacementPicks, acquisitionIronPicks,
+                    diamondsToMine, required);
+        }
+
+        /**
+         * Forecasts every dependency descent before the first obsidian pool. Runtime planning later
+         * debits the same per-descent budget from symbolic torch inventory; the additional eight are
+         * therefore still present when branch search starts.
+         */
+        private ObsidianTorchProvision obsidianTorchProvision(
+                ObsidianToolProvision toolProvision) {
+            int simulatedY = plannedY;
+            boolean perceptionValid = initialOrePerceptionValid;
+            int expectedUse = 0;
+            int futureSmeltFuelItems = 0;
+            int ironIngots = counts.getOrDefault(Items.IRON_INGOT, 0);
+            int rawIron = counts.getOrDefault(Items.RAW_IRON, 0);
+
+            boolean needsWater = counts.getOrDefault(Items.WATER_BUCKET, 0) <= 0;
+            if (needsWater && counts.getOrDefault(Items.BUCKET, 0) <= 0) {
+                if (ironIngots < 3) {
+                    futureSmeltFuelItems++;
+                }
+                IronMaterialForecast bucketIron = consumeForecastIron(
+                        ironIngots, rawIron, 3, simulatedY, perceptionValid);
+                ironIngots = bucketIron.ironIngots();
+                rawIron = bucketIron.rawIron();
+                simulatedY = bucketIron.plannedY();
+                perceptionValid = bucketIron.perceptionValid();
+                expectedUse = saturatedAdd(expectedUse, bucketIron.torches());
+            }
+            if (needsWater) {
+                simulatedY = waterReturnY;
+                perceptionValid = false;
+            }
+
+            int acquisitionIron = saturatedMultiply(
+                    toolProvision.acquisitionIronPickaxes(), 3);
+            if (acquisitionIron > 0) {
+                if (ironIngots < acquisitionIron) {
+                    futureSmeltFuelItems++;
+                }
+                IronMaterialForecast toolIron = consumeForecastIron(
+                        ironIngots, rawIron, acquisitionIron,
+                        simulatedY, perceptionValid);
+                simulatedY = toolIron.plannedY();
+                perceptionValid = toolIron.perceptionValid();
+                expectedUse = saturatedAdd(expectedUse, toolIron.torches());
+            }
+
+            if (toolProvision.diamondsToMine() > 0) {
+                DescentForecast diamondDescent = forecastOreDescent(
+                        simulatedY, perceptionValid,
+                        OreScan.expandOreFamilies(Set.of(Blocks.DIAMOND_ORE)),
+                        toolProvision.diamondsToMine(), true);
+                // A small deep-diamond dependency reserves three spare iron ingots before its
+                // descent. Forecast that nested acquisition in the same order as ensureMineOre:
+                // it may add an iron descent and always opens one physical smelt when ingots are
+                // missing, even if carried raw iron already covers the ore requirement.
+                if (diamondDescent.descends()
+                        && toolProvision.diamondsToMine()
+                        < MiningBudget.EXPEDITION_THRESHOLD) {
+                    int spareMissing = Math.max(0, SPARE_IRON_INGOTS - ironIngots);
+                    if (spareMissing > 0) {
+                        futureSmeltFuelItems++;
+                        int rawUsed = Math.min(rawIron, spareMissing);
+                        rawIron -= rawUsed;
+                        int spareToMine = spareMissing - rawUsed;
+                        if (spareToMine > 0) {
+                            DescentForecast spareIron = forecastOreDescent(
+                                    simulatedY, perceptionValid,
+                                    OreScan.expandOreFamilies(Set.of(Blocks.IRON_ORE)),
+                                    spareToMine, false);
+                            simulatedY = spareIron.plannedY();
+                            perceptionValid = spareIron.perceptionValid();
+                            expectedUse = saturatedAdd(expectedUse, spareIron.torches());
+                        }
+                        diamondDescent = forecastOreDescent(
+                                simulatedY, perceptionValid,
+                                OreScan.expandOreFamilies(Set.of(Blocks.DIAMOND_ORE)),
+                                toolProvision.diamondsToMine(), true);
+                    }
+                }
+                expectedUse = saturatedAdd(expectedUse, diamondDescent.torches());
+            }
+
+            int target = saturatedAdd(expectedUse, TORCH_TARGET);
+            int missing = Math.max(0,
+                    target - counts.getOrDefault(Items.TORCH, 0));
+            int recipeSticks = divideRoundUpSafe(missing, 4);
+            return new ObsidianTorchProvision(
+                    target, recipeSticks, futureSmeltFuelItems);
+        }
+
+        private IronMaterialForecast consumeForecastIron(int ironIngots,
+                                                         int rawIron,
+                                                         int required,
+                                                         int fromY,
+                                                         boolean perceptionValid) {
+            int remaining = Math.max(0, required);
+            int usedIngots = Math.min(Math.max(0, ironIngots), remaining);
+            ironIngots -= usedIngots;
+            remaining -= usedIngots;
+            int usedRaw = Math.min(Math.max(0, rawIron), remaining);
+            rawIron -= usedRaw;
+            remaining -= usedRaw;
+            if (remaining == 0) {
+                return new IronMaterialForecast(
+                        ironIngots, rawIron, fromY, perceptionValid, 0);
+            }
+            DescentForecast descent = forecastOreDescent(
+                    fromY, perceptionValid,
+                    OreScan.expandOreFamilies(Set.of(Blocks.IRON_ORE)),
+                    remaining, false);
+            return new IronMaterialForecast(
+                    ironIngots, rawIron,
+                    descent.plannedY(), descent.perceptionValid(), descent.torches());
+        }
+
+        private DescentForecast forecastOreDescent(int fromY,
+                                                   boolean perceptionValid,
+                                                   Set<Block> ores,
+                                                   int targetCount,
+                                                   boolean rareOre) {
+            int mineY = bestMiningY(ores);
+            boolean longRareExpedition = rareOre
+                    && targetCount >= MiningBudget.EXPEDITION_THRESHOLD;
+            boolean knownOreNearby = perceptionValid && oreNearby.test(ores);
+            boolean descends = fromY - mineY > DESCEND_THRESHOLD
+                    && (longRareExpedition || !knownOreNearby);
+            if (!descends) {
+                return new DescentForecast(fromY, perceptionValid, 0, false);
+            }
+            return new DescentForecast(
+                    mineY, false, descendTorchBudget(fromY, mineY), true);
+        }
+
+        private static int descendTorchBudget(int fromY, int targetY) {
+            int depth = Math.max(0, fromY - targetY);
+            return depth == 0 ? 0 : divideRoundUpSafe(depth, DESCEND_TORCH_EVERY);
+        }
+
+        private static int roundUpToTorchRecipe(int target) {
+            int batches = divideRoundUpSafe(Math.max(0, target), 4);
+            return saturatedMultiply(batches, 4);
+        }
+
+        private boolean ensureObsidianAcquisitionTool(ObsidianToolProvision provision,
+                                                      int depth,
+                                                      Set<String> visiting) {
+            if (provision.acquisitionIronPickaxes() == 0) {
+                return true;
+            }
+            int desiredIronPicks = saturatedAdd(provision.baselineIronPickaxes(),
+                    provision.acquisitionIronPickaxes());
+            return ensureItem(Items.IRON_PICKAXE, desiredIronPicks,
+                    depth + 1, visiting);
+        }
+
+        private boolean ensureObsidianTargetToolDurability(ObsidianToolProvision provision,
+                                                           int depth,
+                                                           Set<String> visiting) {
+            if (provision.replacementDiamondPickaxes() == 0) {
+                return true;
+            }
+            int desiredDiamondPicks = saturatedAdd(provision.baselineDiamondPickaxes(),
+                    provision.replacementDiamondPickaxes());
+            return ensureItem(Items.DIAMOND_PICKAXE, desiredDiamondPicks,
+                    depth + 1, visiting);
+        }
+
+        private record ObsidianToolProvision(int baselineDiamondPickaxes,
+                                             int baselineIronPickaxes,
+                                             int replacementDiamondPickaxes,
+                                             int acquisitionIronPickaxes,
+                                             int diamondsToMine,
+                                             int postReadinessSticks) {
+        }
+
+        private record ObsidianTorchProvision(int targetCount,
+                                              int recipeSticks,
+                                              int futureSmeltFuelItems) {
+        }
+
+        private record DescentForecast(int plannedY,
+                                       boolean perceptionValid,
+                                       int torches,
+                                       boolean descends) {
+        }
+
+        private record IronMaterialForecast(int ironIngots,
+                                            int rawIron,
+                                            int plannedY,
+                                            boolean perceptionValid,
+                                            int torches) {
+        }
+
+        private int plannedObsidianToolUsableDurability() {
+            return saturatedAdd(plannedToolUsableDurability(Items.DIAMOND_PICKAXE),
+                    plannedToolUsableDurability(Items.NETHERITE_PICKAXE));
+        }
+
+        private int plannedToolUsableDurability(Item item) {
+            int initialCount = initialCounts.getOrDefault(item, 0);
+            int plannedCount = counts.getOrDefault(item, 0);
+            int newTools = Math.max(0, plannedCount - initialCount);
+            int plannedFresh = saturatedMultiply(freshUsableDurability(item), newTools);
+            return saturatedAdd(
+                    initialToolUsableDurability.getOrDefault(item, 0), plannedFresh);
+        }
+
         private boolean smeltItem(SmeltRecipe recipe, int missing, int depth, Set<String> visiting) {
             if (!ensureItem(Items.FURNACE, 1, depth + 1, visiting)) {
                 return false;
@@ -870,31 +1845,120 @@ public final class GoalPlanner {
             // (原来无脑砍原木、背包有煤也不用 → 给了煤仍去砍树、无树则 no_resource;实测铁/金锭挂在此。)
             int coalLike = counts.getOrDefault(Items.COAL, 0) + counts.getOrDefault(Items.CHARCOAL, 0);
             int fuelDeficit = missing - coalLike * 8;
-            Item fuel = preferredFuelLog();
             int fuelLogs = 0;
             if (fuelDeficit > 0) {
                 // +1 冗余:执行层与账本天然漂移——craft 换板按整原木消耗、smelt chooseFuel 全额
                 // 单品种装填,两头贪心合计常差 1-2 板,链尾'合成木棍'就 need planks 重采;此时场景
                 // 树若已砍光直接 no_resource(iron_pickaxe 套跑实测)。多砍一根木头吸收漂移。
-                fuelLogs = Math.max(1, (int) Math.ceil(fuelDeficit / 1.5)) + 1;
-                if (!ensureItem(fuel, fuelLogs, depth + 1, visiting)) {
-                    return false;
+                // The extra surface log absorbs recipe/accounting drift during initial bootstrap.
+                // Underground replans must consume the already-carried reserve exactly: adding one
+                // per separated smelt stage made a viable eight-log kit request trees at Y=16.
+                fuelLogs = Math.max(1, (int) Math.ceil(fuelDeficit / 1.5))
+                        + (surfaceAcquisitionAllowed ? 1 : 0);
+                int availableLogs = countItems(RecipeRegistry.LOGS);
+                int missingLogs = Math.max(0, fuelLogs - availableLogs);
+                if (missingLogs > 0) {
+                    if (restrictSurfaceAcquisition) {
+                        unresolved.add("underground_fuel_reserve_depleted:have="
+                                + availableLogs + ":required=" + fuelLogs);
+                        return false;
+                    }
+                    Item fuel = preferredFuelLog();
+                    int desiredFuel = counts.getOrDefault(fuel, 0) + missingLogs;
+                    if (!ensureItem(fuel, desiredFuel, depth + 1, visiting)) {
+                        return false;
+                    }
                 }
             }
             consumeItem(recipe.input(), missing);
             if (fuelLogs > 0) {
-                consumeItem(fuel, fuelLogs);
+                // SmeltTask can reload different vanilla log fuels. Reserve the same family here
+                // instead of binding three separated underground smelts to whichever tree species
+                // happened to appear first in RecipeRegistry.LOGS.
+                consumeItems(RecipeRegistry.LOGS, fuelLogs);
             }
             counts.merge(recipe.output(), missing, Integer::sum);
             addStep(GoalStep.smelt(recipe.input(), recipe.output(), missing));
             return true;
         }
 
-        private Item chooseIngredient(RecipeRegistry.Ingredient ingredient) {
-            for (Item item : ingredient.anyOf()) {
-                if (counts.getOrDefault(item, 0) >= ingredient.count()) {
-                    return item;
+        /**
+         * Treats an any-of ingredient as one inventory family. Each candidate first contributes
+         * only what its currently carried, recipe-compatible inputs can produce (oak logs to oak
+         * planks, birch logs to birch planks, and so on). If the aggregate is still short, exactly
+         * one candidate plans the remaining family deficit instead of independently requesting the
+         * full requirement again.
+         */
+        private boolean ensureIngredient(RecipeRegistry.Ingredient ingredient,
+                                         int need,
+                                         int depth,
+                                         Set<String> visiting) {
+            if (countItems(ingredient.anyOf()) >= need) {
+                return true;
+            }
+            for (Item candidate : ingredient.anyOf()) {
+                int remaining = need - countItems(ingredient.anyOf());
+                if (remaining <= 0) {
+                    return true;
                 }
+                int existing = Math.max(0, counts.getOrDefault(candidate, 0));
+                int carriedCapacity = directCraftCapacity(candidate);
+                int producible = Math.max(0, carriedCapacity - existing);
+                if (producible <= 0) {
+                    continue;
+                }
+                int contribution = Math.min(remaining, producible);
+                if (!ensureItem(candidate, saturatedAdd(existing, contribution), depth,
+                        visiting)) {
+                    return false;
+                }
+            }
+            int remaining = need - countItems(ingredient.anyOf());
+            if (remaining <= 0) {
+                return true;
+            }
+            Item candidate = chooseIngredient(ingredient, remaining);
+            return candidate != null
+                    && ensureItem(candidate, saturatedAdd(
+                    counts.getOrDefault(candidate, 0), remaining), depth, visiting)
+                    && countItems(ingredient.anyOf()) >= need;
+        }
+
+        private Item chooseIngredient(RecipeRegistry.Ingredient ingredient, int need) {
+            Item bestFinished = null;
+            int bestFinishedCount = -1;
+            Item bestSufficient = null;
+            int bestSufficientCapacity = -1;
+            Item bestAvailable = null;
+            int bestAvailableCapacity = -1;
+            for (Item item : ingredient.anyOf()) {
+                int finished = counts.getOrDefault(item, 0);
+                int capacity = directCraftCapacity(item);
+                if (finished >= need && finished > bestFinishedCount) {
+                    bestFinished = item;
+                    bestFinishedCount = finished;
+                }
+                if (capacity >= need && capacity > bestSufficientCapacity) {
+                    bestSufficient = item;
+                    bestSufficientCapacity = capacity;
+                }
+                if (capacity > bestAvailableCapacity) {
+                    bestAvailable = item;
+                    bestAvailableCapacity = capacity;
+                }
+            }
+            // Spend a fully-carried alternative first. Otherwise choose the family whose matching
+            // direct ingredients can actually satisfy the whole multi-craft requirement. This keeps
+            // one stray oak plank from binding an underground stick reserve to an unavailable oak
+            // log when the carried birch logs can make all required birch planks.
+            if (bestFinished != null) {
+                return bestFinished;
+            }
+            if (bestSufficient != null) {
+                return bestSufficient;
+            }
+            if (bestAvailable != null && bestAvailableCapacity > 0) {
+                return bestAvailable;
             }
             for (Item item : ingredient.anyOf()) {
                 if (RecipeRegistry.find(item).isPresent()) {
@@ -902,6 +1966,25 @@ public final class GoalPlanner {
                 }
             }
             return ingredient.anyOf().isEmpty() ? null : ingredient.anyOf().get(0);
+        }
+
+        /** Existing output plus the amount craftable from the recipe's currently carried inputs. */
+        private int directCraftCapacity(Item item) {
+            int existing = Math.max(0, counts.getOrDefault(item, 0));
+            Optional<RecipeRegistry.Recipe> candidateRecipe = RecipeRegistry.find(item);
+            if (candidateRecipe.isEmpty() || candidateRecipe.get().ingredients().isEmpty()) {
+                return existing;
+            }
+            int crafts = Integer.MAX_VALUE;
+            for (RecipeRegistry.Ingredient input : candidateRecipe.get().ingredients()) {
+                int perCraft = Math.max(1, input.count());
+                crafts = Math.min(crafts, countItems(input.anyOf()) / perCraft);
+            }
+            if (crafts <= 0 || crafts == Integer.MAX_VALUE) {
+                return existing;
+            }
+            long capacity = (long) existing + (long) crafts * candidateRecipe.get().outputCount();
+            return capacity >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) capacity;
         }
 
         private void consume(RecipeRegistry.Ingredient ingredient, int count) {
@@ -921,6 +2004,29 @@ public final class GoalPlanner {
 
         private void consumeItem(Item item, int count) {
             counts.put(item, Math.max(0, counts.getOrDefault(item, 0) - count));
+        }
+
+        private int countItems(Iterable<Item> items) {
+            int total = 0;
+            for (Item item : items) {
+                total += counts.getOrDefault(item, 0);
+            }
+            return total;
+        }
+
+        private void consumeItems(Iterable<Item> items, int count) {
+            int remaining = Math.max(0, count);
+            for (Item item : items) {
+                if (remaining <= 0) {
+                    return;
+                }
+                int available = counts.getOrDefault(item, 0);
+                int take = Math.min(available, remaining);
+                if (take > 0) {
+                    counts.put(item, available - take);
+                    remaining -= take;
+                }
+            }
         }
 
         // GOALFIX-GF3:选熔炼燃料——优先背包已有的任意原木种类(spruce/birch…),都没有则默认橡木。
@@ -957,6 +2063,9 @@ public final class GoalPlanner {
         }
 
         private void addStep(GoalStep step) {
+            if (bestEffortDepth > 0) {
+                step = step.asBestEffort();
+            }
             if (!steps.isEmpty()) {
                 GoalStep previous = steps.get(steps.size() - 1);
                 if (previous.sameTarget(step)) {
@@ -968,6 +2077,12 @@ public final class GoalPlanner {
         }
 
         private static Item pickaxeForTier(int tier) {
+            if (tier >= ToolTier.NETHERITE) {
+                return Items.NETHERITE_PICKAXE;
+            }
+            if (tier >= ToolTier.DIAMOND) {
+                return Items.DIAMOND_PICKAXE;
+            }
             if (tier >= ToolTier.IRON) {
                 return Items.IRON_PICKAXE;
             }
@@ -1031,6 +2146,17 @@ public final class GoalPlanner {
 
         private static int divideRoundUp(int value, int divisor) {
             return (value + divisor - 1) / divisor;
+        }
+
+        private static int divideRoundUpSafe(int value, int divisor) {
+            if (value <= 0) {
+                return 0;
+            }
+            if (divisor <= 0) {
+                throw new IllegalArgumentException("invalid_divisor:" + divisor);
+            }
+            return (int) Math.min(Integer.MAX_VALUE,
+                    ((long) value + divisor - 1L) / divisor);
         }
 
         private static String id(Item item) {

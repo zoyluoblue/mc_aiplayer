@@ -14,13 +14,25 @@ import io.github.zoyluo.aibot.brain.ToolRegistry;
 import io.github.zoyluo.aibot.coordination.TaskBoard;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.goal.Goal;
+import io.github.zoyluo.aibot.goal.GoalEvaluation;
 import io.github.zoyluo.aibot.goal.GoalExecutor;
+import io.github.zoyluo.aibot.goal.GoalPlanner;
+import io.github.zoyluo.aibot.goal.GoalPredicate;
+import io.github.zoyluo.aibot.goal.GoalPredicates;
+import io.github.zoyluo.aibot.goal.GoalSnapshot;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
 import io.github.zoyluo.aibot.memory.BotMemoryStore;
+import io.github.zoyluo.aibot.mining.MiningBudget;
+import io.github.zoyluo.aibot.mining.MiningFoodReserve;
+import io.github.zoyluo.aibot.mining.MiningMissionBudget;
+import io.github.zoyluo.aibot.mining.MiningEvidenceAudit;
+import io.github.zoyluo.aibot.mining.ToolTier;
 import io.github.zoyluo.aibot.mode.CapabilityPolicy;
 import io.github.zoyluo.aibot.mode.CapabilityRuntime;
+import io.github.zoyluo.aibot.mode.OperatingProfile;
 import io.github.zoyluo.aibot.mode.PrivilegedCapability;
 import io.github.zoyluo.aibot.persist.BotPersistence;
+import io.github.zoyluo.aibot.persist.MissionSpec;
 import io.github.zoyluo.aibot.runtime.IntentController;
 import io.github.zoyluo.aibot.task.BlueprintLoader;
 import io.github.zoyluo.aibot.task.AbstractTask;
@@ -71,14 +83,21 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Predicate;
 
 import static net.minecraft.server.command.CommandManager.argument;
 import static net.minecraft.server.command.CommandManager.literal;
 
 public final class AIBotVerifySubcommand {
+    private static final int DIAMOND_STACK_TARGET = 64;
+    private static final int OBSIDIAN_HALF_STACK_TARGET = 32;
+    static final String STRICT_STRIP_MINE_REJECTION_FEATURE = "strip_mine_strict_rejection";
+
     private static final List<String> ALL_FEATURES = List.of(
             "capability_profile",
+            "diamond_stack_64_controlled",
+            "obsidian_half_stack_32_controlled",
             "persist",
             "container",
             "combat",
@@ -162,8 +181,30 @@ public final class AIBotVerifySubcommand {
             "geo_rich", "geo_water", "geo_recover", "geo_bonus", "geo_stockpile", "geo_resume", "geo_shaft", "geo_cave", "geo_diamond_lava", "geo_obsidian_make", "geo_cliff_tree", "geo_night_swarm", "geo_replay_ore",
             "geo_flow", "geo_lake", "geo_guard", "explore_wood");
 
+    // Mining First 的快速能力契约：只验证 63/64、31/32 后置条件边界和 MissionSpec 往返，
+    // 不预置矿石、不执行长跑，也绝不把 PASS 表述成真实采矿能力。PR CI 可稳定在秒级完成。
+    private static final List<String> MINING_CONTRACT_SUITE = List.of(
+            "diamond_stack_64_controlled",
+            "obsidian_half_stack_32_controlled");
+
+    // 以下两层均为显式 opt-in，不进入 verify all / mining / PR CI。prepared 隔离工具链和自然资源方差，
+    // from_zero 才是 capability manifest 绑定的最终用户承诺口径。两层都可能在能力未完成时诚实 FAIL。
+    private static final List<String> MINING_ACCEPTANCE_PREPARED_SUITE = List.of(
+            "diamond_stack_64_prepared",
+            "obsidian_half_stack_32_prepared");
+    private static final List<String> MINING_ACCEPTANCE_FROM_ZERO_SUITE = List.of(
+            "diamond_stack_64_from_zero",
+            "obsidian_half_stack_32_from_zero");
+    private static final List<String> OPT_IN_LONG_MINING_FEATURES = List.of(
+            "diamond_stack_64_prepared",
+            "obsidian_half_stack_32_prepared",
+            "diamond_stack_64_from_zero",
+            "obsidian_half_stack_32_from_zero");
+
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
+            "diamond_stack_64_controlled",
+            "obsidian_half_stack_32_controlled",
             "dig_down",
             "mine_exposed",
             "ore_dig_buried",
@@ -279,7 +320,7 @@ public final class AIBotVerifySubcommand {
         return literal("verify")
                 .executes(context -> start(context.getSource(), List.of("all")))
                 .then(literal("all")
-                        .executes(context -> start(context.getSource(), ALL_FEATURES)))
+                        .executes(context -> start(context.getSource(), List.of("all"))))
                 .then(argument("feature", StringArgumentType.word())
                         .suggests((context, builder) -> {
                             ALL_FEATURES.forEach(builder::suggest);
@@ -291,6 +332,11 @@ public final class AIBotVerifySubcommand {
                             builder.suggest("llm_suite");
                             builder.suggest("assistant_suite");
                             builder.suggest("runtime_control_suite");
+                            builder.suggest("mining_contract_suite");
+                            builder.suggest("mining_acceptance_prepared_suite");
+                            builder.suggest("mining_acceptance_from_zero_suite");
+                            builder.suggest("mining_acceptance_suite");
+                            OPT_IN_LONG_MINING_FEATURES.forEach(builder::suggest);
                             return builder.buildFuture();
                         })
                         .executes(context -> {
@@ -336,6 +382,39 @@ public final class AIBotVerifySubcommand {
         return 1;
     }
 
+    // Package-private deterministic hooks for the verifier's own GameTest. This command lives only
+    // in the isolated gametest source set, so exercising the real VerifyRun state machine is both
+    // cheaper and stronger than duplicating its polling semantics in a unit-test facade.
+    static boolean startForGameTest(ServerCommandSource source, AIPlayerEntity bot, String feature) {
+        boolean supportedFeature = MINING_ACCEPTANCE_FROM_ZERO_SUITE.contains(feature)
+                || STRICT_STRIP_MINE_REJECTION_FEATURE.equals(feature);
+        if (!supportedFeature || RUNS.containsKey(bot.getUuid())) {
+            return false;
+        }
+        RUNS.put(bot.getUuid(), new VerifyRun(source, bot.getUuid(), List.of(feature)));
+        return true;
+    }
+
+    static Optional<String> resultDetailForGameTest(UUID botId, String feature) {
+        VerifyRun run = RUNS.get(botId);
+        if (run == null) {
+            return Optional.empty();
+        }
+        return run.results.stream()
+                .filter(result -> result.feature().equals(feature))
+                .map(Result::detail)
+                .findFirst();
+    }
+
+    static boolean hasRunForGameTest(UUID botId) {
+        return RUNS.containsKey(botId);
+    }
+
+    static void discardRunForGameTest(UUID botId) {
+        RUNS.remove(botId);
+        MiningEvidenceAudit.clear(botId);
+    }
+
     private static Optional<AIPlayerEntity> selectBot(ServerCommandSource source) {
         return Optional.ofNullable(source.getPlayer())
                 .flatMap(player -> AIPlayerManager.INSTANCE.botOf(player.getUuid()))
@@ -343,15 +422,27 @@ public final class AIBotVerifySubcommand {
     }
 
     private static List<String> expandFeatures(List<String> requested) {
+        return expandFeatures(requested, AIBotConfig.get().profile());
+    }
+
+    static List<String> expandFeaturesForGameTest(List<String> requested, OperatingProfile profile) {
+        return expandFeatures(requested, profile);
+    }
+
+    private static List<String> expandFeatures(List<String> requested, OperatingProfile profile) {
+        OperatingProfile effectiveProfile = profile == OperatingProfile.OPERATOR
+                ? OperatingProfile.OPERATOR
+                : OperatingProfile.STRICT_SURVIVAL;
         List<String> features = new ArrayList<>();
         for (String raw : requested) {
             String feature = raw.toLowerCase(java.util.Locale.ROOT);
             if (feature.contains("+")) {
                 // 加号组合:任意场景/套件串成一跑(诊断'单跑 PASS 套跑 FAIL'的顺序污染对最常用;
                 // Brigadier word() 字符集不含逗号,故用 +)。
-                features.addAll(expandFeatures(java.util.Arrays.asList(feature.split("\\+"))));
+                features.addAll(expandFeatures(
+                        java.util.Arrays.asList(feature.split("\\+")), effectiveProfile));
             } else if ("all".equals(feature)) {
-                features.addAll(ALL_FEATURES);
+                addFeaturesForProfile(features, ALL_FEATURES, effectiveProfile);
             } else if ("mining".equals(feature)) {
                 features.addAll(MINING_SUITE); // 挖矿回归套件别名
             } else if ("food_suite".equals(feature)) {
@@ -372,13 +463,40 @@ public final class AIBotVerifySubcommand {
                 features.addAll(ASSISTANT_SUITE); // 对话式助手层套件别名(P0 队列/P1 自动备料/P3 参数化/P2 打断保留)
             } else if ("runtime_control_suite".equals(feature)) {
                 features.addAll(RUNTIME_CONTROL_SUITE); // P0 原子取消/替换；确定性且不调用 LLM
+            } else if ("mining_contract_suite".equals(feature)) {
+                features.addAll(MINING_CONTRACT_SUITE); // 秒级数量/持久化/后置条件契约，不代表真实采矿
+            } else if ("mining_acceptance_prepared_suite".equals(feature)) {
+                features.addAll(MINING_ACCEPTANCE_PREPARED_SUITE); // 显式 opt-in 长跑：预置非目标装备
+            } else if ("mining_acceptance_from_zero_suite".equals(feature)) {
+                features.addAll(MINING_ACCEPTANCE_FROM_ZERO_SUITE); // 显式 opt-in 最终能力口径
+            } else if ("mining_acceptance_suite".equals(feature)) {
+                features.addAll(MINING_CONTRACT_SUITE);
+                features.addAll(MINING_ACCEPTANCE_PREPARED_SUITE);
+                features.addAll(MINING_ACCEPTANCE_FROM_ZERO_SUITE);
             } else if (ALL_FEATURES.contains(feature) || LLM_SUITE.contains(feature)
+                       || OPT_IN_LONG_MINING_FEATURES.contains(feature)
                        || "real_diamond3".equals(feature)) {
-                // llm_* 故意不进 ALL_FEATURES(verify all 不烧 API 钱),但允许单点名跑(单跑最省钱)。
-                features.add(feature);
+                // llm_* 与长跑挖矿故意不进 ALL_FEATURES，必须显式点名，避免普通 verify all 偷偷计费或跑数小时。
+                addFeatureForProfile(features, feature, effectiveProfile);
             }
         }
         return List.copyOf(new java.util.LinkedHashSet<>(features));
+    }
+
+    private static void addFeaturesForProfile(List<String> destination,
+                                              List<String> candidates,
+                                              OperatingProfile profile) {
+        candidates.forEach(feature -> addFeatureForProfile(destination, feature, profile));
+    }
+
+    private static void addFeatureForProfile(List<String> destination,
+                                             String feature,
+                                             OperatingProfile profile) {
+        if ("strip_mine".equals(feature) && profile == OperatingProfile.STRICT_SURVIVAL) {
+            destination.add(STRICT_STRIP_MINE_REJECTION_FEATURE);
+            return;
+        }
+        destination.add(feature);
     }
 
     private static Result startScenario(ServerCommandSource source, AIPlayerEntity bot, String feature) throws IOException {
@@ -388,6 +506,10 @@ public final class AIBotVerifySubcommand {
         IntentController.INSTANCE.cancelAll(bot, IntentController.ControlOrigin.SYSTEM, "verify_scenario_reset");
         return switch (feature) {
             case "capability_profile" -> verifyCapabilityProfile(bot);
+            case "diamond_stack_64_controlled" -> verifyMiningCountContract(
+                    "diamond_stack_64_controlled", Items.DIAMOND, DIAMOND_STACK_TARGET);
+            case "obsidian_half_stack_32_controlled" -> verifyMiningCountContract(
+                    "obsidian_half_stack_32_controlled", Items.OBSIDIAN, OBSIDIAN_HALF_STACK_TARGET);
             case "persist" -> verifyPersist(source);
             case "memory" -> verifyMemory(bot);
             case "job" -> verifyJob();
@@ -396,6 +518,7 @@ public final class AIBotVerifySubcommand {
             case "sleep" -> assignSleep(bot);
             case "farm" -> assignFarm(bot);
             case "strip_mine" -> assignStripMine(bot);
+            case STRICT_STRIP_MINE_REJECTION_FEATURE -> assignStripMineStrictRejection(bot);
             case "build" -> assignBuild(bot);
             case "craft_chain" -> assignCraftChain(bot);
             case "drowning" -> verifyDrowning(bot);
@@ -441,9 +564,13 @@ public final class AIBotVerifySubcommand {
             case "real_redstone" -> assignRealRedstone(bot);
             case "real_diamond" -> assignRealDiamond(bot);
             case "real_diamond3" -> assignRealDiamond3(bot);
+            case "diamond_stack_64_prepared" -> assignDiamondStack64Prepared(bot);
+            case "diamond_stack_64_from_zero" -> assignDiamondStack64FromZero(bot);
             case "real_armor" -> assignRealArmor(bot);
             case "real_build" -> assignRealBuild(bot);
             case "real_obsidian" -> assignRealObsidian(bot);
+            case "obsidian_half_stack_32_prepared" -> assignObsidianHalfStack32Prepared(bot);
+            case "obsidian_half_stack_32_from_zero" -> assignObsidianHalfStack32FromZero(bot);
             case "llm_move" -> assignLlmMove(bot);
             case "llm_food" -> assignLlmFood(bot);
             case "llm_iron" -> assignLlmIron(bot);
@@ -522,6 +649,41 @@ public final class AIBotVerifySubcommand {
                 + " ordinary_path=" + (ordinaryPathAllowed ? "allowed" : ordinaryPath.reason());
         return pass ? Result.pass("capability_profile", detail)
                 : Result.fail("capability_profile", detail);
+    }
+
+    /**
+     * M0 Mining First contract only. This intentionally does not mine or grant target items: it
+     * proves that the exact public quantity survives MissionSpec persistence and that the typed
+     * postcondition rejects target-1 while accepting target. Long-running prepared/from-zero
+     * scenarios are separate opt-in tests, so a fast contract PASS can never be read as gameplay
+     * certification.
+     */
+    private static Result verifyMiningCountContract(String feature, Item item, int target) {
+        Goal goal = new Goal.HaveItem(item, target);
+        Optional<Goal> restored = MissionSpec.fromGoal(goal).toGoal();
+        String itemId = net.minecraft.registry.Registries.ITEM.getId(item).toString();
+        GoalPredicate predicate = GoalPredicates.forGoal(goal);
+        GoalSnapshot below = new GoalSnapshot(
+                Map.of(itemId, target - 1), 0, java.util.Set.of(), Map.of(), Map.of(), 0, Optional.empty());
+        GoalSnapshot exact = new GoalSnapshot(
+                Map.of(itemId, target), 0, java.util.Set.of(), Map.of(), Map.of(), 0, Optional.empty());
+        GoalEvaluation belowEvaluation = predicate.evaluate(below);
+        GoalEvaluation exactEvaluation = predicate.evaluate(exact);
+        boolean pass = restored.isPresent()
+                && restored.get().equals(goal)
+                && belowEvaluation.state() == GoalEvaluation.State.UNSATISFIED
+                && belowEvaluation.matched() == target - 1
+                && belowEvaluation.required() == target
+                && exactEvaluation.state() == GoalEvaluation.State.SATISFIED
+                && exactEvaluation.matched() == target
+                && exactEvaluation.required() == target;
+        String detail = "contract_only item=" + itemId
+                + " target=" + target
+                + " below=" + belowEvaluation.matched() + "/" + belowEvaluation.required()
+                + " exact=" + exactEvaluation.matched() + "/" + exactEvaluation.required()
+                + " mission_roundtrip=" + (restored.isPresent() && restored.get().equals(goal))
+                + " execution=not_tested";
+        return pass ? Result.pass(feature, detail) : Result.fail(feature, detail);
     }
 
     private static Result verifyPersist(ServerCommandSource source) {
@@ -606,6 +768,31 @@ public final class AIBotVerifySubcommand {
         return assignTask(bot, "strip_mine", new StripMineTask(direction, 2, 0, null, java.util.Set.of()),
                 800,
                 status -> status.progress() >= 1.0D);
+    }
+
+    /**
+     * Strict-survival still verifies the legacy boundary instead of silently dropping it from
+     * {@code verify all}: the real task must fail immediately with the exact typed reason. The
+     * operator profile never expands to this scenario and continues to run {@link #assignStripMine}.
+     */
+    private static Result assignStripMineStrictRejection(AIPlayerEntity bot) {
+        OperatingProfile profile = AIBotConfig.get().profile();
+        Optional<String> declaredRejection = StripMineTask.profileRejectionReason(profile);
+        if (!declaredRejection.filter(StripMineTask.STRICT_SURVIVAL_REJECTION::equals).isPresent()) {
+            return Result.fail(STRICT_STRIP_MINE_REJECTION_FEATURE,
+                    "profile_contract_mismatch profile=" + profile
+                            + " expected=" + StripMineTask.STRICT_SURVIVAL_REJECTION
+                            + " actual=" + declaredRejection.orElse("allowed"));
+        }
+        TaskManager.INSTANCE.assign(bot,
+                new StripMineTask(Direction.NORTH, 2, 0, null, java.util.Set.of()),
+                io.github.zoyluo.aibot.runtime.TaskOrigin.of(
+                        io.github.zoyluo.aibot.runtime.TaskOrigin.Kind.VERIFY,
+                        "strict_strip_mine_rejection"));
+        return Result.runningExpectTypedFail(
+                STRICT_STRIP_MINE_REJECTION_FEATURE,
+                20,
+                StripMineTask.STRICT_SURVIVAL_REJECTION);
     }
 
     private static Result assignBuild(AIPlayerEntity bot) throws IOException {
@@ -1009,7 +1196,7 @@ public final class AIBotVerifySubcommand {
             return Result.fail("food_extreme", "goal_submit_failed");
         }
         return Result.runningGoal("food_extreme", 12000,
-                ignored -> bot.isAlive() && cookedFoodCount(bot) >= 4);
+                ignored -> bot.isAlive() && safeFoodUnits(bot) >= 4);
     }
 
     /**
@@ -1068,7 +1255,7 @@ public final class AIBotVerifySubcommand {
             return Result.fail("food", "goal_submit_failed");
         }
         return Result.runningGoal("food", 8000,
-                ignored -> bot.isAlive() && cookedFoodCount(bot) >= 4);
+                ignored -> bot.isAlive() && safeFoodUnits(bot) >= 4);
     }
 
     // 完整食物链(给现成石料/燃料/剑):做炉(craft furnace) → 打猎 → 烤。比 food(给现成炉)多覆盖一层"craft 熔炉"。
@@ -1095,20 +1282,11 @@ public final class AIBotVerifySubcommand {
             return Result.fail("food_full", "goal_submit_failed");
         }
         return Result.runningGoal("food_full", 16000,
-                ignored -> bot.isAlive() && cookedFoodCount(bot) >= 4);
+                ignored -> bot.isAlive() && safeFoodUnits(bot) >= 4);
     }
 
-    private static int cookedFoodCount(AIPlayerEntity bot) {
-        return InventoryAction.countItem(bot, Items.COOKED_BEEF)
-                + InventoryAction.countItem(bot, Items.COOKED_PORKCHOP)
-                + InventoryAction.countItem(bot, Items.COOKED_MUTTON)
-                + InventoryAction.countItem(bot, Items.COOKED_CHICKEN)
-                + InventoryAction.countItem(bot, Items.COOKED_RABBIT)
-                + InventoryAction.countItem(bot, Items.BREAD)
-                + InventoryAction.countItem(bot, Items.BAKED_POTATO)
-                // 浆果按 2:1 折算(与 GoalPlanner.ensureFoodTo 的荒芜兜底源一致):
-                // 针叶林等无动物世界 Food 目标走"采浆果直接吃",断言口径必须同步,否则达成也判 FAIL。
-                + InventoryAction.countItem(bot, Items.SWEET_BERRIES) / 2;
+    private static int safeFoodUnits(AIPlayerEntity bot) {
+        return MiningFoodReserve.units(bot.getInventory());
     }
 
     // 食物链"种田做面包"分支端到端测试:无动物 + 有草 → Goal.Food 应走 ensureFoodTo 的种植链
@@ -1289,6 +1467,17 @@ public final class AIBotVerifySubcommand {
         return bot.getBlockPos();
     }
 
+    // Mining First 最终口径比 legacy real_* 更严格：保留 seed 的真实出生位置，不做 surfaceTeleport。
+    // 独立 evidence server 每次只跑一个 from_zero 场景，因此无需用传送来清理前一场景的位置污染。
+    private static BlockPos prepareMiningFromZero(AIPlayerEntity bot) {
+        ServerWorld world = bot.getServerWorld();
+        world.setTimeOfDay(1000L);
+        bot.getActionPack().stopAll();
+        clearInventory(bot);
+        world.getGameRules().get(net.minecraft.world.GameRules.RANDOM_TICK_SPEED).set(3, world.getServer());
+        return bot.getBlockPos();
+    }
+
     // 场景锚点列下方 12 格内无水(挖石阶梯斜下挖,湖上/含水层地块会把 bot 挖进水里泡死——
     // 实测 dig_down stall dump 四面全 water)。
     private static boolean dryColumn(ServerWorld world, BlockPos top) {
@@ -1320,6 +1509,17 @@ public final class AIBotVerifySubcommand {
     // 只看 isAlive() 抓不到"死过又活了"的情况,必须对比死亡计数。
     private static int deathCount(AIPlayerEntity bot) {
         return bot.getStatHandler().getStat(net.minecraft.stat.Stats.CUSTOM.getOrCreateStat(net.minecraft.stat.Stats.DEATHS));
+    }
+
+    private static Function<AIPlayerEntity, Optional<String>> zeroDeathFailFast(int deathBase) {
+        return candidate -> deathCount(candidate) > deathBase
+                ? Optional.of("zero_death_violation")
+                : Optional.empty();
+    }
+
+    private static Function<AIPlayerEntity, Optional<String>> miningFromZeroFailFast(int deathBase) {
+        return candidate -> MiningEvidenceAudit.failFastReason(candidate)
+                .or(() -> zeroDeathFailFast(deathBase).apply(candidate));
     }
 
     // 拥有某装备:背包里有 或 已穿在任意装备槽。用于 armor 断言——避免"合好甲→自动穿甲"的 1-tick 竞态
@@ -1360,7 +1560,7 @@ public final class AIBotVerifySubcommand {
             return Result.fail("real_food", "goal_submit_failed");
         }
         return Result.runningGoal("real_food", 16000,
-                ignored -> bot.isAlive() && cookedFoodCount(bot) >= 4
+                ignored -> bot.isAlive() && safeFoodUnits(bot) >= 4
                         && deathCount(bot) == deathBase);
     }
 
@@ -1470,6 +1670,95 @@ public final class AIBotVerifySubcommand {
                         && deathCount(bot) == deathBase);
     }
 
+    // Mining First M1-prepared:在深层确定性巷道两侧铺 32×2=64 块眼高暴露钻石矿，只预给非目标深矿装备。
+    // 该层用于隔离连续找矿/破块/拾取/工具更换，不是从零能力；显式 opt-in，不进入 verify all。
+    private static Result assignDiamondStack64Prepared(AIPlayerEntity bot) {
+        clearInventory(bot);
+        BlockPos origin = prepareDeepArea(bot, -59);
+        ServerWorld world = bot.getServerWorld();
+        MiningBudget budget = MiningBudget.forQuota(
+                DIAMOND_STACK_TARGET, true, ToolTier.IRON);
+        // Prepared 隔离层与 from-zero 使用同一个远征预算源，避免 fixture 手写值落后于
+        // boundary-zero service 的工具、火把、石材和 future-stick 合约。
+        giveItemToAtLeast(bot, Items.IRON_PICKAXE, budget.initialPickaxes());
+        giveItemToAtLeast(bot, Items.STONE_PICKAXE, budget.tunnelingPickaxes());
+        giveItemToAtLeast(bot, Items.IRON_INGOT, budget.spareToolIngots());
+        giveItemToAtLeast(bot, Items.COBBLESTONE, budget.emergencyBlocks());
+        giveItemToAtLeast(bot, Items.STICK, budget.spareToolSticks());
+        giveItemToAtLeast(bot, Items.TORCH, Math.max(
+                budget.torchTarget(), MiningBudget.DIAMOND_STACK_MIN_BOOTSTRAP_TORCHES));
+        giveItemToAtLeast(bot, Items.COOKED_BEEF, budget.cookedFoodTarget());
+        giveItemToAtLeast(bot, Items.CRAFTING_TABLE, 1);
+        giveDeepMineKit(bot);
+        // 巷道沿 OreDig 默认的首段 NORTH 方向延伸；中间 3 格宽可行走，矿墙与外侧也留空，
+        // 使 strict 模式能真正走到掉落旁碰撞拾取。旧脚下矿层会挖掉自身支撑；封闭环/棋盘
+        // 会在批次恢复后把余矿遮在身后，测到几何死角而不是 8 批远征。
+        for (int dz = -34; dz <= 0; dz++) {
+            for (int dx = -3; dx <= 3; dx++) {
+                world.setBlockState(origin.add(dx, -1, dz),
+                        Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                for (int dy = 0; dy <= 2; dy++) {
+                    world.setBlockState(origin.add(dx, dy, dz),
+                            Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                }
+                // Stable roof keeps naturally generated gravel above the prepared canvas from
+                // falling through the newly carved corridor and burying the bot on the first
+                // neighbouring block update. This is environmental isolation, not a target grant.
+                world.setBlockState(origin.add(dx, 3, dz),
+                        Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+            }
+            for (int dy = 0; dy <= 3; dy++) {
+                world.setBlockState(origin.add(-4, dy, dz),
+                        Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(origin.add(4, dy, dz),
+                        Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        for (int dz = -1; dz >= -32; dz--) {
+            for (int dx : new int[]{-2, 2}) {
+                // 只用眼高单层矿墙：每块均能由中心走廊真实看见、从侧面开采，且掉落落在
+                // 石地板上。prepared 的职责是隔离连续批次/工具/物理拾取，不额外混入
+                // “脚边下层矿被地板遮挡”这一独立感知变量。
+                world.setBlockState(origin.add(dx, 1, dz),
+                        Blocks.DIAMOND_ORE.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        final int deathBase = deathCount(bot);
+        boolean started = GoalExecutor.INSTANCE.submit(
+                bot, new Goal.HaveItem(Items.DIAMOND, DIAMOND_STACK_TARGET));
+        if (!started) {
+            return Result.fail("diamond_stack_64_prepared", "goal_submit_failed");
+        }
+        return Result.runningGoal("diamond_stack_64_prepared", 60000,
+                ignored -> bot.isAlive()
+                        && InventoryAction.countItem(bot, Items.DIAMOND) >= DIAMOND_STACK_TARGET
+                        && deathCount(bot) == deathBase);
+    }
+
+    // Mining First M1-final:自然地形、空背包、零目标给予，从零获得完整一组钻石。
+    // 这是 capability manifest 的唯一可 pin 场景；当前未达标时必须诚实 FAIL/MISSING。
+    private static Result assignDiamondStack64FromZero(AIPlayerEntity bot) {
+        prepareMiningFromZero(bot);
+        MiningEvidenceAudit.begin(bot, MiningEvidenceAudit.Target.DIAMOND);
+        final int deathBase = deathCount(bot);
+        Goal goal = new Goal.HaveItem(Items.DIAMOND, DIAMOND_STACK_TARGET);
+        GoalPlanner.GoalPlan nominalPlan = GoalPlanner.plan(bot, goal);
+        int timeoutTicks = MiningMissionBudget
+                .diamondStack64FromZero(nominalPlan).timeoutTicks();
+        boolean started = GoalExecutor.INSTANCE.submit(bot, goal);
+        if (!started) {
+            return Result.fail("diamond_stack_64_from_zero", "goal_submit_failed");
+        }
+        return Result.runningGoalFailFast("diamond_stack_64_from_zero",
+                timeoutTicks,
+                miningFromZeroFailFast(deathBase),
+                ignored -> bot.isAlive()
+                        && InventoryAction.countItem(bot, Items.DIAMOND) >= DIAMOND_STACK_TARGET
+                        && deathCount(bot) == deathBase
+                        && MiningEvidenceAudit.snapshot(bot)
+                        .filter(MiningEvidenceAudit.Snapshot::passes).isPresent());
+    }
+
     // 从零做整套铁甲(真实地形,不预置任何材料——区别于 achieve_armor 的预置 30 铁只测合甲)。
     // 链路:木→工具→挖铁×24+→熔炼→合 4 甲+剑→穿。比钻石浅(铁在 Y16-48,石镐够,无 Y-59 岩浆),但量大。
     // 断言:整套四件铁甲全部穿上 + 存活 + 零死亡(死一次=大事故,与 real_diamond 同红线)。
@@ -1548,6 +1837,75 @@ public final class AIBotVerifySubcommand {
                         && deathCount(bot) == deathBase);
     }
 
+    // Mining First M1-prepared:确定性画布提供 35 格下沉岩浆池、钻石镐和唯一水桶，但不预放/给予黑曜石。
+    // 它只验证长配额 planner/task 接线；只有使用真实放水与原版流体反应的实现才可晋级最终验收。
+    private static Result assignObsidianHalfStack32Prepared(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin);
+        // 7×5 下沉源池（35 块）+ 石质池沿：真实水流横跨池面批量转化，收水后逐块开采。
+        // 这也是玩家常用的安全采集法，避免同平面孤立源向整张画布无限蔓延。
+        for (int dx = 4; dx <= 10; dx++) {
+            for (int dz = -2; dz <= 2; dz++) {
+                world.setBlockState(origin.add(dx, -1, dz), Blocks.LAVA.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        world.setBlockState(origin.add(3, 0, 0), Blocks.COBBLESTONE.getDefaultState(), Block.NOTIFY_ALL);
+        bot.teleport(world, origin.getX() + 3.5D, origin.getY() + 1.0D, origin.getZ() + 0.5D,
+                java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+        // 可补水的 2x2 水源；目标实现应真实放水/回收，而非直接写黑曜石方块。
+        for (int dx = -3; dx <= -2; dx++) {
+            for (int dz = 0; dz <= 1; dz++) {
+                world.setBlockState(origin.add(dx, 0, dz), Blocks.WATER.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        InventoryAction.giveItem(bot, new ItemStack(Items.DIAMOND_PICKAXE, 1));
+        // 与 from-zero 合约一致：全程只有一个桶，任何一次未回收都会立即暴露为任务失败。
+        InventoryAction.giveItem(bot, new ItemStack(Items.WATER_BUCKET, 1));
+        InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 64));
+        InventoryAction.giveItem(bot, new ItemStack(Items.COOKED_BEEF, 8));
+        InventoryAction.giveItem(bot, new ItemStack(Items.STONE_PICKAXE, 4));
+        InventoryAction.giveItem(bot, new ItemStack(Items.STICK, 32));
+        InventoryAction.giveItem(bot, new ItemStack(Items.CRAFTING_TABLE));
+        final int deathBase = deathCount(bot);
+        boolean started = GoalExecutor.INSTANCE.submit(
+                bot, new Goal.HaveItem(Items.OBSIDIAN, OBSIDIAN_HALF_STACK_TARGET));
+        if (!started) {
+            return Result.fail("obsidian_half_stack_32_prepared", "goal_submit_failed");
+        }
+        return Result.runningGoal("obsidian_half_stack_32_prepared", 24000,
+                ignored -> {
+                    // Prepared isolates the long quota/fluid/pickup pipeline. Keep its 12-minute
+                    // laboratory run in daylight; hostile survival remains a from-zero gate.
+                    world.setTimeOfDay(1000L);
+                    return bot.isAlive()
+                            && InventoryAction.countItem(bot, Items.OBSIDIAN) >= OBSIDIAN_HALF_STACK_TARGET
+                            && deathCount(bot) == deathBase;
+                });
+    }
+
+    // Mining First M1-final:自然地形、空背包，自主取得钻石镐/桶、寻找岩浆并获得半组黑曜石。
+    // 这是 capability manifest 的唯一可 pin 场景；当前未达标时必须诚实 FAIL/MISSING。
+    private static Result assignObsidianHalfStack32FromZero(AIPlayerEntity bot) {
+        prepareMiningFromZero(bot);
+        MiningEvidenceAudit.begin(bot, MiningEvidenceAudit.Target.OBSIDIAN);
+        final int deathBase = deathCount(bot);
+        boolean started = GoalExecutor.INSTANCE.submit(
+                bot, new Goal.HaveItem(Items.OBSIDIAN, OBSIDIAN_HALF_STACK_TARGET));
+        if (!started) {
+            return Result.fail("obsidian_half_stack_32_from_zero", "goal_submit_failed");
+        }
+        return Result.runningGoalFailFast("obsidian_half_stack_32_from_zero", 240000,
+                miningFromZeroFailFast(deathBase),
+                ignored -> bot.isAlive()
+                        && InventoryAction.countItem(bot, Items.OBSIDIAN) >= OBSIDIAN_HALF_STACK_TARGET
+                        && deathCount(bot) == deathBase
+                        && MiningEvidenceAudit.snapshot(bot)
+                        .filter(MiningEvidenceAudit.Snapshot::passes).isPresent());
+    }
+
     // 实操:自然地形长距离导航——目标=东边 120 格的自然地表点(中途可能有湖/崖/密林,考验绕行与容错)。
     // 不验证路径漂不漂亮,只验证"能到":距目标 ≤3 格即过。这是所有 real_*"走过去干活"的共同前置能力,
     // 单拎出来测,导航挂了能直接定位是"走路"问题而不是采集/合成问题。
@@ -1618,7 +1976,7 @@ public final class AIBotVerifySubcommand {
         }
         final int deathBase = deathCount(bot); // 零死亡红线:死亡重生也判 FAIL(照抄 real_* 标准)
         return Result.runningPatient("llm_food", 16000,
-                ignored -> bot.isAlive() && cookedFoodCount(bot) >= 4 && deathCount(bot) == deathBase);
+                ignored -> bot.isAlive() && safeFoodUnits(bot) >= 4 && deathCount(bot) == deathBase);
     }
 
     // 实操(LLM):口语化矿物指令 → 大脑应把"挖一块铁锭"映射到 achieve_goal/mine_ore 全链
@@ -2275,8 +2633,10 @@ public final class AIBotVerifySubcommand {
                 }
                 world.setBlockState(origin.add(7, 1, 0), Blocks.IRON_ORE.getDefaultState(), Block.NOTIFY_ALL);
             }
-            // P0 验证·背包满:36 格塞满圆石开局——dropJunk 应腾位让矿捡得起(否则白挖到超时)。
+            // P0 验证·背包满:工作面不得直接 dropJunk；OreDig 应暂停并等待 sealed
+            // ORE_BATCH capacity service 腾出四格，再从同一 cursor 重试并捡起目标矿。
             case "fullinv" -> {
+                InventoryAction.giveItem(bot, new ItemStack(Items.COOKED_BEEF, 8));
                 for (int i = 0; i < 36; i++) {
                     InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 64));
                 }
@@ -2808,7 +3168,8 @@ public final class AIBotVerifySubcommand {
             world.setBlockState(origin.down(dy), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
         }
         Task task = new DescendToYTask(targetY);
-        return assignTask(bot, "descend_to_ore", task, 4000,
+        return assignTask(bot, "descend_to_ore", task,
+                MiningMissionBudget.descendTaskWindowTicks(origin.getY(), targetY),
                 ignored -> bot.isAlive() && bot.getBlockPos().getY() <= targetY);
     }
 
@@ -2909,7 +3270,7 @@ public final class AIBotVerifySubcommand {
                         && deathCount(bot) == deathBase);
     }
 
-    // 造黑曜石(新能力 L1):画布东侧 5×5 岩浆源池 + 钻石镐 + 4 水桶,**不预放黑曜石**(区别于
+    // 造黑曜石(新能力 L1):画布东侧下沉岩浆源池 + 钻石镐 + 4 水桶,**不预放黑曜石**(区别于
     // achieve_obsidian 作弊预放)。断言 bot 自主"水浇岩浆现造"+挖到 ≥4 块、零死亡。通了再调 15 压测。
     private static Result assignGeoObsidianMake(AIPlayerEntity bot) {
         prepareArea(bot);
@@ -2917,12 +3278,17 @@ public final class AIBotVerifySubcommand {
         ServerWorld world = bot.getServerWorld();
         BlockPos origin = bot.getBlockPos();
         clearNearbyMobs(world, origin);
-        // 间隔摆的孤立岩浆源(每个隔 3 格,互不接触):证"造+挖"主能力,隔离掉多格连续岩浆的流体交互
-        // (相邻源转黑曜石会触发邻格流体重算→扫不到,那是独立硬问题,真实洞底岩浆多为分散点/窄流)。
-        int[] xs = {4, 7, 10, 13};
-        for (int dx : xs) {
-            world.setBlockState(origin.add(dx, 0, 0), Blocks.LAVA.getDefaultState(), Block.NOTIFY_ALL);
+        // 岩浆位于地面下一格、四周保留石质池沿，贴近自然洞底/地表熔岩池。旧画布把源放在
+        // 平地脚位，原版岩浆会无限摊开吞掉安全站位，测到的是人造灾害而非浇水开采能力。
+        for (int dx = 4; dx <= 5; dx++) {
+            for (int dz = -1; dz <= 0; dz++) {
+                world.setBlockState(origin.add(dx, -1, dz), Blocks.LAVA.getDefaultState(), Block.NOTIFY_ALL);
+            }
         }
+        // 从高一格的石质池沿开工：strict survival 只能使用视线内信息，不允许隔着地板扫描地下流体。
+        world.setBlockState(origin.add(3, 0, 0), Blocks.COBBLESTONE.getDefaultState(), Block.NOTIFY_ALL);
+        bot.teleport(world, origin.getX() + 3.5D, origin.getY() + 1.0D, origin.getZ() + 0.5D,
+                java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
         InventoryAction.giveItem(bot, new ItemStack(Items.DIAMOND_PICKAXE, 1));
         InventoryAction.giveItem(bot, new ItemStack(Items.WATER_BUCKET, 4));
         InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 16));
@@ -3301,6 +3667,19 @@ public final class AIBotVerifySubcommand {
         InventoryAction.giveItem(bot, new ItemStack(Items.CRAFTING_TABLE, 1));
     }
 
+    private static void giveItemToAtLeast(AIPlayerEntity bot, Item item, int target) {
+        int remaining = Math.max(0, target - InventoryAction.countItem(bot, item));
+        int stackLimit = Math.max(1, new ItemStack(item).getMaxCount());
+        while (remaining > 0) {
+            int batch = Math.min(stackLimit, remaining);
+            if (InventoryAction.giveItem(bot, new ItemStack(item, batch)).isFailed()) {
+                throw new IllegalStateException("verify_fixture_inventory_full:item=" + item
+                        + ":remaining=" + remaining);
+            }
+            remaining -= batch;
+        }
+    }
+
     // 极端环境:在 bot 周围 spawn count 只僵尸(战斗阈值 maxEnemiesToFight=2,故默认 2 只——bot 会迎战而非逃)。
     // 测"边打边干":生存反射 pauseFor 战斗、打完 resume 原任务,任务仍要完成。
     private static void spawnHostiles(ServerWorld world, BlockPos origin, int count) {
@@ -3386,6 +3765,15 @@ public final class AIBotVerifySubcommand {
 
         private void pollActive(MinecraftServer server, AIPlayerEntity bot) {
             Result running = active.result();
+            Optional<String> fastFailure = running.failFast().apply(bot);
+            if (fastFailure.isPresent()) {
+                String reason = fastFailure.get();
+                IntentController.INSTANCE.cancelAll(
+                        bot, IntentController.ControlOrigin.SYSTEM, "verify_fail_fast:" + reason);
+                record(Result.fail(running.feature(), reason));
+                active = null;
+                return;
+            }
             running.perTick().accept(bot); // 每 tick 执行场景的世界副作用(如催熟作物),先于下面的状态判定
             int elapsedTicks = server.getTicks() - active.startedTick();
             TaskStatus status = TaskManager.INSTANCE.status(bot);
@@ -3455,9 +3843,17 @@ public final class AIBotVerifySubcommand {
             }
             if (status.state() == TaskState.FAILED) {
                 if (running.expectFail()) {
-                    // 反向场景的 PASS:超时前干净报了失败(而非空转到永远)。detail 带失败原因+耗时,便于核对失败得"对不对"。
-                    record(Result.pass(running.feature(), "clean fail in " + elapsedTicks + " ticks: "
-                            + (status.failureReason().isBlank() ? "task_failed" : status.failureReason())));
+                    String failureReason = status.failureReason().isBlank()
+                            ? "task_failed"
+                            : status.failureReason();
+                    if (running.assertion().test(status)) {
+                        // 反向场景的 PASS:超时前干净报了预期失败(而非空转到永远)。
+                        record(Result.pass(running.feature(), "clean fail in " + elapsedTicks
+                                + " ticks: " + failureReason));
+                    } else {
+                        record(Result.fail(running.feature(),
+                                "unexpected_clean_failure reason=" + failureReason));
+                    }
                     active = null;
                     return;
                 }
@@ -3479,14 +3875,87 @@ public final class AIBotVerifySubcommand {
         }
 
         private void record(Result result) {
-            results.add(result);
+            Result effective = finalizeMiningProvenance(result);
+            results.add(effective);
             String message = "[AIBot Verify] "
-                    + result.feature()
+                    + effective.feature()
                     + " "
-                    + (result.pass() ? "PASS" : "FAIL")
+                    + (effective.pass() ? "PASS" : "FAIL")
                     + " - "
-                    + result.detail();
+                    + effective.detail();
             source.sendFeedback(() -> Text.literal(message), false);
+        }
+
+        private Result finalizeMiningProvenance(Result result) {
+            if (!MINING_ACCEPTANCE_FROM_ZERO_SUITE.contains(result.feature())) {
+                return result;
+            }
+            Optional<AIPlayerEntity> liveBot = AIPlayerManager.INSTANCE.getByUuid(botId);
+            Optional<MiningEvidenceAudit.Snapshot> snapshot = liveBot
+                    .flatMap(MiningEvidenceAudit::snapshot)
+                    .or(() -> MiningEvidenceAudit.snapshot(botId));
+            int finalInventory = liveBot.map(bot -> InventoryAction.countItem(
+                            bot,
+                            result.feature().startsWith("diamond_") ? Items.DIAMOND : Items.OBSIDIAN))
+                    .orElse(0);
+            Result effective = result;
+            if (snapshot.isEmpty()) {
+                if (result.pass()) {
+                    effective = Result.fail(result.feature(), "mining_provenance_session_missing");
+                }
+                io.github.zoyluo.aibot.log.BotLog.task(liveBot.orElse(null),
+                        "mining_provenance_result",
+                        "schema", MiningEvidenceAudit.SCHEMA_VERSION,
+                        "scenario", result.feature(),
+                        "target", result.feature().startsWith("diamond_") ? "diamond" : "obsidian",
+                        "verdict", "FAIL",
+                        "reason", "session_missing",
+                        "observed_ticks", 0,
+                        "game_mode_violations", 0,
+                        "privileged_allowed", 0,
+                        "death_delta", 0,
+                        "diamond_natural_ore_breaks", 0,
+                        "diamond_native_drops", 0,
+                        "diamond_physical_pickups", 0,
+                        "water_placements", 0,
+                        "lava_conversions", 0,
+                        "obsidian_breaks", 0,
+                        "obsidian_physical_pickups", 0,
+                        "vanilla_obsidian_breaks", 0,
+                        "final_inventory", finalInventory);
+                MiningEvidenceAudit.clear(botId);
+                return effective;
+            }
+
+            MiningEvidenceAudit.Snapshot facts = snapshot.orElseThrow();
+            boolean finalInventoryPass = facts.target() == MiningEvidenceAudit.Target.DIAMOND
+                    ? finalInventory >= DIAMOND_STACK_TARGET
+                    : finalInventory >= OBSIDIAN_HALF_STACK_TARGET;
+            boolean provenancePass = facts.passes() && finalInventoryPass;
+            if (result.pass() && !provenancePass) {
+                effective = Result.fail(result.feature(), "mining_provenance_postcondition_failed");
+            }
+            io.github.zoyluo.aibot.log.BotLog.task(liveBot.orElse(null),
+                    "mining_provenance_result",
+                    "schema", MiningEvidenceAudit.SCHEMA_VERSION,
+                    "scenario", result.feature(),
+                    "target", facts.target().name().toLowerCase(java.util.Locale.ROOT),
+                    "verdict", effective.pass() && provenancePass ? "PASS" : "FAIL",
+                    "observed_ticks", facts.observedTicks(),
+                    "game_mode_violations", facts.gameModeViolations(),
+                    "privileged_allowed", facts.privilegedAllowed(),
+                    "death_delta", facts.deathDelta(),
+                    "diamond_natural_ore_breaks", facts.diamondNaturalOreBreaks(),
+                    "diamond_native_drops", facts.diamondNativeDrops(),
+                    "diamond_physical_pickups", facts.diamondPhysicalPickups(),
+                    "water_placements", facts.waterPlacements(),
+                    "lava_conversions", facts.lavaConversions(),
+                    "obsidian_breaks", facts.obsidianBreaks(),
+                    "obsidian_physical_pickups", facts.obsidianPhysicalPickups(),
+                    "vanilla_obsidian_breaks", facts.vanillaObsidianBreaks(),
+                    "final_inventory", finalInventory);
+            MiningEvidenceAudit.clear(botId);
+            return effective;
         }
 
         private void finish() {
@@ -3520,46 +3989,71 @@ public final class AIBotVerifySubcommand {
                           boolean expectFail,
                           boolean patient,
                           Predicate<TaskStatus> assertion,
+                          Function<AIPlayerEntity, Optional<String>> failFast,
                           Consumer<AIPlayerEntity> perTick) {
         private static final Consumer<AIPlayerEntity> NO_TICK = bot -> {
         };
+        private static final Function<AIPlayerEntity, Optional<String>> NO_FAIL_FAST = bot -> Optional.empty();
 
         private static Result pass(String feature, String detail) {
-            return new Result(feature, true, detail, false, 0, false, false, false, ignored -> true, NO_TICK);
+            return new Result(feature, true, detail, false, 0, false, false, false,
+                    ignored -> true, NO_FAIL_FAST, NO_TICK);
         }
 
         private static Result fail(String feature, String detail) {
-            return new Result(feature, false, detail, false, 0, false, false, false, ignored -> false, NO_TICK);
+            return new Result(feature, false, detail, false, 0, false, false, false,
+                    ignored -> false, NO_FAIL_FAST, NO_TICK);
         }
 
         private static Result running(String feature, int timeoutTicks, Predicate<TaskStatus> assertion) {
-            return new Result(feature, false, "running", true, timeoutTicks, false, false, false, assertion, NO_TICK);
+            return new Result(feature, false, "running", true, timeoutTicks, false, false, false,
+                    assertion, NO_FAIL_FAST, NO_TICK);
         }
 
         private static Result runningGoal(String feature, int timeoutTicks, Predicate<TaskStatus> assertion) {
-            return new Result(feature, false, "running", true, timeoutTicks, true, false, false, assertion, NO_TICK);
+            return new Result(feature, false, "running", true, timeoutTicks, true, false, false,
+                    assertion, NO_FAIL_FAST, NO_TICK);
+        }
+
+        private static Result runningGoalFailFast(String feature, int timeoutTicks,
+                                                  Function<AIPlayerEntity, Optional<String>> failFast,
+                                                  Predicate<TaskStatus> assertion) {
+            return new Result(feature, false, "running", true, timeoutTicks, true, false, false,
+                    assertion, failFast, NO_TICK);
         }
 
         // 带每-tick 副作用钩子的 runningGoal:perTick 在 pollActive 每个服务端 tick 都被调用(无论有无 task 完成),
         // 用于测试期持续操纵世界(如强制催熟作物,绕开自然随机刻生长的漫长等待)。assertion 仍是成功判定。
         private static Result runningGoal(String feature, int timeoutTicks,
                                           Consumer<AIPlayerEntity> perTick, Predicate<TaskStatus> assertion) {
-            return new Result(feature, false, "running", true, timeoutTicks, true, false, false, assertion, perTick);
+            return new Result(feature, false, "running", true, timeoutTicks, true, false, false,
+                    assertion, NO_FAIL_FAST, perTick);
         }
 
         // 反向场景工厂:期望任务在 timeoutTicks 内**干净 FAILED**——这才算 PASS(detail 带失败原因+耗时);
         // COMPLETED 或超时仍 RUNNING 都记 FAIL。用来钉死"不可达目标必须快速认输"的容错契约,
         // 防止寻路退化成无限重试空转(实操里空转比报错伤得多:看着在干活,实际整局假死)。
-        // assertion 在 expectFail 语义下不参与判定,占位恒 false 防误用。
+        // 通用 clean-fail 只要求任意非空转失败；需要精确原因时用 runningExpectTypedFail。
         private static Result runningExpectCleanFail(String feature, int timeoutTicks) {
-            return new Result(feature, false, "running", true, timeoutTicks, false, true, false, ignored -> false, NO_TICK);
+            return new Result(feature, false, "running", true, timeoutTicks, false, true, false,
+                    ignored -> true, NO_FAIL_FAST, NO_TICK);
+        }
+
+        private static Result runningExpectTypedFail(String feature,
+                                                     int timeoutTicks,
+                                                     String expectedFailureReason) {
+            return new Result(feature, false, "running", true, timeoutTicks, false, true, false,
+                    status -> expectedFailureReason.equals(status.failureReason()),
+                    NO_FAIL_FAST,
+                    NO_TICK);
         }
 
         // patient(耐心)工厂:R2 LLM 全链层专用。大脑会话式驱动下单任务 COMPLETED/FAILED 都不是终局
         // (会连续派发任务/失败重试/空闲思考),pollActive 对 patient 跳过全部终局判定,
         // 只认"世界状态断言达成"(PASS,completed in X ticks)或超时(abort+FAIL,detail 带最后任务状态)。
         private static Result runningPatient(String feature, int timeoutTicks, Predicate<TaskStatus> assertion) {
-            return new Result(feature, false, "running", true, timeoutTicks, false, false, true, assertion, NO_TICK);
+            return new Result(feature, false, "running", true, timeoutTicks, false, false, true,
+                    assertion, NO_FAIL_FAST, NO_TICK);
         }
     }
 }

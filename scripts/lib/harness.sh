@@ -116,10 +116,15 @@ PY
 }
 
 harness_run_id() {
-  local scenario="$1" revision="${2:-unknown}" stamp short
+  local scenario="$1" revision="${2:-unknown}" stamp short nonce
   stamp="$(date -u '+%Y%m%dT%H%M%SZ')"
   short="${revision:0:8}"
-  printf '%s-%s-%s-%s%05d' "$stamp" "$scenario" "$short" "$$" "$RANDOM"
+  if command -v python3 >/dev/null 2>&1; then
+    nonce="$(python3 -c 'import secrets; print(secrets.token_hex(6))')" || return 1
+  else
+    nonce="$$$(printf '%05d' "$RANDOM")"
+  fi
+  printf '%s-%s-%s-%s' "$stamp" "$scenario" "$short" "$nonce"
 }
 
 harness_acquire_lock() {

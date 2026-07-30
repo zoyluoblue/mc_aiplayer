@@ -4,6 +4,7 @@ import io.github.zoyluo.aibot.action.ActionResult;
 import io.github.zoyluo.aibot.action.ContainerAction;
 import io.github.zoyluo.aibot.action.InventoryAction;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
+import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.memory.BotMemoryStore;
 import io.github.zoyluo.aibot.pathfinding.Standability;
 import net.minecraft.component.DataComponentTypes;
@@ -42,6 +43,7 @@ public final class ResupplyTask extends AbstractTask {
 
     private final Need need;
     private final Item requestedItem;
+    private final boolean localOnly;
     private final List<BlockPos> containers = new ArrayList<>();
     private Phase phase = Phase.FIND_BASE;
     private BlockPos basePos;
@@ -52,16 +54,26 @@ public final class ResupplyTask extends AbstractTask {
     private String note = "";
 
     public static ResupplyTask tool(Item item) {
-        return new ResupplyTask(Need.TOOL, item);
+        return new ResupplyTask(Need.TOOL, item, false);
+    }
+
+    /** Tool service that may craft from carried materials but must never path away. */
+    public static ResupplyTask toolInPlace(Item item) {
+        return new ResupplyTask(Need.TOOL, item, true);
     }
 
     public static ResupplyTask food() {
-        return new ResupplyTask(Need.FOOD, null);
+        return new ResupplyTask(Need.FOOD, null, false);
     }
 
-    private ResupplyTask(Need need, Item requestedItem) {
+    boolean localOnly() {
+        return localOnly;
+    }
+
+    private ResupplyTask(Need need, Item requestedItem, boolean localOnly) {
         this.need = need;
         this.requestedItem = requestedItem;
+        this.localOnly = localOnly;
     }
 
     @Override
@@ -123,6 +135,15 @@ public final class ResupplyTask extends AbstractTask {
     private void findBase(AIPlayerEntity bot) {
         if (alreadySatisfied(bot)) {
             phase = afterSupplyPhase(bot);
+            return;
+        }
+        if (localOnly) {
+            // A paused mining owner may owe an exact physical return from a safety-displaced pose.
+            // Looking up a remembered base here would create a second displacement and corrupt
+            // recovery geometry. Carried recipes remain available, but this mode never starts a
+            // path or searches a remote container.
+            note = "local_only";
+            startCrafting(bot);
             return;
         }
         basePos = BotMemoryStore.INSTANCE.of(bot.getUuid())
@@ -305,6 +326,17 @@ public final class ResupplyTask extends AbstractTask {
         }
         if (craftTask.state() == TaskState.FAILED) {
             String reason = craftTask.failureReason();
+            if (reason != null
+                    && reason.startsWith("craft_output_capacity:")
+                    && InventoryAction.dropJunkUntilFreeSlots(bot, 1, 16) > 0) {
+                craftTask = null;
+                BotLog.action(bot, "resupply_craft_capacity_recovered",
+                        "item", Registries.ITEM.getId(
+                                need == Need.FOOD ? Items.BREAD : requestedItem).toString(),
+                        "reason", reason);
+                startCrafting(bot);
+                return;
+            }
             fail(reason == null || reason.isBlank() ? "no_supply" : "no_supply: " + reason);
         }
     }

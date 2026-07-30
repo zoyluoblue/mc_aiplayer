@@ -21,6 +21,10 @@ CAPABILITY_ID="$1"
 SOURCE_INPUT="$2"
 harness_safe_id "$CAPABILITY_ID" capability_id 80 || exit 2
 case "$CAPABILITY_ID" in
+  diamond_stack_64|obsidian_half_stack_32)
+    printf 'pin-baseline: Mining First capabilities require the aggregate 20-seed release gate; single-run pinning is forbidden: %s\n' "$CAPABILITY_ID" >&2
+    exit 2
+    ;;
   index.tsv|LOCKED|checksums.sha256)
     printf 'pin-baseline: reserved capability id: %s\n' "$CAPABILITY_ID" >&2
     exit 2

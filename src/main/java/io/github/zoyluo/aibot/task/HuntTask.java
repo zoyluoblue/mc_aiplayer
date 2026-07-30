@@ -5,17 +5,24 @@ import io.github.zoyluo.aibot.action.HarvestCore;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.mining.ToolTier;
+import io.github.zoyluo.aibot.mode.ObservableWorldQuery;
+import io.github.zoyluo.aibot.pathfinding.AStarPathfinder;
 import io.github.zoyluo.aibot.pathfinding.Standability;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.item.Item;
 import net.minecraft.item.Items;
 import net.minecraft.server.world.ServerWorld;
+import net.minecraft.stat.Stats;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
+import net.minecraft.util.math.Vec3d;
 
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * HUNT(第2层 食物自给):主动猎杀附近可食用动物并捡起生肉,直到凑够目标数量的肉。
@@ -28,39 +35,75 @@ import java.util.Set;
  */
 public final class HuntTask extends AbstractTask {
     private enum Phase { ACQUIRE, APPROACH, STRIKE, PICKUP, ROAM }
+    private enum RoamResult { STARTED, RETRY, EXHAUSTED }
 
     private static final int SEARCH_RANGE = 64;        // 找猎物的扫描范围(动物分散→扩到 64 格,再走过去)
     private static final int MAX_ELAPSED = 3600;       // 3 分钟硬超时
     private static final int NO_PROGRESS_LIMIT = 400;  // 20s 无进展(没靠近/没掉肉)即失败
-    private static final int PICKUP_GRACE = 25;        // 击杀后多等一会儿确保肉落袋
+    private static final int PICKUP_RECOVERY_LIMIT = 200; // 可见掉落/在途拾取的物理恢复硬上限
     private static final int APPROACH_STUCK_TICKS = 30; // 接近时位置 1.5s 不变即判卡路障,改直线追跨台阶
     private static final int MAX_PREY_ROAMS = 10;      // 找不到猎物时漫游换片的最多次数(目标量大时多找几片)
     private static final int ROAM_DISTANCE = 32;       // 每次漫游的水平距离
+    private static final int ROAM_RETRY_ROTATION_DEGREES = 11;
+    private static final double MIN_ROAM_ADVANCE_SQUARED = 64.0D; // 至少实际走 8 格才算探索过一片
+    private static final int WET_PREY_REJECTION_TICKS = 300; // 上岸后 15s 内不重追刚把 bot 带进水里的同一只动物
+    private static final int BLIND_PICKUP_SWEEP_DELAY = 20; // 没捡到任何副产物也要有界搜索,覆盖猪等单掉落猎物
 
     // 可食用猎物及其生肉掉落(烤熟前先拿到生肉)。
     private static final Set<EntityType<?>> PREY = Set.of(
             EntityType.COW, EntityType.PIG, EntityType.SHEEP, EntityType.CHICKEN, EntityType.RABBIT);
     private static final Set<Item> RAW_MEATS = Set.of(
             Items.BEEF, Items.PORKCHOP, Items.MUTTON, Items.CHICKEN, Items.RABBIT);
+    private static final Set<Item> PREY_AUXILIARY_DROPS = Set.of(
+            Items.LEATHER, Items.FEATHER, Items.RABBIT_HIDE, Items.RABBIT_FOOT,
+            Items.WHITE_WOOL, Items.ORANGE_WOOL, Items.MAGENTA_WOOL, Items.LIGHT_BLUE_WOOL,
+            Items.YELLOW_WOOL, Items.LIME_WOOL, Items.PINK_WOOL, Items.GRAY_WOOL,
+            Items.LIGHT_GRAY_WOOL, Items.CYAN_WOOL, Items.PURPLE_WOOL, Items.BLUE_WOOL,
+            Items.BROWN_WOOL, Items.GREEN_WOOL, Items.RED_WOOL, Items.BLACK_WOOL);
+    // Walk a small observed ring around the factual kill cell. A low ItemEntity at the player's
+    // feet can fail LivingEntity.canSee even though a sibling drop was physically collected there.
+    private static final int[][] PICKUP_SWEEP_OFFSETS = {
+            {1, 0}, {0, 1}, {-1, 0}, {0, -1},
+            {1, 1}, {-1, 1}, {-1, -1}, {1, -1},
+            {2, 0}, {0, 2}, {-2, 0}, {0, -2}
+    };
 
     private final int targetMeat;
+    private final boolean requireFullQuota;
     private final int maxElapsed; // 硬超时按目标量放大(每块肉约多给 24s),打大量肉不被固定 3 分钟掐断
     private int meatBaseline;
     private int collected;
     private int lastProgressTick;
     private int pickupGrace;
+    private int targetMeatBaseline;
+    private int pickupInventoryBaseline;
+    private int targetAuxiliaryBaseline;
+    private long targetAuxiliaryPickupBaseline;
+    private int pickupSweepCursor;
+    private BlockPos pickupOrigin;
     private Phase phase = Phase.ACQUIRE;
     private LivingEntity target;
     private BlockPos approachStuckPos; // 接近卡路障检测:上次记录的站位
     private int approachStuckTick;     // 记录该站位的 tick
     private int roamCount;             // 找猎物漫游换片次数
     private BlockPos roamTarget;       // 漫游落脚点
+    private BlockPos roamOrigin;       // 本次漫游实际起点；预算只按真实位移结算
+    private int roamOrdinal;           // 本次漫游成功后应结算的序号
+    private int roamAttemptSerial;     // 未结算的拒绝/落水尝试也要轮换采样方向
+    private boolean roamCredited;
     private int roamStartTick;         // 本次漫游起步 tick(给寻路起步宽限,防"未出发即判到达"瞬退)
+    private int nextRoamRetryTick;     // 候选路径暂时全拒时退避；不把 NO_START 误报成动物耗尽
+    private final Map<UUID, Integer> wetPreyRejectedUntil = new HashMap<>();
     private final BlockMiner obstacleMiner = new BlockMiner(); // 接近时挖掉眼前挡路的方块(树叶/草/泥)
     private boolean clearingObstacle;  // 正在挖挡路方块
 
     public HuntTask(int targetMeat) {
+        this(targetMeat, false);
+    }
+
+    public HuntTask(int targetMeat, boolean requireFullQuota) {
         this.targetMeat = Math.max(1, targetMeat);
+        this.requireFullQuota = requireFullQuota;
         this.maxElapsed = Math.max(MAX_ELAPSED, this.targetMeat * 480);
     }
 
@@ -96,7 +139,17 @@ public final class HuntTask extends AbstractTask {
         collected = 0;
         lastProgressTick = 0;
         pickupGrace = 0;
+        targetMeatBaseline = meatBaseline;
+        pickupInventoryBaseline = meatBaseline;
+        targetAuxiliaryBaseline = HarvestCore.countInventoryItems(bot, PREY_AUXILIARY_DROPS);
+        targetAuxiliaryPickupBaseline = pickedUpAuxiliary(bot);
+        pickupSweepCursor = 0;
+        pickupOrigin = null;
         roamCount = 0;
+        roamAttemptSerial = 0;
+        clearRoamIntent();
+        nextRoamRetryTick = 0;
+        wetPreyRejectedUntil.clear();
         clearingObstacle = false;
         phase = Phase.ACQUIRE;
         surfaceIfUnderground(bot);
@@ -143,7 +196,7 @@ public final class HuntTask extends AbstractTask {
 
     @Override
     protected void onTick(AIPlayerEntity bot) {
-        EpisodeMemory.INSTANCE.recordTrail(bot.getUuid(), bot.getBlockPos()); // 工作记忆:轨迹(roam 避重用)
+        EpisodeMemory.INSTANCE.recordTrail(bot.getUuid(), "hunt", bot.getBlockPos()); // 工作记忆:轨迹(roam 避重用)
         if (elapsed > maxElapsed) {
             fail("hunt_timeout collected=" + collected);
             return;
@@ -160,6 +213,13 @@ public final class HuntTask extends AbstractTask {
         }
         if (collected >= targetMeat) {
             complete();
+            return;
+        }
+
+        // A roam that slips into water must not start and consume ten new paths while the bot is
+        // still swimming (seed 3000 burned the whole prey budget in 21 ticks). Hand control to the
+        // shared physical shore rescue and resume ACQUIRE only after dry ground is restored.
+        if (waitForDryGround(bot)) {
             return;
         }
 
@@ -180,7 +240,14 @@ public final class HuntTask extends AbstractTask {
 
     // 进入接近阶段:重置卡住基线/清障状态(否则沿用上一个目标的基线,新目标第一 tick 就被误判卡住),再起步寻路。
     private void beginApproach(AIPlayerEntity bot) {
+        clearRoamIntent();
         phase = Phase.APPROACH;
+        // Capture before combat. The target can die and its loot can enter inventory before the
+        // following task tick notices !target.isAlive(); a baseline taken in beginPickup would
+        // then mistake that real pickup for pre-existing food and wait forever.
+        targetMeatBaseline = HarvestCore.countInventoryItems(bot, RAW_MEATS);
+        targetAuxiliaryBaseline = HarvestCore.countInventoryItems(bot, PREY_AUXILIARY_DROPS);
+        targetAuxiliaryPickupBaseline = pickedUpAuxiliary(bot);
         approachStuckPos = null;
         approachStuckTick = elapsed;
         clearingObstacle = false;
@@ -197,26 +264,58 @@ public final class HuntTask extends AbstractTask {
         }
         // 周围(64 格)没猎物 → 先漫游换片找更多,努力凑够目标(动物分散/在远处),
         // 而非"猎到一点就收工"(实测:打 10 块肉,猎到几块后附近打光就 complete,没凑够数)。
-        if (roamForPrey(bot)) {
+        RoamResult roam = roamForPrey(bot);
+        if (roam != RoamResult.EXHAUSTED) {
             return;
         }
-        // 漫游也用尽仍找不到:已猎到一些就尽力收(总比空手好),一块没有才失败。
-        if (collected > 0) {
+        // 漫游也用尽仍找不到:普通觅食可尽力收；长期挖矿 readiness 必须达到完整配额。
+        if (collected > 0 && !requireFullQuota) {
             complete();
             return;
         }
-        fail("no_prey_found roams=" + roamCount);
+        fail((collected > 0 ? "insufficient_prey" : "no_prey_found")
+                + " collected=" + collected + "/" + targetMeat + " roams=" + roamCount);
+    }
+
+    private boolean waitForDryGround(AIPlayerEntity bot) {
+        boolean active = NavSafetyNet.INSTANCE.isWaterRescueActive(bot);
+        if (!bot.isTouchingWater() && !active) {
+            return false;
+        }
+        bot.getActionPack().stopAll();
+        if (roamTarget != null) {
+            EpisodeMemory.INSTANCE.exclude(bot.getUuid(), roamTarget,
+                    bot.getServer().getTicks(), EpisodeMemory.TTL_UNREACHABLE);
+        }
+        if (target != null && target.isAlive()) {
+            int rejectedUntil = elapsed + WET_PREY_REJECTION_TICKS;
+            wetPreyRejectedUntil.put(target.getUuid(), rejectedUntil);
+            BotLog.action(bot, "hunt_wet_prey_rejected",
+                    "prey", target.getUuid(),
+                    "until", rejectedUntil,
+                    "at", target.getBlockPos().toShortString());
+        }
+        clearRoamIntent();
+        target = null;
+        phase = Phase.ACQUIRE;
+        lastProgressTick = elapsed;
+        NavSafetyNet.INSTANCE.requestWaterRescue(bot);
+        return true;
     }
 
     // 找不到猎物 → 走到 ROAM_DISTANCE 外的露天地表换片再找;最多 MAX_PREY_ROAMS 次。
-    private boolean roamForPrey(AIPlayerEntity bot) {
-        if (++roamCount > MAX_PREY_ROAMS) {
-            return false;
+    private RoamResult roamForPrey(AIPlayerEntity bot) {
+        if (elapsed < nextRoamRetryTick) {
+            return RoamResult.RETRY;
+        }
+        int nextRoam = roamCount + 1;
+        if (nextRoam > MAX_PREY_ROAMS) {
+            return RoamResult.EXHAUSTED;
         }
         ServerWorld world = bot.getServerWorld();
         BlockPos feet = bot.getBlockPos();
         int[][] dirs = {{1, 0}, {0, 1}, {-1, 0}, {0, -1}, {1, 1}, {-1, -1}, {1, -1}, {-1, 1}};
-        int start = Math.floorMod(roamCount, dirs.length);
+        int start = Math.floorMod(roamAttemptSerial + nextRoam, dirs.length);
         // 距离自适应:满距 8 方向全寻路被拒(山顶/悬崖/水域环绕)就减半再试——近处总有能走的点,
         // 先挪过去下轮再扩(与 GatherQuotaTask.roamToNewArea 同款,治"8 连拒直接放弃"速死)。
         for (int dist = ROAM_DISTANCE; dist >= ROAM_DISTANCE / 4; dist /= 2) {
@@ -224,29 +323,83 @@ public final class HuntTask extends AbstractTask {
             boolean avoidTrail = dist == ROAM_DISTANCE;
             for (int i = 0; i < dirs.length; i++) {
                 int[] d = dirs[(start + i) % dirs.length];
-                BlockPos ground = findGround(world, feet.getX() + d[0] * dist, feet.getZ() + d[1] * dist);
+                BlockPos column = rotatedRoamColumn(feet, d[0], d[1], dist, roamAttemptSerial);
+                BlockPos ground = findGround(world, column.getX(), column.getZ());
                 if (ground == null
-                        || (avoidTrail && EpisodeMemory.INSTANCE.nearTrail(bot.getUuid(), ground, 10.0D))) {
+                        || EpisodeMemory.INSTANCE.isExcluded(
+                        bot.getUuid(), ground, bot.getServer().getTicks())
+                        || (avoidTrail && EpisodeMemory.INSTANCE.nearTrail(
+                                bot.getUuid(), "hunt", ground, 10.0D))) {
+                    continue;
+                }
+                // Surface exploration is a sequence of waypoints, not a one-way cave descent.
+                // Before accepting a lower waypoint, prove that a no-dig/no-pillar route can walk
+                // back to the current surface. This rejects seed-3000's chained safe drops into a
+                // Y=53 pocket whose only reverse path consumed pillar blocks and stranded the bot.
+                if (!hasWalkableReturnRoute(world, ground, feet)) {
+                    EpisodeMemory.INSTANCE.exclude(bot.getUuid(), ground,
+                            bot.getServer().getTicks(), EpisodeMemory.TTL_UNREACHABLE);
+                    BotLog.action(bot, "hunt_roam_one_way_rejected",
+                            "from", feet.toShortString(), "to", ground.toShortString());
                     continue;
                 }
                 bot.getActionPack().stopAll();
                 // 寻路被拒(目标不可达/未加载)→ 试下一个方向。原来不看结果就进 ROAM,
                 // 下一 tick isPathExecutorIdle 即真 → 瞬退回 ACQUIRE → 再 roam……
                 // 同一秒连发 3 次 roam、瞬间烧光漫游预算,bot 原地没动(实测 hunt 在贫瘠地形 642t 空转失败)。
-                if (bot.getActionPack().startPathTo(ground).isFailed()) {
+                if (bot.getActionPack().startSurfacePathTo(ground).isFailed()) {
                     continue;
                 }
                 roamTarget = ground;
+                roamOrigin = feet.toImmutable();
                 roamStartTick = elapsed;
+                roamOrdinal = nextRoam;
+                roamAttemptSerial++;
+                roamCredited = false;
                 phase = Phase.ROAM;
-                lastProgressTick = elapsed;
                 BotLog.action(bot, "hunt_roam",
                         "to", ground.getX() + "," + ground.getY() + "," + ground.getZ(),
-                        "n", roamCount, "dist", dist);
-                return true;
+                        "n", nextRoam, "dist", dist);
+                return RoamResult.STARTED;
             }
         }
-        return false;
+        // A full rejection must change the next candidate geometry. Merely sleeping and retrying
+        // the same 8 directions at the same 3 radii strands the bot forever on seed-3000's ridge:
+        // nextRoam stays 1 because no movement was committed, so every replan repeats the exact
+        // same 24 cells until hunt_no_progress. Rotate the sampling fan deterministically while
+        // preserving the roam credit; successful physical movement still owns roamCount.
+        roamAttemptSerial++;
+        nextRoamRetryTick = elapsed + 20;
+        phase = Phase.ACQUIRE;
+        BotLog.action(bot, "hunt_roam_retry",
+                "n", nextRoam,
+                "attempt", roamAttemptSerial,
+                "from", feet.toShortString());
+        return RoamResult.RETRY;
+    }
+
+    /**
+     * Produces a new deterministic surface-sampling fan after every fully rejected roam attempt.
+     * Serial zero is byte-for-byte the old cardinal/diagonal geometry. Later attempts rotate that
+     * fan through the 45-degree symmetry sector, so a narrow ridge between the compass axes can be
+     * discovered without randomness, teleporting, digging, or accepting a one-way drop.
+     */
+    static BlockPos rotatedRoamColumn(BlockPos origin, int dx, int dz, int distance, int attemptSerial) {
+        double baseAngle = Math.atan2(dz, dx);
+        int rotation = Math.floorMod(attemptSerial * ROAM_RETRY_ROTATION_DEGREES, 45);
+        double angle = baseAngle + Math.toRadians(rotation);
+        double radius = distance * Math.sqrt((double) dx * dx + (double) dz * dz);
+        int x = origin.getX() + (int) Math.round(Math.cos(angle) * radius);
+        int z = origin.getZ() + (int) Math.round(Math.sin(angle) * radius);
+        return new BlockPos(x, origin.getY(), z);
+    }
+
+    static boolean hasWalkableReturnRoute(ServerWorld world, BlockPos waypoint, BlockPos origin) {
+        if (waypoint.getY() >= origin.getY()) {
+            return true; // returning downhill never needs a pillar; the outbound path still validates reachability
+        }
+        return new AStarPathfinder(world, waypoint, origin,
+                4_000, 25L, false, false).findPath().success();
     }
 
     // 漫游途中持续扫猎物:发现就转入捕猎;到落脚点/走不动则回 ACQUIRE 重扫。
@@ -257,12 +410,14 @@ public final class HuntTask extends AbstractTask {
             beginApproach(bot);
             return;
         }
-        // 沾水即弃当前漫游路线:这条路把我们带进了水(寻路不入水,入水多半是沿岸滑落/直线 walk),
-        // 让 NavSafetyNet 拖上岸,回 ACQUIRE 重选方向——别顶着岸壁把自己淹死(实测 drowned)。
-        if (bot.isTouchingWater()) {
-            roamTarget = null;
-            phase = Phase.ACQUIRE;
-            return;
+        double advance = roamOrigin == null
+                ? 0.0D : bot.getBlockPos().getSquaredDistance(roamOrigin);
+        if (!roamCredited && advance >= MIN_ROAM_ADVANCE_SQUARED) {
+            roamCount = Math.max(roamCount, roamOrdinal);
+            roamCredited = true;
+            lastProgressTick = elapsed;
+            BotLog.action(bot, "hunt_roam_committed",
+                    "n", roamCount, "advance", (int) Math.sqrt(advance));
         }
         boolean arrived = roamTarget == null
                 || bot.getBlockPos().getSquaredDistance(roamTarget) <= 9.0D;
@@ -271,9 +426,29 @@ public final class HuntTask extends AbstractTask {
         boolean gaveUp = (elapsed - roamStartTick > 20 && bot.getActionPack().isPathExecutorIdle())
                 || elapsed - roamStartTick > 200;
         if (arrived || gaveUp) {
-            roamTarget = null;
+            if (!roamCredited || gaveUp) {
+                excludeRoamTarget(bot);
+            }
+            if (gaveUp) {
+                bot.getActionPack().stopAll();
+            }
+            clearRoamIntent();
             phase = Phase.ACQUIRE;
         }
+    }
+
+    private void excludeRoamTarget(AIPlayerEntity bot) {
+        if (roamTarget != null) {
+            EpisodeMemory.INSTANCE.exclude(bot.getUuid(), roamTarget,
+                    bot.getServer().getTicks(), EpisodeMemory.TTL_UNREACHABLE);
+        }
+    }
+
+    private void clearRoamIntent() {
+        roamTarget = null;
+        roamOrigin = null;
+        roamOrdinal = 0;
+        roamCredited = false;
     }
 
     // 在 (x,z) 列从高往低找第一个露天可站点(地表落脚点)。
@@ -294,8 +469,7 @@ public final class HuntTask extends AbstractTask {
     }
 
     private void approach(AIPlayerEntity bot) {
-        if (target == null || !target.isAlive()) {
-            beginPickup(bot);
+        if (resolveUnavailableTarget(bot)) {
             return;
         }
         CombatCore.lookAt(bot, target);
@@ -336,14 +510,16 @@ public final class HuntTask extends AbstractTask {
                         "dist", (int) bot.distanceTo(target));
                 target = null;
                 approachStuckPos = null;
-                if (!roamForPrey(bot)) {        // 换地方找猎物;漫游用尽才收尾
-                    if (collected > 0) {
+                RoamResult roam = roamForPrey(bot);
+                if (roam == RoamResult.EXHAUSTED) { // 换地方找猎物;漫游用尽才收尾
+                    if (collected > 0 && !requireFullQuota) {
                         complete();
                     } else {
-                        fail("hunt_stuck_no_escape");
+                        fail(collected > 0 ? "insufficient_prey" : "hunt_stuck_no_escape");
                     }
+                } else if (roam == RoamResult.STARTED) {
+                    lastProgressTick = elapsed;
                 }
-                lastProgressTick = elapsed;
             }
             return;
         }
@@ -372,8 +548,7 @@ public final class HuntTask extends AbstractTask {
     }
 
     private void strike(AIPlayerEntity bot) {
-        if (target == null || !target.isAlive()) {
-            beginPickup(bot);
+        if (resolveUnavailableTarget(bot)) {
             return;
         }
         CombatCore.lookAt(bot, target);
@@ -389,47 +564,154 @@ public final class HuntTask extends AbstractTask {
         // NO_PROGRESS_LIMIT 兜底干净失败,而非"挥空也算进展"把任务拖到 maxElapsed。
     }
 
+    /**
+     * Distinguishes a factual kill from a stale entity reference.
+     *
+     * <p>{@link LivingEntity#isAlive()} is also false after chunk unload. Treating every removed
+     * reference as a corpse creates a pickup debt for loot that never existed, while the same
+     * animal can reappear alive when its chunk loads again. Only zero health or Minecraft's
+     * explicit KILLED removal reason may open the atomic loot transaction.</p>
+     */
+    private boolean resolveUnavailableTarget(AIPlayerEntity bot) {
+        if (target != null && (target.getHealth() <= 0.0F
+                || target.getRemovalReason() == net.minecraft.entity.Entity.RemovalReason.KILLED)) {
+            beginPickup(bot);
+            return true;
+        }
+        if (target != null && target.isAlive()) {
+            return false;
+        }
+
+        UUID lostId = target == null ? null : target.getUuid();
+        Object removal = target == null ? "missing" : target.getRemovalReason();
+        obstacleMiner.cancel(bot);
+        bot.getActionPack().stopAll();
+        target = null;
+        clearingObstacle = false;
+        approachStuckPos = null;
+        lastProgressTick = elapsed;
+        phase = Phase.ACQUIRE;
+        BotLog.action(bot, "hunt_target_reacquire", "prey", lostId, "removal", removal);
+        return true;
+    }
+
     private void beginPickup(AIPlayerEntity bot) {
+        pickupOrigin = target == null ? bot.getBlockPos().toImmutable()
+                : target.getBlockPos().toImmutable();
+        pickupInventoryBaseline = targetMeatBaseline;
         target = null;
         clearingObstacle = false;
         obstacleMiner.cancel(bot);
-        bot.getActionPack().stopMovement();
+        bot.getActionPack().stopAll();
         pickupGrace = 0;
+        pickupSweepCursor = 0;
         lastProgressTick = elapsed;
         phase = Phase.PICKUP;
     }
 
     private void pickup(AIPlayerEntity bot) {
         HarvestCore.sweepPickupAnyOf(bot, RAW_MEATS, 16);
-        if (pickupGrace++ >= PICKUP_GRACE) {
-            phase = Phase.ACQUIRE; // 捡完去找下一只(数量够了会在 onTick 顶部 complete)
+        pickupGrace++;
+        boolean observedDrop = HarvestCore.nearestDropAnyOf(bot, RAW_MEATS, 16).isPresent();
+        boolean pickupMovementActive = !bot.getActionPack().isPathExecutorIdle()
+                || !bot.getActionPack().isWalkToIdle();
+        int currentMeat = HarvestCore.countInventoryItems(bot, RAW_MEATS);
+        boolean collectionConfirmed = currentMeat > pickupInventoryBaseline;
+        boolean auxiliaryPickupObserved = HarvestCore.countInventoryItems(bot, PREY_AUXILIARY_DROPS)
+                > targetAuxiliaryBaseline
+                || pickedUpAuxiliary(bot) > targetAuxiliaryPickupBaseline;
+        if (!collectionConfirmed && !pickupMovementActive && pickupGrace >= 3) {
+            // The kill coordinate is factual. Return there first, but do not camp forever when a
+            // low sibling ItemEntity is hidden from canSee at the player's feet. Picking leather,
+            // wool, feather or hide is observable proof that this kill's loot transaction began;
+            // walk an observed, dry ring so the missed meat becomes visible/collidable. The fixed
+            // delay covers prey without auxiliary drops (notably pigs) without hidden scans.
+            if ((auxiliaryPickupObserved || pickupGrace >= BLIND_PICKUP_SWEEP_DELAY)
+                    && startNextPickupSweepStep(bot)) {
+                pickupMovementActive = true;
+            } else if (pickupOrigin != null) {
+                pickupMovementActive = HarvestCore.approachKnownPickupCell(bot, pickupOrigin);
+            }
         }
+        // PICKUP is an atomic inventory transaction, not a one-tick visibility hint. A dead
+        // animal's ItemEntity may become visible only after this task's tick; leaving early lets a
+        // roam path overwrite the only physical pickup route. Hold the debt until inventory proves
+        // success, and after that until every observed drop/controller has settled.
+        if (pickupGrace < PICKUP_RECOVERY_LIMIT
+                && (!collectionConfirmed || observedDrop || pickupMovementActive)) {
+            return;
+        }
+        if (!collectionConfirmed || observedDrop || pickupMovementActive) {
+            bot.getActionPack().stopAll();
+            fail("hunt_drop_unrecovered origin="
+                    + (pickupOrigin == null ? "unknown" : pickupOrigin.toShortString())
+                    + " baseline=" + pickupInventoryBaseline + " current=" + currentMeat);
+            return;
+        }
+        bot.getActionPack().stopAll();
+        pickupOrigin = null;
+        pickupInventoryBaseline = currentMeat;
+        phase = Phase.ACQUIRE; // 捡完去找下一只(数量够了会在 onTick 顶部 complete)
     }
 
-    // 数据驱动猎物判定(模组兼容):白名单(vanilla 五畜,优先)之外,任何非驯服的 AnimalEntity 都可作猎物
-    //(暮色森林的鹿/野猪等模组动物无需改代码即可猎)。排除已驯服宠物(别把玩家的狼猎了)。
+    // 只猎确定掉生肉的成年 vanilla 动物。旧的“任意 AnimalEntity”兼容会把蜜蜂、青蛙等
+    // 非食物生物当猎物，既浪费 200t 拾取预算又可能主动制造战斗；模组肉源应通过显式配置扩展。
     private static boolean isHuntable(LivingEntity entity) {
-        if (PREY.contains(entity.getType())) {
-            return true;
-        }
-        if (!(entity instanceof net.minecraft.entity.passive.AnimalEntity)) {
-            return false;
-        }
-        if (entity instanceof net.minecraft.entity.passive.TameableEntity tameable && tameable.isTamed()) {
-            return false;
-        }
-        return true;
+        return PREY.contains(entity.getType())
+                && entity instanceof net.minecraft.entity.passive.AnimalEntity animal
+                && !animal.isBaby();
     }
 
     private LivingEntity nearestPrey(AIPlayerEntity bot) {
+        wetPreyRejectedUntil.entrySet().removeIf(entry -> entry.getValue() <= elapsed);
         Box box = bot.getBoundingBox().expand(SEARCH_RANGE);
         return bot.getServerWorld()
                 .getEntitiesByClass(LivingEntity.class, box,
                         entity -> entity.isAlive() && entity != bot && isHuntable(entity))
                 .stream()
                 .filter(entity -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveEntity(bot, entity))
+                .filter(entity -> !wetPreyRejectedUntil.containsKey(entity.getUuid()))
                 .min(Comparator.comparingDouble(bot::distanceTo))
                 .orElse(null);
+    }
+
+    boolean isWetPreyTemporarilyRejected(UUID preyId) {
+        return preyId != null && wetPreyRejectedUntil.getOrDefault(preyId, -1) > elapsed;
+    }
+
+    private boolean startNextPickupSweepStep(AIPlayerEntity bot) {
+        if (pickupOrigin == null) {
+            return false;
+        }
+        ServerWorld world = bot.getServerWorld();
+        for (int checked = 0; checked < PICKUP_SWEEP_OFFSETS.length; checked++) {
+            int[] offset = PICKUP_SWEEP_OFFSETS[
+                    Math.floorMod(pickupSweepCursor++, PICKUP_SWEEP_OFFSETS.length)];
+            BlockPos candidate = pickupOrigin.add(offset[0], 0, offset[1]);
+            Standability.clearCache();
+            if (candidate.equals(bot.getBlockPos())
+                    || !ObservableWorldQuery.canObserveCell(bot, candidate)
+                    || !ObservableWorldQuery.canObserveCell(bot, candidate.up())
+                    || !ObservableWorldQuery.canObserveBlock(bot, candidate.down())
+                    || !Standability.isStandable(world, candidate)) {
+                continue;
+            }
+            bot.getActionPack().startWalkTo(Vec3d.ofBottomCenter(candidate), 0.15D);
+            BotLog.action(bot, "hunt_pickup_observation_sweep",
+                    "origin", pickupOrigin.toShortString(),
+                    "to", candidate.toShortString(),
+                    "step", pickupSweepCursor);
+            return true;
+        }
+        return false;
+    }
+
+    private static long pickedUpAuxiliary(AIPlayerEntity bot) {
+        long count = 0L;
+        for (Item item : PREY_AUXILIARY_DROPS) {
+            count += bot.getStatHandler().getStat(Stats.PICKED_UP, item);
+        }
+        return count;
     }
 
     /** 周围是否有可猎动物——供饥饿链判断"值不值得派猎食任务",避免没动物时空派必失败。 */

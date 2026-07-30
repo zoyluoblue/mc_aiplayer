@@ -14,17 +14,31 @@ import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.Vec3d;
 
 public final class BuildAction {
+    private static final double FACE_SAMPLE_INSET = 0.375D;
+    private static final double[][] FACE_SAMPLE_OFFSETS = {
+            {0.0D, 0.0D},
+            {-FACE_SAMPLE_INSET, 0.0D},
+            {FACE_SAMPLE_INSET, 0.0D},
+            {0.0D, -FACE_SAMPLE_INSET},
+            {0.0D, FACE_SAMPLE_INSET},
+            {-FACE_SAMPLE_INSET, -FACE_SAMPLE_INSET},
+            {-FACE_SAMPLE_INSET, FACE_SAMPLE_INSET},
+            {FACE_SAMPLE_INSET, -FACE_SAMPLE_INSET},
+            {FACE_SAMPLE_INSET, FACE_SAMPLE_INSET}
+    };
+
     private BuildAction() {
     }
 
     public static ActionResult placeBlock(AIPlayerEntity player, BlockPos against, Direction face, Hand hand) {
         double reach = player.getBlockInteractionRange();
-        if (player.getEyePos().squaredDistanceTo(against.toCenterPos()) > reach * reach
-                || !player.canInteractWithBlockAt(against, 0.0D)) {
-            return ActionResult.failed("support_out_of_reach_or_sight");
-        }
+        double sampleRange = exactPlacementSampleRange(
+                AIBotConfig.get().perception().radius(), reach);
+        // Vanilla measures block interaction reach against the block's bounding box, not its
+        // center. The center may be outside reach while a face inset is still a legal click.
         ItemStack stack = player.getStackInHand(hand);
         if (stack.isEmpty()) {
             BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.ERROR, player, "place_failed", "reason", "empty_hand");
@@ -32,13 +46,14 @@ public final class BuildAction {
         }
         var item = stack.getItem();
 
-        LookAction.lookAtBlock(player, against, face);
-        var lookedAt = player.raycast(reach, 1.0F, false);
-        if (!(lookedAt instanceof BlockHitResult hit)
-                || hit.getBlockPos() == null
-                || !hit.getBlockPos().equals(against)
-                || hit.getSide() != face) {
+        // Prove the exact support face inside both physical interaction reach and configured
+        // perception before asking vanilla about that support or reading the destination.
+        BlockHitResult hit = visibleSupportFaceHit(player, against, face, sampleRange);
+        if (hit == null) {
             return ActionResult.failed("support_face_not_visible");
+        }
+        if (!player.canInteractWithBlockAt(against, 0.0D)) {
+            return ActionResult.failed("support_out_of_reach_or_sight");
         }
         BlockPos destination = against.offset(face);
         var before = player.getServerWorld().getBlockState(destination);
@@ -64,26 +79,26 @@ public final class BuildAction {
 
     public static ActionResult placeBlockAt(AIPlayerEntity player, BlockPos pos) {
         ActionResult lastFailure = ActionResult.failed("no_adjacent_block");
+        // Do not pre-filter supports through canObserveBlock's six face-center rays. A support
+        // can expose only a clickable edge. placeBlock provides the strict observation proof by
+        // requiring an exact vanilla ray hit before it reads or interacts with the destination.
         BlockPos below = pos.down();
-        if (ObservableWorldQuery.canObserveBlock(player, below)
-                && !player.getServerWorld().getBlockState(below).isAir()) {
-            ActionResult result = placeBlock(player, below, Direction.UP, Hand.MAIN_HAND);
-            if (result.isSuccess()) {
-                return result;
-            }
-            lastFailure = result;
+        ActionResult belowResult = placeBlock(player, below, Direction.UP, Hand.MAIN_HAND);
+        if (belowResult.isSuccess()) {
+            return belowResult;
         }
+        lastFailure = preferPlacementFailure(lastFailure, belowResult);
 
         for (Direction direction : Direction.values()) {
             BlockPos against = pos.offset(direction.getOpposite());
-            if (ObservableWorldQuery.canObserveBlock(player, against)
-                    && !player.getServerWorld().getBlockState(against).isAir()) {
-                ActionResult result = placeBlock(player, against, direction, Hand.MAIN_HAND);
-                if (result.isSuccess()) {
-                    return result;
-                }
-                lastFailure = result;
+            if (against.equals(below)) {
+                continue;
             }
+            ActionResult result = placeBlock(player, against, direction, Hand.MAIN_HAND);
+            if (result.isSuccess()) {
+                return result;
+            }
+            lastFailure = preferPlacementFailure(lastFailure, result);
         }
         if (AIBotConfig.get().profile() == OperatingProfile.STRICT_SURVIVAL) {
             return lastFailure;
@@ -93,6 +108,75 @@ public final class BuildAction {
             return fallback;
         }
         return lastFailure;
+    }
+
+    static double exactPlacementSampleRange(int perceptionRadius, double interactionRange) {
+        return Math.min(Math.max(1, perceptionRadius), interactionRange);
+    }
+
+    static ActionResult preferPlacementFailure(ActionResult current, ActionResult candidate) {
+        if (candidate == null || !candidate.isFailed()) {
+            return current;
+        }
+        if (current == null || !current.isFailed()
+                || placementFailurePriority(candidate.reason())
+                > placementFailurePriority(current.reason())) {
+            return candidate;
+        }
+        return current;
+    }
+
+    private static int placementFailurePriority(String reason) {
+        if (reason != null && reason.startsWith("interact_block_")) {
+            return 4;
+        }
+        if ("empty_hand".equals(reason)) {
+            return 3;
+        }
+        if ("support_out_of_reach_or_sight".equals(reason)) {
+            return 2;
+        }
+        if ("support_face_not_visible".equals(reason)) {
+            return 1;
+        }
+        return 0;
+    }
+
+    /**
+     * Returns a vanilla ray-proven hit on the requested support face. A face can be physically
+     * clickable at an exposed edge even when its center is hidden by the neighbouring mining
+     * wall, so sample a small deterministic inset grid before declaring it inaccessible.
+     */
+    private static BlockHitResult visibleSupportFaceHit(AIPlayerEntity player,
+                                                        BlockPos against,
+                                                        Direction face,
+                                                        double sampleRange) {
+        double sampleRangeSquared = sampleRange * sampleRange;
+        Vec3d eye = player.getEyePos();
+        Vec3d center = Vec3d.ofCenter(against).add(
+                face.getOffsetX() * 0.5D,
+                face.getOffsetY() * 0.5D,
+                face.getOffsetZ() * 0.5D);
+        for (double[] offset : FACE_SAMPLE_OFFSETS) {
+            Vec3d target = switch (face.getAxis()) {
+                case X -> center.add(0.0D, offset[0], offset[1]);
+                case Y -> center.add(offset[0], 0.0D, offset[1]);
+                case Z -> center.add(offset[0], offset[1], 0.0D);
+            };
+            if (eye.squaredDistanceTo(target) > sampleRangeSquared) {
+                continue;
+            }
+            LookAction.lookAt(player, target);
+            var lookedAt = player.raycast(sampleRange, 1.0F, false);
+            if (!(lookedAt instanceof BlockHitResult hit)
+                    || hit.getBlockPos() == null
+                    || !hit.getBlockPos().equals(against)
+                    || hit.getSide() != face) {
+                continue;
+            }
+            return hit;
+        }
+        return null;
     }
 
     private static ActionResult directPlaceFallback(AIPlayerEntity player, BlockPos pos, Hand hand) {

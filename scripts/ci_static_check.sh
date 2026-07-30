@@ -19,12 +19,19 @@ required_files=(
   scripts/evidence_run.sh
   scripts/evidence_batch.sh
   scripts/evidence_validate.sh
+  scripts/mining_acceptance.sh
+  scripts/mining_evidence_shard.sh
+  scripts/mining_evidence_aggregate.sh
+  scripts/mining_release_gate.sh
   scripts/pin_baseline.sh
   scripts/persistence_restart_test.sh
   scripts/lib/harness.sh
+  scripts/lib/mining_acceptance_contract.sh
   scripts/capability_matrix.sh
   reports/baselines/index.tsv
+  reports/capability_baseline_manifest.tsv
   docs/CAPABILITY_MATRIX.md
+  docs/MINING_ACCEPTANCE.md
   .github/workflows/ci.yml
   .github/workflows/nightly.yml
   .github/workflows/manual-llm.yml
@@ -58,7 +65,9 @@ fi
 
 for script in scripts/ci_static_check.sh scripts/food_test.sh scripts/night_watch.sh \
   scripts/evidence_run.sh scripts/evidence_batch.sh scripts/evidence_validate.sh \
-  scripts/pin_baseline.sh scripts/persistence_restart_test.sh scripts/capability_matrix.sh scripts/lib/harness.sh; do
+  scripts/mining_acceptance.sh scripts/mining_evidence_shard.sh scripts/mining_evidence_aggregate.sh \
+  scripts/mining_release_gate.sh scripts/pin_baseline.sh scripts/persistence_restart_test.sh \
+  scripts/capability_matrix.sh scripts/lib/harness.sh scripts/lib/mining_acceptance_contract.sh; do
   bash -n "$script" || fail "shell syntax failed: $script"
 done
 
@@ -82,10 +91,46 @@ for workflow in .github/workflows/ci.yml .github/workflows/nightly.yml; do
 done
 grep -Fq 'scripts/evidence_run.sh' .github/workflows/ci.yml \
   || fail 'PR CI does not run isolated runtime evidence'
+grep -Fq 'mining_contract_suite' .github/workflows/ci.yml \
+  || fail 'PR CI does not run the fast Mining First contract'
 grep -Fq 'scripts/evidence_batch.sh' .github/workflows/nightly.yml \
   || fail 'nightly does not run the profile/seed evidence matrix'
+grep -Fq 'scripts/mining_acceptance.sh' .github/workflows/nightly.yml \
+  || fail 'nightly lacks the explicit long Mining First entrypoint'
+grep -Fq 'fromJSON(needs.prepare_mining_shards.outputs.matrix)' .github/workflows/nightly.yml \
+  || fail 'from_zero Mining First workflow is not using the fixed parallel shard matrix'
+grep -Fq 'actions/download-artifact@v4' .github/workflows/nightly.yml \
+  || fail 'from_zero Mining First workflow does not download shard evidence for aggregation'
+grep -Fq 'scripts/mining_evidence_aggregate.sh' .github/workflows/nightly.yml \
+  || fail 'from_zero Mining First workflow does not revalidate and aggregate shards'
+grep -Fq 'merge-multiple: true' .github/workflows/nightly.yml \
+  || fail 'from_zero Mining First shard artifacts are not merged into the canonical evidence roots'
+grep -Fq 'pattern: mining-shard-${{ matrix.target }}-*-${{ github.run_id }}-${{ github.run_attempt }}' .github/workflows/nightly.yml \
+  || fail 'from_zero Mining First aggregation can mix artifacts from different workflow attempts'
+if grep -Eq 'mining_acceptance\.sh[^[:cntrl:]]*from_zero' .github/workflows/nightly.yml; then
+  fail 'from_zero Mining First must not regress to one sequential GitHub-hosted job'
+fi
+grep -Fq 'scripts/mining_release_gate.sh' scripts/mining_acceptance.sh \
+  || fail 'from_zero Mining First runs do not enforce the aggregate release gate'
+grep -Fq 'FULL_CAPABILITY_CERTIFIED=no' scripts/mining_release_gate.sh \
+  || fail 'multi-seed evidence gate must not claim full Mining First certification'
 grep -Fq 'profile: [strict_survival, operator]' .github/workflows/nightly.yml \
   || fail 'nightly does not cover both operating profiles'
+
+for capability in diamond_stack_64 obsidian_half_stack_32; do
+  awk -F '\t' -v capability="$capability" 'NR > 1 && $1 == capability && $8 == "MISSING" { found++ } END { exit found == 1 ? 0 : 1 }' \
+    reports/capability_baseline_manifest.tsv \
+    || fail "Mining First capability must exist exactly once and remain MISSING until evidence is pinned: $capability"
+  if awk -F '\t' -v capability="$capability" 'NR > 1 && $1 == capability { found=1 } END { exit found ? 0 : 1 }' reports/baselines/index.tsv; then
+    fail "Mining First single-run baseline index entry is forbidden: $capability"
+  fi
+done
+bash scripts/mining_release_gate.sh --self-test >/dev/null \
+  || fail 'Mining First release threshold self-test failed'
+bash scripts/mining_evidence_shard.sh --self-test >/dev/null \
+  || fail 'Mining First shard matrix self-test failed'
+bash scripts/mining_evidence_aggregate.sh --self-test >/dev/null \
+  || fail 'Mining First evidence aggregator self-test failed'
 
 manual=.github/workflows/manual-llm.yml
 grep -Fq 'workflow_dispatch:' "$manual" || fail 'manual LLM workflow is not dispatch-only'

@@ -55,6 +55,12 @@ public final class AStarPathfinder {
         this(world, start, goal, DEFAULT_MAX_NODES, DEFAULT_MAX_MILLIS, canPillar);
     }
 
+    /** Replans with the caller's original movement-capability ceiling intact. */
+    public AStarPathfinder(ServerWorld world, BlockPos start, BlockPos goal,
+                           boolean canPillar, boolean allowDig) {
+        this(world, start, goal, DEFAULT_MAX_NODES, DEFAULT_MAX_MILLIS, canPillar, allowDig);
+    }
+
     public AStarPathfinder(ServerWorld world, BlockPos start, BlockPos goal, int maxNodes, long maxMillis, boolean canPillar) {
         this(world, start, goal, maxNodes, maxMillis, canPillar, true);
     }

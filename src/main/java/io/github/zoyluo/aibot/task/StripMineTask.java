@@ -12,6 +12,7 @@ import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.memory.BotMemoryStore;
 import io.github.zoyluo.aibot.mining.OreScan;
 import io.github.zoyluo.aibot.mining.ToolTier;
+import io.github.zoyluo.aibot.mode.OperatingProfile;
 import io.github.zoyluo.aibot.pathfinding.Standability;
 import net.minecraft.component.DataComponentTypes;
 import net.minecraft.block.Block;
@@ -34,6 +35,9 @@ import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 public final class StripMineTask extends AbstractTask {
+    public static final String STRICT_SURVIVAL_REJECTION =
+            "legacy_strip_mine_unavailable_in_strict_survival:use_mine_ore_or_achieve_goal";
+
     private enum Phase {
         PREP,
         TUNNEL,
@@ -97,6 +101,18 @@ public final class StripMineTask extends AbstractTask {
         return new StripMineTask(Direction.NORTH, length, 4, null, OreScan.oreFamily(targetOre), false, true);
     }
 
+    /**
+     * The legacy implementation still contains raw world reads that have not crossed the
+     * observable-world boundary. Keep the public constructors for operator/legacy callers, but
+     * fail closed whenever a strict-survival entry reaches the task directly.
+     */
+    public static Optional<String> profileRejectionReason(OperatingProfile profile) {
+        OperatingProfile effective = profile == null ? OperatingProfile.STRICT_SURVIVAL : profile;
+        return effective == OperatingProfile.STRICT_SURVIVAL
+                ? Optional.of(STRICT_SURVIVAL_REJECTION)
+                : Optional.empty();
+    }
+
     private StripMineTask(Direction direction,
                           int length,
                           int branchSpacing,
@@ -157,6 +173,17 @@ public final class StripMineTask extends AbstractTask {
 
     @Override
     protected void onStart(AIPlayerEntity bot) {
+        Optional<String> profileRejection = profileRejectionReason(AIBotConfig.get().profile());
+        if (profileRejection.isPresent()) {
+            String reason = profileRejection.orElseThrow();
+            fail(reason);
+            BotLog.action(bot, "strip_mine_profile_gate",
+                    "result", "rejected",
+                    "profile", OperatingProfile.STRICT_SURVIVAL.configValue(),
+                    "reason", reason,
+                    "task", name());
+            return;
+        }
         phase = Phase.PREP;
         origin = bot.getBlockPos().toImmutable();
         activeDepotChest = resolveDepotChest(bot);

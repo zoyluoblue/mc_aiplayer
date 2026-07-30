@@ -99,10 +99,15 @@ public final class CraftingHelper {
 
             int missingCount = desiredCount - available;
             int crafts = divideRoundUp(missingCount, recipe.outputCount());
+            PlannerState recipeStart = snapshot();
             stack.add(item);
             for (RecipeRegistry.Ingredient ingredient : recipe.ingredients()) {
                 int need = ingredient.count() * crafts;
                 if (!ensureIngredient(ingredient, need, stack)) {
+                    List<Missing> failure = List.copyOf(
+                            missing.subList(recipeStart.missingSize(), missing.size()));
+                    restore(recipeStart);
+                    missing.addAll(failure);
                     stack.remove(item);
                     return false;
                 }
@@ -121,32 +126,88 @@ public final class CraftingHelper {
                 return true;
             }
 
-            int deficit = count - total;
+            PlannerState familyStart = snapshot();
             for (Item candidate : ingredient.anyOf()) {
-                if (RecipeRegistry.find(candidate).isEmpty()) {
-                    continue;
-                }
-                Map<Item, Integer> countsBackup = new HashMap<>(counts);
-                int stepCount = steps.size();
-                int missingCount = missing.size();
-                boolean tableBackup = needsCraftingTable;
-                if (ensureItem(candidate, counts.getOrDefault(candidate, 0) + deficit, stack) && total(ingredient.anyOf()) >= count) {
+                int remaining = count - total(ingredient.anyOf());
+                if (remaining <= 0) {
                     return true;
                 }
-                counts.clear();
-                counts.putAll(countsBackup);
-                while (steps.size() > stepCount) {
-                    steps.remove(steps.size() - 1);
+                if (RecipeRegistry.find(candidate).isEmpty()
+                        || craftAvailable(candidate, remaining, stack) <= 0) {
+                    continue;
                 }
-                while (missing.size() > missingCount) {
-                    missing.remove(missing.size() - 1);
+                if (total(ingredient.anyOf()) >= count) {
+                    return true;
                 }
-                needsCraftingTable = tableBackup;
             }
 
+            int remaining = count - total(ingredient.anyOf());
+            restore(familyStart);
             Item representative = ingredient.anyOf().isEmpty() ? rootTarget : ingredient.anyOf().get(0);
-            addMissing(representative, deficit);
+            addMissing(representative, remaining);
             return false;
+        }
+
+        /**
+         * Commits the largest contribution this one recipe family can make from the inventory that
+         * is already carried. Failed probes are fully transactional: no virtual ingredients, craft
+         * steps, missing entries or table requirement escape into the next family.
+         */
+        private int craftAvailable(Item candidate, int maxAdditional, Set<Item> stack) {
+            if (maxAdditional <= 0) {
+                return 0;
+            }
+            int existing = counts.getOrDefault(candidate, 0);
+            PlannerState start = snapshot();
+            int low = 1;
+            int high = maxAdditional;
+            int best = 0;
+            while (low <= high) {
+                int additional = low + (high - low) / 2;
+                restore(start);
+                int desired = existing > Integer.MAX_VALUE - additional
+                        ? Integer.MAX_VALUE : existing + additional;
+                if (ensureItem(candidate, desired, new HashSet<>(stack))) {
+                    best = additional;
+                    low = additional + 1;
+                } else {
+                    high = additional - 1;
+                }
+            }
+            restore(start);
+            if (best <= 0) {
+                return 0;
+            }
+            int desired = existing > Integer.MAX_VALUE - best
+                    ? Integer.MAX_VALUE : existing + best;
+            if (!ensureItem(candidate, desired, new HashSet<>(stack))) {
+                restore(start);
+                return 0;
+            }
+            return Math.max(0, counts.getOrDefault(candidate, 0) - existing);
+        }
+
+        private PlannerState snapshot() {
+            return new PlannerState(new HashMap<>(counts), steps.size(), missing.size(),
+                    needsCraftingTable);
+        }
+
+        private void restore(PlannerState state) {
+            counts.clear();
+            counts.putAll(state.counts());
+            while (steps.size() > state.stepSize()) {
+                steps.remove(steps.size() - 1);
+            }
+            while (missing.size() > state.missingSize()) {
+                missing.remove(missing.size() - 1);
+            }
+            needsCraftingTable = state.needsCraftingTable();
+        }
+
+        private record PlannerState(Map<Item, Integer> counts,
+                                    int stepSize,
+                                    int missingSize,
+                                    boolean needsCraftingTable) {
         }
 
         private void consume(RecipeRegistry.Ingredient ingredient, int count) {

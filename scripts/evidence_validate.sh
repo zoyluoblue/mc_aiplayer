@@ -6,6 +6,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 HARNESS_REPO_ROOT="$ROOT"
 # shellcheck source=scripts/lib/harness.sh
 source "$ROOT/scripts/lib/harness.sh"
+# shellcheck source=scripts/lib/mining_acceptance_contract.sh
+source "$ROOT/scripts/lib/mining_acceptance_contract.sh"
 
 usage() {
   printf 'usage: scripts/evidence_validate.sh [--require-verified] <evidence-dir> [...]\n       scripts/evidence_validate.sh --self-test\n' >&2
@@ -52,6 +54,10 @@ validate_one() {
   local log_summary_count log_summary parsed_log_passed parsed_log_total
   local row_scenario row_requested row_actual row_result row_passed row_total row_exit row_summary
   local schema commit timestamp finished sealed key value required_count
+  local provenance_schema provenance_verdict survival_ticks mode_violations privileged_allowed death_delta
+  local diamond_breaks diamond_drops diamond_pickups water_placements lava_conversions
+  local obsidian_breaks obsidian_pickups vanilla_obsidian_breaks mining_final_inventory provenance_record
+  local verify_timeout scenario_timeout running_timeouts running_timeout_count running_announcement_count
 
   VALIDATION_REASON=unknown
   [[ -d "$input" && ! -L "$input" ]] || { validation_fail path_missing_or_symlink; return 1; }
@@ -97,7 +103,7 @@ validate_one() {
   done
 
   schema="$(harness_manifest_get "$manifest" schema_version)"
-  [[ "$schema" == 1 ]] || { validation_fail unsupported_schema_version; return 1; }
+  case "$schema" in 1|2) ;; *) validation_fail unsupported_schema_version; return 1 ;; esac
   run_id="$(harness_manifest_get "$manifest" run_id)"
   harness_safe_id "$run_id" run_id 160 >/dev/null 2>&1 || { validation_fail unsafe_run_id; return 1; }
   [[ "$run_id" == "$(basename "$canonical")" ]] || { validation_fail run_id_path_mismatch; return 1; }
@@ -167,6 +173,22 @@ validate_one() {
 
   scenario="$(harness_manifest_get "$manifest" scenario)"
   harness_safe_id "$scenario" scenario 96 >/dev/null 2>&1 || { validation_fail unsafe_scenario; return 1; }
+  if [[ "$schema" == 1 ]]; then
+    case "$scenario" in
+      diamond_stack_64_from_zero|obsidian_half_stack_32_from_zero)
+        validation_fail legacy_mining_provenance_missing
+        return 1
+        ;;
+    esac
+  else
+    for key in mining_provenance_schema mining_provenance_verdict survival_observed_ticks \
+      game_mode_violations privileged_allowed_count diamond_natural_ore_breaks \
+      death_delta diamond_native_drops diamond_physical_pickups water_placements lava_conversions \
+      obsidian_breaks obsidian_physical_pickups vanilla_obsidian_breaks mining_final_inventory; do
+      value="$(harness_manifest_get "$manifest" "$key")"
+      [[ -n "$value" ]] || { validation_fail "missing_manifest_key:$key"; return 1; }
+    done
+  fi
   requested="$(harness_manifest_get "$manifest" requested_seed)"
   harness_safe_seed "$requested" >/dev/null 2>&1 || { validation_fail invalid_requested_seed; return 1; }
   actual="$(harness_manifest_get "$manifest" actual_seed)"
@@ -341,36 +363,254 @@ EOF
     validation_fail invalid_result_numbers
     return 1
   }
-  if [[ "$row_result" == PASS && ( "$row_total" -eq 0 || "$row_passed" -ne "$row_total" || "$row_exit" -ne 0 ) ]]; then
-    validation_fail inconsistent_pass_result
-    return 1
+  [[ "$row_passed" -le "$row_total" ]] || { validation_fail passed_exceeds_total; return 1; }
+  case "$row_result" in
+    PASS)
+      [[ "$row_total" -gt 0 && "$row_passed" -eq "$row_total" && "$row_exit" -eq 0 ]] || {
+        validation_fail inconsistent_pass_result
+        return 1
+      }
+      ;;
+    FAIL)
+      [[ "$row_total" -gt 0 && "$row_passed" -lt "$row_total" && "$row_exit" -ne 0 ]] || {
+        validation_fail inconsistent_fail_result
+        return 1
+      }
+      ;;
+    ERROR)
+      # ERROR is either an infrastructure failure without a valid verifier summary (0/0), or the
+      # explicit post-processing state where the verifier claimed all-pass but provenance did not.
+      [[ "$row_exit" -ne 0 && ( ( "$row_passed" -eq 0 && "$row_total" -eq 0 ) \
+        || ( "$row_total" -gt 0 && "$row_passed" -eq "$row_total" ) ) ]] || {
+        validation_fail inconsistent_error_result
+        return 1
+      }
+      ;;
+  esac
+
+  verify_timeout="$(harness_manifest_get "$manifest" verify_timeout_seconds)"
+  scenario_timeout="$(harness_manifest_get "$manifest" scenario_timeout_ticks)"
+  if [[ -n "$verify_timeout" || -n "$scenario_timeout" ]]; then
+    [[ "$verify_timeout" =~ ^[1-9][0-9]*$ \
+      && "$verify_timeout" -le "$MINING_MAX_VERIFY_TIMEOUT_SECONDS" ]] || {
+      validation_fail invalid_verify_timeout_seconds
+      return 1
+    }
+    case "$scenario_timeout" in
+      not_applicable|not_observed) ;;
+      *) [[ "$scenario_timeout" =~ ^[1-9][0-9]*$ ]] || {
+        validation_fail invalid_scenario_timeout_ticks
+        return 1
+      } ;;
+    esac
   fi
-  if [[ "$row_result" != PASS && "$row_exit" -eq 0 ]]; then
-    validation_fail failing_result_has_zero_exit
-    return 1
+  case "$scenario" in
+    diamond_stack_64_from_zero|obsidian_half_stack_32_from_zero)
+      [[ -n "$verify_timeout" && -n "$scenario_timeout" ]] || {
+        validation_fail missing_mining_timeout_contract
+        return 1
+      }
+      running_timeouts="$(mining_running_timeout_ticks_from_log \
+        "$scenario" "$canonical/server.log")" || {
+        validation_fail malformed_mining_running_timeout
+        return 1
+      }
+      running_timeout_count="$(printf '%s' "$running_timeouts" \
+        | awk 'NF { count++ } END { print count + 0 }')"
+      running_announcement_count="$(mining_running_timeout_announcement_count_from_log \
+        "$scenario" "$canonical/server.log")" || {
+        validation_fail malformed_mining_running_timeout
+        return 1
+      }
+      [[ "$running_announcement_count" -eq "$running_timeout_count" ]] || {
+        validation_fail malformed_mining_running_timeout
+        return 1
+      }
+      if [[ "$scenario_timeout" =~ ^[1-9][0-9]*$ ]]; then
+        [[ "$running_timeout_count" -eq 1 && "$running_timeouts" == "$scenario_timeout" ]] || {
+          validation_fail mining_running_timeout_manifest_mismatch
+          return 1
+        }
+        mining_verify_timeout_covers_ticks "$verify_timeout" "$scenario_timeout" || {
+          validation_fail mining_verify_timeout_too_short
+          return 1
+        }
+      else
+        [[ "$scenario_timeout" == not_observed && "$running_timeout_count" -eq 0 \
+          && ( "$mode" == fixture || "$row_result" != PASS ) ]] || {
+          validation_fail missing_mining_running_timeout
+          return 1
+        }
+      fi
+      ;;
+    *)
+      [[ -z "$scenario_timeout" || "$scenario_timeout" == not_applicable ]] || {
+        validation_fail non_mining_scenario_has_timeout_contract
+        return 1
+      }
+      ;;
+  esac
+
+  if [[ "$schema" == 2 ]]; then
+    provenance_schema="$(harness_manifest_get "$manifest" mining_provenance_schema)"
+    provenance_verdict="$(harness_manifest_get "$manifest" mining_provenance_verdict)"
+    survival_ticks="$(harness_manifest_get "$manifest" survival_observed_ticks)"
+    mode_violations="$(harness_manifest_get "$manifest" game_mode_violations)"
+    privileged_allowed="$(harness_manifest_get "$manifest" privileged_allowed_count)"
+    death_delta="$(harness_manifest_get "$manifest" death_delta)"
+    diamond_breaks="$(harness_manifest_get "$manifest" diamond_natural_ore_breaks)"
+    diamond_drops="$(harness_manifest_get "$manifest" diamond_native_drops)"
+    diamond_pickups="$(harness_manifest_get "$manifest" diamond_physical_pickups)"
+    water_placements="$(harness_manifest_get "$manifest" water_placements)"
+    lava_conversions="$(harness_manifest_get "$manifest" lava_conversions)"
+    obsidian_breaks="$(harness_manifest_get "$manifest" obsidian_breaks)"
+    obsidian_pickups="$(harness_manifest_get "$manifest" obsidian_physical_pickups)"
+    vanilla_obsidian_breaks="$(harness_manifest_get "$manifest" vanilla_obsidian_breaks)"
+    mining_final_inventory="$(harness_manifest_get "$manifest" mining_final_inventory)"
+    for value in "$survival_ticks" "$mode_violations" "$privileged_allowed" "$death_delta" \
+      "$diamond_breaks" "$diamond_drops" "$diamond_pickups" "$water_placements" \
+      "$lava_conversions" "$obsidian_breaks" "$obsidian_pickups" \
+      "$vanilla_obsidian_breaks" "$mining_final_inventory"; do
+      [[ "$value" =~ ^[0-9]+$ ]] || { validation_fail malformed_mining_provenance_number; return 1; }
+    done
+    case "$scenario" in
+      diamond_stack_64_from_zero|obsidian_half_stack_32_from_zero)
+        [[ "$provenance_schema" == 2 ]] || { validation_fail invalid_mining_provenance_schema; return 1; }
+        case "$provenance_verdict" in PASS|FAIL) ;; *) validation_fail invalid_mining_provenance_verdict; return 1 ;; esac
+        provenance_record="$(python3 - "$canonical/server.log" "$scenario" <<'PY'
+import re
+import sys
+
+path, scenario = sys.argv[1:]
+matches = []
+with open(path, "r", encoding="utf-8", errors="replace") as handle:
+    for line in handle:
+        if "event=mining_provenance_result" not in line:
+            continue
+        match = re.search(r"\{([^{}]*)\}\s*$", line.rstrip("\n"))
+        if not match:
+            continue
+        fields = {}
+        for pair in match.group(1).split(", "):
+            if "=" not in pair:
+                fields = {}
+                break
+            key, value = pair.split("=", 1)
+            if not key or key in fields:
+                fields = {}
+                break
+            fields[key] = value
+        if fields.get("scenario") == scenario:
+            matches.append(fields)
+if len(matches) != 1:
+    sys.exit(2)
+fields = matches[0]
+ordered = (
+    "schema", "verdict", "observed_ticks", "game_mode_violations",
+    "privileged_allowed", "death_delta", "diamond_natural_ore_breaks",
+    "diamond_native_drops", "diamond_physical_pickups", "water_placements",
+    "lava_conversions", "obsidian_breaks", "obsidian_physical_pickups",
+    "vanilla_obsidian_breaks", "final_inventory",
+)
+if any(name not in fields for name in ordered):
+    sys.exit(2)
+print("\t".join(fields[name] for name in ordered))
+PY
+)" || { validation_fail missing_or_duplicate_mining_provenance_log; return 1; }
+        [[ "$provenance_record" == "$provenance_schema"$'\t'"$provenance_verdict"$'\t'"$survival_ticks"$'\t'"$mode_violations"$'\t'"$privileged_allowed"$'\t'"$death_delta"$'\t'"$diamond_breaks"$'\t'"$diamond_drops"$'\t'"$diamond_pickups"$'\t'"$water_placements"$'\t'"$lava_conversions"$'\t'"$obsidian_breaks"$'\t'"$obsidian_pickups"$'\t'"$vanilla_obsidian_breaks"$'\t'"$mining_final_inventory" ]] || {
+          validation_fail mining_provenance_log_manifest_mismatch
+          return 1
+        }
+        if [[ "$row_result" == PASS && "$provenance_verdict" != PASS ]]; then
+          validation_fail passing_mining_result_lacks_provenance
+          return 1
+        fi
+        if [[ "$provenance_verdict" == PASS ]]; then
+          [[ "$survival_ticks" -gt 0 && "$mode_violations" -eq 0 && "$privileged_allowed" -eq 0 \
+            && "$death_delta" -eq 0 ]] || {
+            validation_fail invalid_survival_or_privilege_provenance
+            return 1
+          }
+          if [[ "$scenario" == diamond_stack_64_from_zero ]]; then
+            [[ "$diamond_breaks" -ge 64 && "$diamond_drops" -ge 64 \
+              && "$diamond_pickups" -ge 64 && "$mining_final_inventory" -ge 64 ]] || {
+              validation_fail insufficient_diamond_physical_provenance
+              return 1
+            }
+          else
+            [[ "$water_placements" -ge 1 && "$lava_conversions" -ge 32 \
+              && "$obsidian_breaks" -ge 32 && "$vanilla_obsidian_breaks" -ge 32 \
+              && "$obsidian_pickups" -ge 32 && "$mining_final_inventory" -ge 32 ]] || {
+              validation_fail insufficient_obsidian_physical_provenance
+              return 1
+            }
+          fi
+        fi
+        ;;
+      *)
+        [[ "$provenance_schema" == not_applicable && "$provenance_verdict" == not_applicable \
+          && "$survival_ticks" -eq 0 && "$mode_violations" -eq 0 && "$privileged_allowed" -eq 0 \
+          && "$death_delta" -eq 0 \
+          && "$diamond_breaks" -eq 0 && "$diamond_drops" -eq 0 && "$diamond_pickups" -eq 0 \
+          && "$water_placements" -eq 0 && "$lava_conversions" -eq 0 && "$obsidian_breaks" -eq 0 \
+          && "$obsidian_pickups" -eq 0 && "$vanilla_obsidian_breaks" -eq 0 \
+          && "$mining_final_inventory" -eq 0 ]] || {
+          validation_fail non_mining_run_has_mining_provenance
+          return 1
+        }
+        ;;
+    esac
   fi
   log_summary_count="$(grep -acE '\[AIBot Verify\] summary' "$canonical/server.log" 2>/dev/null || true)"
   log_summary="$(grep -aE '\[AIBot Verify\] summary' "$canonical/server.log" 2>/dev/null | tail -1 || true)"
   log_summary="$(harness_tsv_value "$log_summary")"
-  if [[ "$row_result" == PASS || "$row_result" == FAIL ]]; then
-    [[ "$log_summary_count" -eq 1 && "$log_summary" == "$row_summary" ]] || {
+  [[ "$log_summary_count" -le 1 ]] || { validation_fail duplicate_terminal_summary; return 1; }
+  parsed_log_passed=""
+  parsed_log_total=""
+  if [[ "$log_summary_count" -eq 1 ]]; then
+    [[ "$log_summary" == "$row_summary" ]] || {
       validation_fail terminal_summary_result_mismatch
       return 1
     }
     parsed_log_passed="$(printf '%s\n' "$log_summary" | sed -nE 's/.*summary ([0-9]+)\/([0-9]+) PASS.*/\1/p')"
     parsed_log_total="$(printf '%s\n' "$log_summary" | sed -nE 's/.*summary ([0-9]+)\/([0-9]+) PASS.*/\2/p')"
-    [[ "$parsed_log_passed" == "$row_passed" && "$parsed_log_total" == "$row_total" ]] || {
-      validation_fail terminal_summary_counts_mismatch
-      return 1
-    }
-  elif [[ "$log_summary_count" -eq 0 ]]; then
-    [[ "$row_summary" == NO_SUMMARY ]] || { validation_fail missing_summary_not_recorded; return 1; }
-  else
-    [[ "$log_summary_count" -eq 1 && "$log_summary" == "$row_summary" ]] || {
-      validation_fail malformed_terminal_summary_mismatch
-      return 1
-    }
   fi
+  case "$row_result" in
+    PASS|FAIL)
+      [[ "$log_summary_count" -eq 1 && -n "$parsed_log_passed" && -n "$parsed_log_total" \
+        && "$parsed_log_passed" == "$row_passed" && "$parsed_log_total" == "$row_total" ]] || {
+        validation_fail terminal_summary_counts_mismatch
+        return 1
+      }
+      ;;
+    ERROR)
+      if [[ "$log_summary_count" -eq 0 ]]; then
+        [[ "$row_passed" -eq 0 && "$row_total" -eq 0 && "$row_summary" == NO_SUMMARY ]] || {
+          validation_fail missing_summary_not_recorded
+          return 1
+        }
+      elif [[ -n "$parsed_log_passed" && -n "$parsed_log_total" ]]; then
+        # A valid all-pass verifier summary may only become ERROR when the independent Mining First
+        # provenance gate is non-PASS. This preserves the raw verifier claim without mislabelling
+        # it as a scenario FAIL with contradictory pass counts.
+        case "$scenario" in
+          diamond_stack_64_from_zero|obsidian_half_stack_32_from_zero) ;;
+          *) validation_fail valid_summary_error_without_mining_provenance; return 1 ;;
+        esac
+        [[ "$schema" == 2 && "$provenance_schema" == 2 && "$provenance_verdict" != PASS \
+          && "$parsed_log_total" -gt 0 && "$parsed_log_passed" -eq "$parsed_log_total" \
+          && "$row_passed" == "$parsed_log_passed" && "$row_total" == "$parsed_log_total" ]] || {
+          validation_fail invalid_provenance_postprocessing_error
+          return 1
+        }
+      else
+        [[ "$row_passed" -eq 0 && "$row_total" -eq 0 ]] || {
+          validation_fail malformed_terminal_summary_counts
+          return 1
+        }
+      fi
+      ;;
+  esac
 
   if [[ $REQUIRE_VERIFIED -eq 1 && "$state" != VERIFIED ]]; then
     validation_fail "$reason"
@@ -621,14 +861,20 @@ validate_batch() {
 
 run_self_test() (
   set -euo pipefail
-  local fixture evidence output batch batch_output link traversal relative
+  local fixture mining_fixture downgrade_fixture evidence mining_evidence downgrade_evidence
+  local output downgrade_status batch batch_output link traversal relative
   local -a generated
   fixture="$(mktemp "${TMPDIR:-/tmp}/aibot-evidence-self-test.XXXXXX")"
+  mining_fixture="$(mktemp "${TMPDIR:-/tmp}/aibot-mining-evidence-self-test.XXXXXX")"
+  downgrade_fixture="$(mktemp "${TMPDIR:-/tmp}/aibot-mining-downgrade-self-test.XXXXXX")"
   generated=()
   cleanup_self_test() {
     local path
-    rm -f -- "$fixture" "${link:-}"
-    for path in "${generated[@]}"; do
+    rm -f -- "$fixture" "$mining_fixture" "$downgrade_fixture" "${link:-}"
+    # macOS still ships Bash 3.2, where expanding an empty local array under
+    # `set -u` raises an unbound-variable error and hides the real self-test
+    # failure (for example, an evidence lock held by another run).
+    for path in "${generated[@]:-}"; do
       case "$path" in
         "$HARNESS_ARTIFACT_ROOT"/*|"$HARNESS_BATCH_ROOT"/*)
           if [[ -d "$path" && ! -L "$path" ]]; then
@@ -650,12 +896,136 @@ run_self_test() (
   [[ -d "$evidence" ]]
   generated+=("$evidence")
   "$ROOT/scripts/evidence_validate.sh" "$evidence" >/dev/null
+  [[ "$(harness_manifest_get "$evidence/manifest.tsv" verify_timeout_seconds)" == 900 \
+    && "$(harness_manifest_get "$evidence/manifest.tsv" scenario_timeout_ticks)" == not_applicable ]]
   if "$ROOT/scripts/evidence_validate.sh" --require-verified "$evidence" >/dev/null 2>&1; then
     printf 'evidence-self-test: fixture incorrectly became VERIFIED\n' >&2
     exit 1
   fi
   if "$ROOT/scripts/pin_baseline.sh" index.tsv "$evidence" >/dev/null 2>&1; then
     printf 'evidence-self-test: reserved capability id was accepted\n' >&2
+    exit 1
+  fi
+
+  printf '%s\n' \
+    '[Server thread/INFO]: Seed: [424242]' \
+    '[Server thread/INFO]: [AIBot Verify] diamond_stack_64_from_zero RUNNING timeout=18000' \
+    '[Server thread/INFO] (aibot) [AIBot] TASK event=mining_provenance_result bot=EvidenceBot {schema=2, scenario=diamond_stack_64_from_zero, target=diamond, verdict=PASS, observed_ticks=999, game_mode_violations=0, privileged_allowed=0, death_delta=0, diamond_natural_ore_breaks=64, diamond_native_drops=64, diamond_physical_pickups=64, water_placements=0, lava_conversions=0, obsidian_breaks=0, obsidian_physical_pickups=0, vanilla_obsidian_breaks=0, final_inventory=64}' \
+    '[Server thread/INFO]: [AIBot Verify] summary 1/1 PASS {diamond_stack_64_from_zero=PASS}' > "$mining_fixture"
+  set +e
+  output="$("$ROOT/scripts/evidence_run.sh" --scenario diamond_stack_64_from_zero \
+    --seed 424242 --timeout 1199 --fixture-log "$mining_fixture" 2>&1)"
+  timeout_contract_status=$?
+  set -e
+  [[ "$timeout_contract_status" -eq 2 && "$output" == *verify_timeout_too_short* \
+    && "$output" != *'EVIDENCE_DIR='* ]] || {
+    printf 'evidence-self-test: insufficient wall timeout did not fail closed\n' >&2
+    exit 1
+  }
+  output="$("$ROOT/scripts/evidence_run.sh" --scenario diamond_stack_64_from_zero \
+    --seed 424242 --timeout 1200 --fixture-log "$mining_fixture")"
+  mining_evidence="$(printf '%s\n' "$output" | sed -n 's/^EVIDENCE_DIR=//p' | tail -1)"
+  [[ -d "$mining_evidence" ]]
+  generated+=("$mining_evidence")
+  "$ROOT/scripts/evidence_validate.sh" "$mining_evidence" >/dev/null
+  chmod -R u+w "$mining_evidence"
+  [[ "$(harness_manifest_get "$mining_evidence/manifest.tsv" verify_timeout_seconds)" == 1200 \
+    && "$(harness_manifest_get "$mining_evidence/manifest.tsv" scenario_timeout_ticks)" == 18000 ]]
+  sed -i.bak $'s/^verify_timeout_seconds\t1200$/verify_timeout_seconds\t1199/' \
+    "$mining_evidence/manifest.tsv"
+  rm -f -- "$mining_evidence/manifest.tsv.bak"
+  harness_write_checksums "$mining_evidence"
+  harness_write_locked_marker "$mining_evidence"
+  if "$ROOT/scripts/evidence_validate.sh" "$mining_evidence" >/dev/null 2>&1; then
+    printf 'evidence-self-test: insufficient verify timeout was accepted\n' >&2
+    exit 1
+  fi
+  sed -i.bak $'s/^verify_timeout_seconds\t1199$/verify_timeout_seconds\t1200/' \
+    "$mining_evidence/manifest.tsv"
+  rm -f -- "$mining_evidence/manifest.tsv.bak"
+  sed -i.bak 's/death_delta=0/death_delta=1/' "$mining_evidence/server.log"
+  rm -f -- "$mining_evidence/server.log.bak"
+  sed -i.bak $'s/^death_delta\t0$/death_delta\t1/' "$mining_evidence/manifest.tsv"
+  rm -f -- "$mining_evidence/manifest.tsv.bak"
+  harness_write_checksums "$mining_evidence"
+  harness_write_locked_marker "$mining_evidence"
+  if "$ROOT/scripts/evidence_validate.sh" "$mining_evidence" >/dev/null 2>&1; then
+    printf 'evidence-self-test: death_delta=1 provenance was accepted\n' >&2
+    exit 1
+  fi
+  sed -i.bak 's/death_delta=1/death_delta=0/' "$mining_evidence/server.log"
+  rm -f -- "$mining_evidence/server.log.bak"
+  sed -i.bak $'s/^death_delta\t1$/death_delta\t0/' "$mining_evidence/manifest.tsv"
+  rm -f -- "$mining_evidence/manifest.tsv.bak"
+  sed -i.bak $'s/^diamond_natural_ore_breaks\t64$/diamond_natural_ore_breaks\t63/' \
+    "$mining_evidence/manifest.tsv"
+  rm -f -- "$mining_evidence/manifest.tsv.bak"
+  harness_write_checksums "$mining_evidence"
+  harness_write_locked_marker "$mining_evidence"
+  if "$ROOT/scripts/evidence_validate.sh" "$mining_evidence" >/dev/null 2>&1; then
+    printf 'evidence-self-test: insufficient diamond provenance was accepted\n' >&2
+    exit 1
+  fi
+
+  printf '%s\n' \
+    '[Server thread/INFO]: Seed: [424243]' \
+    '[Server thread/INFO]: [AIBot Verify] summary 1/1 PASS {diamond_stack_64_from_zero=PASS}' \
+    > "$downgrade_fixture"
+  set +e
+  output="$("$ROOT/scripts/evidence_run.sh" --scenario diamond_stack_64_from_zero \
+    --seed 424243 --fixture-log "$downgrade_fixture" 2>&1)"
+  downgrade_status=$?
+  set -e
+  [[ "$downgrade_status" -eq 3 && "$output" != *'EVIDENCE_DIR='* ]] || {
+    printf 'evidence-self-test: missing provenance event was sealed\n' >&2
+    exit 1
+  }
+
+  printf '%s\n' \
+    '[Server thread/INFO]: Seed: [424244]' \
+    '[Server thread/INFO] (aibot) [AIBot] TASK event=mining_provenance_result bot=EvidenceBot {schema=1, scenario=diamond_stack_64_from_zero, target=diamond, verdict=FAIL, observed_ticks=10, game_mode_violations=0, privileged_allowed=0, death_delta=1, diamond_natural_ore_breaks=0, diamond_native_drops=0, diamond_physical_pickups=0, water_placements=0, lava_conversions=0, obsidian_breaks=0, obsidian_physical_pickups=0, vanilla_obsidian_breaks=0, final_inventory=0}' \
+    '[Server thread/INFO]: [AIBot Verify] summary 1/1 PASS {diamond_stack_64_from_zero=PASS}' \
+    > "$downgrade_fixture"
+  set +e
+  output="$("$ROOT/scripts/evidence_run.sh" --scenario diamond_stack_64_from_zero \
+    --seed 424244 --fixture-log "$downgrade_fixture" 2>&1)"
+  downgrade_status=$?
+  set -e
+  [[ "$downgrade_status" -eq 3 && "$output" != *'EVIDENCE_DIR='* ]] || {
+    printf 'evidence-self-test: legacy provenance schema was sealed\n' >&2
+    exit 1
+  }
+
+  printf '%s\n' \
+    '[Server thread/INFO]: Seed: [424245]' \
+    '[Server thread/INFO] (aibot) [AIBot] TASK event=mining_provenance_result bot=EvidenceBot {schema=2, scenario=diamond_stack_64_from_zero, target=diamond, verdict=FAIL, observed_ticks=10, game_mode_violations=0, privileged_allowed=0, death_delta=1, diamond_natural_ore_breaks=0, diamond_native_drops=0, diamond_physical_pickups=0, water_placements=0, lava_conversions=0, obsidian_breaks=0, obsidian_physical_pickups=0, vanilla_obsidian_breaks=0, final_inventory=0}' \
+    '[Server thread/INFO]: [AIBot Verify] summary 1/1 PASS {diamond_stack_64_from_zero=PASS}' \
+    > "$downgrade_fixture"
+  set +e
+  output="$("$ROOT/scripts/evidence_run.sh" --scenario diamond_stack_64_from_zero \
+    --seed 424245 --fixture-log "$downgrade_fixture" 2>&1)"
+  downgrade_status=$?
+  set -e
+  [[ "$downgrade_status" -eq 1 ]] || {
+    printf 'evidence-self-test: provenance post-processing did not exit as ERROR evidence\n' >&2
+    exit 1
+  }
+  downgrade_evidence="$(printf '%s\n' "$output" | sed -n 's/^EVIDENCE_DIR=//p' | tail -1)"
+  [[ -d "$downgrade_evidence" ]]
+  generated+=("$downgrade_evidence")
+  "$ROOT/scripts/evidence_validate.sh" "$downgrade_evidence" >/dev/null
+  [[ "$(harness_manifest_get "$downgrade_evidence/manifest.tsv" result)" == ERROR \
+    && "$(harness_manifest_get "$downgrade_evidence/manifest.tsv" passed)" == 1 \
+    && "$(harness_manifest_get "$downgrade_evidence/manifest.tsv" total)" == 1 ]]
+  chmod -R u+w "$downgrade_evidence"
+  sed -i.bak $'s/^result\tERROR$/result\tFAIL/' "$downgrade_evidence/manifest.tsv"
+  rm -f -- "$downgrade_evidence/manifest.tsv.bak"
+  sed -i.bak $'s/\tERROR\t/\tFAIL\t/' "$downgrade_evidence/result.tsv"
+  rm -f -- "$downgrade_evidence/result.tsv.bak"
+  harness_write_checksums "$downgrade_evidence"
+  harness_write_locked_marker "$downgrade_evidence"
+  if "$ROOT/scripts/evidence_validate.sh" "$downgrade_evidence" >/dev/null 2>&1; then
+    printf 'evidence-self-test: FAIL + passed==total + PASS summary was accepted\n' >&2
     exit 1
   fi
 

@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
 
 /**
  * 语义知识库(三层记忆模型第 3 层):去情境化的持久知识——资源点/危险区/教训。
@@ -135,10 +136,20 @@ public final class KnowledgeBase {
 
     /** 最近的已知资源点(按 blockId,跳过危险区内的);到了发现没了请调 invalidateResource。 */
     public Optional<ResourcePoint> nearestResource(UUID botId, String blockId, BlockPos from, double maxDist) {
+        return nearestResource(botId, blockId, from, maxDist, ignored -> true);
+    }
+
+    /** 最近的可用已知资源点；调用方可临时排除本 episode 已证实不可达的提示。 */
+    public Optional<ResourcePoint> nearestResource(UUID botId,
+                                                   String blockId,
+                                                   BlockPos from,
+                                                   double maxDist,
+                                                   Predicate<BlockPos> allowed) {
         return of(botId).resources.stream()
                 .filter(r -> r.blockId().equals(blockId))
                 .filter(r -> !isDanger(botId, r.pos()))
                 .filter(r -> r.pos().isWithinDistance(from, maxDist))
+                .filter(r -> allowed.test(r.pos()))
                 .min(java.util.Comparator.comparingDouble(r -> r.pos().getSquaredDistance(from)));
     }
 
@@ -186,6 +197,15 @@ public final class KnowledgeBase {
     public void invalidateResource(UUID botId, BlockPos pos) {
         BotKnowledge k = of(botId);
         if (k.resources.removeIf(r -> r.pos().isWithinDistance(pos, 4))) {
+            save(botId, k);
+        }
+    }
+
+    /** 精确按资源类型销账，避免采完树时顺带删除树旁的矿物或其他知识点。 */
+    public void invalidateResource(UUID botId, String blockId, BlockPos pos) {
+        BotKnowledge k = of(botId);
+        if (k.resources.removeIf(r -> r.blockId().equals(blockId)
+                && r.pos().isWithinDistance(pos, 4))) {
             save(botId, k);
         }
     }

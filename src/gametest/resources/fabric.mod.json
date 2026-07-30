@@ -10,7 +10,30 @@
       "io.github.zoyluo.aibot.gametest.AIBotHarnessTestMod"
     ],
     "fabric-gametest": [
-      "io.github.zoyluo.aibot.gametest.AIBotDeterministicGameTests"
+      "io.github.zoyluo.aibot.gametest.AIBotDeterministicGameTests",
+      "io.github.zoyluo.aibot.command.AIBotVerifyFailFastGameTests",
+      "io.github.zoyluo.aibot.goal.GoalPlannerMiningGameTests",
+      "io.github.zoyluo.aibot.goal.DeathRecoveryMissionGameTests",
+      "io.github.zoyluo.aibot.goal.MiningCheckpointMissionGameTests",
+      "io.github.zoyluo.aibot.brain.ToolRegistryMiningGameTests",
+      "io.github.zoyluo.aibot.action.ActionPackPhysicalSnapGameTests",
+      "io.github.zoyluo.aibot.action.BuildActionEdgeVisibilityGameTests",
+      "io.github.zoyluo.aibot.action.OffhandExecutionGameTests",
+      "io.github.zoyluo.aibot.task.AcquireWaterTaskGameTests",
+      "io.github.zoyluo.aibot.task.CreateObsidianMissionRecoveryGameTests",
+      "io.github.zoyluo.aibot.task.DescendCheckpointGameTests",
+      "io.github.zoyluo.aibot.task.DigDownReturnGameTests",
+      "io.github.zoyluo.aibot.task.DangerWatcherLowHealthGameTests",
+      "io.github.zoyluo.aibot.task.EmergencyShelterAtomicRecoveryGameTests",
+      "io.github.zoyluo.aibot.task.MiningTorchToolRestoreGameTests",
+      "io.github.zoyluo.aibot.task.MiningHostileRecoveryGameTests",
+      "io.github.zoyluo.aibot.task.UndergroundSafetyGameTests",
+      "io.github.zoyluo.aibot.task.HuntCrossRegionGameTests",
+      "io.github.zoyluo.aibot.task.SurfaceWaterRecoveryGameTests",
+      "io.github.zoyluo.aibot.task.SmeltFurnacePlacementGameTests",
+      "io.github.zoyluo.aibot.task.MiningServiceResourceGameTests",
+      "io.github.zoyluo.aibot.task.OreDigPickupGameTests",
+      "io.github.zoyluo.aibot.task.GatherPickupGameTests"
     ]
   },
   "depends": {

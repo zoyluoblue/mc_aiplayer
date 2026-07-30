@@ -20,6 +20,9 @@ public final class BotReporter {
     private static final int MIN_REPORT_INTERVAL_TICKS = 80;
     private static final Pattern COUNT_PATTERN = Pattern.compile("(\\d+)/(\\d+)");
     private final Map<UUID, ReportState> states = new ConcurrentHashMap<>();
+    // Per-bot logical task-chat sequence: useful for runtime diagnostics and deterministic restore
+    // assertions without depending on whether a panel subscriber happens to be connected.
+    private final Map<UUID, Long> taskReportSequences = new ConcurrentHashMap<>();
 
     private BotReporter() {
     }
@@ -72,10 +75,16 @@ public final class BotReporter {
 
     public void onCleared(AIPlayerEntity bot) {
         states.remove(bot.getUuid());
+        taskReportSequences.remove(bot.getUuid());
     }
 
     public void clearAll() {
         states.clear();
+        taskReportSequences.clear();
+    }
+
+    public long taskReportSequence(AIPlayerEntity bot) {
+        return taskReportSequences.getOrDefault(bot.getUuid(), 0L);
     }
 
     public void onGoalMessage(AIPlayerEntity bot, String text) {
@@ -109,6 +118,7 @@ public final class BotReporter {
         }
         state.lastText = text;
         state.lastTick = tick;
+        taskReportSequences.merge(bot.getUuid(), 1L, Long::sum);
         AIBotServerNetworking.INSTANCE.sendBotChat(bot, "system", text);
     }
 

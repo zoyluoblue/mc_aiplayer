@@ -12,9 +12,11 @@ import io.github.zoyluo.aibot.runtime.TaskOrigin;
 import net.minecraft.block.BlockState;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.mob.CreeperEntity;
+import net.minecraft.entity.mob.EndermanEntity;
 import net.minecraft.entity.mob.HostileEntity;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraft.item.PickaxeItem;
 import net.minecraft.registry.tag.FluidTags;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.math.BlockPos;
@@ -37,6 +39,8 @@ public final class DangerWatcher {
     private final Map<UUID, Integer> nextHuntAttemptTick = new ConcurrentHashMap<>();
     private final Map<UUID, PosRecord> darkStuckRecords = new ConcurrentHashMap<>(); // 规避:困死陷阱检测
     private final Map<UUID, Integer> nextEscapeHelpTick = new ConcurrentHashMap<>();  // 撤离求助节流
+    private final Map<UUID, Integer> nextShelterAttemptTick = new ConcurrentHashMap<>();
+    private final Map<UUID, ShelterEpisode> shelterEpisodes = new ConcurrentHashMap<>();
 
     // 第1层 困死退避:逃避类任务(evade/shelter)在同一格反复触发却没脱身,即判"被困",
     // 退避一段时间不再空派、并按间隔节流求助。终结"夜间困坑底每 2 秒 shelter/evade 死循环刷屏"。
@@ -46,6 +50,11 @@ public final class DangerWatcher {
     private static final int HUNT_FOOD_TARGET = 3;       // 第2层 饥饿链:没食物时主动猎取的生肉数量
     private static final int DARK_STUCK_TICKS = 160;     // 规避:地下黑暗处静止 8s 判"困死陷阱",撤回地面
     private static final float EMERGENCY_SHELTER_HP = 8.0F; // 夜间怪海:≤4 心+有敌 → 无视冷却立即筑墙保命
+    private static final double DROP_RECOVERY_MAX_DISTANCE = 80.0D;
+    private static final int DROP_RECOVERY_MAX_VERTICAL_DELTA = 24;
+    private static final int SHELTER_RETRY_COOLDOWN = 100;
+    private static final double SHELTER_EPISODE_RADIUS = 4.0D;
+    private static final double CLOSE_DEFENSIVE_HOSTILE_RADIUS = CombatCore.ATTACK_RANGE + 2.0D;
 
     private DangerWatcher() {
     }
@@ -61,6 +70,8 @@ public final class DangerWatcher {
         nextHuntAttemptTick.remove(id);
         darkStuckRecords.remove(id);
         nextEscapeHelpTick.remove(id);
+        nextShelterAttemptTick.remove(id);
+        shelterEpisodes.remove(id);
     }
 
     public void clearAll() {
@@ -73,12 +84,45 @@ public final class DangerWatcher {
         nextHuntAttemptTick.clear();
         darkStuckRecords.clear();
         nextEscapeHelpTick.clear();
+        nextShelterAttemptTick.clear();
+        shelterEpisodes.clear();
     }
 
     private record TrapRecord(BlockPos pos, int repeatCount, int lastHelpTick) {
     }
 
     private record PosRecord(BlockPos pos, int sinceTick) {
+    }
+
+    private record ShelterEpisode(BlockPos anchor,
+                                  int terminalTick,
+                                  TaskState outcome,
+                                  String reason) {
+    }
+
+    record DropRecoveryDecision(boolean allowed, String reason) {
+    }
+
+    static DropRecoveryDecision dropRecoveryDecision(BlockPos respawn,
+                                                       BlockPos death,
+                                                       int visibleHostiles,
+                                                       boolean dangerous) {
+        if (respawn == null || death == null) {
+            return new DropRecoveryDecision(false, "missing_position");
+        }
+        if (dangerous) {
+            return new DropRecoveryDecision(false, "known_danger_zone");
+        }
+        if (visibleHostiles > 0) {
+            return new DropRecoveryDecision(false, "hostile_death_site");
+        }
+        if (Math.abs(respawn.getY() - death.getY()) > DROP_RECOVERY_MAX_VERTICAL_DELTA) {
+            return new DropRecoveryDecision(false, "deep_route_without_trail");
+        }
+        if (!respawn.isWithinDistance(death, DROP_RECOVERY_MAX_DISTANCE)) {
+            return new DropRecoveryDecision(false, "route_too_far");
+        }
+        return new DropRecoveryDecision(true, "short_clear_route");
     }
 
     public void scanAll(MinecraftServer server) {
@@ -92,27 +136,41 @@ public final class DangerWatcher {
         if (bot.getHealth() <= 0.0F || !bot.isAlive()) {
             BlockPos deathPos = bot.getBlockPos();
             long deathTick = server.getTicks();
+            int visibleHostilesAtDeath = bot.getServerWorld()
+                    .getEntitiesByClass(LivingEntity.class, bot.getBoundingBox().expand(8.0D),
+                            entity -> entity instanceof HostileEntity && entity.isAlive())
+                    .stream()
+                    .filter(entity -> ObservableWorldQuery.canObserveEntity(bot, entity))
+                    .toList().size();
             AIPlayerManager.INSTANCE.respawnDeadBot(bot);
             // 死亡找回反射:装备掉在死亡点(5 分钟 despawn),真实玩家第一反应就是跑尸。
-            // 自动出发的两个闸:①重生点离死亡点 ≤160(太远赶不上白跑);②死亡点不在危险区
-            // (同区两死记忆会立牌——记忆劝阻就听劝,别第三次送死,装备认亏)。
-            boolean nearEnough = bot.getBlockPos().isWithinDistance(deathPos, 160.0D);
+            // 只有短、浅且死亡现场已清空的路线才自动跑尸。严格生存没有传送；从世界出生点裸体直挖
+            // 回深矿既没有可证明入口，又会在掉落消失前再次送死。深矿恢复必须等未来持久化的
+            // 可逆入口/trail 合同，当前先 fail-closed，立即恢复原 Mission 从地表重建物资。
             boolean dangerous = io.github.zoyluo.aibot.memory.KnowledgeBase.INSTANCE
                     .isDanger(bot.getUuid(), deathPos);
-            if (nearEnough && !dangerous) {
+            DropRecoveryDecision recovery = dropRecoveryDecision(
+                    bot.getBlockPos(), deathPos, visibleHostilesAtDeath, dangerous);
+            if (recovery.allowed()) {
                 TaskManager.INSTANCE.assign(bot, new RecoverDropsTask(deathPos, deathTick), TaskOrigin.safety("recover_drops"));
                 BrainCoordinator.INSTANCE.sendPanelChat(bot, "system",
                         bot.getGameProfile().getName() + " 死亡后已复活,正赶回 "
                                 + deathPos.toShortString() + " 找回掉落装备。");
             } else {
+                BotLog.danger(bot, "drop_recovery_skipped",
+                        "death", deathPos.toShortString(),
+                        "respawn", bot.getBlockPos().toShortString(),
+                        "hostiles", visibleHostilesAtDeath,
+                        "reason", recovery.reason());
                 BrainCoordinator.INSTANCE.sendPanelChat(bot, "system",
                         bot.getGameProfile().getName() + " 死亡后已自动复活到地面。"
-                                + (dangerous ? "(死亡点已是危险区,放弃跑尸)" : ""));
+                                + "(放弃不安全的跑尸路线:" + recovery.reason() + ")");
             }
             return true;
         }
         Optional<Threat> threat = collectTopThreat(bot);
         Optional<Task> active = TaskManager.INSTANCE.getActive(bot);
+        refreshShelterEpisode(bot);
         // 入浆即自救(最高优先,压倒威胁):岩浆每 tick 烧 4,几秒就死。SurvivalGuard 只中断作业、注释说
         // "让位 DangerWatcher 脱困"但从未实现——bot 泡在岩浆里被烧死(real_diamond 下潜挖穿岩浆袋,14/15 步功亏一篑)。
         // 这里补上:身陷岩浆且当前不是逃浆任务 → 立即派 LavaEscapeTask,把命先捞回来。
@@ -125,6 +183,113 @@ public final class DangerWatcher {
                     "hp", (int) bot.getHealth());
             return true;
         }
+        // CreateObsidianTask deliberately works near a pool and independently enforces dry,
+        // standable, non-adjacent work poses. Do not replace that bounded operation with an
+        // EvadeTask merely because lava is visible two cells away. Contact/adjacency/fire/low HP
+        // fail the task's predicate and continue through the normal emergency path above/below.
+        if (threat.isPresent()
+                && threat.get().type() == Threat.Type.LAVA
+                && active.isPresent()
+                && active.get() instanceof CreateObsidianTask obsidianTask
+                && obsidianTask.controlsNearbyLava(bot, threat.get().pos())) {
+            noteThreatOwned(bot);
+            threat = Optional.empty();
+        }
+        // OreDig owns a bounded branch cursor and rejects observed hazardous directions itself.
+        // In a two-block-high mine, generic Evade has no valid open escape goal and used to pause
+        // the miner every cooldown without changing the lava-facing branch. Rotate the factual
+        // cursor now; actual lava contact still takes the LavaEscape path above.
+        if (threat.isPresent()
+                && threat.get().type() == Threat.Type.LAVA
+                && active.isPresent()
+                && active.get() instanceof OreDigTask oreDig
+                && oreDig.avoidObservedLava(bot, threat.get().pos())) {
+            noteThreatOwned(bot);
+            return true;
+        }
+        // DigDown owns a factual staircase back to its exact entry. Visible lava closes the current
+        // descent, but a generic underground Evade has no proven surface destination and can leave
+        // the return owner paused forever while the same source remains visible. Let the active
+        // owner turn around, or resume the exact paused owner once any prior safety task has ended.
+        Task digDownCandidate = active.filter(DigDownTask.class::isInstance)
+                .orElseGet(() -> active.isEmpty()
+                        ? TaskManager.INSTANCE.peekPaused(bot)
+                        .filter(DigDownTask.class::isInstance)
+                        .orElse(null)
+                        : null);
+        boolean pausedDigDownCanResume = active.isEmpty()
+                && !TaskManager.INSTANCE.isUserPaused(bot)
+                && !bot.getActionPack().hasActiveActions()
+                && bot.hurtTime == 0
+                && bot.getHealth() > AIBotConfig.get().combat().retreatHp();
+        if (threat.isPresent()
+                && threat.get().type() == Threat.Type.LAVA
+                && digDownCandidate instanceof DigDownTask digDown
+                && (active.orElse(null) == digDown || pausedDigDownCanResume)
+                && digDown.claimObservedLavaReturn(bot, threat.get().pos())) {
+            noteThreatOwned(bot);
+            if (active.isEmpty()) {
+                TaskManager.INSTANCE.resumeFromPause(bot);
+            }
+            return true;
+        }
+        // A shelter is an atomic safety envelope. Let it either prove all nine cells sealed or
+        // fail with shelter_unsealable; Combat/Evade/Eat must not preempt it on the next scan and
+        // grow a nested pause stack while the same holes are still being closed.
+        if (active.isPresent() && (active.get() instanceof EmergencyShelterTask
+                || active.get() instanceof MiningBarricadeTask)) {
+            return true;
+        }
+        // A healing EatTask is a short, atomic survival transaction. LOW_HP is expected to remain
+        // true throughout the bite, and an already-observed hostile can also remain in range; using
+        // either signal to pause Eat again grows a safety-on-safety stack and prevents the food from
+        // ever being consumed. Contact lava and drowning are deliberately excluded here and retain
+        // their higher-priority handling.
+        if (active.isPresent()
+                && active.get() instanceof EatTask
+                && isHealingEatTransaction(bot)
+                && threat.filter(DangerWatcher::isHostilePressure).isPresent()) {
+            return true;
+        }
+        // CombatTask already owns the complete close-contact lifecycle: strike, bounded retreat,
+        // food-backed healing, and defensive-leash disengagement. Replacing it with a shelter on
+        // the first damage tick is actively unsafe: the hostile can already occupy a wall cell,
+        // while the airborne/knocked-back bot gives the shelter a stale origin. Endermen may also
+        // teleport briefly outside observable pressure; that is not a safe naked-eating boundary.
+        // Let the active combat transaction settle even during that transient empty scan. Lava and
+        // drowning have already been handled above.
+        if (active.isPresent()
+                && active.get() instanceof CombatTask
+                && (threat.isEmpty()
+                || threat.get().type() == Threat.Type.HOSTILE
+                || threat.get().type() == Threat.Type.LOW_HP)) {
+            return true;
+        }
+        // A controlled strip mine already owns a real rear corridor. Seal the branch before any
+        // generic combat/evade logic can pillar-jump into the cave or overwrite its checkpoint.
+        // A paused OreDig is also eligible because SurvivalGuard now preserves mission instances.
+        Task miningCandidate = active.filter(OreDigTask.class::isInstance)
+                .orElseGet(() -> TaskManager.INSTANCE.peekPaused(bot)
+                        .filter(OreDigTask.class::isInstance)
+                        .orElse(null));
+        if (threat.isPresent()
+                && threat.get().type() == Threat.Type.HOSTILE
+                && miningCandidate instanceof OreDigTask oreDig
+                && MiningBarricadeTask.hasMaterialsForOpenGate(bot)) {
+            Optional<MiningBarricadeTask> barricade =
+                    oreDig.prepareHostileBarricade(bot, threat.get().pos());
+            if (barricade.isPresent()) {
+                if (active.orElse(null) == oreDig) {
+                    TaskManager.INSTANCE.pauseFor(bot, "mining_hostile_barricade");
+                }
+                TaskManager.INSTANCE.assign(bot, barricade.get(),
+                        TaskOrigin.safety("mining_hostile_barricade"));
+                BotLog.danger(bot, "mining_hostile_barricade_started",
+                        "source", threat.get().pos(),
+                        "paused", oreDig.name());
+                return true;
+            }
+        }
         // 夜间怪海保命(治死亡螺旋):濒死(≤4 心)+ 有敌 + 当前没在筑墙 → 立即筑墙自保,**无视威胁冷却**。
         // 元凶:combat 完(~100t 没杀光)→进 100t 冷却→gather 恢复挨打→guard 中止→冷却没过 shelter
         // 派不出→再挨打到死(real_diamond 三种子全栽这,bot 会打但打不赢多怪围殴)。保命压倒一切:
@@ -134,20 +299,28 @@ public final class DangerWatcher {
         // 因为地下逃跑无效、拖到 ≤4 心才入土往往已死(real_diamond 深层挖矿 evade/guard_low_hp 送命主因)。
         boolean cannotFlee = !bot.getServerWorld().isSkyVisible(bot.getBlockPos());
         boolean entombNow = bot.getHealth() <= EMERGENCY_SHELTER_HP || (cannotFlee && bot.hurtTime > 0);
-        // 死亡螺旋修复(self-inflicted 倒挂):collectTopThreat 在血<6 时把 top 改写成 LOW_HP/entity=null,
-        // 使本闸的 type==HOSTILE 判定恰在最该入土时失效(血越低越筑不了墙,正是上面注释想治的螺旋)。
-        // 补:LOW_HP 抢占时独立扫一次近处可达 hostile,有则照样入土。不动威胁分类早返回,避免误伤 DROWNING/LAVA。
+        // 死亡螺旋修复(self-inflicted 倒挂):血<6 时 top 会变为 LOW_HP；即使 Threat 保留了
+        // hostile entity，单看 type==HOSTILE 仍会在最该入土时失效。优先使用实体身份，并保留
+        // 一次近处可达 hostile 扫描作为防御性兜底；不改 DROWNING/LAVA 的优先级。
         boolean topIsHostile = threat.isPresent() && threat.get().type() == Threat.Type.HOSTILE;
         boolean lowHpUnderHostile = threat.isPresent() && threat.get().type() == Threat.Type.LOW_HP
-                && hasReachableHostile(bot);
+                && (isHostileBacked(threat.get()) || hasReachableHostile(bot));
         if ((topIsHostile || lowHpUnderHostile)
+                // A Creeper shelter is safe only while sealed; reopening the owned door gives the
+                // same explosive contact threat a point-blank line of sight. Creepers therefore
+                // stay on the escape path even at low HP. Controlled strip mines already get the
+                // stronger rear-corridor MiningBarricade branch above.
+                && !isCreeperThreat(threat.get())
                 && entombNow
                 && EmergencyShelterTask.hasShelterBlock(bot)
-                && !(active.isPresent() && active.get() instanceof EmergencyShelterTask)) {
+                && EmergencyShelterTask.canStartAtCurrentPose(bot)
+                && canAttemptShelter(server, bot)) {
             if (active.isPresent()) {
+                markThreatDirectionAvoided(active.get(), bot, threat.get());
                 TaskManager.INSTANCE.pauseFor(bot, "emergency_entomb");
             }
             TaskManager.INSTANCE.assign(bot, new EmergencyShelterTask(), TaskOrigin.safety("emergency_entomb"));
+            noteShelterAttempt(server, bot);
             BotLog.danger(bot, "emergency_entomb", "hp", (int) bot.getHealth(),
                     "underground", cannotFlee, "threat", threat.get().type());
             return true;
@@ -157,14 +330,20 @@ public final class DangerWatcher {
             if (top.severity().ordinal() >= Threat.Severity.MEDIUM.ordinal()
                     && shouldAssignThreatTask(active, top)
                     && canAssignThreatTask(server, bot, top)) {
-                Task task = decideCombatOrEvade(bot, top);
+                Task task = decideCombatOrEvade(bot, top, canAttemptShelter(server, bot));
                 if (trappedBackoff(server, bot, task)) {
                     return true; // 被困:退避并(节流)求助,不再每 2 秒空派 shelter/evade
                 }
                 if (active.isPresent() && shouldPauseForThreat(active.get(), top, task)) {
+                    if (task instanceof EmergencyShelterTask) {
+                        markThreatDirectionAvoided(active.get(), bot, top);
+                    }
                     TaskManager.INSTANCE.pauseFor(bot, "threat: " + top.type());
                 }
                 TaskManager.INSTANCE.assign(bot, task, TaskOrigin.safety("threat:" + top.type()));
+                if (task instanceof EmergencyShelterTask) {
+                    noteShelterAttempt(server, bot);
+                }
                 nextThreatAttemptTick.put(bot.getUuid(), server.getTicks() + threatCooldownTicks(top, task));
                 BotLog.danger(bot, "threat_detected",
                         "type", top.type(),
@@ -198,11 +377,18 @@ public final class DangerWatcher {
         }
         if (active.isEmpty()
                 && !bot.getActionPack().hasActiveActions()
-                && TaskManager.INSTANCE.hasPaused(bot)) {
+                && TaskManager.INSTANCE.hasPaused(bot)
+                && canResumePausedWork(bot, threat)) {
             TaskManager.INSTANCE.resumeFromPause(bot);
             return true;
         }
         return false;
+    }
+
+    static boolean canResumePausedWork(AIPlayerEntity bot, Optional<Threat> threat) {
+        return threat.isEmpty()
+                && bot.hurtTime == 0
+                && bot.getHealth() > AIBotConfig.get().combat().retreatHp();
     }
 
     private boolean maybeResupply(MinecraftServer server, AIPlayerEntity bot, Optional<Task> active) {
@@ -227,7 +413,41 @@ public final class DangerWatcher {
 
         ResupplyTask task = null;
         ItemStack mainHand = bot.getMainHandStack();
-        if (isNearlyBroken(mainHand)) {
+        Optional<Task> paused = active.isEmpty()
+                ? TaskManager.INSTANCE.peekPaused(bot) : Optional.empty();
+        // These mining tasks own an exact break/pickup/return transaction. The generic ten-percent
+        // threshold is intentionally much wider (a diamond pick at raw 33 is already below it),
+        // while ToolTier deliberately reports a raw-one pick as NONE. Resolve ownership separately
+        // from the held slot: combat may leave a sword selected when the miner resumes. The owner
+        // must first settle an already-legal break, then either yield at its service boundary or
+        // report its own typed durability failure before opening a new one. DigDown additionally
+        // owns the exact-return path for that failure. DescendToY does not yet expose the same typed
+        // durability contract and therefore remains under generic resupply.
+        boolean activeTaskOwnsMiningTransaction = active
+                .filter(DangerWatcher::ownsMiningPickTransaction).isPresent();
+        boolean pausedTaskOwnsMiningTransaction = paused
+                .filter(DangerWatcher::ownsMiningPickTransaction).isPresent();
+        boolean pausedDigDownOwnsReturnDebt = paused
+                .filter(DigDownTask.class::isInstance).isPresent();
+        // Crafting never spends or depends on the held mining tool. In particular, the final rare
+        // bootstrap deliberately crafts fresh replacements while an old nearly-broken pick may
+        // still be selected. Generic tool resupply here would pause that atomic craft and consume
+        // the sealed stick/stone inputs before the five-pick hand-off is complete.
+        boolean taskDoesNotUseHeldTool = active.filter(CraftTask.class::isInstance).isPresent();
+        if (isNearlyBroken(mainHand)
+                && mainHand.getItem() instanceof PickaxeItem
+                && pausedDigDownOwnsReturnDebt
+                && !taskDoesNotUseHeldTool) {
+            // DigDown alone needs a generic tool to pay an exact physical RETURN debt after a
+            // safety displacement. Service it from carried materials only; travelling to a
+            // remembered base would compound that displacement. MiningService/CreateObsidian/
+            // OreDig retain their own exact-budget or typed, persisted service boundaries instead
+            // of spending materials through this generic ten-percent threshold.
+            task = ResupplyTask.toolInPlace(mainHand.getItem());
+        } else if (isNearlyBroken(mainHand)
+                && !activeTaskOwnsMiningTransaction
+                && !pausedTaskOwnsMiningTransaction
+                && !taskDoesNotUseHeldTool) {
             Item item = mainHand.getItem();
             task = ResupplyTask.tool(item);
         } else {
@@ -255,21 +475,38 @@ public final class DangerWatcher {
         return true;
     }
 
+    private static boolean ownsMiningPickTransaction(Task task) {
+        return task instanceof MiningServiceTask
+                || task instanceof CreateObsidianTask
+                || task instanceof OreDigTask
+                || task instanceof DigDownTask;
+    }
+
     private boolean maybeEat(MinecraftServer server, AIPlayerEntity bot, Optional<Task> active) {
         int foodLevel = bot.getHungerManager().getFoodLevel();
         AIBotConfig.Survival survival = AIBotConfig.get().survival();
-        if (foodLevel > survival.hungerEatThreshold()) {
+        boolean healingEmergency = isHealingEatTransaction(bot);
+        if (foodLevel > survival.hungerEatThreshold() && !healingEmergency) {
             return false;
         }
         boolean critical = foodLevel <= survival.hungerCriticalThreshold();
-        if (TaskManager.INSTANCE.isUserPaused(bot) && !critical) {
+        boolean urgent = critical || healingEmergency;
+        if (TaskManager.INSTANCE.isUserPaused(bot) && !urgent) {
             return false;
         }
-        if (bot.getActionPack().hasActiveActions() && !critical) {
+        if (bot.getActionPack().hasActiveActions() && !urgent) {
             return false; // 非紧急进食等动作完成；critical starvation 仍可抢占保命。
         }
         if (active.isPresent() && active.get() instanceof EatTask) {
             return true;
+        }
+        // Admission and continuation are deliberately different boundaries. Once a physical bite
+        // has started, the earlier atomic-Eat branch lets it settle without growing another safety
+        // frame. Before assignment, however, eating in the open beside an already-observed hostile
+        // (or immediately after a hit) is never safe. A sealed shelter owns its own internal EatTask
+        // and therefore does not pass through this unprotected admission gate.
+        if (hasNakedEatHostilePressure(bot)) {
+            return false;
         }
         int now = server.getTicks();
         if (now < nextEatAttemptTick.getOrDefault(bot.getUuid(), 0)) {
@@ -285,16 +522,20 @@ public final class DangerWatcher {
         }
 
         if (active.isPresent()) {
-            if (!critical || active.get() instanceof EvadeTask) {
+            if (!urgent || active.get() instanceof EvadeTask
+                    || active.get() instanceof CombatTask) {
                 return false;
             }
-            TaskManager.INSTANCE.pauseFor(bot, "hunger: " + foodLevel);
+            TaskManager.INSTANCE.pauseFor(bot, healingEmergency
+                    ? "low_health_heal: " + bot.getHealth()
+                    : "hunger: " + foodLevel);
         }
-        TaskManager.INSTANCE.assign(bot, new EatTask(), critical
-                ? TaskOrigin.safety("critical_hunger")
+        TaskManager.INSTANCE.assign(bot, new EatTask(), urgent
+                ? TaskOrigin.safety(healingEmergency ? "low_health_heal" : "critical_hunger")
                 : TaskOrigin.of(TaskOrigin.Kind.SYSTEM_BACKGROUND, "eat"));
         nextEatAttemptTick.put(bot.getUuid(), now + 100);
-        BotLog.danger(bot, "hunger_eat_started", "food", foodLevel, "critical", critical);
+        BotLog.danger(bot, "hunger_eat_started", "food", foodLevel, "critical", critical,
+                "healing", healingEmergency, "hp", (int) bot.getHealth());
         return true;
     }
 
@@ -332,19 +573,138 @@ public final class DangerWatcher {
         return true;
     }
 
-    private Task decideCombatOrEvade(AIPlayerEntity bot, Threat threat) {
+    private Task decideCombatOrEvade(AIPlayerEntity bot,
+                                     Threat threat,
+                                     boolean shelterAllowed) {
         AIBotConfig.Combat combat = AIBotConfig.get().combat();
+        // These mobs require a dedicated tactic, never the generic defensive melee loop. Keep this
+        // before every underground/night shelter admission so broad fallbacks cannot override the
+        // shared policy. The emergency low-health entomb branch above still has first priority.
+        if (isMeleeForbiddenThreat(threat)) {
+            return new EvadeTask(threat);
+        }
+        boolean underground = !bot.getServerWorld().isSkyVisible(bot.getBlockPos());
+        boolean hostileThreat = isHostileBacked(threat);
+        boolean lowHpHostile = threat.type() == Threat.Type.LOW_HP && hostileThreat;
+        // A completed/failed shelter owns this local hostile episode until pressure clears or the
+        // bot genuinely relocates. When that fixed-anchor option is locked, a single close
+        // non-Creeper must not fall through to naked healing merely because canFight's ordinary
+        // cost/benefit gate rejects low HP. Defensive Combat starts in RETREAT, counterattacks only
+        // if boxed in, and owns the later safe-heal boundary.
+        if (!shelterAllowed && shouldDefensivelyFightClosePressure(bot, threat)) {
+            return CombatTask.defensive(threat.entity(), combat.retreatHp(), bot.getBlockPos());
+        }
+        if (underground
+                && hostileThreat
+                && shelterAllowed
+                && EmergencyShelterTask.hasShelterBlock(bot)
+                && (lowHpHostile || requiresUndergroundShelter(bot, threat, combat))) {
+            return new EmergencyShelterTask();
+        }
         // combat 困死:连续多次 combat 被 stuck 中止(目标够不到——如僵尸在下方矿洞/墙后)→ 别再站桩等死,改逃跑。
         if (canFight(bot, threat, combat) && !combatStuck(bot)) {
-            return new CombatTask(threat.entity().getType(), 1, combat.retreatHp());
+            // Safety combat defends the interrupted work site. It binds the observed entity and
+            // cannot turn into an open-ended hunt by reacquiring another mob of the same type.
+            return CombatTask.defensive(threat.entity(), combat.retreatHp(), bot.getBlockPos());
         }
         if (!bot.getServerWorld().isDay()
                 && threat.type() == Threat.Type.HOSTILE
                 && !SleepTask.hasBedAccess(bot)
-                && EmergencyShelterTask.hasShelterBlock(bot)) {
+                && shelterAllowed
+                && EmergencyShelterTask.hasShelterBlock(bot)
+                && EmergencyShelterTask.canStartAtCurrentPose(bot)) {
             return new EmergencyShelterTask();
         }
         return new EvadeTask(threat);
+    }
+
+    private static boolean shouldDefensivelyFightClosePressure(AIPlayerEntity bot,
+                                                                Threat threat) {
+        return isHostileBacked(threat)
+                && !isMeleeForbiddenThreat(threat)
+                && EquipAction.bestWeaponSlot(bot).isPresent()
+                && visibleHostileCount(bot) == 1
+                && bot.distanceTo(threat.entity()) < CLOSE_DEFENSIVE_HOSTILE_RADIUS;
+    }
+
+    private static boolean requiresUndergroundShelter(AIPlayerEntity bot,
+                                                       Threat threat,
+                                                       AIBotConfig.Combat combat) {
+        BlockPos here = bot.getBlockPos();
+        BlockPos source = threat.entity().getBlockPos();
+        double dx = source.getX() - here.getX();
+        double dz = source.getZ() - here.getZ();
+        boolean belowDefenseFloor = source.getY() < here.getY() - 2;
+        boolean beyondDefenseRadius = dx * dx + dz * dz > 64.0D;
+        return belowDefenseFloor
+                || beyondDefenseRadius
+                || visibleHostileCount(bot) > combat.maxEnemiesToFight();
+    }
+
+    private boolean canAttemptShelter(MinecraftServer server, AIPlayerEntity bot) {
+        return server.getTicks() >= nextShelterAttemptTick.getOrDefault(bot.getUuid(), 0)
+                && !shelterEpisodeActive(bot)
+                && EmergencyShelterTask.canStartAtCurrentPose(bot);
+    }
+
+    boolean shelterEpisodeActive(AIPlayerEntity bot) {
+        return shelterEpisodes.containsKey(bot.getUuid());
+    }
+
+    private void noteShelterAttempt(MinecraftServer server, AIPlayerEntity bot) {
+        nextShelterAttemptTick.put(bot.getUuid(), server.getTicks() + SHELTER_RETRY_COOLDOWN);
+    }
+
+    /** Called by the fixed-anchor owner at its exact terminal boundary. */
+    void noteShelterTerminal(AIPlayerEntity bot,
+                             BlockPos anchor,
+                             TaskState outcome,
+                             String reason) {
+        if (anchor == null || bot.getServer() == null) {
+            return;
+        }
+        int now = bot.getServer().getTicks();
+        BlockPos fixedAnchor = anchor.toImmutable();
+        shelterEpisodes.put(bot.getUuid(), new ShelterEpisode(
+                fixedAnchor, now, outcome, reason == null ? "" : reason));
+        // Assignment-time cooldowns can expire while a real shelter is still building/holding.
+        // Start the retry clock at terminal instead; the episode latch below is stronger while the
+        // same local hostile pressure remains continuous.
+        nextShelterAttemptTick.put(bot.getUuid(), now + SHELTER_RETRY_COOLDOWN);
+        // A shelter terminal is a new safety boundary, not another failed scheduler attempt. Let the
+        // next scan immediately choose the episode-safe fallback (normally defensive Combat) rather
+        // than waiting out the assignment-time threat cooldown with no active protection.
+        nextThreatAttemptTick.remove(bot.getUuid());
+        BotLog.danger(bot, "shelter_episode_terminal",
+                "anchor", fixedAnchor.toShortString(),
+                "outcome", outcome,
+                "reason", reason == null ? "" : reason);
+    }
+
+    private void refreshShelterEpisode(AIPlayerEntity bot) {
+        ShelterEpisode episode = shelterEpisodes.get(bot.getUuid());
+        if (episode == null) {
+            return;
+        }
+        boolean sameSite = episode.anchor().isWithinDistance(
+                bot.getBlockPos(), SHELTER_EPISODE_RADIUS);
+        boolean hostileContinues = hasObservableActiveHostile(bot, 10.0D);
+        if (sameSite && hostileContinues) {
+            return;
+        }
+        shelterEpisodes.remove(bot.getUuid(), episode);
+        nextShelterAttemptTick.remove(bot.getUuid());
+        BotLog.danger(bot, "shelter_episode_reset",
+                "anchor", episode.anchor().toShortString(),
+                "reason", sameSite ? "hostile_cleared" : "site_relocated");
+    }
+
+    private static void markThreatDirectionAvoided(Task interrupted,
+                                                   AIPlayerEntity bot,
+                                                   Threat threat) {
+        if (interrupted instanceof DescendToYTask descend) {
+            descend.avoidCurrentDescentDirection(bot, threat.pos());
+        }
     }
 
     // 第1层:困死退避 + 求助。仅针对逃避类(evade/shelter);战斗(canFight→CombatTask)不拦。
@@ -372,6 +732,8 @@ public final class DangerWatcher {
                     net.minecraft.entity.mob.HostileEntity.class,
                     bot.getBoundingBox().expand(4.0D), e -> e.isAlive())
                     .stream()
+                    .filter(e -> isActiveHostileThreat(bot, e))
+                    .filter(e -> !CombatCore.isMeleeForbiddenThreat(e))
                     .filter(e -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveEntity(bot, e))
                     .findFirst().orElse(null);
             if (hostile != null) {
@@ -562,16 +924,66 @@ public final class DangerWatcher {
         if (bot.getHealth() <= combat.retreatHp()) {
             return false;
         }
-        if (threat.entity() instanceof CreeperEntity) {
-            return false; // 苦力怕一律不近战(会爆炸秒杀满血 bot),始终改逃
+        if (CombatCore.isMeleeForbiddenThreat(threat.entity())) {
+            return false;
         }
-        int hostiles = bot.getServerWorld()
-                .getEntitiesByClass(LivingEntity.class, bot.getBoundingBox().expand(8.0D),
-                        entity -> entity instanceof HostileEntity && entity.isAlive())
-                .stream()
-                .filter(entity -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveEntity(bot, entity))
-                .toList().size();
+        int hostiles = visibleHostileCount(bot);
         return hostiles <= combat.maxEnemiesToFight() && EquipAction.bestWeaponSlot(bot).isPresent();
+    }
+
+    private static int visibleHostileCount(AIPlayerEntity bot) {
+        return observableActiveHostilePressure(bot).size();
+    }
+
+    /**
+     * Starting a bite is unsafe when pressure already exists, even if the ordinary threat
+     * scheduler is still inside its retry cooldown. A close observed hostile does not require LOS:
+     * one that just rounded a tunnel corner can reopen contact before an unprotected EatTask can
+     * finish. The wider ranged envelope does require factual LOS. Continuation is handled
+     * separately by the atomic-Eat branch near the top of
+     * {@link #scanBot(MinecraftServer, AIPlayerEntity)}.
+     */
+    private static boolean hasNakedEatHostilePressure(AIPlayerEntity bot) {
+        return bot.hurtTime > 0
+                || !observableActiveHostilePressure(bot).isEmpty();
+    }
+
+    private static boolean hasObservableActiveHostile(AIPlayerEntity bot, double range) {
+        return !bot.getServerWorld()
+                .getEntitiesByClass(LivingEntity.class, bot.getBoundingBox().expand(range),
+                        entity -> isActiveHostileThreat(bot, entity)
+                                && ObservableWorldQuery.canObserveEntity(bot, entity))
+                .isEmpty();
+    }
+
+    private static List<LivingEntity> observableActiveHostilePressure(AIPlayerEntity bot) {
+        return bot.getServerWorld()
+                .getEntitiesByClass(
+                        LivingEntity.class,
+                        bot.getBoundingBox().expand(CombatCore.hostilePressureScanRange()),
+                        entity -> isActiveHostileThreat(bot, entity)
+                                && ObservableWorldQuery.canObserveEntity(bot, entity)
+                                && CombatCore.isWithinHostilePressureEnvelope(bot, entity));
+    }
+
+    /**
+     * Some mobs are implemented as {@link HostileEntity} without being unconditionally hostile.
+     * An unprovoked Enderman can stand in a cave indefinitely and must not pause a survival
+     * mission or trigger a shelter that changes the local fluid boundary. Once it is angry or has
+     * selected this bot as its target, it is treated exactly like every other hostile mob.
+     */
+    static boolean isActiveHostileThreat(AIPlayerEntity bot, LivingEntity entity) {
+        if (!(entity instanceof HostileEntity) || !entity.isAlive()) {
+            return false;
+        }
+        if (entity instanceof EndermanEntity enderman) {
+            // isAngry() is only a broad tracked flag: an Enderman targeting another player or mob
+            // also sets it. shouldAngerAt() binds persistent/universal anger to this exact bot and
+            // remains factual if teleportation temporarily clears the live target reference.
+            return enderman.getTarget() == bot
+                    || enderman.shouldAngerAt(bot, bot.getServerWorld());
+        }
+        return true;
     }
 
     private static boolean shouldAssignThreatTask(Optional<Task> active, Threat threat) {
@@ -582,7 +994,7 @@ public final class DangerWatcher {
         if (task instanceof EvadeTask) {
             return false;
         }
-        return !(task instanceof CombatTask) || threat.type() == Threat.Type.LOW_HP;
+        return !(task instanceof CombatTask);
     }
 
     private static boolean shouldPauseForThreat(Task active, Threat threat, Task nextTask) {
@@ -618,21 +1030,66 @@ public final class DangerWatcher {
         return max - stack.getDamage() <= max * 0.10D;
     }
 
+    private static boolean isHealingEatTransaction(AIPlayerEntity bot) {
+        return bot.getHealth() <= AIBotConfig.get().combat().retreatHp()
+                && bot.getHungerManager().getFoodLevel() < 20
+                && InventoryAction.findFoodSlot(bot) >= 0;
+    }
+
+    private static boolean isHostilePressure(Threat threat) {
+        return threat.type() == Threat.Type.LOW_HP || threat.type() == Threat.Type.HOSTILE;
+    }
+
+    private static boolean isHostileBacked(Threat threat) {
+        return isHostilePressure(threat)
+                && threat.entity() instanceof HostileEntity
+                && threat.entity().isAlive();
+    }
+
+    private static boolean isCreeperThreat(Threat threat) {
+        return threat.entity() instanceof CreeperEntity;
+    }
+
+    private static boolean isMeleeForbiddenThreat(Threat threat) {
+        return threat.entity() != null
+                && CombatCore.isMeleeForbiddenThreat(threat.entity());
+    }
+
+    /** A completed escape is a new safety boundary; its assignment-time debounce must not linger. */
+    void noteEvadeCompleted(AIPlayerEntity bot) {
+        nextThreatAttemptTick.remove(bot.getUuid());
+    }
+
+    /** Task-owned safety progress starts a new boundary; stale generic backoff must not leak on. */
+    private void noteThreatOwned(AIPlayerEntity bot) {
+        UUID id = bot.getUuid();
+        nextThreatAttemptTick.remove(id);
+        trapRecords.remove(id);
+    }
+
     private static Optional<Threat> collectTopThreat(AIPlayerEntity bot) {
-        if (bot.getHealth() < 6.0F) {
-            return Optional.of(new Threat(Threat.Type.LOW_HP, Threat.Severity.HIGH, null, bot.getBlockPos()));
-        }
-        // 规避加固:检测半径 10,但只把"能真正威胁到 bot"的敌对怪算进来——bot 眼睛到怪眼睛之间若被实心
-        // 方块阻隔(隔着墙/在另一条隧道),怪根本够不到 bot,不应触发战斗/逃跑(实测 bug:被方块挡着的怪
-        // 让 bot 一直"正在战斗"、中断正常挖矿)。按距离从近到远找第一个有视线(可达)的怪。
-        List<LivingEntity> hostiles = bot.getServerWorld()
-                .getEntitiesByClass(LivingEntity.class, bot.getBoundingBox().expand(10.0D),
-                        entity -> entity instanceof HostileEntity && entity.isAlive()
-                                && ObservableWorldQuery.canObserveEntity(bot, entity));
-        hostiles.sort(Comparator.comparingDouble(bot::distanceTo));
+        // Close threats use the original ten-block envelope. A ranged attacker remains pressure
+        // through twenty blocks only with factual LOS, matching naked-Eat admission and secondary
+        // combat settlement. Sort the shared pressure set before choosing the top threat.
+        List<LivingEntity> hostiles = observableActiveHostilePressure(bot);
+        // Explosive pressure cannot be hidden behind a closer ordinary mob. A strict obsidian run
+        // resumed its water mission while a Creeper was still visible at fifteen blocks; sorting
+        // Creepers first keeps every shelter/combat branch below aligned with the no-melee policy.
+        hostiles.sort(Comparator
+                .comparing((LivingEntity mob) -> !(mob instanceof CreeperEntity))
+                .thenComparingDouble(bot::distanceTo));
         for (LivingEntity mob : hostiles) {
             if (!canReachThreat(bot, mob)) {
                 continue; // 被方块阻隔,够不到 bot → 不算威胁
+            }
+            // Low HP is a combat modifier, not a threat by itself. The old unconditional branch
+            // emitted an entity-less LOW_HP at the bot's own position even in broad daylight with
+            // no hostile nearby. Evade then chose an arbitrary +X destination and could route a
+            // recovering worker from safe surface terrain into a cave. Preserve retreat priority
+            // only when this observed, reachable hostile actually exists, and keep its direction.
+            if (bot.getHealth() < 6.0F) {
+                return Optional.of(new Threat(
+                        Threat.Type.LOW_HP, Threat.Severity.HIGH, mob, mob.getBlockPos()));
             }
             Threat.Severity severity = mob instanceof CreeperEntity
                     ? Threat.Severity.HIGH : Threat.Severity.MEDIUM;
@@ -665,8 +1122,8 @@ public final class DangerWatcher {
         return CombatCore.hasLineOfSight(bot, mob);
     }
 
-    // 近处(8 格)是否有可达(有视线)的敌对怪。用于濒死封墙闸在 LOW_HP 抢占下补判——血<6 时 collectTopThreat
-    // 已把 top 改写成 LOW_HP/entity=null,丢了 hostile 信息,这里独立扫一次还原"是否真被怪围"。复用同款视线判定。
+    // 近处(8 格)是否有可达(有视线)的敌对怪。作为濒死封墙闸的防御性兜底；正常 LOW_HP
+    // Threat 已携带 hostile entity。复用同款视线判定，避免把隔墙怪物算作当前压力。
     private static boolean hasReachableHostile(AIPlayerEntity bot) {
         List<LivingEntity> hostiles = bot.getServerWorld()
                 .getEntitiesByClass(LivingEntity.class, bot.getBoundingBox().expand(8.0D),

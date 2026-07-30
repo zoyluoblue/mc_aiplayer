@@ -2,10 +2,12 @@
 
 此文件由 `reports/capability_baseline_manifest.tsv`、`reports/baselines/index.tsv` 通过 `scripts/capability_matrix.sh` 生成。
 
-重要：`reports/baselines/index.tsv` 是 VERIFIED 证据的唯一选择器，优先于 legacy manifest；生成器不会自动选择“最好”或“最新”的结果。没有新式 pinned bundle 时，只展示 manifest 固化的 legacy 汇总快照。manifest 保留历史源文件名与 SHA-256 供追溯，但生成器不会读取或依赖这些本地报告；legacy 数据缺少 tested revision、配置 hash 和 actual seed，因此始终为 `UNVERIFIED`。
+重要：`reports/baselines/index.tsv` 是普通能力 VERIFIED 单-run 证据的唯一选择器，优先于 legacy manifest；生成器不会自动选择“最好”或“最新”的结果。Mining First 明确禁止单-run pin，必须先通过 `scripts/mining_release_gate.sh` 的固定 20-seed 与哨兵批次门禁。没有合格的聚合证据格式前，两项 Mining First 能力保持 `MISSING`。manifest 保留历史源文件名与 SHA-256 供追溯，但生成器不会读取或依赖这些本地报告；legacy 数据缺少 tested revision、配置 hash 和 actual seed，因此始终为 `UNVERIFIED`。
 
 | ID | 能力 | 场景 | 结果 | 成熟度 | 证据 | 可信度 | 测试版本 | 日期 | 模式 | Fixture | 备注 |
 |---|---|---|---:|---|---|---|---|---|---|---|---|
+| `diamond_stack_64` | 从零挖一组钻石 | `diamond_stack_64_from_zero` | — | `BLOCKED` | `MISSING` | `NONE` | 无测试记录 | — | — | 自然地形、空背包、64 钻石、零死亡、strict_survival | Mining First 最终承诺；controlled 只验数量契约，prepared 只作长跑诊断；尚无可 pin 的 from_zero 证据 |
+| `obsidian_half_stack_32` | 从零获得半组黑曜石 | `obsidian_half_stack_32_from_zero` | — | `BLOCKED` | `MISSING` | `NONE` | 无测试记录 | — | — | 自然地形、空背包、自主取得钻石镐与桶、32 黑曜石、零死亡、strict_survival | Mining First 最终承诺；必须使用真实放水与原版流体反应；尚无可 pin 的 from_zero 证据 |
 | `wood_from_zero` | 自然采木 | `real_wood` | 4/4 (100%; 4 seeds; FAIL 0, ERR 0) | `DEMONSTRATED` | `UNVERIFIED` (legacy snapshot) | `LOW` | unknown; seed未回读 | 2026-06-24 | 未知（legacy） | 自然地形、空背包、白天、地表化、零死亡 | 固定小批次全绿，但报告未绑定代码和配置 |
 | `food_from_zero` | 获取熟食 | `real_food` | 8/10 (80%; 10 seeds; FAIL 2, ERR 0) | `ALPHA` | `UNVERIFIED` (legacy snapshot) | `LOW` | unknown; seed未回读 | 2026-06-18 | 未知（legacy） | 自然地形、空背包、白天、地表化、四份熟食、零死亡 | 较好批次 8/10，不能代表当前 HEAD；失败阶段 other=2 |
 | `wheat_to_bread` | 种麦做面包 | `real_wheat` | 1/5 (20%; 5 seeds; FAIL 4, ERR 0) | `UNSTABLE` | `UNVERIFIED` (legacy snapshot) | `LOW` | unknown; seed未回读 | 2026-06-24 | 未知（legacy） | 自然地形、空背包、randomTickSpeed=40、两个面包、零死亡 | 生长时间被加速，仍只有少量成功；失败阶段 other=3, wood_gather=1 |
@@ -25,8 +27,10 @@
 - `UNVERIFIED`：manifest 仅保留 legacy 汇总、历史源文件名与 hash，缺少可验证的唯一代码、配置或 actual seed 证据。
 - `MISSING`：尚无明确 pin 的可比较批次。
 
-## v0.1 Release Gate
+## Release Gates
 
+- Mining First：`diamond_stack_64` 与 `obsidian_half_stack_32` 各至少 20 个固定公开 seed，成功率 `>= 90%`、零死亡、`strict_survival`；
+- controlled contract 只验证数量/持久化/后置条件，prepared 只用于诊断；两者 PASS 不得认证最终能力；
 - 四条黄金链各至少 20 个固定公开 seed，成功率 `>= 90%`；
 - `cancel/replace/restart-resume` 为 `100%`；
 - `PARTIAL` 不得计入 PASS；
@@ -36,7 +40,7 @@
 ## 更新方式
 
 1. 运行不可变、带 metadata 的多 seed 测试；
-2. 用 `scripts/pin_baseline.sh` 将 VERIFIED run 显式绑定到 capability ID；
+2. 普通能力用 `scripts/pin_baseline.sh` 将 VERIFIED run 显式绑定到 capability ID；Mining First 禁止走此单-run 入口；
 3. 将 immutable bundle 与 `reports/baselines/index.tsv` 一起纳入版本控制；
 4. 运行 `bash scripts/capability_matrix.sh --output docs/CAPABILITY_MATRIX.md`；
 5. P0-07b CI 建立后运行 `bash scripts/capability_matrix.sh --check docs/CAPABILITY_MATRIX.md`。

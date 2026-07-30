@@ -30,7 +30,6 @@ class PrivilegedBoundarySourceTest {
                 "mode/FakePlayerMotion.java",
                 "network/AIBotServerNetworking.java",
                 "task/DangerWatcher.java",
-                "task/DigDownTask.java",
                 "task/GatherQuotaTask.java",
                 "task/HuntTask.java",
                 "task/NavSafetyNet.java");
@@ -54,6 +53,35 @@ class PrivilegedBoundarySourceTest {
         int emergencyGate = actionPack.indexOf("CapabilityRuntime.decide", currentStandable);
         assertTrue(snapMethod >= 0 && currentStandable > snapMethod && emergencyGate > currentStandable,
                 "ordinary pathfinding from a valid start must run before the emergency-teleport gate");
+    }
+
+    @Test
+    void digDownRelocationUsesObservedFailureInsteadOfHiddenColumnScan() throws IOException {
+        String digDown = read("task/DigDownTask.java");
+        assertFalse(digDown.contains("dryColumn("),
+                "DigDown must not pre-scan buried fluid columns in strict survival");
+
+        int onStart = digDown.indexOf("protected void onStart");
+        int relocation = digDown.indexOf("private void prepareEntryRelocation", onStart);
+        int descent = digDown.indexOf("private void initializeFreshDescent", relocation);
+        assertTrue(onStart >= 0 && relocation > onStart && descent > relocation);
+        String entrySelection = digDown.substring(onStart, descent);
+        assertTrue(entrySelection.contains("EpisodeMemory.INSTANCE.isExcluded"),
+                "entry relocation must be gated by an observed episode failure");
+        assertTrue(entrySelection.contains("Standability.isStandable"),
+                "replacement entries still require a factual surface landing");
+        assertFalse(entrySelection.contains("getFluidState"),
+                "entry selection must not inspect buried fluid state");
+
+        int remember = digDown.indexOf("private void rememberUnusableEntry");
+        int beginReturn = digDown.indexOf("private void beginReturn", remember);
+        assertTrue(remember >= 0 && beginReturn > remember);
+        String failureMemory = digDown.substring(remember, beginReturn);
+        assertTrue(failureMemory.contains("ReturnOutcome.WALLED"));
+        assertTrue(failureMemory.contains("ReturnOutcome.NO_PROGRESS")
+                        && failureMemory.contains("horizontalMode"),
+                "only an observed horizontal no-progress may retire the local entry");
+        assertTrue(failureMemory.contains("EpisodeMemory.INSTANCE.exclude"));
     }
 
     @Test
@@ -98,11 +126,13 @@ class PrivilegedBoundarySourceTest {
         String build = read("action/BuildAction.java");
         assertTrue(build.contains("target_out_of_reach"));
         assertTrue(build.contains("target_not_visible"));
-        assertTrue(build.contains("ObservableWorldQuery.canObserveBlock"));
+        assertFalse(build.contains("ObservableWorldQuery.canObserveBlock"),
+                "face-center observation must not pre-empt the exact inset click sampler");
         assertTrue(build.contains("ObservableWorldQuery.canObserveCell"));
         assertTrue(build.contains("canPlace(placementState, pos, ShapeContext.of(player))"),
                 "direct placement fallback must respect entity/world collision");
-        assertTrue(build.contains("player.raycast(reach, 1.0F, false)"));
+        assertTrue(build.contains("player.raycast(sampleRange, 1.0F, false)"),
+                "exact placement rays must use the perception-and-interaction bounded range");
         assertTrue(build.contains("hit.getSide() != face"));
         assertTrue(build.contains("OperatingProfile.STRICT_SURVIVAL"),
                 "strict mode must not use direct setBlockState placement fallback");
@@ -127,6 +157,42 @@ class PrivilegedBoundarySourceTest {
 
         assertTrue(matchingSources(Pattern.compile("setTimeOfDay\\s*\\(")).isEmpty(),
                 "sleep tasks must respect the server's vanilla sleep quorum");
+    }
+
+    @Test
+    void miningServiceDefersRememberedDepotReadsUntilObservableReach() throws IOException {
+        String service = read("task/MiningServiceTask.java");
+
+        int onStart = service.indexOf("protected void onStart");
+        int onTick = service.indexOf("protected void onTick", onStart);
+        assertTrue(onStart >= 0 && onTick > onStart);
+        assertFalse(service.substring(onStart, onTick).contains("ContainerAction.resolve"),
+                "restoring a remembered depot must not read a remote container");
+
+        int resolveDepot = service.indexOf("private BlockPos resolveDepot");
+        int approach = service.indexOf("private ActionResult startDepotApproach", resolveDepot);
+        assertTrue(resolveDepot >= 0 && approach > resolveDepot);
+        String resolver = service.substring(resolveDepot, approach);
+        assertFalse(resolver.contains("ContainerAction.resolve"));
+        assertFalse(resolver.contains("nearestContainerNear"));
+
+        int walkToDepot = service.indexOf("private void walkToDepot");
+        int deposit = service.indexOf("private void deposit", walkToDepot);
+        String approachBody = service.substring(walkToDepot, deposit);
+        assertTrue(approachBody.indexOf("canInteractWithDepot(bot, depot)")
+                        < approachBody.indexOf("ContainerAction.resolve(bot, depot)"),
+                "the remembered depot must cross the reach/visibility guard before resolution");
+        int serviceTool = service.indexOf("private void serviceTool", deposit);
+        String depositBody = service.substring(deposit, serviceTool);
+        assertTrue(depositBody.indexOf("canInteractWithDepot(bot, depot)")
+                        < depositBody.indexOf("ContainerAction.resolve(bot, depot)"),
+                "container transfer must re-check reach and visibility");
+
+        int interactionGuard = service.indexOf("private static boolean canInteractWithDepot");
+        assertTrue(interactionGuard >= 0);
+        String guard = service.substring(interactionGuard);
+        assertTrue(guard.contains("squaredDistanceTo(pos.toCenterPos()) <= REACH_SQUARED"));
+        assertTrue(guard.contains("ObservableWorldQuery.canObserveCell(bot, pos)"));
     }
 
     @Test

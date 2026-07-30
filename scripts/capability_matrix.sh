@@ -94,6 +94,15 @@ validate_index() {
 pinned_baseline() {
   local capability="$1" expected_scenario="$2" row
   row="$(awk -F '\t' -v wanted="$capability" 'NR > 1 && $1 == wanted { print; found++ } END { if (found > 1) exit 1 }' "$BASELINE_INDEX")" || return 1
+  case "$capability" in
+    diamond_stack_64|obsidian_half_stack_32)
+      [[ -z "$row" ]] || {
+        echo "capability-matrix: Mining First cannot be certified by the single-run baseline index: $capability" >&2
+        return 1
+      }
+      return 2
+      ;;
+  esac
   [[ -n "$row" ]] || return 2
 
   local indexed_cap run_id evidence_path lock_hash commit_sha indexed_scenario pinned_at
@@ -162,7 +171,7 @@ render() {
 
 此文件由 `reports/capability_baseline_manifest.tsv`、`reports/baselines/index.tsv` 通过 `scripts/capability_matrix.sh` 生成。
 
-重要：`reports/baselines/index.tsv` 是 VERIFIED 证据的唯一选择器，优先于 legacy manifest；生成器不会自动选择“最好”或“最新”的结果。没有新式 pinned bundle 时，只展示 manifest 固化的 legacy 汇总快照。manifest 保留历史源文件名与 SHA-256 供追溯，但生成器不会读取或依赖这些本地报告；legacy 数据缺少 tested revision、配置 hash 和 actual seed，因此始终为 `UNVERIFIED`。
+重要：`reports/baselines/index.tsv` 是普通能力 VERIFIED 单-run 证据的唯一选择器，优先于 legacy manifest；生成器不会自动选择“最好”或“最新”的结果。Mining First 明确禁止单-run pin，必须先通过 `scripts/mining_release_gate.sh` 的固定 20-seed 与哨兵批次门禁。没有合格的聚合证据格式前，两项 Mining First 能力保持 `MISSING`。manifest 保留历史源文件名与 SHA-256 供追溯，但生成器不会读取或依赖这些本地报告；legacy 数据缺少 tested revision、配置 hash 和 actual seed，因此始终为 `UNVERIFIED`。
 
 | ID | 能力 | 场景 | 结果 | 成熟度 | 证据 | 可信度 | 测试版本 | 日期 | 模式 | Fixture | 备注 |
 |---|---|---|---:|---|---|---|---|---|---|---|---|
@@ -240,8 +249,10 @@ EOF
 - `UNVERIFIED`：manifest 仅保留 legacy 汇总、历史源文件名与 hash，缺少可验证的唯一代码、配置或 actual seed 证据。
 - `MISSING`：尚无明确 pin 的可比较批次。
 
-## v0.1 Release Gate
+## Release Gates
 
+- Mining First：`diamond_stack_64` 与 `obsidian_half_stack_32` 各至少 20 个固定公开 seed，成功率 `>= 90%`、零死亡、`strict_survival`；
+- controlled contract 只验证数量/持久化/后置条件，prepared 只用于诊断；两者 PASS 不得认证最终能力；
 - 四条黄金链各至少 20 个固定公开 seed，成功率 `>= 90%`；
 - `cancel/replace/restart-resume` 为 `100%`；
 - `PARTIAL` 不得计入 PASS；
@@ -251,7 +262,7 @@ EOF
 ## 更新方式
 
 1. 运行不可变、带 metadata 的多 seed 测试；
-2. 用 `scripts/pin_baseline.sh` 将 VERIFIED run 显式绑定到 capability ID；
+2. 普通能力用 `scripts/pin_baseline.sh` 将 VERIFIED run 显式绑定到 capability ID；Mining First 禁止走此单-run 入口；
 3. 将 immutable bundle 与 `reports/baselines/index.tsv` 一起纳入版本控制；
 4. 运行 `bash scripts/capability_matrix.sh --output docs/CAPABILITY_MATRIX.md`；
 5. P0-07b CI 建立后运行 `bash scripts/capability_matrix.sh --check docs/CAPABILITY_MATRIX.md`。

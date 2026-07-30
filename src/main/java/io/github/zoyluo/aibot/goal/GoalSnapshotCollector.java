@@ -2,6 +2,7 @@ package io.github.zoyluo.aibot.goal;
 
 import io.github.zoyluo.aibot.action.ContainerAction;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
+import io.github.zoyluo.aibot.mining.MiningFoodReserve;
 import io.github.zoyluo.aibot.mining.ToolTier;
 import io.github.zoyluo.aibot.mode.CapabilityRuntime;
 import io.github.zoyluo.aibot.mode.ObservableWorldQuery;
@@ -63,7 +64,8 @@ public final class GoalSnapshotCollector {
                 ? stationCounts(bot, resolved.origin()) : Map.of();
         Map<String, Integer> containerItems = goal instanceof Goal.Stockpile
                 ? containerCounts(bot, resolved) : Map.of();
-        int foodUnits = goal instanceof Goal.Food ? foodUnits(inventory) : 0;
+        int foodUnits = goal instanceof Goal.Food
+                ? MiningFoodReserve.units(bot.getInventory()) : 0;
         Optional<StructureReport> structure = Optional.empty();
         if (goal instanceof Goal.Build && resolved.blueprint() != null && resolved.buildAnchor() != null) {
             structure = Optional.of(StructureVerifier.verify(bot.getServerWorld(), resolved.blueprint(),
@@ -168,17 +170,6 @@ public final class GoalSnapshotCollector {
             }
         }
         return positions;
-    }
-
-    private static int foodUnits(Map<String, Integer> inventory) {
-        int units = 0;
-        for (Item item : List.of(
-                Items.COOKED_BEEF, Items.COOKED_CHICKEN, Items.COOKED_MUTTON, Items.COOKED_PORKCHOP,
-                Items.COOKED_RABBIT, Items.COOKED_COD, Items.COOKED_SALMON, Items.BAKED_POTATO, Items.BREAD)) {
-            units += inventory.getOrDefault(Registries.ITEM.getId(item).toString(), 0);
-        }
-        units += inventory.getOrDefault(Registries.ITEM.getId(Items.SWEET_BERRIES).toString(), 0) / 2;
-        return units;
     }
 
     private static boolean nearlyBroken(ItemStack stack) {

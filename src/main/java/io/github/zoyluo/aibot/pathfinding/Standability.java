@@ -81,16 +81,26 @@ public final class Standability {
         int topY = world.getBottomY() + world.getHeight();
         int minY = Math.max(world.getBottomY() + 1, origin.getY() - Math.max(0, verticalDown));
         int maxY = Math.min(topY - 2, origin.getY() + Math.max(0, verticalUp));
-        for (int y = Math.min(origin.getY(), maxY); y >= minY; y--) {
-            BlockPos candidate = new BlockPos(origin.getX(), y, origin.getZ());
-            if (isStandable(world, candidate)) {
-                return Optional.of(candidate.toImmutable());
+        int originY = Math.max(minY, Math.min(maxY, origin.getY()));
+        int maxDelta = Math.max(originY - minY, maxY - originY);
+        for (int delta = 0; delta <= maxDelta; delta++) {
+            // Preserve the safer lower-cell tie break, but compare vertical distance before
+            // direction. The old two-pass scan searched as many as 128 blocks downward before
+            // considering a stand only one block above, so a surface waypoint could resolve into
+            // a cave below it even though the obstacle itself was directly jumpable.
+            int downY = originY - delta;
+            if (downY >= minY) {
+                BlockPos candidate = new BlockPos(origin.getX(), downY, origin.getZ());
+                if (isStandable(world, candidate)) {
+                    return Optional.of(candidate.toImmutable());
+                }
             }
-        }
-        for (int y = Math.max(origin.getY() + 1, minY); y <= maxY; y++) {
-            BlockPos candidate = new BlockPos(origin.getX(), y, origin.getZ());
-            if (isStandable(world, candidate)) {
-                return Optional.of(candidate.toImmutable());
+            int upY = originY + delta;
+            if (delta > 0 && upY <= maxY) {
+                BlockPos candidate = new BlockPos(origin.getX(), upY, origin.getZ());
+                if (isStandable(world, candidate)) {
+                    return Optional.of(candidate.toImmutable());
+                }
             }
         }
         return Optional.empty();
@@ -105,6 +115,14 @@ public final class Standability {
         BlockState feet = world.getBlockState(pos);
         BlockState head = world.getBlockState(pos.up());
         BlockState below = world.getBlockState(pos.down());
+        // "Standable" is a dry footing contract. A water cell has no collision shape and used to
+        // pass the checks below whenever it had a solid lake bed, so A* emitted DROP_DOWN nodes
+        // into water. Clientless fake players cannot execute normal swimming travel; NavSafety
+        // would lift them back onto the bank and the unchanged path immediately dropped them in
+        // again. Dedicated rescue code may traverse water explicitly, ordinary navigation may not.
+        if (!feet.getFluidState().isEmpty() || !head.getFluidState().isEmpty()) {
+            return false;
+        }
         if (!feet.getCollisionShape(world, pos).isEmpty()) {
             return false;
         }

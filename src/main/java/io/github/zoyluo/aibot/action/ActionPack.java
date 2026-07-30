@@ -3,6 +3,7 @@ package io.github.zoyluo.aibot.action;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.log.LogCategory;
+import io.github.zoyluo.aibot.mode.FakePlayerMotion;
 import io.github.zoyluo.aibot.pathfinding.AStarPathfinder;
 import io.github.zoyluo.aibot.pathfinding.PathExecutor;
 import io.github.zoyluo.aibot.pathfinding.PathfindingResult;
@@ -85,7 +86,12 @@ public final class ActionPack {
     }
 
     public ActionResult startWalkTo(Vec3d target) {
-        this.walkTo = new WalkToController(target);
+        return startWalkTo(target, 0.6D);
+    }
+
+    /** Starts a direct walk with a caller-defined horizontal arrival tolerance. */
+    public ActionResult startWalkTo(Vec3d target, double arrivalThreshold) {
+        this.walkTo = new WalkToController(target, arrivalThreshold);
         this.mining = null;
         this.pathExecutor = null;
         return ActionResult.IN_PROGRESS;
@@ -95,6 +101,15 @@ public final class ActionPack {
     // AStarPathfinder.resolveEndpoint 的挖掘终点豁免)。接近被包裹的矿/穿山直达用这个;
     // 普通走路仍用 startPathTo(先 WALK 后小预算 DIG)。
     public ActionResult startDigPathTo(BlockPos goal) {
+        return startDigPathTo(goal, 0);
+    }
+
+    /**
+     * Starts a digging approach while preserving a caller-scoped mining-stone reserve.
+     * The same reserve gates initial pillar planning, physical pillar execution and replanning.
+     */
+    public ActionResult startDigPathTo(BlockPos goal, int protectedStoneLikeReserve) {
+        int reserve = Math.max(0, protectedStoneLikeReserve);
         int now = player.getServer().getTicks();
         BlockPos immutableGoal = goal.toImmutable();
         if (lastPathGoal != null && lastPathGoal.equals(immutableGoal) && now < nextPathfindTick) {
@@ -104,7 +119,7 @@ public final class ActionPack {
             nextPathfindTick = now + PATHFIND_FAILURE_COOLDOWN_TICKS;
             return ActionResult.failed("pathfinding_failed: NO_START");
         }
-        boolean canPillar = PathExecutor.hasPlaceableBlock(player);
+        boolean canPillar = PathExecutor.hasPlaceableBlock(player, reserve);
         PathfindingResult result = new AStarPathfinder(player.getServerWorld(), player.getBlockPos(), goal,
                 DIG_APPROACH_MAX_NODES, PATHFIND_MAX_MILLIS, canPillar, true, 10.0D).findPath();
         if (!result.success()) {
@@ -117,13 +132,41 @@ public final class ActionPack {
         nextPathfindTick = now + PATHFIND_SUCCESS_COOLDOWN_TICKS;
         BlockPos resolvedGoal = result.resolvedGoal() == null ? immutableGoal : result.resolvedGoal();
         activePathGoal = resolvedGoal;
-        this.pathExecutor = new PathExecutor(result.path(), resolvedGoal);
+        this.pathExecutor = new PathExecutor(
+                result.path(), resolvedGoal, canPillar, true, reserve);
         this.walkTo = null;
         this.mining = null;
         return ActionResult.IN_PROGRESS;
     }
 
     public ActionResult startPathTo(BlockPos goal) {
+        return startPathTo(goal, 0);
+    }
+
+    /**
+     * Starts an ordinary route while preserving a caller-scoped mining-stone reserve.
+     * Non-reserve path supports remain eligible; protected stone is exposed only above the
+     * requested floor.
+     */
+    public ActionResult startPathTo(BlockPos goal, int protectedStoneLikeReserve) {
+        int reserve = Math.max(0, protectedStoneLikeReserve);
+        return startPathTo(
+                goal, PathExecutor.hasPlaceableBlock(player, reserve), true, reserve);
+    }
+
+    /**
+     * Starts a surface-exploration path without digging or disposable pillar shortcuts.
+     * Hunt/Gather roaming must be able to keep moving after it reaches a waypoint; a path that
+     * spends the last few dirt blocks pillaring out of a depression is not a reusable surface route.
+     */
+    public ActionResult startSurfacePathTo(BlockPos goal) {
+        return startPathTo(goal, false, false, 0);
+    }
+
+    private ActionResult startPathTo(BlockPos goal, boolean canPillar,
+                                     boolean allowDigFallback,
+                                     int protectedStoneLikeReserve) {
+        int reserve = Math.max(0, protectedStoneLikeReserve);
         int now = player.getServer().getTicks();
         BlockPos immutableGoal = goal.toImmutable();
         if (lastPathGoal != null && lastPathGoal.equals(immutableGoal) && now < nextPathfindTick) {
@@ -135,14 +178,13 @@ public final class ActionPack {
             nextPathfindTick = now + PATHFIND_FAILURE_COOLDOWN_TICKS;
             return ActionResult.failed("pathfinding_failed: NO_START");
         }
-        boolean canPillar = PathExecutor.hasPlaceableBlock(player);
         ServerWorld world = player.getServerWorld();
         BlockPos from = player.getBlockPos();
         // NAV-OPT 两阶段寻路:先纯步行(禁挖,搜索空间=空气格,收敛快、不会被挖穿邻居撑爆到 SEARCH_LIMIT);
         // 纯步行无解再允许挖穿兜底(隧道/破障),挖穿预算更小以限制被困/地下时的 3D 体积爆搜。
         PathfindingResult result =
                 new AStarPathfinder(world, from, goal, WALK_MAX_NODES, PATHFIND_MAX_MILLIS, canPillar, false).findPath();
-        if (!result.success()) {
+        if (!result.success() && allowDigFallback) {
             PathfindingResult dig =
                     new AStarPathfinder(world, from, goal, DIG_MAX_NODES, PATHFIND_MAX_MILLIS, canPillar, true).findPath();
             if (dig.success()) {
@@ -159,7 +201,8 @@ public final class ActionPack {
         nextPathfindTick = now + PATHFIND_SUCCESS_COOLDOWN_TICKS;
         BlockPos resolvedGoal = result.resolvedGoal() == null ? immutableGoal : result.resolvedGoal();
         activePathGoal = resolvedGoal;
-        this.pathExecutor = new PathExecutor(result.path(), resolvedGoal);
+        this.pathExecutor = new PathExecutor(
+                result.path(), resolvedGoal, canPillar, allowDigFallback, reserve);
         this.walkTo = null;
         this.mining = null;
         return ActionResult.IN_PROGRESS;
@@ -174,6 +217,13 @@ public final class ActionPack {
         BlockPos current = player.getBlockPos();
         Standability.clearCache();
         if (Standability.isStandable(world, current)) {
+            return true;
+        }
+        // A fake player can end a jump/drop fractionally inside the neighbouring cell even though
+        // an adjacent legal landing exists. Recover that one-cell movement physically before asking
+        // for the privileged long-distance snap. In strict_survival this is the difference between
+        // continuing a hunt and every subsequent path request failing NO_START in one tick.
+        if (tryPhysicalSnap(world, current, reason)) {
             return true;
         }
         // A valid current start is ordinary pathfinding and must not require an emergency
@@ -206,6 +256,42 @@ public final class ActionPack {
         return true;
     }
 
+    private boolean tryPhysicalSnap(ServerWorld world, BlockPos current, String reason) {
+        // Same-level steps first, then a one-block drop, finally a vanilla-style jump. A vertical
+        // move may include one horizontal axis; three-axis corner jumps are never legitimate.
+        int[][] horizontalOffsets = {
+                {1, 0}, {-1, 0}, {0, 1}, {0, -1},
+                {1, 1}, {1, -1}, {-1, 1}, {-1, -1}, {0, 0}
+        };
+        for (int dy : new int[]{0, -1, 1}) {
+            for (int[] offset : horizontalOffsets) {
+                int dx = offset[0];
+                int dz = offset[1];
+                if ((dx == 0 && dz == 0 && dy == 0)
+                        || (dy != 0 && Math.abs(dx) + Math.abs(dz) > 1)) {
+                    continue;
+                }
+                BlockPos candidate = current.add(dx, dy, dz);
+                if (!Standability.isStandable(world, candidate)) {
+                    continue;
+                }
+                boolean moved = dy > 0
+                        ? FakePlayerMotion.jumpTo(player, candidate, "path_start_physical_snap:" + reason)
+                        : FakePlayerMotion.stepTo(player, candidate, "path_start_physical_snap:" + reason);
+                if (!moved) {
+                    continue;
+                }
+                Standability.clearCache();
+                BotLog.path(player, "path_start_physical_snap",
+                        "reason", reason,
+                        "from", io.github.zoyluo.aibot.log.LogFields.pos(current),
+                        "to", io.github.zoyluo.aibot.log.LogFields.pos(candidate));
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * 主动把 bot 下沉一格到指定(已为空气的)格子。
      * 关键:bot 是 ServerPlayerEntity,服务端**不跑 travel()**(真实玩家的移动/重力由客户端驱动,
@@ -214,11 +300,12 @@ public final class ActionPack {
      *(实测:dig_down 全程 y 恒定、200t no_progress 卡死的共享根因)。
      * 幂等:bot 已在该层或更低则不动。teleport 会清零 fallDistance,不会摔伤。
      */
-    public void descendInto(BlockPos target) {
+    public boolean descendInto(BlockPos target) {
         if (player.getBlockPos().getY() <= target.getY()) {
-            return;
+            return player.getBlockPos().equals(target);
         }
-        io.github.zoyluo.aibot.mode.FakePlayerMotion.stepTo(player, target, "descend_into");
+        return io.github.zoyluo.aibot.mode.FakePlayerMotion.stepToStandable(
+                player, target, "descend_into");
     }
 
     public ActionResult startMining(BlockPos pos, Direction face) {

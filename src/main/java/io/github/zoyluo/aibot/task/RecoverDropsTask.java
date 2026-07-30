@@ -15,8 +15,8 @@ import net.minecraft.util.math.BlockPos;
  *
  * 设计要点:
  *  - 掉落物 6000t(5 分钟)despawn:死亡时刻起算总预算,赶不上就别去白跑;
- *  - 移动用既有寻路(startPathTo 两阶段),失败降级挖掘接近(startDigPathTo)——死亡点
- *    多在 bot 自己走过的路上,可达性好,不需要 MoveTask 的全套中继火力;
+ *  - 自动恢复只接受 DangerWatcher 证明过的短、浅路线。寻路失败就有界重试并 typed fail，
+ *    绝不让裸体 bot 从出生点朝深矿盲挖;
  *  - 完成语义宽松:到点捡完窗口即 complete(哪怕零捡取——岩浆死掉落已烧光是常态),
  *    只播报结果不纠缠;捡不回来不是任务的错,别让 goal 层 replan 死循环。
  */
@@ -25,11 +25,18 @@ public final class RecoverDropsTask extends AbstractTask {
     private static final int MAX_ELAPSED = 3600;          // 赶路总闸 3 分钟
     private static final int PICKUP_WINDOW = 100;         // 到场后捡取窗口 5s(掉落散布要扫几轮)
     private static final long DESPAWN_BUDGET = 5600L;     // 掉落 6000t 消失,留 400t 余量
+    private static final int ROUTE_RETRY_TICKS = 20;
+    private static final int ROUTE_FAILURE_LIMIT = 3;
+    private static final int ROUTE_NO_PROGRESS_LIMIT = 100;
 
     private final BlockPos deathPos;
     private final long deathTick;
     private int arrivedTick = -1;
     private int repathCooldown;
+    private int routeFailures;
+    private int lastRouteProgressTick;
+    private double initialDistance;
+    private double bestDistance;
 
     public RecoverDropsTask(BlockPos deathPos, long deathTick) {
         this.deathPos = deathPos.toImmutable();
@@ -51,7 +58,14 @@ public final class RecoverDropsTask extends AbstractTask {
         if (state == TaskState.COMPLETED) {
             return 1.0D;
         }
-        return arrivedTick >= 0 ? 0.8D : Math.min(0.7D, elapsed / (double) MAX_ELAPSED);
+        if (arrivedTick >= 0) {
+            return 0.8D;
+        }
+        if (initialDistance <= 0.0D) {
+            return 0.0D;
+        }
+        return Math.min(0.7D,
+                0.7D * (1.0D - Math.min(1.0D, bestDistance / initialDistance)));
     }
 
     @Override
@@ -65,6 +79,10 @@ public final class RecoverDropsTask extends AbstractTask {
             fail("drops_expired");
             return;
         }
+        initialDistance = distance(bot);
+        bestDistance = initialDistance;
+        lastRouteProgressTick = 0;
+        routeFailures = 0;
         startApproach(bot);
     }
 
@@ -76,7 +94,13 @@ public final class RecoverDropsTask extends AbstractTask {
     private void startApproach(AIPlayerEntity bot) {
         ActionResult walk = bot.getActionPack().startPathTo(deathPos);
         if (walk.isFailed()) {
-            bot.getActionPack().startDigPathTo(deathPos); // 深坑/矿道里的死亡点:挖掘接近兜底
+            routeFailures++;
+            BotLog.action(bot, "recover_route_retry",
+                    "attempt", routeFailures, "reason", walk.reason(),
+                    "from", bot.getBlockPos().toShortString(), "to", deathPos.toShortString());
+            if (routeFailures >= ROUTE_FAILURE_LIMIT) {
+                fail("recover_route_unreachable:" + walk.reason());
+            }
         }
     }
 
@@ -117,6 +141,13 @@ public final class RecoverDropsTask extends AbstractTask {
             return;
         }
 
+        double remaining = distance(bot);
+        if (remaining + 0.5D < bestDistance) {
+            bestDistance = remaining;
+            lastRouteProgressTick = elapsed;
+            routeFailures = 0;
+        }
+
         if (bot.getServer().getTicks() - deathTick > DESPAWN_BUDGET) {
             fail("drops_expired_enroute"); // 赶不上了,及时止损
             return;
@@ -125,10 +156,21 @@ public final class RecoverDropsTask extends AbstractTask {
             fail("recover_timeout");
             return;
         }
-        // 寻路断了(执行器空闲且没到)→ 续发(startPathTo 内置节流,不会风暴)
-        if (bot.getActionPack().isPathExecutorIdle() && elapsed - repathCooldown > 20) {
+        // 寻路断了(执行器空闲且没到)→ 有界续发。progress 只认真实距离改善，不能再让 elapsed
+        // 冒充跑尸进度并拖到 3 分钟总闸。
+        if (bot.getActionPack().isPathExecutorIdle()
+                && elapsed - lastRouteProgressTick > ROUTE_NO_PROGRESS_LIMIT) {
+            fail("recover_route_unreachable:no_progress");
+            return;
+        }
+        if (bot.getActionPack().isPathExecutorIdle()
+                && elapsed - repathCooldown > ROUTE_RETRY_TICKS) {
             repathCooldown = elapsed;
             startApproach(bot);
         }
+    }
+
+    private double distance(AIPlayerEntity bot) {
+        return Math.sqrt(bot.getBlockPos().getSquaredDistance(deathPos));
     }
 }

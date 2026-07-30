@@ -3,6 +3,7 @@ package io.github.zoyluo.aibot.mode;
 import io.github.zoyluo.aibot.AIBotConfig;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
+import io.github.zoyluo.aibot.mining.MiningEvidenceAudit;
 
 import java.util.Objects;
 import java.util.UUID;
@@ -23,6 +24,7 @@ public final class CapabilityRuntime {
         AIBotConfig config = AIBotConfig.get();
         CapabilityDecision decision = CapabilityPolicy.decide(
                 config.profile(), config.operatorCapabilities(), capability);
+        MiningEvidenceAudit.recordCapabilityDecision(bot, decision.allowed());
         String normalizedContext = context == null ? "" : context;
         int now = bot.getServer().getTicks();
         AuditKey key = new AuditKey(bot.getUuid(), capability, normalizedContext, decision.allowed());

@@ -16,6 +16,7 @@ import io.github.zoyluo.aibot.manager.AIPlayerManager;
 import io.github.zoyluo.aibot.memory.BotMemoryStore;
 import io.github.zoyluo.aibot.memory.EpisodeLog;
 import io.github.zoyluo.aibot.memory.KnowledgeBase;
+import io.github.zoyluo.aibot.mining.MiningEvidenceAudit;
 import io.github.zoyluo.aibot.mode.CapabilityRuntime;
 import io.github.zoyluo.aibot.network.AIBotServerNetworking;
 import io.github.zoyluo.aibot.observe.BotProfiler;
@@ -74,9 +75,9 @@ public final class RuntimeLifecycleCoordinator {
     public void onBotDeath(AIPlayerEntity bot) {
         BrainCoordinator.INSTANCE.invalidateDecision(bot, "bot_death");
         BrainCoordinator.INSTANCE.clearIntentWakeSources(bot);
-        GoalExecutor.INSTANCE.failCurrent(bot, "bot_died");
-        GoalExecutor.INSTANCE.clearQueue(bot);
-        BotMemoryStore.INSTANCE.of(bot.getUuid()).clearGoal();
+        // A death interrupts but does not erase a long-running Mission. GoalExecutor persists the
+        // exact goal/task checkpoint while RecoverDropsTask owns the safety slot, then resumes it.
+        GoalExecutor.INSTANCE.suspendForDeath(bot);
         IdleCoordinator.INSTANCE.cancelClaimedJob(bot, "bot_died");
         TaskManager.INSTANCE.cancelIntentTasks(bot, "bot_died");
         bot.getActionPack().stopAll();
@@ -117,6 +118,7 @@ public final class RuntimeLifecycleCoordinator {
     }
 
     private static void forgetBot(AIPlayerEntity bot) {
+        MiningEvidenceAudit.clear(bot);
         clearTransient(bot);
         BotRuntimeOptions.INSTANCE.clear(bot);
         BotMemoryStore.INSTANCE.remove(bot.getUuid());
@@ -145,6 +147,7 @@ public final class RuntimeLifecycleCoordinator {
         BotProfiler.INSTANCE.clearAll();
         AIBotServerNetworking.INSTANCE.clear();
         CapabilityRuntime.clearAll();
+        MiningEvidenceAudit.clearAll();
         TpsGuard.INSTANCE.reset();
         AStarPathfinder.invalidateCache("runtime_world_boundary");
     }

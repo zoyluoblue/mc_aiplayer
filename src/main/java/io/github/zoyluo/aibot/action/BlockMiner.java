@@ -2,6 +2,7 @@ package io.github.zoyluo.aibot.action;
 
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import net.minecraft.block.BlockState;
+import net.minecraft.registry.Registries;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
@@ -35,10 +36,16 @@ public final class BlockMiner {
     private BlockPos target;
     private int sinceTick;
     private boolean started;
+    private boolean miningChannelToolPolicy;
     private String failureReason = "";
 
     /** 开始挖一个新目标块(若与当前目标相同且在挖,则不打断、不清零进度)。 */
     public void begin(AIPlayerEntity bot, BlockPos pos) {
+        begin(bot, pos, false);
+    }
+
+    /** OreDig may opt into lowest-sufficient pickaxe selection; the default remains unchanged. */
+    public void begin(AIPlayerEntity bot, BlockPos pos, boolean miningChannelToolPolicy) {
         if (pos != null && pos.equals(target) && started) {
             return; // 同一块继续挖,绝不重置(这正是 #9 卡死的根因)
         }
@@ -47,6 +54,7 @@ public final class BlockMiner {
         this.target = pos == null ? null : pos.toImmutable();
         this.sinceTick = 0;
         this.started = false;
+        this.miningChannelToolPolicy = miningChannelToolPolicy;
         this.failureReason = "";
     }
 
@@ -105,7 +113,23 @@ public final class BlockMiner {
         // 绝不每 tick 重发 startMining —— 那会把 progress 清零,永远破不了块。
         if (bot.getActionPack().isMiningIdle()) {
             BlockState equipTarget = world.getBlockState(target);
-            ToolSelector.equipBestTool(bot, equipTarget);
+            if (miningChannelToolPolicy) {
+                ToolSelector.Selection selection = ToolSelector.equipMiningChannelTool(bot, equipTarget);
+                // Empty hand is a valid mining channel for dirt/grass/sand and other blocks that
+                // do not require a tool.  Keep the explicit failure for stone/ores: those blocks
+                // would otherwise be broken without a harvest drop or consume a scarce wrong tier.
+                if (selection.slot() < 0
+                        || (equipTarget.isToolRequired() && selection.stack().isEmpty())) {
+                    bot.getActionPack().stopMining();
+                    failureReason = "missing_mining_channel_tool:"
+                            + Registries.ITEM.getId(
+                            ToolSelector.requiredMiningChannelTool(equipTarget));
+                    target = null;
+                    return Status.FAILED;
+                }
+            } else {
+                ToolSelector.equipBestTool(bot, equipTarget);
+            }
             Direction face = faceToward(bot, target);
             MiningAction.startMining(bot, target, face);
             started = true;
@@ -119,6 +143,7 @@ public final class BlockMiner {
         target = null;
         started = false;
         sinceTick = 0;
+        miningChannelToolPolicy = false;
     }
 
     /** 从 bot 眼睛朝方块中心的方向,作为破坏面(取主轴)。正对方块即可,不必精确。 */

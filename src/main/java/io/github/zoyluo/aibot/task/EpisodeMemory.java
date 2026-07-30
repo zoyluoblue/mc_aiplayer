@@ -41,7 +41,7 @@ public final class EpisodeMemory {
 
     private static final class BotEpisode {
         final Map<BlockPos, Integer> excludedUntil = new HashMap<>();
-        final Deque<BlockPos> trail = new ArrayDeque<>();
+        final Map<String, Deque<BlockPos>> trails = new HashMap<>();
     }
 
     private BotEpisode of(UUID botId) {
@@ -92,29 +92,50 @@ public final class EpisodeMemory {
 
     /** 记录轨迹采样(自动去抖:与上一采样点距离不足 TRAIL_SPACING 则跳过)。 */
     public void recordTrail(UUID botId, BlockPos pos) {
+        recordTrail(botId, "default", pos);
+    }
+
+    /** Records a purpose-scoped search trail so gathering does not poison later hunting frontiers. */
+    public void recordTrail(UUID botId, String purpose, BlockPos pos) {
         BotEpisode ep = of(botId);
-        BlockPos last = ep.trail.peekLast();
+        Deque<BlockPos> trail = ep.trails.computeIfAbsent(normalizePurpose(purpose), ignored -> new ArrayDeque<>());
+        BlockPos last = trail.peekLast();
         if (last != null && last.getSquaredDistance(pos) < TRAIL_SPACING * TRAIL_SPACING) {
             return;
         }
-        ep.trail.addLast(pos.toImmutable());
-        while (ep.trail.size() > TRAIL_MAX) {
-            ep.trail.pollFirst();
+        trail.addLast(pos.toImmutable());
+        while (trail.size() > TRAIL_MAX) {
+            trail.pollFirst();
         }
     }
 
     /** pos 是否落在最近轨迹 radius 内——漫游选点避开刚搜过的区域(不再盲目转圈)。 */
     public boolean nearTrail(UUID botId, BlockPos pos, double radius) {
+        return nearTrail(botId, "default", pos, radius);
+    }
+
+    /** Horizontal search-area membership for a purpose-scoped trail. Elevation changes are the same region. */
+    public boolean nearTrail(UUID botId, String purpose, BlockPos pos, double radius) {
         BotEpisode ep = episodes.get(botId);
         if (ep == null) {
             return false;
         }
+        Deque<BlockPos> trail = ep.trails.get(normalizePurpose(purpose));
+        if (trail == null) {
+            return false;
+        }
         double r2 = radius * radius;
-        for (BlockPos p : ep.trail) {
-            if (p.getSquaredDistance(pos) <= r2) {
+        for (BlockPos p : trail) {
+            long dx = (long) p.getX() - pos.getX();
+            long dz = (long) p.getZ() - pos.getZ();
+            if (dx * dx + dz * dz <= r2) {
                 return true;
             }
         }
         return false;
+    }
+
+    private static String normalizePurpose(String purpose) {
+        return purpose == null || purpose.isBlank() ? "default" : purpose;
     }
 }

@@ -48,10 +48,10 @@ jobs:
       - name: Verify persistence across two JVM processes
         run: bash scripts/persistence_restart_test.sh
 
-      - name: Run isolated strict-survival runtime contract
+      - name: Run isolated strict-survival runtime and Mining First contracts
         run: >-
           bash scripts/evidence_run.sh
-          --scenario capability_profile+runtime_control_suite
+          --scenario capability_profile+runtime_control_suite+mining_contract_suite
           --seed 20260610
           --timeout 240
           --startup-timeout 480

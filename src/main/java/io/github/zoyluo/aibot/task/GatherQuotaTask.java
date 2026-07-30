@@ -14,6 +14,7 @@ import net.minecraft.item.BlockItem;
 import net.minecraft.item.Item;
 import net.minecraft.item.Items;
 import net.minecraft.registry.Registries;
+import net.minecraft.stat.Stats;
 import net.minecraft.util.math.BlockPos;
 
 import java.util.LinkedHashSet;
@@ -30,6 +31,7 @@ public final class GatherQuotaTask extends AbstractTask {
     private static final int MAX_ROAMS = 8;          // 卡步逃逸:最多漫游换片次数(找树/换片共用,~224 格),再不行才 fail
     private static final int ROAM_DISTANCE = 28;     // 每次漫游的水平距离
     private static final int SELF_STUCK_LIMIT = 160; // A:采集自卡死阈值(自管看门狗,见 isWaiting 说明)
+    private static final int HARVEST_LIMIT = 240;    // 单棵原子挖掘上限;不得让区域看门狗中断 HARVEST/PICKUP
     private static final int ROAM_MOVE_LIMIT = 100;  // 漫游走 5s 还没到落脚点(目标在高处/不可达、爬坡卡)→ 放弃回 SURVEY
     // 治无树兜底:48 格 + 上浮都找不到资源时,用 OreProspector palette 扫描大范围(96 格)定位最近的目标方块
     //(如原木),再寻路走过去。专治"无树高原/恶劣地形"——roam 只在同片横移跨不出高原,prospect 能直接锁定山脚/远处的树。
@@ -73,6 +75,10 @@ public final class GatherQuotaTask extends AbstractTask {
     private int countSoFar;
     private int countBeforeHarvest;
     private int pickupTicks;
+    private int harvestStartedTick;
+    private BlockPos pickupOrigin;
+    private long pickupStatBeforeHarvest;
+    private boolean pickupOriginApproachLogged;
     private int pickupMisses; // 连续"砍了但没捡到掉落物"的次数,超限才判 pickup_timeout(避免一棵没捡到就整个采集失败)
     private boolean pickupSweepAttempted;
     private StockpileTask stockpileTask;
@@ -144,23 +150,33 @@ public final class GatherQuotaTask extends AbstractTask {
         countSoFar = countAccepted(bot);
         phase = countSoFar >= targetCount ? Phase.DONE : Phase.SURVEY;
         stockpileTask = null;
+        pickupOrigin = null;
+        pickupStatBeforeHarvest = pickedUpAccepted(bot);
+        pickupOriginApproachLogged = false;
     }
 
     @Override
     protected void onTick(AIPlayerEntity bot) {
         // 工作记忆:记录走过的轨迹(4 格去抖),roam 选点避开已搜过的区域(不再盲目转圈)。
-        EpisodeMemory.INSTANCE.recordTrail(bot.getUuid(), bot.getBlockPos());
+        EpisodeMemory.INSTANCE.recordTrail(bot.getUuid(), "gather", bot.getBlockPos());
         countSoFar = countAccepted(bot);
         if (countSoFar >= targetCount) {
+            bot.getActionPack().stopAll();
+            clearPickupLedger();
             phase = Phase.DONE;
         }
         if (elapsed > 6000) {
             fail("gather_timeout");
             return;
         }
+        // Do not re-enter SURVEY/EXPLORE every tick while swimming. That used to burn all eight
+        // exploration hops in place before NavSafetyNet's low-air threshold could take control.
+        if (waitForDryGround(bot)) {
+            return;
+        }
         // A:采集自愈——只看"是否采到新木"(count 是否增长),不看位置。GOTO 缓慢挪动但久采不到(走不到树/
         // 砍不动)也算卡 → 及时漫游换片,而非缓慢耗到 gather_timeout(实测:采到 5 根后走不到剩下的、5min 超时被秒)。
-        if (phase != Phase.ROAM && phase != Phase.EXPLORE) {
+        if (phase == Phase.SURVEY || phase == Phase.GOTO) {
             if (countSoFar != selfStuckCount) {
                 selfStuckCount = countSoFar;
                 selfStuckTick = elapsed;
@@ -336,7 +352,10 @@ public final class GatherQuotaTask extends AbstractTask {
                 int[] d = dirs[(start + i) % dirs.length];
                 BlockPos ground = findGroundAt(world, feet.getX() + d[0] * dist, feet.getZ() + d[1] * dist);
                 if (ground == null
-                        || (avoidTrail && EpisodeMemory.INSTANCE.nearTrail(bot.getUuid(), ground, 10.0D))) {
+                        || EpisodeMemory.INSTANCE.isExcluded(
+                        bot.getUuid(), ground, bot.getServer().getTicks())
+                        || (avoidTrail && EpisodeMemory.INSTANCE.nearTrail(
+                        bot.getUuid(), "gather", ground, 10.0D))) {
                     continue;
                 }
                 // 拟人:走过去换片,不再 teleport 闪现(实测砍树时瞬移很出戏)。
@@ -375,14 +394,6 @@ public final class GatherQuotaTask extends AbstractTask {
 
     // 漫游中:走向新片落脚点;到达(3 格内)或走不动(寻路空闲)→ 回 SURVEY 在新片找树(途中 SURVEY 也会扫到沿路的树)。
     private void roamMove(AIPlayerEntity bot) {
-        // 沾水即弃当前漫游路线(这条路把我们带进了水),让 NavSafetyNet 拖上岸后回 SURVEY 重选——
-        // 别顶着岸壁反复半淹(与 HuntTask.roamMove 同款保护)。
-        if (bot.isTouchingWater()) {
-            roamTarget = null;
-            searchRadius = SEARCH_RADIUS;
-            phase = Phase.SURVEY;
-            return;
-        }
         // 起步宽限 20t:startPathTo 后 A* 异步计算需几个 tick,期间 executor 仍 idle——立即判"走不动"
         // 会瞬退回 SURVEY,prospect 拉黑机制连带把"还没出发"的好目标当"走不到"误杀(实测割草连环误杀至 no_resource)。
         boolean pathGaveUp = elapsed - selfStuckTick > 20 && bot.getActionPack().isPathExecutorIdle();
@@ -407,9 +418,11 @@ public final class GatherQuotaTask extends AbstractTask {
         exploreHint = null;
         boolean aimed = false;
         // 记忆导向:语义知识库(跨会话)里最近的同类资源点 → 直奔(哪怕中途轻扫先截胡也赚)。
+        int now = bot.getServer().getTicks();
         for (Block block : harvestBlocks) {
             var known = io.github.zoyluo.aibot.memory.KnowledgeBase.INSTANCE.nearestResource(
-                    bot.getUuid(), Registries.BLOCK.getId(block).toString(), feet, KNOWN_RESOURCE_RANGE);
+                    bot.getUuid(), Registries.BLOCK.getId(block).toString(), feet, KNOWN_RESOURCE_RANGE,
+                    pos -> !EpisodeMemory.INSTANCE.isExcluded(bot.getUuid(), pos, now));
             if (known.isPresent()) {
                 exploreHint = known.get().pos();
                 exploreHeading = Math.atan2(exploreHint.getZ() + 0.5D - bot.getZ(), exploreHint.getX() + 0.5D - bot.getX());
@@ -425,7 +438,8 @@ public final class GatherQuotaTask extends AbstractTask {
                 int px = (int) Math.floor(bot.getX() + 44.0D * Math.cos(heading));
                 int pz = (int) Math.floor(bot.getZ() + 44.0D * Math.sin(heading));
                 BlockPos probe = findGroundAt(world, px, pz);
-                if (probe == null || EpisodeMemory.INSTANCE.nearTrail(bot.getUuid(), probe, 16.0D)) {
+                if (probe == null || EpisodeMemory.INSTANCE.nearTrail(
+                        bot.getUuid(), "gather", probe, 16.0D)) {
                     continue;
                 }
                 exploreHeading = heading;
@@ -473,7 +487,9 @@ public final class GatherQuotaTask extends AbstractTask {
             double sin = Math.sin(phi);
             for (double dist : EXPLORE_HOP_DISTANCES) {
                 BlockPos candidate = findGroundAt(world, (int) Math.floor(bx + dist * cos), (int) Math.floor(bz + dist * sin));
-                if (candidate == null || !isDryColumn(world, candidate)) {
+                if (candidate == null || !isDryColumn(world, candidate)
+                        || EpisodeMemory.INSTANCE.isExcluded(
+                        bot.getUuid(), candidate, bot.getServer().getTicks())) {
                     continue;
                 }
                 if (exploreHint != null && candidate.getSquaredDistance(exploreHint) > maxHintDistSq) {
@@ -510,21 +526,14 @@ public final class GatherQuotaTask extends AbstractTask {
         // ① 这一跳走太久没到(跳点其实难达/路线绕远)→ 弃跳回 SURVEY 重扫(扫描半径/限频复位)。
         if (elapsed - exploreHopStartTick > EXPLORE_MOVE_LIMIT) {
             bot.getActionPack().stopAll();
+            excludeExploreHint(bot, "timeout");
             exploreTarget = null;
             searchRadius = SEARCH_RADIUS;
             lastScanTick = -100;
             phase = Phase.SURVEY;
             return;
         }
-        // ② 沾水即弃当前路线(与 roamMove 同款):NavSafetyNet 拖上岸后回 SURVEY 重选。
-        if (bot.isTouchingWater()) {
-            bot.getActionPack().stopAll();
-            exploreTarget = null;
-            searchRadius = SEARCH_RADIUS;
-            phase = Phase.SURVEY;
-            return;
-        }
-        // ③ 途中轻扫(每 EXPLORE_SCAN_INTERVAL tick,16 格):看到目标方块就收手,交回 SURVEY 精确采集。
+        // ② 途中轻扫(每 EXPLORE_SCAN_INTERVAL tick,16 格):看到目标方块就收手,交回 SURVEY 精确采集。
         int now = bot.getServer().getTicks();
         if (now - lastExploreScanTick >= EXPLORE_SCAN_INTERVAL) {
             lastExploreScanTick = now;
@@ -538,11 +547,11 @@ public final class GatherQuotaTask extends AbstractTask {
                 return;
             }
         }
-        // ④ 到达跳点(≤3 格):记忆导向走到记忆点 16 格内却没被③拦下=旧情报没货 → 资源点销账,
+        // ③ 到达跳点(≤3 格):记忆导向走到记忆点 16 格内却没被②拦下=旧情报没货 → 资源点销账,
         // 防下次 startExplore 又朝同一条旧情报奔;之后回 SURVEY(没货由 fail 链继续外探)。
         if (exploreTarget == null || bot.getBlockPos().getSquaredDistance(exploreTarget) <= 9.0D) {
             if (exploreHint != null && bot.getBlockPos().getSquaredDistance(exploreHint) <= 256.0D) {
-                io.github.zoyluo.aibot.memory.KnowledgeBase.INSTANCE.invalidateResource(bot.getUuid(), exploreHint);
+                invalidateKnownResource(bot, exploreHint);
                 exploreHint = null;
             }
             bot.getActionPack().stopAll();
@@ -551,7 +560,7 @@ public final class GatherQuotaTask extends AbstractTask {
             phase = Phase.SURVEY;
             return;
         }
-        // ⑤ 半路断线(起步宽限 20t,刚 startPathTo 时 executor 可能仍 idle)→ 同航向重选一跳;
+        // ④ 半路断线(起步宽限 20t,刚 startPathTo 时 executor 可能仍 idle)→ 同航向重选一跳;
         // 旋 90° 仍选不出 → 回 SURVEY(本跳预算 EXPLORE_MOVE_LIMIT 对整跳含重选连续计)。
         if (elapsed - exploreHopStartTick > 20 && bot.getActionPack().isPathExecutorIdle()) {
             BlockPos repick = pickExploreWaypoint(bot);
@@ -561,6 +570,7 @@ public final class GatherQuotaTask extends AbstractTask {
             }
             if (repick == null) {
                 bot.getActionPack().stopAll();
+                excludeExploreHint(bot, "no_path");
                 exploreTarget = null;
                 searchRadius = SEARCH_RADIUS;
                 phase = Phase.SURVEY;
@@ -662,6 +672,7 @@ public final class GatherQuotaTask extends AbstractTask {
 
     private void goToTarget(AIPlayerEntity bot) {
         if (targetPos == null || !isHarvestBlock(bot, targetPos)) {
+            invalidateConsumedResource(bot);
             phase = Phase.SURVEY;
             return;
         }
@@ -736,9 +747,21 @@ public final class GatherQuotaTask extends AbstractTask {
 
     private void harvest(AIPlayerEntity bot) {
         if (targetPos == null || !isHarvestBlock(bot, targetPos)) {
+            invalidateConsumedResource(bot);
             bot.getActionPack().stopAll(); // 砍倒后停稳,别带移动惯性漂离掉落物(实测砍完从树位漂走→捡不到)
             pickupTicks = probabilisticDrop ? 30 : 120; // 概率掉落资源(种子/浆果)掉脚边、捡得快,少等
             phase = Phase.PICKUP;
+            return;
+        }
+        if (elapsed - harvestStartedTick > HARVEST_LIMIT) {
+            bot.getActionPack().stopAll();
+            EpisodeMemory.INSTANCE.exclude(bot.getUuid(), targetPos,
+                    bot.getServer().getTicks(), EpisodeMemory.TTL_UNREACHABLE);
+            BotLog.action(bot, "gather_harvest_timeout", "pos", targetPos.toShortString());
+            targetPos = null;
+            clearPickupLedger();
+            resetSurveyWatchdog();
+            phase = Phase.SURVEY;
             return;
         }
         if (bot.getActionPack().isMiningIdle() && elapsed % 200 == 0) {
@@ -749,39 +772,170 @@ public final class GatherQuotaTask extends AbstractTask {
     private void pickup(AIPlayerEntity bot) {
         HarvestCore.forcePickupNearbyAnyOf(bot, acceptItems);
         countSoFar = countAccepted(bot);
-        if (countSoFar > countBeforeHarvest) {
-            phase = countSoFar >= targetCount ? Phase.DONE : Phase.SURVEY;
+        long pickupStatNow = pickedUpAccepted(bot);
+        if (confirmPickup(bot, pickupStatNow)) {
             return;
         }
         pickupTicks--;
-        HarvestCore.chaseDropAnyOf(bot, acceptItems, 8.0D);
+        var visibleDrop = HarvestCore.nearestDropAnyOf(bot, acceptItems, 8.0D);
+        if (visibleDrop.isPresent()) {
+            if (bot.getActionPack().isPathExecutorIdle() && bot.getActionPack().isWalkToIdle()) {
+                HarvestCore.approachDropPhysically(bot, visibleDrop.get());
+            }
+        }
+        // A freshly spawned visible ItemEntity can remain airborne, making entity-based pickup
+        // navigation deliberately wait.  The break coordinate is already a factual, durable
+        // ledger entry, so if the entity route did not start any movement, walk to that exact
+        // cell now instead of standing four blocks away until the whole pickup window expires.
+        if (pickupOrigin != null
+                && bot.getActionPack().isPathExecutorIdle()
+                && bot.getActionPack().isWalkToIdle()) {
+            boolean started = HarvestCore.approachKnownPickupCell(bot, pickupOrigin);
+            if (started && !pickupOriginApproachLogged) {
+                pickupOriginApproachLogged = true;
+                BotLog.action(bot, "gather_pickup_origin_approach",
+                        "origin", pickupOrigin.toShortString(),
+                        "from", bot.getBlockPos().toShortString());
+            }
+        }
         if (pickupTicks <= 0) {
-            if (!pickupSweepAttempted && HarvestCore.nearestDropAnyOf(bot, acceptItems, 8.0D).isPresent()) {
+            if (!pickupSweepAttempted && visibleDrop.isPresent()) {
                 pickupSweepAttempted = true;
                 HarvestCore.sweepPickupAnyOf(bot, acceptItems, 8);
                 pickupTicks = 60;
                 return;
             }
             countSoFar = countAccepted(bot);
-            if (countSoFar > countBeforeHarvest) {
-                pickupMisses = 0;
-                phase = countSoFar >= targetCount ? Phase.DONE : Phase.SURVEY;
+            pickupStatNow = pickedUpAccepted(bot);
+            if (confirmPickup(bot, pickupStatNow)) {
+                return;
             } else if (probabilisticDrop) {
                 // 概率掉落(割草取种子/采浆果丛):这次破坏没掉是常态,不算"采不到",回 SURVEY 继续采下一个;
                 // 靠 survey 找不到方块(→roam)与 gather_timeout(6000t)兜底,避免被 pickup_miss 误判超时
                 //(实测:割草取种子 pickup_timeout、只采到 1 个就失败)。
+                clearPickupLedger();
+                resetSurveyWatchdog();
                 phase = Phase.SURVEY;
             } else if (++pickupMisses <= MAX_PICKUP_MISSES) {
                 // 没捡到(高处掉落卡叶/够不到)→ 别 fail,回 SURVEY 换棵再砍。关键修:去掉旧的"countSoFar>0"
                 // 限制——实测树稀疏区第一棵就捡不到→countSoFar=0 直接 fail→大脑重规划同样计划→死循环 19 分钟被秒。
-                BotLog.action(bot, "gather_pickup_miss", "have", countSoFar + "/" + targetCount, "miss", pickupMisses);
+                BotLog.action(bot, "gather_pickup_miss",
+                        "have", countSoFar + "/" + targetCount,
+                        "miss", pickupMisses,
+                        "origin", pickupOrigin == null ? "unknown" : pickupOrigin.toShortString(),
+                        "at", bot.getBlockPos().toShortString(),
+                        "pickup_stat_delta", Math.max(0L, pickupStatNow - pickupStatBeforeHarvest),
+                        "visible_drop", visibleDrop.isPresent());
+                clearPickupLedger();
+                resetSurveyWatchdog();
                 phase = Phase.SURVEY;
-            } else if (roamToNewArea(bot)) {
-                // 同一片连续多棵都采不到 → 漫游(走过去)换片重试(roamToNewArea 内已设 phase=ROAM)。
             } else {
-                fail("pickup_timeout");
+                clearPickupLedger();
+                resetSurveyWatchdog();
+                if (roamToNewArea(bot)) {
+                    // 同一片连续多棵都采不到 → 漫游(走过去)换片重试(roamToNewArea 内已设 phase=ROAM)。
+                } else {
+                    fail("pickup_timeout");
+                }
             }
         }
+    }
+
+    /**
+     * Confirms ordinary entity pickup independently from net inventory growth. A safety resupply
+     * may consume one accepted log while this task is paused, so inventory can remain unchanged
+     * even though vanilla collision collected the newly broken block.
+     */
+    private boolean confirmPickup(AIPlayerEntity bot, long pickupStatNow) {
+        boolean inventoryGain = countSoFar > countBeforeHarvest;
+        boolean vanillaPickup = pickupStatNow > pickupStatBeforeHarvest;
+        if (!inventoryGain && !vanillaPickup) {
+            return false;
+        }
+        bot.getActionPack().stopAll();
+        pickupMisses = 0;
+        clearPickupLedger();
+        if (countSoFar >= targetCount) {
+            phase = Phase.DONE;
+        } else {
+            // A vanilla pickup can coincide with accepted-item consumption, leaving no quota
+            // progress. Re-enter local survey with a fresh regional deadline instead of treating
+            // the atomic HARVEST/PICKUP duration as time spent stuck in this area.
+            resetSurveyWatchdog();
+            phase = Phase.SURVEY;
+        }
+        return true;
+    }
+
+    private void clearPickupLedger() {
+        pickupOrigin = null;
+        pickupOriginApproachLogged = false;
+    }
+
+    private void resetSurveyWatchdog() {
+        selfStuckCount = countSoFar;
+        selfStuckTick = elapsed;
+    }
+
+    private void invalidateConsumedResource(AIPlayerEntity bot) {
+        if (targetPos == null) {
+            return;
+        }
+        // RESOURCE_FOUND stores the factual block coordinate. Once that block is gone, retaining
+        // it sends every later replan back to an empty point (seed 3000 repeatedly burned all eight
+        // explore hops on the same harvested tree). Nearby live blocks will be rediscovered normally.
+        bot.getActionPack().stopAll();
+        invalidateKnownResource(bot, targetPos);
+        targetPos = null;
+    }
+
+    private boolean waitForDryGround(AIPlayerEntity bot) {
+        boolean active = NavSafetyNet.INSTANCE.isWaterRescueActive(bot);
+        if (!bot.isTouchingWater() && !active) {
+            return false;
+        }
+        bot.getActionPack().stopAll();
+        if (exploreHint != null) {
+            excludeExploreHint(bot, "water");
+        }
+        if (targetPos != null) {
+            EpisodeMemory.INSTANCE.exclude(bot.getUuid(), targetPos,
+                    bot.getServer().getTicks(), EpisodeMemory.TTL_UNREACHABLE);
+        }
+        if (roamTarget != null) {
+            EpisodeMemory.INSTANCE.exclude(bot.getUuid(), roamTarget,
+                    bot.getServer().getTicks(), EpisodeMemory.TTL_UNREACHABLE);
+        }
+        if (exploreTarget != null) {
+            EpisodeMemory.INSTANCE.exclude(bot.getUuid(), exploreTarget,
+                    bot.getServer().getTicks(), EpisodeMemory.TTL_UNREACHABLE);
+        }
+        roamTarget = null;
+        exploreTarget = null;
+        targetPos = null;
+        searchRadius = SEARCH_RADIUS;
+        phase = Phase.SURVEY;
+        selfStuckTick = elapsed;
+        NavSafetyNet.INSTANCE.requestWaterRescue(bot);
+        return true;
+    }
+
+    private void invalidateKnownResource(AIPlayerEntity bot, BlockPos pos) {
+        for (Block block : harvestBlocks) {
+            io.github.zoyluo.aibot.memory.KnowledgeBase.INSTANCE.invalidateResource(
+                    bot.getUuid(), Registries.BLOCK.getId(block).toString(), pos);
+        }
+    }
+
+    private void excludeExploreHint(AIPlayerEntity bot, String reason) {
+        if (exploreHint == null) {
+            return;
+        }
+        EpisodeMemory.INSTANCE.exclude(bot.getUuid(), exploreHint,
+                bot.getServer().getTicks(), EpisodeMemory.TTL_UNREACHABLE);
+        BotLog.action(bot, "gather_known_hint_excluded",
+                "pos", exploreHint.toShortString(), "reason", reason);
+        exploreHint = null;
     }
 
     private void deposit(AIPlayerEntity bot) {
@@ -806,12 +960,29 @@ public final class GatherQuotaTask extends AbstractTask {
     private void startHarvest(AIPlayerEntity bot) {
         countBeforeHarvest = countAccepted(bot);
         pickupSweepAttempted = false;
+        harvestStartedTick = elapsed;
+        pickupOrigin = targetPos == null ? null : targetPos.toImmutable();
+        pickupStatBeforeHarvest = pickedUpAccepted(bot);
+        pickupOriginApproachLogged = false;
         HarvestCore.startMining(bot, targetPos);
         phase = Phase.HARVEST;
     }
 
     private int countAccepted(AIPlayerEntity bot) {
-        return HarvestCore.countInventoryItems(bot, acceptItems);
+        return acceptedInventoryCount(bot, targetItem);
+    }
+
+    private long pickedUpAccepted(AIPlayerEntity bot) {
+        long count = 0L;
+        for (Item item : acceptItems) {
+            count += bot.getStatHandler().getStat(Stats.PICKED_UP, item);
+        }
+        return count;
+    }
+
+    /** Family-aware absolute inventory baseline used when Goal steps carry incremental gathers. */
+    public static int acceptedInventoryCount(AIPlayerEntity bot, Item targetItem) {
+        return HarvestCore.countInventoryItems(bot, acceptItemsFor(targetItem));
     }
 
     private boolean isHarvestBlock(AIPlayerEntity bot, BlockPos pos) {

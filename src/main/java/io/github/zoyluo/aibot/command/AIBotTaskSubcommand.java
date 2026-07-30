@@ -6,6 +6,7 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
+import io.github.zoyluo.aibot.AIBotConfig;
 import io.github.zoyluo.aibot.auth.BotAuthorizationGate;
 import io.github.zoyluo.aibot.auth.BotAuthorizationPolicy;
 import io.github.zoyluo.aibot.runtime.TaskOrigin;
@@ -248,11 +249,24 @@ public final class AIBotTaskSubcommand {
     }
 
     private static int assignStripMine(CommandContext<ServerCommandSource> context, int length, int spacing, BlockPos depot) {
-        return assign(context, bot -> new StripMineTask(direction(context), length, spacing, depot, Set.of()));
+        return assign(context, bot -> {
+            requireLegacyMiningProfile();
+            return new StripMineTask(direction(context), length, spacing, depot, Set.of());
+        });
     }
 
     private static int assignMineVein(CommandContext<ServerCommandSource> context, Block ore) {
-        return assign(context, bot -> StripMineTask.mineNearbyVein(ore == null ? Set.of() : Set.of(ore)));
+        return assign(context, bot -> {
+            requireLegacyMiningProfile();
+            return StripMineTask.mineNearbyVein(ore == null ? Set.of() : Set.of(ore));
+        });
+    }
+
+    private static void requireLegacyMiningProfile() {
+        StripMineTask.profileRejectionReason(AIBotConfig.get().profile())
+                .ifPresent(reason -> {
+                    throw new IllegalArgumentException(reason);
+                });
     }
 
     private static int assignCraft(CommandContext<ServerCommandSource> context, int count) {

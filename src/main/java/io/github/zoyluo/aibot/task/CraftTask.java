@@ -143,27 +143,63 @@ public final class CraftTask extends AbstractTask {
             phase = Phase.ENSURING_TABLE;
             return;
         }
-        for (RecipeRegistry.Ingredient ingredient : recipe.ingredients()) {
-            if (!removeIngredient(bot, ingredient, ingredient.count() * step.crafts())) {
-                fail("need: " + describeIngredient(ingredient, ingredient.count() * step.crafts()));
-                return;
-            }
-        }
-        ActionResult result = InventoryAction.giveItem(bot, new ItemStack(recipe.output(), step.outputCount()));
-        if (result.isFailed()) {
-            fail(result.reason());
+        PreparedCraft prepared = prepareCraft(bot, step);
+        if (prepared.missingIngredient() != null) {
+            fail("need: " + describeIngredient(
+                    prepared.missingIngredient(), prepared.missingCount()));
             return;
         }
+        if (prepared.availableOutput() < step.outputCount()) {
+            fail("craft_output_capacity:item=" + Registries.ITEM.getId(recipe.output())
+                    + ":count=" + step.outputCount()
+                    + ":available=" + prepared.availableOutput());
+            return;
+        }
+        commitPreparedCraft(bot, prepared);
+        BotLog.action(bot, "craft_atomic",
+                "item", Registries.ITEM.getId(recipe.output()).toString(),
+                "count", step.outputCount());
         if (recipe.output() == target) {
             craftedCount += step.outputCount();
         }
         nextStep++;
     }
 
-    private static boolean removeIngredient(AIPlayerEntity bot, RecipeRegistry.Ingredient ingredient, int count) {
+    /**
+     * Builds the complete post-craft inventory on deep copies. The live inventory is not touched
+     * until every ingredient has been consumed and the entire output has been proven insertable.
+     */
+    private static PreparedCraft prepareCraft(
+            AIPlayerEntity bot, CraftingHelper.CraftStep step) {
+        List<ItemStack> main = copyStacks(bot.getInventory().main);
+        List<ItemStack> offHand = copyStacks(bot.getInventory().offHand);
+        for (RecipeRegistry.Ingredient ingredient : step.recipe().ingredients()) {
+            int required = ingredient.count() * step.crafts();
+            if (!removeIngredient(main, offHand, ingredient, required)) {
+                return new PreparedCraft(main, offHand, ingredient, required, 0);
+            }
+        }
+
+        ItemStack output = new ItemStack(step.recipe().output(), step.outputCount());
+        int available = outputCapacity(main, output);
+        if (available >= output.getCount()) {
+            insertEntireStack(main, output);
+        }
+        return new PreparedCraft(main, offHand, null, 0, available);
+    }
+
+    private static List<ItemStack> copyStacks(List<ItemStack> source) {
+        return source.stream().map(ItemStack::copy).collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+    }
+
+    private static boolean removeIngredient(
+            List<ItemStack> main,
+            List<ItemStack> offHand,
+            RecipeRegistry.Ingredient ingredient,
+            int count) {
         int total = 0;
         for (Item item : ingredient.anyOf()) {
-            total += InventoryAction.countItem(bot, item);
+            total += countItem(main, offHand, item);
         }
         if (total < count) {
             return false;
@@ -173,13 +209,90 @@ public final class CraftTask extends AbstractTask {
             if (remaining <= 0) {
                 return true;
             }
-            int take = Math.min(remaining, InventoryAction.countItem(bot, item));
-            if (take > 0 && !InventoryAction.removeItems(bot, item, take)) {
-                return false;
+            for (List<ItemStack> region : List.of(main, offHand)) {
+                for (ItemStack stack : region) {
+                    if (remaining <= 0) {
+                        return true;
+                    }
+                    if (!stack.isOf(item)) {
+                        continue;
+                    }
+                    int take = Math.min(remaining, stack.getCount());
+                    stack.decrement(take);
+                    remaining -= take;
+                }
             }
-            remaining -= take;
         }
         return remaining == 0;
+    }
+
+    private static int countItem(List<ItemStack> main, List<ItemStack> offHand, Item item) {
+        int count = 0;
+        for (List<ItemStack> region : List.of(main, offHand)) {
+            for (ItemStack stack : region) {
+                if (stack.isOf(item)) {
+                    count += stack.getCount();
+                }
+            }
+        }
+        return count;
+    }
+
+    private static int outputCapacity(List<ItemStack> main, ItemStack output) {
+        long available = 0L;
+        for (ItemStack stack : main) {
+            if (stack.isEmpty()) {
+                available += output.getMaxCount();
+            } else if (ItemStack.areItemsAndComponentsEqual(stack, output)) {
+                available += Math.max(0, stack.getMaxCount() - stack.getCount());
+            }
+        }
+        return (int) Math.min(Integer.MAX_VALUE, available);
+    }
+
+    private static void insertEntireStack(List<ItemStack> main, ItemStack output) {
+        for (ItemStack stack : main) {
+            if (output.isEmpty()) {
+                return;
+            }
+            if (!stack.isEmpty() && ItemStack.areItemsAndComponentsEqual(stack, output)) {
+                int moved = Math.min(output.getCount(), stack.getMaxCount() - stack.getCount());
+                if (moved > 0) {
+                    stack.increment(moved);
+                    output.decrement(moved);
+                }
+            }
+        }
+        for (int slot = 0; slot < main.size() && !output.isEmpty(); slot++) {
+            if (!main.get(slot).isEmpty()) {
+                continue;
+            }
+            int moved = Math.min(output.getCount(), output.getMaxCount());
+            main.set(slot, output.copyWithCount(moved));
+            output.decrement(moved);
+        }
+        if (!output.isEmpty()) {
+            throw new IllegalStateException("craft output preflight capacity mismatch");
+        }
+    }
+
+    private static void commitPreparedCraft(AIPlayerEntity bot, PreparedCraft prepared) {
+        var inventory = bot.getInventory();
+        for (int slot = 0; slot < inventory.main.size(); slot++) {
+            inventory.main.set(slot, prepared.main().get(slot));
+        }
+        for (int slot = 0; slot < inventory.offHand.size(); slot++) {
+            inventory.offHand.set(slot, prepared.offHand().get(slot));
+        }
+        inventory.markDirty();
+    }
+
+    private record PreparedCraft(
+            List<ItemStack> main,
+            List<ItemStack> offHand,
+            RecipeRegistry.Ingredient missingIngredient,
+            int missingCount,
+            int availableOutput) {
     }
 
     private static BlockPos nearbyCraftingTable(AIPlayerEntity bot) {

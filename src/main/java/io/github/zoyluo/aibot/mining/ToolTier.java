@@ -86,12 +86,12 @@ public final class ToolTier {
     }
 
     public static int bestPickaxeTier(AIPlayerEntity bot) {
-        int best = tierOf(bot.getMainHandStack());
+        int best = pickaxeTier(bot.getMainHandStack());
         for (ItemStack stack : bot.getInventory().main) {
-            best = Math.max(best, tierOf(stack));
+            best = Math.max(best, pickaxeTier(stack));
         }
         for (ItemStack stack : bot.getInventory().offHand) {
-            best = Math.max(best, tierOf(stack));
+            best = Math.max(best, pickaxeTier(stack));
         }
         return best;
     }
@@ -140,7 +140,7 @@ public final class ToolTier {
         return Items.AIR;
     }
 
-    private static int tierOf(ItemStack stack) {
+    public static int pickaxeTier(ItemStack stack) {
         if (stack.isEmpty() || nearlyBroken(stack)) {
             return NONE;
         }

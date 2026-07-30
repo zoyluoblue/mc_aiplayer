@@ -6,15 +6,14 @@ import io.github.zoyluo.aibot.action.ActionResult;
 import io.github.zoyluo.aibot.action.BuildAction;
 import io.github.zoyluo.aibot.action.InventoryAction;
 import io.github.zoyluo.aibot.action.LookAction;
+import io.github.zoyluo.aibot.action.MaterialPalette;
 import io.github.zoyluo.aibot.action.MiningController;
 import io.github.zoyluo.aibot.action.WalkToController;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.log.LogCategory;
 import io.github.zoyluo.aibot.log.LogFields;
-import net.minecraft.block.Blocks;
-import net.minecraft.item.BlockItem;
-import net.minecraft.item.ItemStack;
+import io.github.zoyluo.aibot.mode.FakePlayerMotion;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
@@ -28,10 +27,13 @@ public final class PathExecutor {
     private List<Node> path;
     private int index = 1;
     private final BlockPos originalGoal;
+    private final boolean replanCanPillar;
+    private final boolean replanAllowDig;
+    private final int protectedStoneLikeReserve;
     private WalkToController subWalker;
     private MiningController subMiner;
     private boolean digWalking;
-    private boolean replanTried;
+    private final ReplanGate replanGate = new ReplanGate();
     private Vec3d lastPos;
     private int stuckTicks;
     private int totalTicks;
@@ -40,8 +42,22 @@ public final class PathExecutor {
     private int nodeRetry;
 
     public PathExecutor(List<Node> path, BlockPos originalGoal) {
+        this(path, originalGoal, false, false, 0);
+    }
+
+    public PathExecutor(List<Node> path, BlockPos originalGoal,
+                        boolean replanCanPillar, boolean replanAllowDig) {
+        this(path, originalGoal, replanCanPillar, replanAllowDig, 0);
+    }
+
+    public PathExecutor(List<Node> path, BlockPos originalGoal,
+                        boolean replanCanPillar, boolean replanAllowDig,
+                        int protectedStoneLikeReserve) {
         this.path = List.copyOf(path);
         this.originalGoal = originalGoal.toImmutable();
+        this.replanCanPillar = replanCanPillar;
+        this.replanAllowDig = replanAllowDig;
+        this.protectedStoneLikeReserve = Math.max(0, protectedStoneLikeReserve);
     }
 
     public ActionResult tick(ActionPack pack) {
@@ -66,7 +82,8 @@ public final class PathExecutor {
         }
 
         ActionResult result = switch (next.moveType()) {
-            case WALK, DIAGONAL, JUMP_UP, DROP_DOWN -> tickWalk(pack, next);
+            case WALK, DIAGONAL, JUMP_UP -> tickWalk(pack, next);
+            case DROP_DOWN -> tickDrop(pack, next);
             case DIG_THROUGH -> tickDigThrough(pack, next);
             case PILLAR_UP -> tickPillar(pack, next);
         };
@@ -88,13 +105,26 @@ public final class PathExecutor {
     }
 
     public static boolean hasPlaceableBlock(AIPlayerEntity player) {
-        return findPlaceableBlock(player) >= 0;
+        return hasPlaceableBlock(player, 0);
+    }
+
+    public static boolean hasPlaceableBlock(AIPlayerEntity player,
+                                            int protectedStoneLikeReserve) {
+        return findPlaceableBlock(player, protectedStoneLikeReserve) >= 0;
     }
 
     private ActionResult tickWalk(ActionPack pack, Node next) {
         if (arrivedAt(pack.player().getBlockPos(), next.pos())) {
             advance();
             return ActionResult.IN_PROGRESS;
+        }
+        if (next.moveType() == MoveType.JUMP_UP) {
+            if (FakePlayerMotion.jumpTo(pack.player(), next.pos(), "path_jump_up")) {
+                BotLog.path(pack.player(), "path_jump_complete", "to", LogFields.pos(next.pos()));
+                advance();
+                return ActionResult.IN_PROGRESS;
+            }
+            return handleStuck(pack, "jump_up_blocked");
         }
         if (subWalker == null) {
             activeWalkTargetIndex = chooseWalkTargetIndex(pack);
@@ -106,7 +136,8 @@ public final class PathExecutor {
                         "from", LogFields.pos(next.pos()),
                         "to", LogFields.pos(target.pos()));
             }
-            subWalker = new WalkToController(Vec3d.ofCenter(target.pos()));
+            subWalker = new WalkToController(
+                    Vec3d.ofCenter(target.pos()), WalkToController.PATH_NODE_ARRIVAL_THRESHOLD);
         }
         Node target = path.get(activeWalkTargetIndex);
         if (arrivedAt(pack.player().getBlockPos(), target.pos())) {
@@ -119,6 +150,34 @@ public final class PathExecutor {
         }
         if (result.isFailed()) {
             return handleWalkFailure(pack, "walk_failed: " + result.reason());
+        }
+        return ActionResult.IN_PROGRESS;
+    }
+
+    /** Executes a safe fall one collision-validated adjacent cell at a time for a clientless bot. */
+    private ActionResult tickDrop(ActionPack pack, Node next) {
+        AIPlayerEntity player = pack.player();
+        BlockPos current = player.getBlockPos();
+        BlockPos target = next.pos();
+        if (current.equals(target)) {
+            advance();
+            return ActionResult.IN_PROGRESS;
+        }
+        if (current.getY() <= target.getY()
+                || Math.abs(current.getX() - target.getX()) > 1
+                || Math.abs(current.getZ() - target.getZ()) > 1) {
+            return handleStuck(pack, "drop_pose_drift");
+        }
+        int stepX = Integer.compare(target.getX(), current.getX());
+        int stepZ = stepX == 0 ? Integer.compare(target.getZ(), current.getZ()) : 0;
+        BlockPos step = current.add(stepX, -1, stepZ);
+        if (DangerCheck.scan(player.getServerWorld(), step) != null
+                || !FakePlayerMotion.stepTo(player, step, "path_drop_down")) {
+            return handleStuck(pack, "drop_step_blocked");
+        }
+        if (step.equals(target)) {
+            BotLog.path(player, "path_drop_complete", "to", LogFields.pos(target));
+            advance();
         }
         return ActionResult.IN_PROGRESS;
     }
@@ -149,7 +208,8 @@ public final class PathExecutor {
             }
             subMiner = null;
             digWalking = true;
-            subWalker = new WalkToController(Vec3d.ofCenter(next.pos()));
+            subWalker = new WalkToController(
+                    Vec3d.ofCenter(next.pos()), WalkToController.PATH_NODE_ARRIVAL_THRESHOLD);
         }
 
         ActionResult walk = subWalker.tick(pack);
@@ -170,7 +230,7 @@ public final class PathExecutor {
             advance();
             return ActionResult.IN_PROGRESS;
         }
-        int slot = findPlaceableBlock(player);
+        int slot = findPlaceableBlock(player, protectedStoneLikeReserve);
         if (slot < 0) {
             return handleStuck(pack, "pillar_no_block");
         }
@@ -182,30 +242,40 @@ public final class PathExecutor {
         double rise = player.getY() - placeSlot.getY();
         if (rise > 0.5D && rise < 1.2D && player.getServerWorld().getBlockState(placeSlot).isAir()) {
             BuildAction.placeBlockAt(player, placeSlot);
+            return ActionResult.IN_PROGRESS;
+        }
+
+        // ServerPlayerEntity normally receives its jump displacement from client movement packets.
+        // Our fake player has no client, so setJumping alone can leave it bouncing at the same block
+        // forever (the obsidian pool pickup path is a deterministic two-block-deep reproduction).
+        // Model exactly one adjacent jump cell through the reviewed fake-client adapter, then place
+        // the support with the normal visible vanilla interaction. If placement fails, return to the
+        // factual old feet cell so a replan never leaves the bot suspended in an invented pose.
+        if (player.isOnGround() && player.getBlockPos().equals(placeSlot)) {
+            if (!FakePlayerMotion.jumpTo(player, next.pos(), "path_pillar_jump")) {
+                return handleStuck(pack, "pillar_jump_blocked");
+            }
+            ActionResult placed = BuildAction.placeBlockAt(player, placeSlot);
+            if (placed.isSuccess()) {
+                BotLog.path(player, "path_pillar_complete",
+                        "from", LogFields.pos(placeSlot),
+                        "to", LogFields.pos(next.pos()));
+                advance();
+                return ActionResult.IN_PROGRESS;
+            }
+            FakePlayerMotion.stepTo(player, placeSlot, "path_pillar_rollback");
+            return handleStuck(pack, "pillar_place_failed: " + placed.reason());
         }
         return ActionResult.IN_PROGRESS;
     }
 
-    private static int findPlaceableBlock(AIPlayerEntity player) {
-        var main = player.getInventory().main;
-        for (int i = 0; i < main.size(); i++) {
-            ItemStack stack = main.get(i);
-            if (stack.isEmpty() || !(stack.getItem() instanceof BlockItem blockItem)) {
-                continue;
-            }
-            var block = blockItem.getBlock();
-            if (isPathFillerBlock(block)) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
-    private static boolean isPathFillerBlock(net.minecraft.block.Block block) {
-        return block == Blocks.COBBLESTONE || block == Blocks.DIRT || block == Blocks.STONE
-                || block == Blocks.COBBLED_DEEPSLATE || block == Blocks.DEEPSLATE
-                || block == Blocks.NETHERRACK || block == Blocks.ANDESITE
-                || block == Blocks.DIORITE || block == Blocks.GRANITE;
+    private static int findPlaceableBlock(AIPlayerEntity player,
+                                          int protectedStoneLikeReserve) {
+        // A fluid seal and a standing surface have different geometry requirements. Use the
+        // path-only full-height palette so lowered blocks such as mud cannot invalidate the
+        // one-block rise assumed by PILLAR_UP.
+        return MaterialPalette.pickPathSupportBlockSlot(
+                player, protectedStoneLikeReserve).orElse(-1);
     }
 
     private ActionResult checkProgress(ActionPack pack, Node next) {
@@ -237,7 +307,7 @@ public final class PathExecutor {
         lastPos = null;
         activeWalkTargetIndex = -1;
         nodeRetry = 0;
-        replanTried = false;
+        replanGate.resetAfterNodeAdvance();
     }
 
     private int chooseWalkTargetIndex(ActionPack pack) {
@@ -256,7 +326,9 @@ public final class PathExecutor {
     private boolean canStringPullTo(ActionPack pack, BlockPos from, int candidateIndex) {
         for (int i = index; i <= candidateIndex; i++) {
             MoveType type = path.get(i).moveType();
-            if (type != MoveType.WALK && type != MoveType.DIAGONAL && type != MoveType.JUMP_UP) {
+            // A jump node is a mandatory change of elevation. WalkToController only steers on the
+            // horizontal plane, so string-pulling across JUMP_UP silently skips the climb.
+            if (type != MoveType.WALK && type != MoveType.DIAGONAL) {
                 return false;
             }
         }
@@ -299,10 +371,11 @@ public final class PathExecutor {
         return !world.getBlockState(below).getCollisionShape(world, below).isEmpty();
     }
 
-    private static boolean arrivedAt(BlockPos current, BlockPos target) {
-        int dx = current.getX() - target.getX();
-        int dz = current.getZ() - target.getZ();
-        return dx * dx + dz * dz <= 1 && Math.abs(current.getY() - target.getY()) <= 1;
+    static boolean arrivedAt(BlockPos current, BlockPos target) {
+        // String-pulling may deliberately collapse a verified clear run. Every node left in the
+        // executable path, however, is a required geometric waypoint: accepting an adjacent cell
+        // skipped the final horizontal setup before JUMP_UP and asked the bot to jump two blocks.
+        return current.equals(target);
     }
 
     private ActionResult handleWalkFailure(ActionPack pack, String reason) {
@@ -326,21 +399,28 @@ public final class PathExecutor {
     }
 
     private ActionResult handleStuck(ActionPack pack, String reason) {
-        if (!replanTried) {
+        if (replanGate.tryAcquire()) {
             int now = pack.player().getServer().getTicks();
             if (now - lastReplanTick < REPLAN_COOLDOWN_TICKS) {
                 cleanup(pack);
                 return ActionResult.failed(reason + "; replan_throttled");
             }
             lastReplanTick = now;
-            replanTried = true;
             BotLog.path(pack.player(), "path_stuck", "at_node", reason, "stuck_ticks", stuckTicks);
             if (!pack.snapPlayerToNearestStandable("path_replan_start_invalid")) {
                 cleanup(pack);
                 return ActionResult.failed(reason + "; replan_failed: NO_START");
             }
-            boolean canPillar = hasPlaceableBlock(pack.player());
-            AStarPathfinder finder = new AStarPathfinder(pack.player().getServerWorld(), pack.player().getBlockPos(), originalGoal, canPillar);
+            // A runtime obstruction may narrow an existing route, but it may never broaden the
+            // caller's original movement contract. In particular, surface/pickup paths are created
+            // without digging or disposable pillars; silently enabling either here can destroy the
+            // wall hiding a finite drop or consume mission materials. Pillaring also remains gated
+            // by the current inventory because a previously available support may have been spent.
+            boolean canPillar = replanCanPillar
+                    && hasPlaceableBlock(pack.player(), protectedStoneLikeReserve);
+            AStarPathfinder finder = new AStarPathfinder(
+                    pack.player().getServerWorld(), pack.player().getBlockPos(), originalGoal,
+                    canPillar, replanAllowDig);
             PathfindingResult fresh = finder.findPath();
             if (fresh.success()) {
                 BotLog.path(pack.player(), "path_replan", "at_node", reason, "new_path_size", fresh.path().size());
@@ -351,13 +431,45 @@ public final class PathExecutor {
                 digWalking = false;
                 stuckTicks = 0;
                 lastPos = null;
-                replanTried = false;
                 return ActionResult.IN_PROGRESS;
             }
             reason = reason + "; replan_failed: " + fresh.reason();
         }
         cleanup(pack);
         return ActionResult.failed(reason);
+    }
+
+    boolean replanCanPillar() {
+        return replanCanPillar;
+    }
+
+    boolean replanAllowDig() {
+        return replanAllowDig;
+    }
+
+    int protectedStoneLikeReserve() {
+        return protectedStoneLikeReserve;
+    }
+
+    /**
+     * Grants one internal replan until the executor commits real node progress. Finding another
+     * path is not progress: an unreachable WalkTo target may produce the same valid A* route on
+     * every timeout, so resetting here would turn the executor into an unbounded retry loop.
+     */
+    static final class ReplanGate {
+        private boolean acquired;
+
+        boolean tryAcquire() {
+            if (acquired) {
+                return false;
+            }
+            acquired = true;
+            return true;
+        }
+
+        void resetAfterNodeAdvance() {
+            acquired = false;
+        }
     }
 
     private void cleanup(ActionPack pack) {

@@ -17,13 +17,16 @@ import java.util.Set;
  */
 public final class MiningChain {
 
-    /** 矿物链条目。bestY=推荐下挖到的目标 Y(峰值层);bestY=Integer.MAX_VALUE 表示浅层广布、无需强制下挖。 */
+    /** 矿物链条目。bestY=推荐下挖到的目标 Y(峰值层)。 */
     public record OreEntry(Block ore, Block deepslate, Item rawDrop, Item smelted, int pickaxeTier, int bestY) {
     }
 
     private static final OreEntry[] TABLE = {
             //          普通矿石                深板岩变体                         掉落物            冶炼产物          镐级           峰值Y
-            new OreEntry(Blocks.COAL_ORE,     Blocks.DEEPSLATE_COAL_ORE,     Items.COAL,         Items.COAL,        ToolTier.WOOD,  Integer.MAX_VALUE),
+            // strict_survival can only inspect exposed blocks. Starting a branch mine at the
+            // surface therefore turns coal acquisition into an endless dirt/forest spiral. Enter
+            // the same rock layer used by OreScan before opening the observable search tunnel.
+            new OreEntry(Blocks.COAL_ORE,     Blocks.DEEPSLATE_COAL_ORE,     Items.COAL,         Items.COAL,        ToolTier.WOOD,  48),
             new OreEntry(Blocks.COPPER_ORE,   Blocks.DEEPSLATE_COPPER_ORE,   Items.RAW_COPPER,   Items.COPPER_INGOT, ToolTier.STONE, 48),
             new OreEntry(Blocks.IRON_ORE,     Blocks.DEEPSLATE_IRON_ORE,     Items.RAW_IRON,     Items.IRON_INGOT,  ToolTier.STONE, 16),
             new OreEntry(Blocks.LAPIS_ORE,    Blocks.DEEPSLATE_LAPIS_ORE,    Items.LAPIS_LAZULI, Items.LAPIS_LAZULI, ToolTier.STONE, -1),
@@ -54,7 +57,7 @@ public final class MiningChain {
 
     /**
      * 这组矿物推荐下挖到的目标 Y:取所有已知矿中**最深**(最小 bestY)的层,以便一次下到位。
-     * 全是"浅层广布矿"(如煤)或无已知矿 → 返回 Integer.MAX_VALUE(调用方据此不强制下挖)。
+     * 无已知矿 → 返回 Integer.MAX_VALUE(调用方据此不强制下挖)。
      */
     public static int bestY(Set<Block> ores) {
         int best = Integer.MAX_VALUE;

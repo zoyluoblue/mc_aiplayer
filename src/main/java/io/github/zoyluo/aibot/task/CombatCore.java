@@ -7,6 +7,9 @@ import io.github.zoyluo.aibot.action.LookAction;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.ai.RangedAttackMob;
+import net.minecraft.entity.mob.CreeperEntity;
+import net.minecraft.entity.mob.EndermanEntity;
 import net.minecraft.entity.mob.HostileEntity;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
@@ -19,13 +22,67 @@ import java.util.Optional;
 
 public final class CombatCore {
     public static final float ATTACK_RANGE = 3.0F;
+    private static final double CLOSE_HOSTILE_PRESSURE_RANGE = 10.0D;
+    /** Creepers can erase a zero-death mission before ordinary melee pressure is re-entered. */
+    private static final double CREEPER_PRESSURE_RANGE = 16.0D;
+    private static final double RANGED_HOSTILE_PRESSURE_RANGE = 20.0D;
 
     private CombatCore() {
     }
 
     public static void equipMelee(AIPlayerEntity bot) {
         EquipAction.equipBestArmor(bot);
+        ensureMeleeWeapon(bot);
+    }
+
+    /**
+     * Re-evaluates the complete inventory at an attack boundary. This is intentionally above the
+     * low-level interaction primitive: a melee hit may consume the held weapon's final durability,
+     * and the combat owner must atomically select its physical successor before another tick can
+     * continue empty-handed.
+     */
+    public static void ensureMeleeWeapon(AIPlayerEntity bot) {
         EquipAction.equipBestWeapon(bot);
+    }
+
+    /** Shared combat policy: projectile-capable mobs keep pressure while line of sight remains. */
+    static boolean isRangedThreat(LivingEntity entity) {
+        return entity instanceof RangedAttackMob;
+    }
+
+    static double hostilePressureScanRange() {
+        return RANGED_HOSTILE_PRESSURE_RANGE;
+    }
+
+    /**
+     * A close hostile remains pressure even while rounding a corner. Beyond that close envelope,
+     * only an observable ranged attacker with factual line of sight can still deal damage while
+     * the bot is eating or settling another combat target.
+     */
+    static boolean isWithinHostilePressureEnvelope(AIPlayerEntity bot, LivingEntity entity) {
+        double distanceSquared = bot.squaredDistanceTo(entity);
+        if (distanceSquared
+                <= CLOSE_HOSTILE_PRESSURE_RANGE * CLOSE_HOSTILE_PRESSURE_RANGE) {
+            return true;
+        }
+        if (entity instanceof CreeperEntity
+                && distanceSquared <= CREEPER_PRESSURE_RANGE * CREEPER_PRESSURE_RANGE) {
+            return true;
+        }
+        return isRangedThreat(entity)
+                && distanceSquared
+                <= RANGED_HOSTILE_PRESSURE_RANGE * RANGED_HOSTILE_PRESSURE_RANGE
+                && hasLineOfSight(bot, entity);
+    }
+
+    /**
+     * Shared combat policy for mobs that need a dedicated tactic instead of generic melee.
+     * Creepers require explosive spacing; Endermen require a low ceiling/water/leg trap strategy
+     * that the ordinary approach/strike loop does not own.  Until those tactics exist, survival
+     * safety must create distance rather than turn an interrupted mining mission into a duel.
+     */
+    static boolean isMeleeForbiddenThreat(LivingEntity entity) {
+        return entity instanceof CreeperEntity || entity instanceof EndermanEntity;
     }
 
     public static Optional<LivingEntity> nearestTarget(AIPlayerEntity bot, EntityType<?> targetType, double range) {

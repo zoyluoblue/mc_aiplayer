@@ -32,10 +32,24 @@ public final class TaskManager {
     }
 
     public void assign(AIPlayerEntity bot, Task task, TaskOrigin origin) {
+        assign(bot, task, origin, true);
+    }
+
+    /**
+     * Establishes task authority without publishing irreversible user-visible task reports.
+     * Restore callers must publish the assignment only after their persisted authority has passed
+     * every semantic check.
+     */
+    public void assignSilently(AIPlayerEntity bot, Task task, TaskOrigin origin) {
+        assign(bot, task, origin, false);
+    }
+
+    private void assign(AIPlayerEntity bot, Task task, TaskOrigin origin,
+                        boolean publishStatus) {
         if (isUserPaused(bot) && !origin.safety()) {
             throw new IllegalStateException("mission_user_paused");
         }
-        abort(bot);
+        abort(bot, publishStatus);
         bot.getActionPack().stopAll();
         UUID uuid = bot.getUuid();
         active.put(uuid, task);
@@ -66,25 +80,51 @@ public final class TaskManager {
             if (failed.state() == TaskState.FAILED) {
                 recordFailure(bot, task.name(), failed.failureReason(), bot.getServer().getTicks());
             }
-            BotReporter.INSTANCE.onStatus(bot.getServer(), bot, failed);
+            if (publishStatus) {
+                BotReporter.INSTANCE.onStatus(bot.getServer(), bot, failed);
+            }
             BotLog.error(bot, "task_start_failed", startFailure, "name", task.name());
             throw startFailure;
         }
         TaskStatus status = TaskStatus.from(task);
         lastStatus.put(uuid, status);
-        BotReporter.INSTANCE.onAssigned(bot, status);
+        if (publishStatus) {
+            BotReporter.INSTANCE.onAssigned(bot, status);
+        }
         BotLog.task(bot, "task_assigned", "name", task.name(), "params", task.describe(),
                 "origin", origin.kind(), "origin_reason", origin.reason());
     }
 
     public void abort(AIPlayerEntity bot) {
+        abort(bot, true);
+    }
+
+    private void abort(AIPlayerEntity bot, boolean publishStatus) {
         Task current = active.remove(bot.getUuid());
         activeOrigins.remove(bot.getUuid());
         if (current != null) {
             current.abort(bot);
             lastStatus.put(bot.getUuid(), TaskStatus.from(current));
-            BotReporter.INSTANCE.onStatus(bot.getServer(), bot, TaskStatus.from(current));
+            if (publishStatus) {
+                BotReporter.INSTANCE.onStatus(bot.getServer(), bot, TaskStatus.from(current));
+            }
         }
+    }
+
+    /** Publishes the assignment established by {@link #assignSilently} after restore commit. */
+    public boolean publishCurrentAssignment(AIPlayerEntity bot) {
+        Task current = active.get(bot.getUuid());
+        if (current == null) {
+            return false;
+        }
+        TaskStatus status = TaskStatus.from(current);
+        if (status.state() != TaskState.RUNNING
+                && status.state() != TaskState.PAUSED) {
+            return false;
+        }
+        lastStatus.put(bot.getUuid(), status);
+        BotReporter.INSTANCE.onAssigned(bot, status);
+        return true;
     }
 
     /**
@@ -160,6 +200,12 @@ public final class TaskManager {
     public boolean hasPaused(AIPlayerEntity bot) {
         ExecutionStack<Task> stack = executionStacks.get(bot.getUuid());
         return stack != null && !stack.isEmpty();
+    }
+
+    /** Most recently interrupted work, used by safety routing without consuming the stack. */
+    public Optional<Task> peekPaused(AIPlayerEntity bot) {
+        ExecutionStack<Task> stack = executionStacks.get(bot.getUuid());
+        return stack == null ? Optional.empty() : stack.peek().map(ExecutionStack.Frame::work);
     }
 
     public int pausedDepth(AIPlayerEntity bot) {
@@ -282,6 +328,15 @@ public final class TaskManager {
             // 失败原因透传给 goal 层 replan。任务私有熔断可以更早更聪明,但漏配时这里兜底。
             String breaker = SurvivalGuard.INSTANCE.check(player, task);
             if (breaker != null && task.state() == TaskState.RUNNING) {
+                if ((origin == null || !origin.safety()) && breaker.startsWith("guard_")) {
+                    // Survival interruptions are temporary physical conditions, not evidence that
+                    // the mission cursor is invalid. Preserve the exact task instance and let the
+                    // safety layer repay the danger before resuming it.
+                    pauseFor(player, "survival_guard:" + breaker);
+                    BotLog.danger(player, "survival_guard_paused",
+                            "task", task.name(), "why", breaker);
+                    continue;
+                }
                 task.abort(player);
                 if (task instanceof AbstractTask at) {
                     at.failureReason = breaker; // abort 默认 "aborted",改成可诊断的熔断理由
@@ -378,7 +433,12 @@ public final class TaskManager {
     }
 
     private static boolean isCritical(Task task) {
-        return task instanceof EvadeTask || task instanceof CombatTask || task instanceof EatTask || task instanceof ResupplyTask;
+        return task instanceof EvadeTask
+                || task instanceof CombatTask
+                || task instanceof EmergencyShelterTask
+                || task instanceof MiningBarricadeTask
+                || task instanceof EatTask
+                || task instanceof ResupplyTask;
     }
 
     public record FailureRecord(String name, String reason, int count, int tick) {

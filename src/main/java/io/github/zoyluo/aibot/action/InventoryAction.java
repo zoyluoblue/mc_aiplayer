@@ -7,6 +7,7 @@ import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
+import net.minecraft.entity.ItemEntity;
 import net.minecraft.util.collection.DefaultedList;
 
 import java.util.LinkedHashMap;
@@ -33,7 +34,41 @@ public final class InventoryAction {
                 return OptionalInt.of(slot);
             }
         }
+        for (int slot = 0; slot < inventory.offHand.size(); slot++) {
+            if (inventory.offHand.get(slot).isOf(item)) {
+                return promoteOffhandSlot(player, slot);
+            }
+        }
         return OptionalInt.empty();
+    }
+
+    /**
+     * Moves one offhand stack into an addressable main-inventory slot without deleting the stack
+     * displaced from a full inventory. Callers can then use the ordinary equip/select path.
+     */
+    public static OptionalInt promoteOffhandSlot(AIPlayerEntity player, int offhandSlot) {
+        PlayerInventory inventory = player.getInventory();
+        if (offhandSlot < 0 || offhandSlot >= inventory.offHand.size()) {
+            return OptionalInt.empty();
+        }
+        ItemStack moving = inventory.offHand.get(offhandSlot);
+        if (moving.isEmpty()) {
+            return OptionalInt.empty();
+        }
+        int destination = firstEmptyMain(inventory);
+        if (destination < 0) {
+            destination = inventory.selectedSlot;
+        }
+        ItemStack displaced = inventory.main.get(destination);
+        inventory.main.set(destination, moving);
+        inventory.offHand.set(offhandSlot, displaced);
+        inventory.markDirty();
+        BotLog.action(player, "promote_offhand",
+                "offhand_slot", offhandSlot,
+                "main_slot", destination,
+                "item", moving.getItem(),
+                "swapped", !displaced.isEmpty());
+        return OptionalInt.of(destination);
     }
 
     public static int countItem(AIPlayerEntity player, Item item) {
@@ -58,6 +93,9 @@ public final class InventoryAction {
             return -1;
         }
         if (PlayerInventory.isValidHotbarIndex(sourceSlot)) {
+            if (inventory.selectedSlot == sourceSlot) {
+                return sourceSlot;
+            }
             inventory.selectedSlot = sourceSlot;
             inventory.markDirty();
             BotLog.action(player, "equip_slot", "source_slot", sourceSlot, "hotbar_slot", sourceSlot);
@@ -79,6 +117,15 @@ public final class InventoryAction {
 
     public static int firstEmptyHotbar(PlayerInventory inventory) {
         for (int slot = 0; slot <= 8; slot++) {
+            if (inventory.main.get(slot).isEmpty()) {
+                return slot;
+            }
+        }
+        return -1;
+    }
+
+    private static int firstEmptyMain(PlayerInventory inventory) {
+        for (int slot = 0; slot < inventory.main.size(); slot++) {
             if (inventory.main.get(slot).isEmpty()) {
                 return slot;
             }
@@ -140,7 +187,25 @@ public final class InventoryAction {
             }
             return slot; // 优先安全食物(熟肉/面包/生牛猪羊)
         }
-        return harmfulSlot; // 只剩有害食物时才吃(总比饿死强);都没有则 -1
+        int harmfulOffhandSlot = -1;
+        for (int slot = 0; slot < inventory.offHand.size(); slot++) {
+            ItemStack stack = inventory.offHand.get(slot);
+            if (stack.isEmpty() || !stack.contains(DataComponentTypes.FOOD)) {
+                continue;
+            }
+            if (HARMFUL_FOODS.contains(stack.getItem())) {
+                if (harmfulOffhandSlot < 0) {
+                    harmfulOffhandSlot = slot;
+                }
+                continue;
+            }
+            return promoteOffhandSlot(player, slot).orElse(-1);
+        }
+        if (harmfulSlot >= 0) {
+            return harmfulSlot;
+        }
+        return harmfulOffhandSlot < 0
+                ? -1 : promoteOffhandSlot(player, harmfulOffhandSlot).orElse(-1);
     }
 
     public static Map<String, Integer> summarize(AIPlayerEntity player) {
@@ -165,17 +230,45 @@ public final class InventoryAction {
     }
 
     public static ActionResult dropSlot(AIPlayerEntity player, int slot, boolean wholeStack) {
+        return dropSlotEntity(player, slot, wholeStack).isPresent()
+                ? ActionResult.SUCCESS : ActionResult.failed("drop_entity_not_created");
+    }
+
+    /**
+     * Drops through the ordinary survival-player path and returns the actual world entity.  Callers
+     * that must prove physical containment (rather than merely freeing an inventory slot) can keep
+     * the UUID and wait until the entity reaches its factual destination.  A rejected spawn is
+     * rolled back into the inventory instead of turning a failed drop into direct item deletion.
+     */
+    public static java.util.Optional<ItemEntity> dropSlotEntity(
+            AIPlayerEntity player, int slot, boolean wholeStack) {
         var inventory = player.getInventory();
-        if (slot < 0 || slot >= inventory.size()) {
-            return ActionResult.failed("slot_out_of_range");
+        int count = slot >= 0 && slot < inventory.size()
+                ? wholeStack ? inventory.getStack(slot).getCount() : 1 : 0;
+        return dropSlotEntity(player, slot, count);
+    }
+
+    /** Drops an exact positive count from one slot through the same vanilla entity path. */
+    public static java.util.Optional<ItemEntity> dropSlotEntity(
+            AIPlayerEntity player, int slot, int requestedCount) {
+        var inventory = player.getInventory();
+        if (slot < 0 || slot >= inventory.size() || requestedCount <= 0) {
+            return java.util.Optional.empty();
         }
-        ItemStack removed = wholeStack ? inventory.removeStack(slot) : inventory.removeStack(slot, 1);
+        int count = Math.min(requestedCount, inventory.getStack(slot).getCount());
+        ItemStack removed = inventory.removeStack(slot, count);
         if (removed.isEmpty()) {
-            return ActionResult.failed("empty_slot");
+            return java.util.Optional.empty();
         }
-        player.dropItem(removed, false, true);
-        BotLog.action(player, "drop", "slot", slot, "whole_stack", wholeStack);
-        return ActionResult.SUCCESS;
+        ItemEntity entity = player.dropItem(removed, false, true);
+        if (entity == null) {
+            inventory.insertStack(removed);
+            inventory.markDirty();
+            return java.util.Optional.empty();
+        }
+        BotLog.action(player, "drop", "slot", slot, "count", count,
+                "whole_stack", inventory.getStack(slot).isEmpty());
+        return java.util.Optional.of(entity);
     }
 
     // P0 背包满自救:丢低值占位方块(圆石/泥土/砂砾族),每种保留 keepEach 个(搭路垫脚仍够用)。
@@ -205,6 +298,96 @@ public final class InventoryAction {
             }
         }
         return droppedAny;
+    }
+
+    /**
+     * Drops whole low-value stacks until the requested number of main-inventory slots is free.
+     * Stone-like stacks are considered only after other junk and never reduce the carried
+     * emergency pool below the requested reserve (or sixteen blocks, whichever is greater).
+     * Every removal goes through {@link #dropSlot}, so the items remain ordinary world drops with
+     * vanilla pickup delay instead of being deleted.
+     *
+     * @return number of inventory stacks dropped
+     */
+    public static int dropJunkUntilFreeSlots(AIPlayerEntity player,
+                                             int requiredFreeSlots,
+                                             int emergencyStoneLikeReserve) {
+        int required = Math.max(0,
+                Math.min(requiredFreeSlots, player.getInventory().main.size()));
+        if (freeMainSlots(player) >= required) {
+            return 0;
+        }
+        int stoneLike = stoneLikeCount(player);
+        int protectedStoneLike = Math.min(stoneLike,
+                Math.max(16, emergencyStoneLikeReserve));
+        int droppedStacks = 0;
+        for (int pass = 0; pass < 2 && freeMainSlots(player) < required; pass++) {
+            for (int slot = 0;
+                 slot < player.getInventory().main.size() && freeMainSlots(player) < required;
+                 slot++) {
+                ItemStack stack = player.getInventory().main.get(slot);
+                if (stack.isEmpty() || !isJunk(stack.getItem())) {
+                    continue;
+                }
+                boolean emergencyBlock = isStoneLike(stack.getItem());
+                if (emergencyBlock != (pass == 1)) {
+                    continue;
+                }
+                if (emergencyBlock && stoneLike - stack.getCount() < protectedStoneLike) {
+                    continue;
+                }
+                int count = stack.getCount();
+                if (!dropSlot(player, slot, true).isFailed()) {
+                    droppedStacks++;
+                    if (emergencyBlock) {
+                        stoneLike -= count;
+                    }
+                }
+            }
+        }
+        if (droppedStacks > 0) {
+            BotLog.action(player, "drop_junk_for_slots",
+                    "stacks", droppedStacks,
+                    "free", freeMainSlots(player),
+                    "required", required,
+                    "stone_like", stoneLike,
+                    "stone_reserve", protectedStoneLike);
+        }
+        return droppedStacks;
+    }
+
+    private static boolean isJunk(Item item) {
+        if (isStoneLike(item)) {
+            return true;
+        }
+        for (Item junk : JUNK_ITEMS) {
+            if (item == junk) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isStoneLike(Item item) {
+        return item == Items.COBBLESTONE
+                || item == Items.COBBLED_DEEPSLATE
+                || item == Items.BLACKSTONE;
+    }
+
+    private static int stoneLikeCount(AIPlayerEntity player) {
+        return countItem(player, Items.COBBLESTONE)
+                + countItem(player, Items.COBBLED_DEEPSLATE)
+                + countItem(player, Items.BLACKSTONE);
+    }
+
+    private static int freeMainSlots(AIPlayerEntity player) {
+        int free = 0;
+        for (ItemStack stack : player.getInventory().main) {
+            if (stack.isEmpty()) {
+                free++;
+            }
+        }
+        return free;
     }
 
     private static void addStack(Map<String, Integer> summary, ItemStack stack) {

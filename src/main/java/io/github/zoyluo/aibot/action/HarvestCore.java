@@ -29,6 +29,10 @@ public final class HarvestCore {
     private static final int REACH_VERIFY_LIMIT = 8;
     private static final int REACH_MAX_NODES = 3_000;
     private static final long REACH_MAX_MILLIS = 30L;
+    /** Vanilla item bounces can leave a drop just above a block edge without setting onGround. */
+    private static final double PICKUP_SUPPORT_PROBE_DEPTH = 0.26D;
+    /** Maximum observed, collision-free fall column that pickup recovery may wait beneath. */
+    private static final int PICKUP_DRY_SHAFT_DEPTH = 6;
 
     private HarvestCore() {
     }
@@ -141,15 +145,8 @@ public final class HarvestCore {
             return;
         }
         nearestDropAnyOf(bot, items, radius).ifPresent(drop -> {
-            if (bot.distanceTo(drop) > 1.3F) {
-                if (bot.getActionPack().isPathExecutorIdle() && bot.getActionPack().isWalkToIdle()) {
-                    ActionResult result = bot.getActionPack().startPathTo(pickupStandPos(bot, drop.getBlockPos()));
-                    if (result.isFailed()) {
-                        bot.getActionPack().startWalkTo(drop.getPos());
-                    }
-                }
-            } else {
-                bot.getActionPack().stopMovement();
+            if (bot.getActionPack().isPathExecutorIdle() && bot.getActionPack().isWalkToIdle()) {
+                approachDropPhysically(bot, drop);
             }
         });
     }
@@ -171,13 +168,158 @@ public final class HarvestCore {
         }
         nearestDropAnyOf(bot, items, radius).ifPresent(drop -> {
             if (bot.getActionPack().isPathExecutorIdle() && bot.getActionPack().isWalkToIdle()) {
-                ActionResult result = bot.getActionPack().startPathTo(pickupStandPos(bot, drop.getBlockPos()));
-                if (result.isFailed()) {
-                    bot.getActionPack().startWalkTo(drop.getPos());
-                }
+                approachDropPhysically(bot, drop);
             }
         });
         return 0;
+    }
+
+    /**
+     * Moves through ordinary player collision toward one observed drop without confusing a
+     * vertical separation for horizontal arrival. {@link WalkToController} intentionally steers
+     * only on X/Z, so handing it an item directly below the bot reports success without entering
+     * the drop's cell. Deep staircase mining hits that geometry frequently.
+     */
+    public static boolean approachDropPhysically(AIPlayerEntity bot, ItemEntity drop) {
+        if (!isDropPhysicallySupported(bot, drop)) {
+            return false;
+        }
+        return approachKnownPickupCell(bot, drop.getBlockPos(), drop.getPos(), false);
+    }
+
+    /**
+     * Waits beneath an observed airborne drop only when its current column is visibly dry and has
+     * a real standable floor. The route is exact surface movement: it cannot dig or spend a pillar,
+     * and an unsupported/occluded column retains the caller's durable pickup debt instead.
+     */
+    public static boolean approachObservedAirborneDropColumn(AIPlayerEntity bot, ItemEntity drop) {
+        if (bot == null || drop == null || !drop.isAlive()) {
+            return false;
+        }
+        BlockPos shaftBase = observableDryPickupShaftBase(bot, drop.getBlockPos());
+        if (shaftBase == null) {
+            return false;
+        }
+        BlockPos current = bot.getBlockPos();
+        if (current.equals(shaftBase)) {
+            bot.getActionPack().stopMovement();
+            return true;
+        }
+        int vertical = shaftBase.getY() - current.getY();
+        int horizontal = Math.abs(shaftBase.getX() - current.getX())
+                + Math.abs(shaftBase.getZ() - current.getZ());
+        if (vertical == -1 && horizontal == 0
+                && Standability.isStandable(bot.getServerWorld(), shaftBase)) {
+            bot.getActionPack().descendInto(shaftBase);
+            return true;
+        }
+        return startExactPickupPath(bot, shaftBase);
+    }
+
+    /**
+     * Accepts an observed drop only after ordinary collision can support it. ItemEntity's
+     * {@code onGround} flag is not authoritative at a block edge: vanilla bounce resolution can
+     * leave the item a fraction of a block above a real support while its velocity is already
+     * settled. A thin downward collision probe admits that recoverable state without chasing a
+     * truly airborne coordinate or manufacturing a pillar route.
+     */
+    public static boolean isDropPhysicallySupported(AIPlayerEntity bot, ItemEntity drop) {
+        if (bot == null || drop == null || !drop.isAlive()) {
+            return false;
+        }
+        if (drop.isOnGround() || drop.isTouchingWater()) {
+            return true;
+        }
+        Box bounds = drop.getBoundingBox();
+        Box supportProbe = new Box(
+                bounds.minX,
+                bounds.minY - PICKUP_SUPPORT_PROBE_DEPTH,
+                bounds.minZ,
+                bounds.maxX,
+                bounds.minY,
+                bounds.maxZ);
+        return bot.getServerWorld().findSupportingBlockPos(drop, supportProbe).isPresent();
+    }
+
+    /**
+     * Returns to a previously observed break/kill cell through ordinary collision movement.
+     * This is the fail-closed fallback for a durable pickup ledger when the ItemEntity itself is
+     * temporarily behind terrain: the coordinate came from a visible interaction, not a hidden
+     * entity scan, and no digging or pillaring is allowed while recovering it.
+     */
+    public static boolean approachKnownPickupCell(AIPlayerEntity bot, BlockPos itemPos) {
+        return approachKnownPickupCell(bot, itemPos, itemPos.toCenterPos(), true);
+    }
+
+    private static boolean approachKnownPickupCell(AIPlayerEntity bot,
+                                                    BlockPos itemPos,
+                                                    net.minecraft.util.math.Vec3d target,
+                                                    boolean requireExactRoute) {
+        BlockPos current = bot.getBlockPos();
+        Standability.clearCache();
+        BlockPos stand = pickupStandPos(bot, itemPos);
+        // A freshly broken item keeps its launch velocity for several ticks.  Its current block
+        // can therefore be an unsupported air cell.  Asking A* to "reach" that cell makes endpoint
+        // resolution choose an unrelated standable block above it and, when filler blocks are in
+        // inventory, can even pillar past the falling item.  Wait for the entity to settle instead;
+        // the durable pickup ledger owns the retry/deadline.
+        if (stand == null) {
+            return false;
+        }
+        int vertical = stand.getY() - current.getY();
+        int horizontal = Math.abs(stand.getX() - current.getX())
+                + Math.abs(stand.getZ() - current.getZ());
+
+        if (vertical == -1 && horizontal == 0
+                && Standability.isStandable(bot.getServerWorld(), stand)) {
+            // Server-side fake players receive no client gravity. Enter the adjacent open cell
+            // explicitly; ActionPack validates this as a single physical fake-client step.
+            bot.getActionPack().descendInto(stand);
+            return true;
+        }
+        if (vertical != 0) {
+            // Pickup navigation may use an existing jump/drop route, but it must never dig or
+            // pillar toward a transient entity position.  If no ordinary route exists, leave the
+            // durable pickup pending and retry/fail with its typed recovery deadline.
+            return startExactPickupPath(bot, stand);
+        }
+        if (current.equals(stand)) {
+            // A lower-ring pose is intentionally adjacent to an elevated drop. Move 0.15 blocks
+            // toward it while staying inside this supported cell; steering at the entity itself
+            // would walk into its pedestal and trigger an unintended jump onto the upper cell.
+            // A visible drop can also land at the far edge of the same block: block-coordinate
+            // arrival alone does not guarantee a bounding-box collision, so keep nudging toward
+            // the observed entity pose. Remembered cells have no factual entity pose and stop at
+            // their centre instead.
+            if (!stand.equals(itemPos) || !requireExactRoute) {
+                io.github.zoyluo.aibot.mode.FakePlayerMotion.nudgeWithinBlockToward(
+                        bot, stand, target, "physical_drop_pickup");
+            } else {
+                bot.getActionPack().stopMovement();
+            }
+            return true;
+        }
+        // A direct walker steers toward the centre in one straight line. At a diagonal mining
+        // corner that line collides with the two solid cardinal walls even though an ordinary
+        // two-step L route exists. Exact surface A* retains every required waypoint and its
+        // endpoint validation still forbids digging or pillaring during pickup recovery.
+        return startExactPickupPath(bot, stand);
+    }
+
+    private static boolean startExactPickupPath(AIPlayerEntity bot, BlockPos stand) {
+        ActionResult result = bot.getActionPack().startSurfacePathTo(stand);
+        if (result.isFailed()) {
+            return false;
+        }
+        BlockPos resolved = bot.getActionPack().activePathGoal();
+        if (resolved == null || !resolved.equals(stand)) {
+            bot.getActionPack().stopAll();
+            BotLog.action(bot, "pickup_path_endpoint_rejected",
+                    "requested", stand.toShortString(),
+                    "resolved", resolved == null ? "none" : resolved.toShortString());
+            return false;
+        }
+        return true;
     }
 
     public static int sweepPickup(AIPlayerEntity bot, Item item, int maxTargets) {
@@ -273,27 +415,84 @@ public final class HarvestCore {
         return true;
     }
 
+    /** Returns a real standable pickup pose, or {@code null} while a drop is still unsupported. */
     public static BlockPos pickupStandPos(AIPlayerEntity bot, BlockPos itemPos) {
+        BlockPos current = bot.getBlockPos();
+        // A grounded drop on the bot's current level must be collected by entering its exact
+        // cell. Choosing the already occupied neighbouring cell merely causes a bounded nudge;
+        // that is useful for an elevated drop on a pedestal, but it cannot close an ordinary
+        // one-block horizontal gap reliably under vanilla pickup collision.
+        if (itemPos.getY() == current.getY()
+                && Standability.isStandable(bot.getServerWorld(), itemPos)) {
+            return itemPos.toImmutable();
+        }
+        BlockPos below = itemPos.down();
+        if (itemPos.getY() == current.getY() + 1
+                && Standability.isStandable(bot.getServerWorld(), below)) {
+            // A launch-drifted drop one block above and one block sideways can be visible while
+            // the nearest generic candidate is the current lower-ring cell. Nudging inside that
+            // cell never crosses the horizontal block boundary, so the item can survive until the
+            // recovery deadline. Walk to the factual stand directly beneath it; the player's
+            // ordinary collision box then overlaps the elevated ItemEntity without a jump/pillar.
+            return below.toImmutable();
+        }
         BlockPos best = null;
         double bestDistance = Double.MAX_VALUE;
+        BlockPos shaftBase = observableDryPickupShaftBase(bot, itemPos);
         BlockPos[] candidates = {
                 itemPos,
                 itemPos.north(),
                 itemPos.south(),
                 itemPos.east(),
-                itemPos.west()
+                itemPos.west(),
+                below,
+                below.north(),
+                below.south(),
+                below.east(),
+                below.west()
         };
         for (BlockPos candidate : candidates) {
             if (!Standability.isStandable(bot.getServerWorld(), candidate)) {
                 continue;
             }
-            double distance = candidate.getSquaredDistance(bot.getBlockPos());
+            double distance = candidate.getSquaredDistance(current);
             if (distance < bestDistance) {
                 best = candidate;
                 bestDistance = distance;
             }
         }
-        return best == null ? itemPos : best;
+        if (shaftBase != null) {
+            double distance = shaftBase.getSquaredDistance(current);
+            if (distance < bestDistance) {
+                best = shaftBase;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * Finds the factual floor beneath an observed airborne drop without scanning through terrain.
+     * Stacked overhead ores can suspend a newly spawned ItemEntity several cells above the mining
+     * floor long enough to exhaust a recovery ledger. Waiting below its visible, dry fall column
+     * keeps pickup physical and uses only ordinary no-dig/no-pillar surface movement.
+     */
+    private static BlockPos observableDryPickupShaftBase(AIPlayerEntity bot, BlockPos itemPos) {
+        if (bot == null || itemPos == null) {
+            return null;
+        }
+        var world = bot.getServerWorld();
+        for (int depth = 0; depth <= PICKUP_DRY_SHAFT_DEPTH; depth++) {
+            BlockPos cell = itemPos.down(depth);
+            if (!ObservableWorldQuery.canObserveCell(bot, cell)
+                    || !world.getFluidState(cell).isEmpty()
+                    || !world.getBlockState(cell).getCollisionShape(world, cell).isEmpty()) {
+                return null;
+            }
+            if (depth >= 2 && Standability.isStandable(world, cell)) {
+                return cell.toImmutable();
+            }
+        }
+        return null;
     }
 
     public static boolean canReach(AIPlayerEntity bot, BlockPos target) {

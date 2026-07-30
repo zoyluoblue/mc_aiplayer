@@ -10,6 +10,8 @@
 
 目标不是让 Bob 展示“会做很多动作”，而是让它成为一个可信赖的 Minecraft 协作伙伴：
 
+当前唯一最高产品优先级是 **Mining First**：先把“从零获得 64 颗钻石、从零获得 32 块黑曜石”做成可复现、可暂停恢复、可审计的 strict-survival 能力，再扩展其它高级能力。小规模演示、controlled fixture 或单 seed PASS 不算完成。
+
 > “Bob，跟我来，在这里用附近材料盖一个小屋；天黑先回家，完工后把剩余材料放进这个箱子。”
 
 完成这句话意味着 Bob 必须能够：
@@ -50,7 +52,7 @@ LLM 理解意图
 
 - Minecraft `1.21.3`、Fabric Loader `0.18.4`、Java `21`。
 - 9 类 Goal、63 个 Tool 注册点、34 个具体 Task 状态机。
-- testmod 的 `/aibot verify all` 含 98 个确定性场景，另有 1 个 opt-in 确定性场景和 4 个真实 LLM 场景；生产 jar 不包含 test/verify 命令。
+- testmod 的 `/aibot verify all` 含 100 个确定性场景；另有 5 个 opt-in 长跑/诊断场景和 4 个真实 LLM 场景；生产 jar 不包含 test/verify 命令。
 - `clean test runGameTest build` 成功；当前有 19 个 JUnit 类、68 个测试和 3 个 GameTest。`capability_profile + runtime_control_suite` 在 strict/operator 下均为 7/7；两 JVM restart-resume 精确恢复非默认 checkpoint，并以原 Mission `COMPLETED 4/4` 结束。
 - PR CI、nightly 双 profile/seed matrix 与手动计费 LLM workflow 已建立；evidence bundle 会绑定 revision/config/actual seed/runtime/profile 并做不可变封存。
 - 现有多 seed 报告能用于诊断，但缺少 commit SHA、配置摘要和 actual seed 回读，不能作为 HEAD 的发布证明。
@@ -103,6 +105,24 @@ Capability
 
 详细拆分见 [P0 Runtime Hardening](docs/P0_RUNTIME_HARDENING.md)。P0 全绿前，不新增高层 Goal 和大规模技能。
 
+### M1：Mining First（当前进行中，最高优先级）
+
+目标不是“能挖到一颗”，而是以下两个最终能力：
+
+1. `diamond_stack_64`：自然地形、空背包、零目标给予，最终持有至少 64 颗钻石；
+2. `obsidian_half_stack_32`：自然地形、空背包，自主取得钻石镐与水桶，按原版流体规则最终持有至少 32 块黑曜石。
+
+交付顺序固定为：
+
+1. `controlled`：秒级验证 63/64、31/32 数量边界、持久化和 typed postcondition，不宣称游戏能力；
+2. `prepared`：只预给非目标装备，在确定性资源场验证长配额执行、工具更换、拾取和恢复；
+3. `from_zero`：最终用户口径，20 个公开 seed 成功率 `>=90%`、零死亡；
+4. 在钻石 `1/32/63`、黑曜石 `1/16/31` 进度点验证 pause/cancel/restart-resume 为 `100%`。
+
+普通 PR 只运行秒级 controlled contract；prepared/from-zero 必须通过显式本地或 nightly 入口运行。未达到多 seed 门槛前，两个 capability 在能力矩阵中保持 `MISSING`，不得用 controlled/prepared PASS 冒充完成。
+
+完整契约与 seed、timeout、evidence 规则见 [Mining First 能力契约](docs/MINING_ACCEPTANCE.md)。在 M1 达标前，v0.1 其它黄金链只做回归维护，不抢占主动开发优先级。
+
 ### v0.1：可信赖的核心助手
 
 只打磨四条黄金链：
@@ -130,7 +150,7 @@ Capability
 
 ### v0.3：高级生存与生产
 
-- 稳定深层钻石与百量级采集；
+- 在 Mining First 已认证基础上扩展附魔、Fortune、百量级其它矿物与自动归仓；
 - 建筑修复、续建和多蓝图组合；
 - 可持续农场、基地补给与长期经营；
 - Nether 与跨维度 WorldModel；
@@ -144,6 +164,7 @@ Capability
 |---|---|---|
 | Pure logic | JUnit、静态不变量检查、编译 | 同一套 JUnit/静态检查/生产构建 |
 | Runtime contract | 取消、权限、生命周期、两 JVM restart probe、strict evidence | 7 项 profile/runtime 合约 × 2 profile × 2 seed |
+| Mining First contract | 64/32 数量边界、MissionSpec 往返；不执行长跑 | prepared/from-zero 由显式 strict-only 长跑入口执行并封存 evidence |
 | Game behavior | 3 个 Fabric GameTest | 现阶段同为 3 个 GameTest；v0.1 再分片扩到 98 场景、多 seed |
 | LLM routing | 不注入 API key | 独立手动 workflow，明确确认计费后运行 4 个真实 LLM story |
 
@@ -169,9 +190,10 @@ Capability
 
 ## 8. 下一检查点
 
-P0 已完成，下一步进入 v0.1 可靠性收敛：
+P0 已完成，下一步进入 Mining First 可靠性收敛：
 
-1. 用户授权提交后，让 clean CI 生成首批 `VERIFIED` evidence，并通过 `pin_baseline.sh` 显式更新 `reports/baselines/index.tsv`；
-2. 对四条黄金链各跑至少 20 个公开 seed，先选择“铁装备”或“简单建房”中的一条收敛到 `>= 90%`；
-3. 将真实失败按 stage 聚类，只修最高频根因，不扩大 Goal/Tool 数量；
-4. 以 strict 为发布口径，operator 作为单独可审计的服务器自动化模式持续回归。
+1. clean CI 先生成 `mining_contract_suite` 的 strict `VERIFIED` evidence，但明确只代表数量契约；
+2. 依次跑 `diamond_stack_64_prepared`、`diamond_stack_64_from_zero`，按失败 stage 收敛到 20 seed `>=90%`；
+3. 让黑曜石链使用真实放水/原版流体反应，再依次跑 prepared/from-zero，禁止直接写目标方块的伪能力；
+4. 两条最终场景达到门槛后，才用 `pin_baseline.sh` 显式更新 `reports/baselines/index.tsv`；
+5. 以 strict 为发布口径，operator 仅作为单独可审计的服务器自动化模式持续回归。

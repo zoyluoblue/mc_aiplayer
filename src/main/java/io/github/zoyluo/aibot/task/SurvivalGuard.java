@@ -29,7 +29,8 @@ public final class SurvivalGuard {
      */
     public String check(AIPlayerEntity bot, Task task) {
         if (task instanceof EvadeTask || task instanceof CombatTask
-                || task instanceof EmergencyShelterTask || task instanceof EatTask
+                || task instanceof EmergencyShelterTask || task instanceof MiningBarricadeTask
+                || task instanceof EatTask
                 || task instanceof LavaEscapeTask) {
             return null; // LavaEscapeTask 是入浆自救本身,绝不能被 guard_in_lava 反过来打断
         }

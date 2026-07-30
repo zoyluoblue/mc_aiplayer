@@ -6,6 +6,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 HARNESS_REPO_ROOT="$ROOT"
 # shellcheck source=scripts/lib/harness.sh
 source "$ROOT/scripts/lib/harness.sh"
+# shellcheck source=scripts/lib/mining_acceptance_contract.sh
+source "$ROOT/scripts/lib/mining_acceptance_contract.sh"
 
 usage() {
   cat >&2 <<'EOF'
@@ -107,8 +109,10 @@ BATCH_CAPABILITIES="hiddenBlockScan=$BATCH_HIDDEN_SCAN,emergencyTeleport=$BATCH_
   printf 'evidence-batch: runs and timeouts must be positive integers\n' >&2
   exit 2
 }
-[[ "$RUNS" -le 100 && "$TIMEOUT" -le 86400 && "$STARTUP_TIMEOUT" -le 1800 ]] || {
-  printf 'evidence-batch: safety limit exceeded (runs=100, verify=86400, startup=1800)\n' >&2
+[[ "$RUNS" -le 100 && "$TIMEOUT" -le "$MINING_MAX_VERIFY_TIMEOUT_SECONDS" \
+    && "$STARTUP_TIMEOUT" -le 1800 ]] || {
+  printf 'evidence-batch: safety limit exceeded (runs=100, verify=%s, startup=1800)\n' \
+    "$MINING_MAX_VERIFY_TIMEOUT_SECONDS" >&2
   exit 2
 }
 

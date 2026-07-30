@@ -7,7 +7,9 @@
     "ServerTickProbeMixin",
     "ClientConnectionAccessorMixin",
     "PlayerManagerFakePlayerMixin",
-    "MerchantEntityInvokerMixin"
+    "MerchantEntityInvokerMixin",
+    "ServerWorldEntityManagerAccessorMixin",
+    "ServerEntityManagerCacheAccessorMixin"
   ],
   "client": [],
   "server": [],

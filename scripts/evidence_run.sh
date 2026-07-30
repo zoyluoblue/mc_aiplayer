@@ -6,6 +6,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 HARNESS_REPO_ROOT="$ROOT"
 # shellcheck source=scripts/lib/harness.sh
 source "$ROOT/scripts/lib/harness.sh"
+# shellcheck source=scripts/lib/mining_acceptance_contract.sh
+source "$ROOT/scripts/lib/mining_acceptance_contract.sh"
 
 usage() {
   cat >&2 <<'EOF'
@@ -58,8 +60,9 @@ harness_safe_seed "$REQUESTED_SEED" || exit 2
   printf 'evidence-run: timeouts must be positive integers\n' >&2
   exit 2
 }
-[[ "$MAXWAIT" -le 86400 && "$STARTUP_TIMEOUT" -le 1800 ]] || {
-  printf 'evidence-run: timeout exceeds safety limit (verify=86400, startup=1800)\n' >&2
+[[ "$MAXWAIT" -le "$MINING_MAX_VERIFY_TIMEOUT_SECONDS" && "$STARTUP_TIMEOUT" -le 1800 ]] || {
+  printf 'evidence-run: timeout exceeds safety limit (verify=%s, startup=1800)\n' \
+    "$MINING_MAX_VERIFY_TIMEOUT_SECONDS" >&2
   exit 2
 }
 case "$PROFILE" in strict_survival|operator) ;; *) printf 'evidence-run: invalid profile: %s\n' "$PROFILE" >&2; exit 2 ;; esac
@@ -87,6 +90,23 @@ if [[ "$MODE" == deterministic && $WITH_LLM -eq 1 ]]; then
   printf 'evidence-run: --with-llm requires --mode llm_story\n' >&2
   exit 2
 fi
+
+# Evidence runs can last for hours on strict-survival mining scenarios. On macOS, an idle or
+# maintenance sleep suspends the whole dedicated server without consuming task-tick budgets, which
+# preserves correctness but turns one run into several wall-clock hours. Keep the host awake for
+# this shell's lifetime using the same best-effort pattern as the repository reliability runners.
+if [[ -z "$FIXTURE_LOG" ]] && command -v caffeinate >/dev/null 2>&1; then
+  caffeinate -is -w $$ &
+fi
+
+MINING_TARGET=""
+SCENARIO_TIMEOUT_TICKS=not_applicable
+if MINING_TARGET="$(mining_target_for_scenario "$SCENARIO" 2>/dev/null)"; then
+  SCENARIO_TIMEOUT_TICKS=not_observed
+else
+  MINING_TARGET=""
+fi
+TIMEOUT_CONTRACT_ERROR=""
 
 HIDDEN_SCAN=false
 EMERGENCY_TELEPORT=false
@@ -150,6 +170,35 @@ STAGING=""
 FINAL=""
 PUBLISHED=0
 FD_OPEN=0
+
+observe_mining_timeout_contract() {
+  local observed count announcement_count minimum
+  [[ -n "$MINING_TARGET" ]] || return 0
+  observed="$(mining_running_timeout_ticks_from_log "$SCENARIO" "$STAGING/server.log")" || {
+    TIMEOUT_CONTRACT_ERROR="could_not_parse_running_timeout scenario=$SCENARIO"
+    return 0
+  }
+  count="$(printf '%s' "$observed" | awk 'NF { count++ } END { print count + 0 }')"
+  announcement_count="$(mining_running_timeout_announcement_count_from_log \
+    "$SCENARIO" "$STAGING/server.log")" || {
+    TIMEOUT_CONTRACT_ERROR="could_not_count_running_timeout scenario=$SCENARIO"
+    return 0
+  }
+  if [[ "$announcement_count" -ne "$count" ]]; then
+    TIMEOUT_CONTRACT_ERROR="malformed_running_timeout scenario=$SCENARIO announcements=$announcement_count parsed=$count"
+    return 0
+  fi
+  if [[ "$count" -gt 1 ]]; then
+    TIMEOUT_CONTRACT_ERROR="duplicate_running_timeout scenario=$SCENARIO count=$count"
+    return 0
+  fi
+  [[ "$count" -eq 1 ]] || return 0
+  SCENARIO_TIMEOUT_TICKS="$observed"
+  if ! mining_verify_timeout_covers_ticks "$MAXWAIT" "$SCENARIO_TIMEOUT_TICKS"; then
+    minimum="$(mining_minimum_verify_timeout_seconds "$SCENARIO_TIMEOUT_TICKS")" || minimum=unknown
+    TIMEOUT_CONTRACT_ERROR="verify_timeout_too_short scenario=$SCENARIO configured_seconds=$MAXWAIT scenario_ticks=$SCENARIO_TIMEOUT_TICKS minimum_seconds=$minimum min_supported_tps=$MINING_MIN_SUPPORTED_TPS"
+  fi
+}
 
 cleanup() {
   local status=$?
@@ -279,6 +328,7 @@ WORKDIR_VERIFIED=no
 
 if [[ -n "$FIXTURE_LOG" ]]; then
   cp "$FIXTURE_LOG" "$STAGING/server.log" || exit 3
+  observe_mining_timeout_contract
 else
   {
     printf '%s\n' 'gradle.projectsEvaluated {'
@@ -336,6 +386,8 @@ else
     sleep 5
     printf 'aibot verify %s\n' "$SCENARIO" >&9 || READY=no
     for ((i = 0; i < MAXWAIT; i++)); do
+      observe_mining_timeout_contract
+      [[ -z "$TIMEOUT_CONTRACT_ERROR" ]] || break
       grep -aqE '\[AIBot Verify\] summary' "$STAGING/server.log" 2>/dev/null && break
       kill -0 "$SERVER_PID" 2>/dev/null || break
       sleep 1
@@ -351,6 +403,12 @@ else
   fi
   if wait "$SERVER_PID" 2>/dev/null; then GRADLE_EXIT=0; else GRADLE_EXIT=$?; fi
   SERVER_PID=""
+fi
+
+if [[ -n "$TIMEOUT_CONTRACT_ERROR" ]]; then
+  printf 'evidence-run: Mining First timeout contract rejected: %s\n' \
+    "$TIMEOUT_CONTRACT_ERROR" >&2
+  exit 2
 fi
 
 if [[ "$MODE" == fixture ]]; then
@@ -439,6 +497,102 @@ else
   [[ -n "$SUMMARY" ]] || SUMMARY='NO_SUMMARY'
 fi
 
+MINING_PROVENANCE_SCHEMA=not_applicable
+MINING_PROVENANCE_VERDICT=not_applicable
+SURVIVAL_OBSERVED_TICKS=0
+GAME_MODE_VIOLATIONS=0
+PRIVILEGED_ALLOWED_COUNT=0
+DEATH_DELTA=0
+DIAMOND_NATURAL_ORE_BREAKS=0
+DIAMOND_NATIVE_DROPS=0
+DIAMOND_PHYSICAL_PICKUPS=0
+WATER_PLACEMENTS=0
+LAVA_CONVERSIONS=0
+OBSIDIAN_BREAKS=0
+OBSIDIAN_PHYSICAL_PICKUPS=0
+VANILLA_OBSIDIAN_BREAKS=0
+MINING_FINAL_INVENTORY=0
+case "$SCENARIO" in
+  diamond_stack_64_from_zero|obsidian_half_stack_32_from_zero)
+    MINING_PROVENANCE_SCHEMA=2
+    MINING_PROVENANCE_VERDICT=FAIL
+    provenance_record="$(python3 - "$STAGING/server.log" "$SCENARIO" <<'PY'
+import re
+import sys
+
+path, scenario = sys.argv[1:]
+matches = []
+with open(path, "r", encoding="utf-8", errors="replace") as handle:
+    for line in handle:
+        if "event=mining_provenance_result" not in line:
+            continue
+        match = re.search(r"\{([^{}]*)\}\s*$", line.rstrip("\n"))
+        if not match:
+            continue
+        fields = {}
+        malformed = False
+        for pair in match.group(1).split(", "):
+            if "=" not in pair:
+                malformed = True
+                break
+            key, value = pair.split("=", 1)
+            if not key or key in fields:
+                malformed = True
+                break
+            fields[key] = value
+        if not malformed and fields.get("scenario") == scenario:
+            matches.append(fields)
+
+required = (
+    "schema", "verdict", "observed_ticks", "game_mode_violations",
+    "privileged_allowed", "death_delta", "diamond_natural_ore_breaks",
+    "diamond_native_drops", "diamond_physical_pickups", "water_placements",
+    "lava_conversions", "obsidian_breaks", "obsidian_physical_pickups",
+    "vanilla_obsidian_breaks", "final_inventory",
+)
+if len(matches) != 1 or any(name not in matches[0] for name in required):
+    sys.exit(2)
+values = [matches[0][name] for name in required]
+if any("\t" in value or "\n" in value or "\r" in value for value in values):
+    sys.exit(2)
+print("\t".join(values))
+PY
+)" || provenance_record=""
+    [[ -n "$provenance_record" ]] || {
+      printf 'evidence-run: refusing to seal Mining First evidence without one complete provenance event\n' >&2
+      exit 3
+    }
+    IFS=$'\t' read -r MINING_PROVENANCE_SCHEMA MINING_PROVENANCE_VERDICT \
+      SURVIVAL_OBSERVED_TICKS GAME_MODE_VIOLATIONS PRIVILEGED_ALLOWED_COUNT DEATH_DELTA \
+      DIAMOND_NATURAL_ORE_BREAKS DIAMOND_NATIVE_DROPS DIAMOND_PHYSICAL_PICKUPS \
+      WATER_PLACEMENTS LAVA_CONVERSIONS OBSIDIAN_BREAKS OBSIDIAN_PHYSICAL_PICKUPS \
+      VANILLA_OBSIDIAN_BREAKS MINING_FINAL_INVENTORY <<EOF
+$provenance_record
+EOF
+    [[ "$MINING_PROVENANCE_SCHEMA" == 2 ]] || {
+      printf 'evidence-run: refusing unsupported Mining First provenance schema: %s\n' \
+        "$MINING_PROVENANCE_SCHEMA" >&2
+      exit 3
+    }
+    case "$MINING_PROVENANCE_VERDICT" in PASS|FAIL) ;; *)
+      printf 'evidence-run: refusing invalid Mining First provenance verdict: %s\n' \
+        "$MINING_PROVENANCE_VERDICT" >&2
+      exit 3
+      ;;
+    esac
+    if [[ "$MINING_PROVENANCE_VERDICT" != PASS ]]; then
+      if [[ "$RUN_RESULT" == PASS ]]; then
+        # The verifier reported every scenario as PASS, but the independent physical-evidence
+        # gate could not authenticate that claim. Preserve the verifier's raw counts/summary and
+        # classify the bundle as an evidence-processing ERROR; calling it FAIL would create the
+        # contradictory tuple FAIL + passed==total + PASS summary.
+        RUN_RESULT=ERROR
+        SCRIPT_EXIT=1
+      fi
+    fi
+    ;;
+esac
+
 EVIDENCE_STATE=VERIFIED
 VERIFY_REASON=complete
 add_unverified_reason() {
@@ -463,7 +617,7 @@ FINISHED_AT="$(harness_now_utc)"
 CAPABILITIES="hiddenBlockScan=$HIDDEN_SCAN,emergencyTeleport=$EMERGENCY_TELEPORT,forcedPickup=$FORCED_PICKUP,manualTeleport=$MANUAL_TELEPORT"
 OS_RUNTIME="$(uname -srm | tr '\t\r\n' '   ')"
 {
-  printf 'schema_version\t1\n'
+  printf 'schema_version\t2\n'
   printf 'run_id\t%s\n' "$RUN_ID"
   printf 'evidence_state\t%s\n' "$EVIDENCE_STATE"
   printf 'verification_reason\t%s\n' "$VERIFY_REASON"
@@ -481,6 +635,8 @@ OS_RUNTIME="$(uname -srm | tr '\t\r\n' '   ')"
   printf 'java_home\t%s\n' "$(harness_tsv_value "$JAVA_HOME_ACTUAL")"
   printf 'java_runtime_verified\t%s\n' "$JAVA_RUNTIME_VERIFIED"
   printf 'scenario\t%s\n' "$SCENARIO"
+  printf 'verify_timeout_seconds\t%s\n' "$MAXWAIT"
+  printf 'scenario_timeout_ticks\t%s\n' "$SCENARIO_TIMEOUT_TICKS"
   printf 'requested_seed\t%s\n' "$REQUESTED_SEED"
   printf 'actual_seed\t%s\n' "$ACTUAL_SEED"
   printf 'actual_seed_verified\t%s\n' "$ACTUAL_SEED_VERIFIED"
@@ -499,6 +655,21 @@ OS_RUNTIME="$(uname -srm | tr '\t\r\n' '   ')"
   printf 'result\t%s\n' "$RUN_RESULT"
   printf 'passed\t%s\n' "$PASSED"
   printf 'total\t%s\n' "$TOTAL"
+  printf 'mining_provenance_schema\t%s\n' "$MINING_PROVENANCE_SCHEMA"
+  printf 'mining_provenance_verdict\t%s\n' "$MINING_PROVENANCE_VERDICT"
+  printf 'survival_observed_ticks\t%s\n' "$SURVIVAL_OBSERVED_TICKS"
+  printf 'game_mode_violations\t%s\n' "$GAME_MODE_VIOLATIONS"
+  printf 'privileged_allowed_count\t%s\n' "$PRIVILEGED_ALLOWED_COUNT"
+  printf 'death_delta\t%s\n' "$DEATH_DELTA"
+  printf 'diamond_natural_ore_breaks\t%s\n' "$DIAMOND_NATURAL_ORE_BREAKS"
+  printf 'diamond_native_drops\t%s\n' "$DIAMOND_NATIVE_DROPS"
+  printf 'diamond_physical_pickups\t%s\n' "$DIAMOND_PHYSICAL_PICKUPS"
+  printf 'water_placements\t%s\n' "$WATER_PLACEMENTS"
+  printf 'lava_conversions\t%s\n' "$LAVA_CONVERSIONS"
+  printf 'obsidian_breaks\t%s\n' "$OBSIDIAN_BREAKS"
+  printf 'obsidian_physical_pickups\t%s\n' "$OBSIDIAN_PHYSICAL_PICKUPS"
+  printf 'vanilla_obsidian_breaks\t%s\n' "$VANILLA_OBSIDIAN_BREAKS"
+  printf 'mining_final_inventory\t%s\n' "$MINING_FINAL_INVENTORY"
 } > "$STAGING/manifest.tsv" || exit 3
 
 {

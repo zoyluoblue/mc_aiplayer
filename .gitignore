@@ -51,6 +51,7 @@ node_modules/
 # Immutable harness output is local until a VERIFIED run is explicitly pinned.
 artifacts/evidence/
 artifacts/evidence-batches/
+artifacts/mining-shards/
 
 # Transient files used while atomically pinning committed baseline evidence.
 # Override broad repository-level ignores such as build/, run/, bin/, and *.md

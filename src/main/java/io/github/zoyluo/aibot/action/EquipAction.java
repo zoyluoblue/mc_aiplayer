@@ -7,8 +7,10 @@ import net.minecraft.entity.attribute.EntityAttribute;
 import net.minecraft.entity.attribute.EntityAttributeModifier;
 import net.minecraft.entity.attribute.EntityAttributes;
 import net.minecraft.entity.player.PlayerInventory;
+import net.minecraft.item.AxeItem;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
+import net.minecraft.item.SwordItem;
 import net.minecraft.registry.entry.RegistryEntry;
 
 import java.util.EnumMap;
@@ -16,6 +18,7 @@ import java.util.Map;
 import java.util.OptionalInt;
 
 public final class EquipAction {
+    private static final int MIN_MELEE_RAW_DURABILITY = 2;
     private static final EquipmentSlot[] ARMOR_SLOTS = {
             EquipmentSlot.HEAD,
             EquipmentSlot.CHEST,
@@ -71,18 +74,46 @@ public final class EquipAction {
         PlayerInventory inventory = bot.getInventory();
         int bestSlot = -1;
         double bestDamage = 1.0D;
+        int bestSwordPriority = -1;
+        int bestDurability = -1;
         for (int slot = 0; slot < inventory.main.size(); slot++) {
             ItemStack stack = inventory.main.get(slot);
-            if (stack.isEmpty()) {
+            if (!isQualifiedMeleeWeapon(stack)) {
                 continue;
             }
             double damage = attackDamage(stack);
-            if (damage > bestDamage) {
+            int swordPriority = swordPriority(stack);
+            int durability = remainingDurability(stack);
+            if (damage > bestDamage
+                    || Double.compare(damage, bestDamage) == 0
+                    && damage > 1.0D
+                    && (swordPriority > bestSwordPriority
+                    || swordPriority == bestSwordPriority
+                    && durability > bestDurability)) {
                 bestDamage = damage;
+                bestSwordPriority = swordPriority;
+                bestDurability = durability;
                 bestSlot = slot;
             }
         }
         return bestSlot < 0 ? OptionalInt.empty() : OptionalInt.of(bestSlot);
+    }
+
+    /** Only purpose-built melee tools may authorize a defensive Combat transaction. */
+    public static boolean isQualifiedMeleeWeapon(ItemStack stack) {
+        return !stack.isEmpty()
+                && (stack.getItem() instanceof SwordItem || stack.getItem() instanceof AxeItem)
+                && remainingDurability(stack) >= MIN_MELEE_RAW_DURABILITY;
+    }
+
+    private static int swordPriority(ItemStack stack) {
+        return stack.getItem() instanceof SwordItem ? 1 : 0;
+    }
+
+    private static int remainingDurability(ItemStack stack) {
+        return stack.isDamageable()
+                ? Math.max(0, stack.getMaxDamage() - stack.getDamage())
+                : Integer.MAX_VALUE;
     }
 
     public static OptionalInt bestRangedSlot(AIPlayerEntity bot) {

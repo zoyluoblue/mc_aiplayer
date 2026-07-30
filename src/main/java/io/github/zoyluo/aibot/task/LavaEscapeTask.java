@@ -95,7 +95,7 @@ public final class LavaEscapeTask extends AbstractTask {
         // 四周 5 格都没岸 → 垫方块自救:在脚边水平放一格当踏台(替换流动岩浆),跳上去脱浆。
         if (elapsed - lastPlaceTick >= PLACE_INTERVAL) {
             lastPlaceTick = elapsed;
-            OptionalInt slot = MaterialPalette.pickAnyBlockSlot(bot);
+            OptionalInt slot = MaterialPalette.pickSacrificialBlockSlot(bot);
             if (slot.isPresent()) {
                 InventoryAction.equipFromSlot(bot, slot.getAsInt());
                 BlockPos feet = bot.getBlockPos();

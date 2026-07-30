@@ -13,6 +13,7 @@ import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.memory.BotMemoryStore;
 import io.github.zoyluo.aibot.pathfinding.Standability;
 import net.minecraft.block.Blocks;
+import net.minecraft.block.AbstractFurnaceBlock;
 import net.minecraft.block.entity.AbstractFurnaceBlockEntity;
 import net.minecraft.inventory.Inventory;
 import net.minecraft.item.Item;
@@ -42,6 +43,12 @@ public final class SmeltTask extends AbstractTask {
     private static final Map<Item, Integer> FUEL_TICKS = new LinkedHashMap<>();
     private static final int BASE_FUEL_RADIUS = 8;
     private static final double REACH_SQUARED = 20.25D;
+    /**
+     * A remembered furnace is useful only while reaching it is cheaper than carrying eight
+     * cobblestone.  In a mining expedition the old surface furnace can be fifty blocks above the
+     * bot; walking/digging toward it consumes the whole smelt watchdog before the first item cooks.
+     */
+    private static final double LOCAL_FURNACE_DISTANCE_SQUARED = 24.0D * 24.0D;
 
     static {
         FUEL_TICKS.put(Items.COAL, 1600);
@@ -68,6 +75,7 @@ public final class SmeltTask extends AbstractTask {
     private Item input;             // cookAll 模式下运行期可重选(逐种烤背包里的生食)
     private Item output;
     private final boolean cookAll;  // true=烤背包所有可烤生食,凑够 targetCount 个熟食
+    private final boolean requireCookedQuota;
     private final int targetCount;
     private Phase phase = Phase.FINDING_FURNACE;
     private BlockPos furnacePos;
@@ -77,19 +85,27 @@ public final class SmeltTask extends AbstractTask {
     private final BlockMiner clearMiner = new BlockMiner(); // 被围放不下熔炉时,挖一格相邻方块腾位
     private boolean walkDigging; // 纯寻路到不了现有熔炉时,降级挖掘式朝熔炉挖过去(复用 clearMiner)
     private CraftTask furnaceCraftSub; // 走炉卡死且无备炉时,就地合成一座新炉(复用 CraftTask,不重复扣料逻辑)
+    private boolean furnaceCraftRequired; // 没有任何可用炉时,子合成失败必须终止而非 FINDING↔CRAFTING 空转
+    private boolean furnaceCraftFailed;   // 一次失败即禁用本 task 的重复子合成；远炉替换失败仍可回退旧炉
 
     public SmeltTask(Item input, Item output, int targetCount) {
         this.input = input;
         this.output = output;
         this.cookAll = false;
+        this.requireCookedQuota = true;
         this.targetCount = Math.max(1, targetCount);
     }
 
     /** cookAll 模式:烤背包里所有可烤生食,凑够 targetCount 个熟食(供 COOK_FOOD 步——猎后烤肉)。 */
     public SmeltTask(int targetCount) {
+        this(targetCount, false);
+    }
+
+    public SmeltTask(int targetCount, boolean requireCookedQuota) {
         this.input = null;
         this.output = null;
         this.cookAll = true;
+        this.requireCookedQuota = requireCookedQuota;
         this.targetCount = Math.max(1, targetCount);
     }
 
@@ -112,12 +128,18 @@ public final class SmeltTask extends AbstractTask {
     @Override
     public boolean isWaiting() {
         // 挖掘式走向熔炉时 bot 站着挖、位置基本不变 → 视为 waiting,避免 StuckWatcher 误判(本任务总超时兜底)。
-        return phase == Phase.SMELTING || (phase == Phase.WALKING_TO_FURNACE && walkDigging);
+        // 封闭矿道内为熔炉清理水平放置格同样会原地持续挖掘。这段进度由
+        // BlockMiner 的 200-tick 单块超时管理，不应被只观察位移的 StuckWatcher 提前中止。
+        return phase == Phase.SMELTING
+                || (phase == Phase.WALKING_TO_FURNACE && walkDigging)
+                || (phase == Phase.PLACING_FURNACE && clearMiner.target() != null);
     }
 
     @Override
     protected void onStart(AIPlayerEntity bot) {
         phase = Phase.FINDING_FURNACE;
+        furnaceCraftRequired = false;
+        furnaceCraftFailed = false;
     }
 
     @Override
@@ -167,10 +189,11 @@ public final class SmeltTask extends AbstractTask {
             }
         }
         if (next == null) {
-            if (collected > 0) {
+            if (collected >= targetCount || (collected > 0 && !requireCookedQuota)) {
                 complete();
             } else {
-                fail("no_raw_food");
+                fail((collected > 0 ? "insufficient_cooked_food" : "no_raw_food")
+                        + " collected=" + collected + "/" + targetCount);
             }
             return false;
         }
@@ -202,13 +225,40 @@ public final class SmeltTask extends AbstractTask {
         }
         if (furnacePos == null) {
             if (InventoryAction.findItem(bot, Items.FURNACE).isEmpty()) {
+                // 完全没有本地/记忆炉时也应复用同一个背包内合成路径。旧逻辑只会在“记得一座
+                // 远炉”时就地造炉；surface 炉超过 96 格记忆半径后反而直接 missing furnace，
+                // 即使深层背包已有工作台和数百石料。这里只消费当前库存，不触发任何采集任务。
+                if (canCraftFurnaceFromInventory(bot)) {
+                    beginFurnaceCraft(bot, true, "smelt_missing_furnace_craft");
+                    return;
+                }
                 fail("missing minecraft:furnace");
                 return;
             }
             phase = Phase.PLACING_FURNACE;
             return;
         }
-        if (bot.getEyePos().squaredDistanceTo(furnacePos.toCenterPos()) <= REACH_SQUARED
+        double furnaceDistanceSquared = bot.getEyePos().squaredDistanceTo(furnacePos.toCenterPos());
+        if (furnaceDistanceSquared > LOCAL_FURNACE_DISTANCE_SQUARED) {
+            boolean hasPortableFurnace = InventoryAction.findItem(bot, Items.FURNACE).isPresent();
+            boolean canCraftPortableFurnace = canCraftFurnaceFromInventory(bot);
+            if (hasPortableFurnace || canCraftPortableFurnace) {
+                BotLog.action(bot, "smelt_far_furnace_replace",
+                        "old", furnacePos.toShortString(),
+                        "distance", String.format(java.util.Locale.ROOT, "%.1f",
+                                Math.sqrt(furnaceDistanceSquared)),
+                        "source", hasPortableFurnace ? "inventory" : "craft");
+                furnacePos = null;
+                bot.getActionPack().stopAll();
+                if (hasPortableFurnace) {
+                    phase = Phase.PLACING_FURNACE;
+                } else {
+                    beginFurnaceCraft(bot, false, null);
+                }
+                return;
+            }
+        }
+        if (furnaceDistanceSquared <= REACH_SQUARED
                 && io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveBlock(bot, furnacePos)) {
             phase = Phase.LOADING;
             return;
@@ -274,12 +324,12 @@ public final class SmeltTask extends AbstractTask {
                 if (InventoryAction.findItem(bot, Items.FURNACE).isPresent()) {
                     phase = Phase.PLACING_FURNACE;
                     BotLog.action(bot, "smelt_walk_stall_replace", "dist2", String.format("%.0f", dist2));
-                } else if (CraftingHelper.plan(bot, Items.FURNACE, 1).success()) {
+                } else if (canCraftFurnaceFromInventory(bot)) {
                     // 无备炉但有料(实测 24/25 churn 是 cobblestone 满手却只造过 1 座炉,摆出去就没备)——就地合成新炉
                     // 就近熔炼,而非回 FINDING 死走远炉 churn 到 smelt_timeout。合成纯背包变换(扣 8 石→给炉),
                     // 工作台"持有即可"由 CraftTask 内部处理;合成失败/短路优雅回退 FINDING(见 craftFurnace)。
                     bot.getActionPack().stopAll(); // 清残留 walkTo(挖掘式刚 startWalkTo),免合成期杂散位移
-                    phase = Phase.CRAFTING_FURNACE;
+                    beginFurnaceCraft(bot, false, null);
                     BotLog.action(bot, "smelt_walk_stall_craft", "dist2", String.format("%.0f", dist2));
                 } else {
                     phase = Phase.FINDING_FURNACE;
@@ -311,43 +361,114 @@ public final class SmeltTask extends AbstractTask {
         TaskState st = furnaceCraftSub.state();
         if (st == TaskState.COMPLETED) {
             furnaceCraftSub = null;
+            furnaceCraftRequired = false;
+            furnaceCraftFailed = false;
             // 合成完可能因 CraftTask.utilityAlreadyAvailable 短路(8 格内已有炉)而没真造出物品——
             // 有物品才摆,否则回 FINDING 让 nearestFurnace 就近接管,绝不带空手进 PLACING 硬失败。
             phase = InventoryAction.findItem(bot, Items.FURNACE).isPresent()
                     ? Phase.PLACING_FURNACE : Phase.FINDING_FURNACE;
         } else if (st == TaskState.FAILED) {
+            String subFailure = furnaceCraftSub.failureReason();
             furnaceCraftSub = null;
-            phase = Phase.FINDING_FURNACE; // 合成失败(无料/无台且无木)→回退原远炉逻辑,不比基线更差
+            // A full mining inventory can make a perfectly valid furnace recipe fail only when
+            // its output has nowhere to go.  This happened with nine cobblestone: consuming eight
+            // left one in the source slot, so the crafted furnace still needed a new slot.  Keep
+            // the ordinary survival semantics by dropping one whole low-value stack as a world
+            // ItemEntity, then retry the same local craft instead of permanently chasing a remote
+            // remembered furnace until the smelt watchdog expires.
+            if (subFailure != null
+                    && subFailure.startsWith("craft_output_capacity:")
+                    && InventoryAction.dropJunkUntilFreeSlots(bot, 1, 16) > 0) {
+                BotLog.action(bot, "smelt_furnace_craft_capacity_recovered",
+                        "reason", subFailure);
+                return;
+            }
+            boolean required = furnaceCraftRequired;
+            furnaceCraftRequired = false;
+            furnaceCraftFailed = true;
+            if (required) {
+                // 这里没有旧炉可回退。一次失败后直接发布 typed failure，交地下 planner 处理
+                // 当前材料缺口；反复重建同一个 CraftTask 只会烧完 SmeltTask 的总预算。
+                fail("missing minecraft:furnace:local_craft_failed:" + subFailure);
+            } else {
+                phase = Phase.FINDING_FURNACE; // 远炉替换失败→只回退旧炉；furnaceCraftFailed 禁止再次子合成
+            }
         }
         // else RUNNING:continue ticking(furnace 合成仅 1~2 步,数 tick 内完成,远低于 CraftTask 400t 超时)
     }
 
+    private boolean canCraftFurnaceFromInventory(AIPlayerEntity bot) {
+        return !furnaceCraftFailed && CraftingHelper.plan(bot, Items.FURNACE, 1).success();
+    }
+
+    private void beginFurnaceCraft(AIPlayerEntity bot, boolean required, String event) {
+        furnaceCraftRequired = required;
+        phase = Phase.CRAFTING_FURNACE;
+        bot.getActionPack().stopAll();
+        if (event != null) {
+            BotLog.action(bot, event, "source", "inventory_craft");
+        }
+    }
+
     private void placeFurnace(AIPlayerEntity bot) {
+        // 已开始清理放置格时，先让挖掘原子完整推进，不要在每个 task tick
+        // 查询或重新手持 furnace。findItem 可能把 offhand 炉子提升进满背包，并与
+        // selected pick 交换；MiningController 会用当前手持物计算破坏速度，中途换回
+        // furnace 会让石镐清理铁矿退化为空手速度，并在 watchdog 窗口内永远挖不完。
+        if (clearMiner.target() != null) {
+            BlockMiner.Status status = clearMiner.tick(bot);
+            if (status == BlockMiner.Status.FAILED) {
+                fail("no_place_for_furnace:clear_failed:" + clearMiner.failureReason());
+                return;
+            }
+            if (status != BlockMiner.Status.DONE) {
+                return;
+            }
+        }
+
         OptionalInt furnaceSlot = InventoryAction.findItem(bot, Items.FURNACE);
         if (furnaceSlot.isEmpty()) {
             fail("missing minecraft:furnace");
             return;
         }
-        BlockPos pos = adjacentAir(bot);
-        if (pos == null) {
-            // 被围(四周方块)放不下 → 挖掉一个相邻可破坏方块腾位(bot 有镐就该自己清场,而非直接失败)。
-            if (!clearSpaceForFurnace(bot)) {
-                fail("no_place_for_furnace");
+
+        // DigDown 返回地表时 bot 常站在楼梯口旁。固定取第一个 air 会先选中楼梯上方的悬空格，
+        // 该格没有任何可点击支撑，严格生存下 placeBlockAt 合法返回 no_adjacent_block；但其他方向
+        // 往往就是可用地面。逐个尝试全部水平空位，避免一个坏候选把整条食物/挖矿链提前判死。
+        boolean foundAir = false;
+        boolean furnaceEquipped = false;
+        ActionResult lastFailure = ActionResult.failed("no_adjacent_block");
+        BlockPos origin = bot.getBlockPos();
+        for (Direction direction : Direction.Type.HORIZONTAL) {
+            BlockPos candidate = origin.offset(direction);
+            if (!bot.getServerWorld().getBlockState(candidate).isAir()) {
+                continue;
             }
-            return; // 挖位中,下 tick adjacentAir 即可找到
-        }
-        InventoryAction.equipFromSlot(bot, furnaceSlot.getAsInt());
-        ActionResult result = BuildAction.placeBlockAt(bot, pos);
-        if (result.isFailed()) {
-            fail("place_furnace_failed: " + result.reason());
+            foundAir = true;
+            if (!furnaceEquipped) {
+                InventoryAction.equipFromSlot(bot, furnaceSlot.getAsInt());
+                furnaceEquipped = true;
+            }
+            ActionResult result = BuildAction.placeBlockAt(bot, candidate);
+            if (result.isFailed()) {
+                lastFailure = result;
+                continue;
+            }
+            furnacePos = candidate.toImmutable();
+            // R2 修:炉位入记忆——挖矿走远后 nearestFurnace(局部扫描)找不回自己放的炉,
+            // missing furnace 整链报废(real_diamond 实测:第一炉用完,挖第二批铁回来炉'丢了')。
+            io.github.zoyluo.aibot.memory.BotMemoryStore.INSTANCE.of(bot.getUuid())
+                    .markPlace("furnace", bot.getServerWorld(), furnacePos);
+            phase = Phase.LOADING;
             return;
         }
-        furnacePos = pos;
-        // R2 修:炉位入记忆——挖矿走远后 nearestFurnace(局部扫描)找不回自己放的炉,
-        // missing furnace 整链报废(real_diamond 实测:第一炉用完,挖第二批铁回来炉'丢了')。
-        io.github.zoyluo.aibot.memory.BotMemoryStore.INSTANCE.of(bot.getUuid())
-                .markPlace("furnace", bot.getServerWorld(), pos);
-        phase = Phase.LOADING;
+
+        // 四周被围，或现有空位都没有合法可见支撑：挖掉一个相邻可破坏方块再重试。
+        if (!clearSpaceForFurnace(bot)) {
+            fail(foundAir
+                    ? "place_furnace_failed: " + lastFailure.reason()
+                    : "no_place_for_furnace");
+        }
     }
 
     private void loadFurnace(AIPlayerEntity bot) {
@@ -378,7 +499,9 @@ public final class SmeltTask extends AbstractTask {
         }
         ItemStack fuelSlot = furnace.getStack(1);
         FuelChoice fuel = null;
-        if (fuelSlot.isEmpty()) {
+        // 原版熔炉开始燃烧后会立即消耗一份燃料，燃料槽可为空但 burnTime 仍足够继续熔炼。
+        // LIT 是玩家可见的方块状态；不能仅凭槽为空就重复补燃料或误报 out_of_fuel。
+        if (fuelSlot.isEmpty() && !isBurning(bot)) {
             int smeltsNeedingFuel = Math.max(1, inputQueued + Math.max(inputToLoad, 0));
             fuel = chooseFuel(bot, smeltsNeedingFuel);
             if (fuel == null) {
@@ -426,7 +549,8 @@ public final class SmeltTask extends AbstractTask {
         }
         ItemStack inputSlot = furnace.getStack(0);
         ItemStack fuelSlot = furnace.getStack(1);
-        if (collected < targetCount && (inputSlot.isEmpty() || fuelSlot.isEmpty())) {
+        if (collected < targetCount
+                && (inputSlot.isEmpty() || (fuelSlot.isEmpty() && !isBurning(bot)))) {
             phase = Phase.LOADING;
         }
     }
@@ -471,6 +595,14 @@ public final class SmeltTask extends AbstractTask {
         return bot.getServerWorld().getBlockEntity(furnacePos) instanceof AbstractFurnaceBlockEntity furnace ? furnace : null;
     }
 
+    private boolean isBurning(AIPlayerEntity bot) {
+        if (furnacePos == null) {
+            return false;
+        }
+        var state = bot.getServerWorld().getBlockState(furnacePos);
+        return state.contains(AbstractFurnaceBlock.LIT) && state.get(AbstractFurnaceBlock.LIT);
+    }
+
     private static Optional<BlockPos> nearestFurnace(AIPlayerEntity bot) {
         BlockPos origin = bot.getBlockPos();
         return BlockPos.stream(origin.add(-10, -3, -10), origin.add(10, 4, 10))
@@ -484,17 +616,6 @@ public final class SmeltTask extends AbstractTask {
         for (Direction direction : Direction.Type.HORIZONTAL) {
             BlockPos candidate = pos.offset(direction);
             if (Standability.isStandable(bot.getServerWorld(), candidate)) {
-                return candidate.toImmutable();
-            }
-        }
-        return null;
-    }
-
-    private static BlockPos adjacentAir(AIPlayerEntity bot) {
-        BlockPos origin = bot.getBlockPos();
-        for (Direction direction : Direction.Type.HORIZONTAL) {
-            BlockPos candidate = origin.offset(direction);
-            if (bot.getServerWorld().getBlockState(candidate).isAir()) {
                 return candidate.toImmutable();
             }
         }

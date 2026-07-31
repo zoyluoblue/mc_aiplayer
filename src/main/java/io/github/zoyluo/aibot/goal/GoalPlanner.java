@@ -17,6 +17,7 @@ import io.github.zoyluo.aibot.mining.OreScan;
 import io.github.zoyluo.aibot.mining.ToolTier;
 import io.github.zoyluo.aibot.task.BlueprintLoader;
 import io.github.zoyluo.aibot.task.BlueprintSchema;
+import io.github.zoyluo.aibot.task.EmergencyShelterTask;
 import io.github.zoyluo.aibot.task.HuntTask;
 import io.github.zoyluo.aibot.task.MiningServiceTask;
 import net.minecraft.block.Block;
@@ -405,6 +406,8 @@ public final class GoalPlanner {
         private final List<String> unresolved = new ArrayList<>();
         private int bestEffortDepth;
         private int suppressOrdinaryTorchProvisionDepth;
+        /** -1 means not opened; otherwise the still-unprovisioned portion of the 14-log seal. */
+        private int surfaceEmergencyShelterWoodPending = -1;
 
         private Planner(AIPlayerEntity bot, Map<Item, Integer> counts, int maxDepth, int botY,
                         boolean hasPreyNearby, boolean hasGrassNearby, boolean hasBerriesNearby,
@@ -551,15 +554,26 @@ public final class GoalPlanner {
             int rareBootstrapStart = longRareExpedition ? steps.size() : -1;
 
             if (longRareExpedition) {
-                // Surface readiness is a hard gate before descent. During an underground resume,
-                // only the fail-closed deep-mine reserve is checked; Hunt/Cook/Gather must never be
-                // emitted from the mine bottom.
+                // Surface readiness is a hard gate before descent. Once the sealed descent kit
+                // hands off to the mine, its protected stone ledger supersedes this phase-scoped
+                // wood reserve; an underground resume must never emit a wood top-up.
+                boolean reserveSurfaceShelter = count >= 64 && surfaceAcquisitionAllowed;
+                if (reserveSurfaceShelter) {
+                    beginSurfaceEmergencyShelterWoodReserve();
+                }
                 int unresolvedBefore = unresolved.size();
                 if (!ensureMiningFoodReserveTo(
                         missionBudget.cookedFoodTarget(),
                         MiningBudget.RARE_SERVICE_FOOD_FLOOR,
                         depth + 1, visiting)
                         || unresolved.size() > unresolvedBefore) {
+                    return false;
+                }
+                // Keep the first bounded local hunt ahead of bulk wood collection; after food has
+                // established that ordering, seal the emergency reserve before tool/fuel/service
+                // dependencies are allowed to borrow it.
+                if (reserveSurfaceShelter
+                        && !reserveSurfaceEmergencyShelterWood(depth + 1, visiting)) {
                     return false;
                 }
             }
@@ -1325,6 +1339,54 @@ public final class GoalPlanner {
             return true;
         }
 
+        /**
+         * Seals one maximum-size surface shelter budget away from every later symbolic consumer.
+         *
+         * <p>Raw logs are the hard unit because every later physical recipe consumes them one for
+         * one. Planks remain ordinary recipe stock: reserving them only symbolically would not stop
+         * CraftTask from spending four carried planks while leaving one newly gathered log, which
+         * loses three physical shelter blocks. The logs remain physically carried and are spent
+         * only if DangerWatcher opens an emergency shelter transaction. This ownership ends at the
+         * descent hand-off, where the mine's protected stone/service ledger becomes the emergency
+         * enclosure budget; underground replans may therefore use carried logs as tool material.</p>
+         */
+        private void beginSurfaceEmergencyShelterWoodReserve() {
+            if (surfaceEmergencyShelterWoodPending >= 0) {
+                return;
+            }
+            int target = EmergencyShelterTask.MAX_PLACEMENT_BLOCKS;
+            int logs = Math.min(target, countItems(RecipeRegistry.LOGS));
+            consumeItems(RecipeRegistry.LOGS, logs);
+            surfaceEmergencyShelterWoodPending = target - logs;
+        }
+
+        private boolean reserveSurfaceEmergencyShelterWood(int depth,
+                                                           Set<String> visiting) {
+            beginSurfaceEmergencyShelterWoodReserve();
+            if (surfaceEmergencyShelterWoodPending == 0) {
+                return true;
+            }
+            // Food planning may have produced a harmless raw-log remainder. Claim it before
+            // gathering the outstanding reserve, but never return the logs sealed at begin() to
+            // symbolic stock.
+            int available = Math.min(
+                    surfaceEmergencyShelterWoodPending,
+                    countItems(RecipeRegistry.LOGS));
+            consumeItems(RecipeRegistry.LOGS, available);
+            surfaceEmergencyShelterWoodPending -= available;
+            if (surfaceEmergencyShelterWoodPending > 0) {
+                Item log = preferredFuelLog();
+                int desired = saturatedAdd(
+                        counts.getOrDefault(log, 0), surfaceEmergencyShelterWoodPending);
+                if (!ensureItem(log, desired, depth + 1, visiting)) {
+                    return false;
+                }
+                consumeItems(RecipeRegistry.LOGS, surfaceEmergencyShelterWoodPending);
+                surfaceEmergencyShelterWoodPending = 0;
+            }
+            return true;
+        }
+
         private boolean ensureItem(Item item, int desiredCount, int depth, Set<String> visiting) {
             if (depth > maxDepth) {
                 unresolved.add("max_depth:" + id(item));
@@ -1439,11 +1501,14 @@ public final class GoalPlanner {
                 // 黑曜石远征顺序是硬契约：先在地表备足食物、廉价掘进镐、封堵块和备用木棍；
                 // 再为桶单独取得 3 铁并物理返回地表找可见水源；最后才进入钻石镐深潜链。
                 // bucket recipe 会消费自己的 3 铁，后续铁镐/备用铁因此会被独立倒推，不能挪用桶铁。
+                int missionTarget = saturatedAdd(
+                        counts.getOrDefault(Items.OBSIDIAN, 0), missing);
                 ObsidianToolProvision toolProvision = obsidianToolProvision(missing);
                 ObsidianTorchProvision torchProvision =
                         obsidianTorchProvision(toolProvision);
                 if (!ensureObsidianExpeditionReadiness(
-                        missing, toolProvision, torchProvision, depth + 1, visiting)) {
+                        missing, missionTarget, toolProvision, torchProvision,
+                        depth + 1, visiting)) {
                     return false;
                 }
                 if (counts.getOrDefault(Items.WATER_BUCKET, 0) <= 0) {
@@ -1533,14 +1598,24 @@ public final class GoalPlanner {
         }
 
         private boolean ensureObsidianExpeditionReadiness(int targetCount,
+                                                          int missionTarget,
                                                           ObsidianToolProvision toolProvision,
                                                           ObsidianTorchProvision torchProvision,
                                                           int depth,
                                                           Set<String> visiting) {
+            boolean reserveSurfaceShelter = missionTarget >= 32
+                    && surfaceAcquisitionAllowed;
+            if (reserveSurfaceShelter) {
+                beginSurfaceEmergencyShelterWoodReserve();
+            }
             int unresolvedBefore = unresolved.size();
             if (!ensureMiningFoodReserveTo(OBSIDIAN_EXPEDITION_FOOD,
                     depth + 1, visiting, true)
                     || unresolved.size() > unresolvedBefore) {
+                return false;
+            }
+            if (reserveSurfaceShelter
+                    && !reserveSurfaceEmergencyShelterWood(depth + 1, visiting)) {
                 return false;
             }
             // Keep the tool-upgrade boundary explicit: four stone picks are cheap tunnel tools;

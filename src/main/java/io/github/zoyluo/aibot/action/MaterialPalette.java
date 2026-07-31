@@ -219,6 +219,58 @@ public final class MaterialPalette {
         return total;
     }
 
+    /**
+     * Selects a block for a temporary, life-critical enclosure.
+     *
+     * <p>The ordinary shelter palette remains intentionally narrow because it is also used by
+     * permanent mining barricades. An emergency shelter has a different ownership contract: it
+     * physically reopens its doorway, and preserving the player's life is allowed to spend wood
+     * when no lower-value block is available. The mission planner reserves this wood explicitly,
+     * so planks/logs precede mining stone that may own a stricter barricade or tool-repair ledger.
+     * Planks precede logs so the least equivalent amount of future crafting material is lost.</p>
+     */
+    public static OptionalInt pickEmergencyShelterBlockSlot(AIPlayerEntity bot) {
+        for (Item item : SHELTER_EASY_BLOCKS) {
+            OptionalInt slot = InventoryAction.findItem(bot, item);
+            if (slot.isPresent()) {
+                return slot;
+            }
+        }
+        for (Item item : RecipeRegistry.PLANKS) {
+            OptionalInt slot = InventoryAction.findItem(bot, item);
+            if (slot.isPresent()) {
+                return slot;
+            }
+        }
+        for (Item item : RecipeRegistry.LOGS) {
+            OptionalInt slot = InventoryAction.findItem(bot, item);
+            if (slot.isPresent()) {
+                return slot;
+            }
+        }
+        for (Item item : SHELTER_TOOL_BLOCKS) {
+            if (hasHealthySuitableTool(bot, item)) {
+                OptionalInt slot = InventoryAction.findItem(bot, item);
+                if (slot.isPresent()) {
+                    return slot;
+                }
+            }
+        }
+        return OptionalInt.empty();
+    }
+
+    /** Counts only blocks authorized for a temporary emergency enclosure. */
+    public static int countEmergencyShelterBlocks(AIPlayerEntity bot) {
+        int total = countShelterBlocks(bot);
+        for (Item item : RecipeRegistry.PLANKS) {
+            total += InventoryAction.countItem(bot, item);
+        }
+        for (Item item : RecipeRegistry.LOGS) {
+            total += InventoryAction.countItem(bot, item);
+        }
+        return total;
+    }
+
     private static boolean hasHealthySuitableTool(AIPlayerEntity bot, Item blockItem) {
         if (!(blockItem instanceof BlockItem item)) {
             return false;

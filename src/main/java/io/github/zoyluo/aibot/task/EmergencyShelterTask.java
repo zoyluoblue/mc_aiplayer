@@ -18,10 +18,12 @@ import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
 import net.minecraft.world.Heightmap;
 
-import java.util.EnumSet;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedList;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -29,6 +31,8 @@ import java.util.Queue;
 import java.util.Set;
 
 public final class EmergencyShelterTask extends AbstractTask {
+    /** Four optional foundations, eight side cells, one roof support and one center roof. */
+    public static final int MAX_PLACEMENT_BLOCKS = 14;
     private static final int NO_PROGRESS_LIMIT = 20;
     private static final int ANCHOR_RECOVERY_LIMIT = 20;
     private static final int BUILD_LIMIT = 120;
@@ -48,6 +52,12 @@ public final class EmergencyShelterTask extends AbstractTask {
         HOLD,
         OPEN_EXIT,
         STEP_OUT
+    }
+
+    private record ShelterPlan(BlockPos egressFeet,
+                               BlockPos roofSupport,
+                               BlockPos roofSupportBase,
+                               List<BlockPos> targets) {
     }
 
     private final Queue<BlockPos> targets = new LinkedList<>();
@@ -153,51 +163,18 @@ public final class EmergencyShelterTask extends AbstractTask {
         // excludes an open deep mine that happens to have a vertical view of the sky.
         surfaceShelter = isSurfaceShelterAnchor(bot, feet);
         shelterFeet = feet.toImmutable();
-        BlockPos head = feet.up();
-        BlockPos roof = head.up();
-        // The eight side cells are only diagonal to the center roof. In strict survival they can
-        // never be clicked as a face-adjacent placement support for that roof. Build one permanent
-        // top-rim block above the north wall first; once the north head wall exists, the rim can be
-        // placed on it and the center roof can then be placed against the rim.
-        roofSupport = roof.north().toImmutable();
-        roofSupportBase = head.north().toImmutable();
-        elevatedForRoofSupport = false;
-        egressFeet = selectPlannedEgress(bot);
-        if (egressFeet == null) {
+        Optional<ShelterPlan> planned = planShelter(bot, shelterFeet);
+        if (planned.isEmpty()) {
             failShelter(bot, "shelter_no_owned_egress");
             return;
         }
-        // Only an open side whose landing support is missing needs a foundation. Requiring all four
-        // foundations made a natural tunnel wall impossible to shelter beside: the player's edge
-        // shift correctly collided with that wall, but BUILD kept demanding a useless block below
-        // it. Put the planned exit support first so no envelope block can be placed until the task
-        // has physically proved that it owns a supported way back out.
-        addFoundationIfNeeded(bot, egressFeet);
-        for (Direction direction : HORIZONTAL) {
-            BlockPos side = feet.offset(direction);
-            if (!side.equals(egressFeet)) {
-                addFoundationIfNeeded(bot, side);
-            }
-        }
-        // Build the envelope from the ground up. The north head cell is roofSupportBase, so this
-        // order proves that the jump-time support exists before the task ever raises the player.
-        // Keeping roof last is also important when an adjacent, earlier shelter left its rim over
-        // this anchor: an already sealed center roof needs no new rim and must not trigger a jump
-        // into that occupied headroom.
-        for (Direction direction : HORIZONTAL) {
-            targets.add(feet.offset(direction));
-            targets.add(head.offset(direction));
-        }
-        if (!isSealed(bot, roof)) {
-            targets.add(roofSupport);
-            targets.add(roof);
-        }
-        int required = 0;
-        for (BlockPos target : targets) {
-            if (!isSealed(bot, target)) {
-                required++;
-            }
-        }
+        ShelterPlan plan = planned.orElseThrow();
+        egressFeet = plan.egressFeet();
+        roofSupport = plan.roofSupport();
+        roofSupportBase = plan.roofSupportBase();
+        elevatedForRoofSupport = false;
+        targets.addAll(plan.targets());
+        int required = requiredShelterBlocks(bot, plan);
         int available = countShelterBlocks(bot);
         if (available < required) {
             failShelter(bot,
@@ -1034,18 +1011,71 @@ public final class EmergencyShelterTask extends AbstractTask {
         DangerWatcher.INSTANCE.noteShelterTerminal(bot, anchor, outcome, reason);
     }
 
-    private void addFoundationIfNeeded(AIPlayerEntity bot, BlockPos sideFeet) {
+    private static void addFoundationIfNeeded(AIPlayerEntity bot,
+                                              List<BlockPos> targets,
+                                              BlockPos sideFeet) {
         if (!isSealed(bot, sideFeet) && !isSealed(bot, sideFeet.down())) {
             targets.add(sideFeet.down().toImmutable());
         }
     }
 
-    private BlockPos selectPlannedEgress(AIPlayerEntity bot) {
+    private static Optional<ShelterPlan> planShelter(AIPlayerEntity bot, BlockPos feet) {
+        BlockPos head = feet.up();
+        BlockPos roof = head.up();
+        // The eight side cells are only diagonal to the center roof. In strict survival they can
+        // never be clicked as a face-adjacent placement support for that roof. Build one permanent
+        // top-rim block above the north wall first; once the north head wall exists, the rim can be
+        // placed on it and the center roof can then be placed against the rim.
+        BlockPos roofSupport = roof.north().toImmutable();
+        BlockPos roofSupportBase = head.north().toImmutable();
+        BlockPos egressFeet = selectPlannedEgress(bot, feet);
+        if (egressFeet == null) {
+            return Optional.empty();
+        }
+        List<BlockPos> targets = new ArrayList<>(MAX_PLACEMENT_BLOCKS);
+        // Only an open side whose landing support is missing needs a foundation. Put the planned
+        // exit support first so no envelope block can be placed until the task has physically
+        // proved that it owns a supported way back out.
+        addFoundationIfNeeded(bot, targets, egressFeet);
+        for (Direction direction : HORIZONTAL) {
+            BlockPos side = feet.offset(direction);
+            if (!side.equals(egressFeet)) {
+                addFoundationIfNeeded(bot, targets, side);
+            }
+        }
+        // Build the envelope from the ground up. Keeping the center roof last prevents an earlier
+        // failed target from leaving the player under a roof that can no longer be supported.
+        for (Direction direction : HORIZONTAL) {
+            targets.add(feet.offset(direction).toImmutable());
+            targets.add(head.offset(direction).toImmutable());
+        }
+        if (!isSealed(bot, roof)) {
+            targets.add(roofSupport);
+            targets.add(roof.toImmutable());
+        }
+        return Optional.of(new ShelterPlan(
+                egressFeet.toImmutable(),
+                roofSupport,
+                roofSupportBase,
+                List.copyOf(targets)));
+    }
+
+    private static int requiredShelterBlocks(AIPlayerEntity bot, ShelterPlan plan) {
+        int required = 0;
+        for (BlockPos target : plan.targets()) {
+            if (!isSealed(bot, target)) {
+                required++;
+            }
+        }
+        return required;
+    }
+
+    private static BlockPos selectPlannedEgress(AIPlayerEntity bot, BlockPos feet) {
         var world = bot.getServerWorld();
         // Prefer a landing that already exists. Only extend a foundation when no naturally
         // supported two-block doorway is available.
         for (Direction direction : HORIZONTAL) {
-            BlockPos candidate = shelterFeet.offset(direction);
+            BlockPos candidate = feet.offset(direction);
             if (!isDryReplaceable(world.getBlockState(candidate))
                     || !isDryReplaceable(world.getBlockState(candidate.up()))) {
                 continue;
@@ -1056,7 +1086,7 @@ public final class EmergencyShelterTask extends AbstractTask {
             }
         }
         for (Direction direction : HORIZONTAL) {
-            BlockPos candidate = shelterFeet.offset(direction);
+            BlockPos candidate = feet.offset(direction);
             if (isDryReplaceable(world.getBlockState(candidate))
                     && isDryReplaceable(world.getBlockState(candidate.up()))
                     && isDryReplaceable(world.getBlockState(candidate.down()))) {
@@ -1251,14 +1281,28 @@ public final class EmergencyShelterTask extends AbstractTask {
     }
 
     private static OptionalInt findShelterBlockSlot(AIPlayerEntity bot) {
-        return MaterialPalette.pickShelterBlockSlot(bot);
+        return MaterialPalette.pickEmergencyShelterBlockSlot(bot);
     }
 
     private static int countShelterBlocks(AIPlayerEntity bot) {
-        return MaterialPalette.countShelterBlocks(bot);
+        return MaterialPalette.countEmergencyShelterBlocks(bot);
     }
 
     public static boolean hasShelterBlock(AIPlayerEntity bot) {
         return findShelterBlockSlot(bot).isPresent();
+    }
+
+    /**
+     * Admission probe shared with the danger scheduler. It uses the exact same physical plan and
+     * inventory palette as {@link #onStart(AIPlayerEntity)}, so a one-block inventory cannot pause
+     * live work for a shelter that is guaranteed to fail before its first placement.
+     */
+    static boolean hasMaterialsForCurrentPose(AIPlayerEntity bot) {
+        if (!canStartAtCurrentPose(bot)) {
+            return false;
+        }
+        Optional<ShelterPlan> plan = planShelter(bot, bot.getBlockPos());
+        return plan.isPresent()
+                && countShelterBlocks(bot) >= requiredShelterBlocks(bot, plan.orElseThrow());
     }
 }

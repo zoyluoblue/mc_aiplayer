@@ -25,6 +25,7 @@
       "io.github.zoyluo.aibot.task.DigDownReturnGameTests",
       "io.github.zoyluo.aibot.task.DangerWatcherLowHealthGameTests",
       "io.github.zoyluo.aibot.task.EmergencyShelterAtomicRecoveryGameTests",
+      "io.github.zoyluo.aibot.task.EmergencyShelterMaterialSchedulingGameTests",
       "io.github.zoyluo.aibot.task.MiningTorchToolRestoreGameTests",
       "io.github.zoyluo.aibot.task.MiningHostileRecoveryGameTests",
       "io.github.zoyluo.aibot.task.UndergroundSafetyGameTests",

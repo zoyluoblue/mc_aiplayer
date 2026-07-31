@@ -18,6 +18,7 @@ import io.github.zoyluo.aibot.runtime.TaskOrigin;
 import io.github.zoyluo.aibot.task.AbstractTask;
 import io.github.zoyluo.aibot.task.CraftTask;
 import io.github.zoyluo.aibot.task.DescendToYTask;
+import io.github.zoyluo.aibot.task.EmergencyShelterTask;
 import io.github.zoyluo.aibot.task.HoldTask;
 import io.github.zoyluo.aibot.task.MiningServiceTask;
 import io.github.zoyluo.aibot.task.OreDigTask;
@@ -308,7 +309,8 @@ public final class MiningCheckpointMissionGameTests implements FabricGameTest {
         // gather surface wood. The planner consumes these logs into target-coal handles, ordinary
         // channel repairs and the sealed rare tail before reaching the coal OreDig task.
         giveItemToAtLeast(bot, Items.STICK, 234);
-        giveItemToAtLeast(bot, Items.OAK_LOG, 40);
+        giveItemToAtLeast(bot, Items.OAK_LOG,
+                40 + EmergencyShelterTask.MAX_PLACEMENT_BLOCKS);
         giveItemToAtLeast(bot, Items.COOKED_BEEF, MiningBudget.RARE_BOOTSTRAP_FOOD);
         giveItemToAtLeast(bot, Items.COBBLESTONE, 160);
         giveItemToAtLeast(bot, Items.CRAFTING_TABLE, 1);
@@ -439,10 +441,13 @@ public final class MiningCheckpointMissionGameTests implements FabricGameTest {
         giveItemToAtLeast(bot, Items.COOKED_BEEF, MiningBudget.RARE_BOOTSTRAP_FOOD);
         giveItemToAtLeast(bot, Items.CRAFTING_TABLE, 1);
         giveItemToAtLeast(bot, Items.CHEST, 1);
-        Item[] carriedLoot = {Items.RAW_COPPER, Items.RAW_GOLD};
-        for (Item loot : carriedLoot) {
-            giveItemToAtLeast(bot, loot, 1);
-        }
+        // Carry the surface shelter reserve in the slot previously occupied by one generic loot
+        // stack. The original exactly-four-working-slot capacity boundary therefore stays intact.
+        Map<Item, Integer> carriedSupplies = Map.of(
+                Items.OAK_LOG, EmergencyShelterTask.MAX_PLACEMENT_BLOCKS,
+                Items.RAW_GOLD, 1);
+        carriedSupplies.forEach((item, count) ->
+                giveItemToAtLeast(bot, item, count));
         require(context, freeMainSlots(bot) == 4,
                 "crowded final-kit fixture must expose exactly four working slots, got "
                         + freeMainSlots(bot));
@@ -523,11 +528,10 @@ public final class MiningCheckpointMissionGameTests implements FabricGameTest {
                                 "missing mission depot place"));
                 Inventory depot = ContainerAction.resolve(bot, depotPos).orElseThrow(
                         () -> new IllegalStateException("mission depot is not a container"));
-                for (Item loot : carriedLoot) {
-                    require(context, InventoryAction.countItem(bot, loot)
-                                    + countItem(depot, loot) == 1,
-                            "final capacity boundary lost/duplicated " + loot);
-                }
+                carriedSupplies.forEach((item, expected) ->
+                        require(context, InventoryAction.countItem(bot, item)
+                                        + countItem(depot, item) == expected,
+                                "final capacity boundary lost/duplicated " + item));
                 AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
                 context.complete();
             } else if (GoalExecutor.INSTANCE.lastResult(bot).isPresent()
@@ -992,7 +996,8 @@ public final class MiningCheckpointMissionGameTests implements FabricGameTest {
         giveItemToAtLeast(bot, Items.IRON_PICKAXE, 3);
         giveItemToAtLeast(bot, Items.IRON_INGOT, 6);
         giveItemToAtLeast(bot, Items.STICK, 204);
-        giveItemToAtLeast(bot, Items.OAK_LOG, 40);
+        giveItemToAtLeast(bot, Items.OAK_LOG,
+                40 + EmergencyShelterTask.MAX_PLACEMENT_BLOCKS);
         giveItemToAtLeast(bot, Items.COOKED_BEEF, MiningBudget.RARE_BOOTSTRAP_FOOD);
         giveItemToAtLeast(bot, Items.COBBLESTONE, 160);
         giveItemToAtLeast(bot, Items.FURNACE, 1);
@@ -5403,7 +5408,8 @@ public final class MiningCheckpointMissionGameTests implements FabricGameTest {
         giveItemToAtLeast(bot, Items.WOODEN_PICKAXE, 5);
         giveItemToAtLeast(bot, Items.IRON_INGOT, 6);
         giveItemToAtLeast(bot, Items.STICK, 234);
-        giveItemToAtLeast(bot, Items.OAK_LOG, 40);
+        giveItemToAtLeast(bot, Items.OAK_LOG,
+                40 + EmergencyShelterTask.MAX_PLACEMENT_BLOCKS);
         giveItemToAtLeast(bot, Items.COOKED_BEEF,
                 MiningBudget.RARE_BOOTSTRAP_FOOD);
         giveItemToAtLeast(bot, Items.COBBLESTONE, 160);

@@ -312,12 +312,16 @@ public final class DangerWatcher {
                 // stronger rear-corridor MiningBarricade branch above.
                 && !isCreeperThreat(threat.get())
                 && entombNow
-                && EmergencyShelterTask.hasShelterBlock(bot)
-                && EmergencyShelterTask.canStartAtCurrentPose(bot)
+                && EmergencyShelterTask.hasMaterialsForCurrentPose(bot)
                 && canAttemptShelter(server, bot)) {
             if (active.isPresent()) {
                 markThreatDirectionAvoided(active.get(), bot, threat.get());
-                TaskManager.INSTANCE.pauseFor(bot, "emergency_entomb");
+                // Preserve mission/background work, but replace an active safety task in place.
+                // Pausing Evade (also SAFETY) here used to add another frame on every shelter
+                // retry, eventually burying the mission under an unbounded safety stack.
+                if (shouldPreserveActiveWork(bot)) {
+                    TaskManager.INSTANCE.pauseFor(bot, "emergency_entomb");
+                }
             }
             TaskManager.INSTANCE.assign(bot, new EmergencyShelterTask(), TaskOrigin.safety("emergency_entomb"));
             noteShelterAttempt(server, bot);
@@ -331,10 +335,22 @@ public final class DangerWatcher {
                     && shouldAssignThreatTask(active, top)
                     && canAssignThreatTask(server, bot, top)) {
                 Task task = decideCombatOrEvade(bot, top, canAttemptShelter(server, bot));
-                if (trappedBackoff(server, bot, task)) {
-                    return true; // 被困:退避并(节流)求助,不再每 2 秒空派 shelter/evade
+                boolean trapped = trappedBackoff(server, bot, task);
+                if (trapped) {
+                    boolean criticalHostile = isHostileBacked(top)
+                            && (top.type() == Threat.Type.LOW_HP
+                            || top.severity() == Threat.Severity.HIGH);
+                    if (!criticalHostile || hasActiveHostileDefenseOwner(bot)) {
+                        return true;
+                    }
+                    // A hard backoff may throttle ordinary churn, but it cannot claim a live
+                    // critical hostile while leaving only paused mission work. Fall through and
+                    // assign the already-decided shelter/evade owner; the normal high-severity
+                    // cooldown below replaces the longer diagnostic backoff.
                 }
-                if (active.isPresent() && shouldPauseForThreat(active.get(), top, task)) {
+                if (active.isPresent()
+                        && shouldPauseForThreat(active.get(), top, task)
+                        && shouldPreserveActiveWork(bot)) {
                     if (task instanceof EmergencyShelterTask) {
                         markThreatDirectionAvoided(active.get(), bot, top);
                     }
@@ -597,7 +613,7 @@ public final class DangerWatcher {
         if (underground
                 && hostileThreat
                 && shelterAllowed
-                && EmergencyShelterTask.hasShelterBlock(bot)
+                && EmergencyShelterTask.hasMaterialsForCurrentPose(bot)
                 && (lowHpHostile || requiresUndergroundShelter(bot, threat, combat))) {
             return new EmergencyShelterTask();
         }
@@ -611,8 +627,7 @@ public final class DangerWatcher {
                 && threat.type() == Threat.Type.HOSTILE
                 && !SleepTask.hasBedAccess(bot)
                 && shelterAllowed
-                && EmergencyShelterTask.hasShelterBlock(bot)
-                && EmergencyShelterTask.canStartAtCurrentPose(bot)) {
+                && EmergencyShelterTask.hasMaterialsForCurrentPose(bot)) {
             return new EmergencyShelterTask();
         }
         return new EvadeTask(threat);
@@ -688,12 +703,13 @@ public final class DangerWatcher {
         }
         boolean sameSite = episode.anchor().isWithinDistance(
                 bot.getBlockPos(), SHELTER_EPISODE_RADIUS);
-        boolean hostileContinues = hasObservableActiveHostile(bot, 10.0D);
+        boolean hostileContinues = !observableActiveHostilePressure(bot).isEmpty();
         if (sameSite && hostileContinues) {
             return;
         }
         shelterEpisodes.remove(bot.getUuid(), episode);
-        nextShelterAttemptTick.remove(bot.getUuid());
+        // Keep the terminal-time cooldown even when LOS flickers or the bot crosses the local
+        // episode radius. Removing both latches made a failed shelter immediately eligible again.
         BotLog.danger(bot, "shelter_episode_reset",
                 "anchor", episode.anchor().toShortString(),
                 "reason", sameSite ? "hostile_cleared" : "site_relocated");
@@ -738,7 +754,8 @@ public final class DangerWatcher {
                     .findFirst().orElse(null);
             if (hostile != null) {
                 BotLog.danger(bot, "trapped_fight_back", "target", hostile.getType().toString());
-                if (TaskManager.INSTANCE.getActive(bot).isPresent()) {
+                if (TaskManager.INSTANCE.getActive(bot).isPresent()
+                        && shouldPreserveActiveWork(bot)) {
                     TaskManager.INSTANCE.pauseFor(bot, "trapped_fight_back");
                 }
                 TaskManager.INSTANCE.assign(bot, new CombatTask(hostile.getType(), 1, 0.0F),
@@ -948,14 +965,6 @@ public final class DangerWatcher {
                 || !observableActiveHostilePressure(bot).isEmpty();
     }
 
-    private static boolean hasObservableActiveHostile(AIPlayerEntity bot, double range) {
-        return !bot.getServerWorld()
-                .getEntitiesByClass(LivingEntity.class, bot.getBoundingBox().expand(range),
-                        entity -> isActiveHostileThreat(bot, entity)
-                                && ObservableWorldQuery.canObserveEntity(bot, entity))
-                .isEmpty();
-    }
-
     private static List<LivingEntity> observableActiveHostilePressure(AIPlayerEntity bot) {
         return bot.getServerWorld()
                 .getEntitiesByClass(
@@ -1006,6 +1015,31 @@ public final class DangerWatcher {
         // 而不是被后续 assign 直接 abort 销毁。旧逻辑对"敌对→战斗"和 LOW_HP 都返回 false=不暂停=销毁当前任务,
         // 导致 GoalExecutor 把它判为 foreign 而整体放弃目标(实测刷怪时挖矿目标被反复放弃、空转发呆)。
         return true;
+    }
+
+    /**
+     * Safety work is a replaceable owner, never another resumable mission frame. Unknown legacy
+     * origins remain preservable so a missing origin cannot silently destroy user work.
+     */
+    private static boolean shouldPreserveActiveWork(AIPlayerEntity bot) {
+        return TaskManager.INSTANCE.activeOrigin(bot)
+                .map(origin -> !origin.safety())
+                .orElse(true);
+    }
+
+    /**
+     * A hard trapped backoff may stand down only behind an owner that is physically defending
+     * against hostile pressure. SAFETY is an authority class, not proof of that property:
+     * critical hunt/resupply and future safety transactions must still be replaced by real
+     * hostile defense.
+     */
+    static boolean hasActiveHostileDefenseOwner(AIPlayerEntity bot) {
+        return TaskManager.INSTANCE.getActive(bot)
+                .map(task -> task instanceof EvadeTask
+                        || task instanceof CombatTask
+                        || task instanceof EmergencyShelterTask
+                        || task instanceof MiningBarricadeTask)
+                .orElse(false);
     }
 
     private boolean canAssignThreatTask(MinecraftServer server, AIPlayerEntity bot, Threat threat) {

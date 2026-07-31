@@ -1,17 +1,21 @@
 package io.github.zoyluo.aibot.goal;
 
+import io.github.zoyluo.aibot.craft.RecipeRegistry;
 import io.github.zoyluo.aibot.mining.MiningMissionBudget;
 import io.github.zoyluo.aibot.mining.MiningBudget;
 import io.github.zoyluo.aibot.mining.ToolTier;
+import io.github.zoyluo.aibot.task.EmergencyShelterTask;
 import io.github.zoyluo.aibot.task.MiningServiceTask;
 import net.fabricmc.fabric.api.gametest.v1.FabricGameTest;
 import net.minecraft.block.Blocks;
 import net.minecraft.entity.player.PlayerInventory;
+import net.minecraft.item.Item;
 import net.minecraft.item.Items;
 import net.minecraft.test.GameTest;
 import net.minecraft.test.TestContext;
 import net.minecraft.util.math.BlockPos;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -223,7 +227,8 @@ public final class GoalPlannerMiningGameTests implements FabricGameTest {
                 Items.STICK, 40,
                 Items.CRAFTING_TABLE, 1,
                 Items.COOKED_BEEF, 24,
-                Items.TORCH, 8);
+                Items.TORCH, 8,
+                Items.OAK_LOG, EmergencyShelterTask.MAX_PLACEMENT_BLOCKS);
         GoalPlanner.GoalPlan plan = GoalPlanner.planFromState(null,
                 new Goal.HaveItem(Items.OBSIDIAN, 32), prepared, 64, 64,
                 true, false, false, ignored -> false, null);
@@ -247,7 +252,8 @@ public final class GoalPlannerMiningGameTests implements FabricGameTest {
                 Map.entry(Items.STICK, 41),
                 Map.entry(Items.CRAFTING_TABLE, 1),
                 Map.entry(Items.COOKED_BEEF, 24),
-                Map.entry(Items.TORCH, 8));
+                Map.entry(Items.TORCH, 8),
+                Map.entry(Items.OAK_LOG, EmergencyShelterTask.MAX_PLACEMENT_BLOCKS));
         GoalPlanner.GoalPlan plan = GoalPlanner.planFromState(null,
                 new Goal.HaveItem(Items.OBSIDIAN, 32), prepared, 64, 64,
                 true, false, false, ignored -> false, null);
@@ -280,7 +286,8 @@ public final class GoalPlannerMiningGameTests implements FabricGameTest {
                 Items.STICK, 40,
                 Items.CRAFTING_TABLE, 1,
                 Items.COOKED_BEEF, 24,
-                Items.TORCH, 8);
+                Items.TORCH, 8,
+                Items.OAK_LOG, EmergencyShelterTask.MAX_PLACEMENT_BLOCKS);
         GoalPlanner.GoalPlan plan = GoalPlanner.planFromState(null,
                 new Goal.HaveItem(Items.OBSIDIAN, 32), prepared, 64, 64,
                 true, false, false, ignored -> false, null);
@@ -540,7 +547,8 @@ public final class GoalPlannerMiningGameTests implements FabricGameTest {
                 Map.entry(Items.STICK, 44),
                 Map.entry(Items.CRAFTING_TABLE, 1),
                 Map.entry(Items.COOKED_BEEF, 8),
-                Map.entry(Items.TORCH, 8));
+                Map.entry(Items.TORCH, 8),
+                Map.entry(Items.OAK_LOG, EmergencyShelterTask.MAX_PLACEMENT_BLOCKS));
         Map<net.minecraft.item.Item, Integer> exactKit = Map.ofEntries(
                 Map.entry(Items.WATER_BUCKET, 1),
                 Map.entry(Items.NETHERITE_PICKAXE, 1),
@@ -550,7 +558,8 @@ public final class GoalPlannerMiningGameTests implements FabricGameTest {
                 Map.entry(Items.STICK, 40),
                 Map.entry(Items.CRAFTING_TABLE, 1),
                 Map.entry(Items.COOKED_BEEF, 8),
-                Map.entry(Items.TORCH, 8));
+                Map.entry(Items.TORCH, 8),
+                Map.entry(Items.OAK_LOG, EmergencyShelterTask.MAX_PLACEMENT_BLOCKS));
         Goal goal = new Goal.HaveItem(Items.OBSIDIAN, 32);
         GoalPlanner.GoalPlan low = GoalPlanner.planFromState(null, goal, lowKit,
                 Map.of(Items.NETHERITE_PICKAXE, 1), 64, 64,
@@ -596,7 +605,8 @@ public final class GoalPlannerMiningGameTests implements FabricGameTest {
                 Map.entry(Items.STICK, 40),
                 Map.entry(Items.CRAFTING_TABLE, 1),
                 Map.entry(Items.COOKED_BEEF, 8),
-                Map.entry(Items.TORCH, 8));
+                Map.entry(Items.TORCH, 8),
+                Map.entry(Items.OAK_LOG, EmergencyShelterTask.MAX_PLACEMENT_BLOCKS));
         Map<net.minecraft.item.Item, Integer> belowKit = new java.util.HashMap<>(exactKit);
         belowKit.put(Items.STICK, 42);
         Goal goal = new Goal.HaveItem(Items.OBSIDIAN, 32);
@@ -807,6 +817,147 @@ public final class GoalPlannerMiningGameTests implements FabricGameTest {
         require(context, !plan.success(), "netherite acquisition is not implemented and must remain explicit");
         require(context, plan.unresolved().stream().anyMatch(reason -> reason.contains("minecraft:netherite_pickaxe")),
                 "wrong tier selected: " + plan.unresolved());
+        context.complete();
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
+    public void surfaceDiamondStackAddsExactlyFourteenRawLogShelterReserve(
+            TestContext context) {
+        Goal goal = new Goal.HaveItem(Items.DIAMOND, 64);
+        // Keep every non-shelter dependency identical. A raw from-zero comparison lets the
+        // carried wood change recipe-family rounding elsewhere in the bootstrap and does not
+        // isolate this reserve contract.
+        GoalPlanner.GoalPlan empty = GoalPlanner.planFromState(null, goal,
+                preparedDiamondContract(Map.of()),
+                64, 64, false, false, false, ignored -> false, null);
+        GoalPlanner.GoalPlan carried = GoalPlanner.planFromState(null, goal,
+                preparedDiamondContract(Map.of(
+                        Items.OAK_LOG,
+                        EmergencyShelterTask.MAX_PLACEMENT_BLOCKS)),
+                64, 64, false, false, false, ignored -> false, null);
+
+        require(context, empty.success() && carried.success(),
+                "diamond reserve fixtures did not plan: empty=" + empty.unresolved()
+                        + " carried=" + carried.unresolved());
+        int emptyGather = plannedLogGatherCount(empty);
+        int carriedGather = plannedLogGatherCount(carried);
+        require(context, emptyGather - carriedGather
+                        == EmergencyShelterTask.MAX_PLACEMENT_BLOCKS,
+                "diamond raw-log reserve delta was not exactly "
+                        + EmergencyShelterTask.MAX_PLACEMENT_BLOCKS
+                        + ": empty=" + emptyGather + " carried=" + carriedGather);
+        context.complete();
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
+    public void surfaceDiamondStackTopsUpThirteenButNotFourteenShelterBlocks(
+            TestContext context) {
+        Goal goal = new Goal.HaveItem(Items.DIAMOND, 64);
+        GoalPlanner.GoalPlan empty = GoalPlanner.planFromState(null, goal,
+                preparedDiamondContract(Map.of()),
+                64, 64, false, false, false, ignored -> false, null);
+        GoalPlanner.GoalPlan thirteen = GoalPlanner.planFromState(null, goal,
+                preparedDiamondContract(Map.of(
+                        Items.OAK_LOG,
+                        EmergencyShelterTask.MAX_PLACEMENT_BLOCKS - 1)),
+                64, 64, false, false, false, ignored -> false, null);
+        GoalPlanner.GoalPlan fourteen = GoalPlanner.planFromState(null, goal,
+                preparedDiamondContract(Map.of(
+                        Items.OAK_LOG,
+                        EmergencyShelterTask.MAX_PLACEMENT_BLOCKS)),
+                64, 64, false, false, false, ignored -> false, null);
+
+        require(context, empty.success() && thirteen.success() && fourteen.success(),
+                "prepared diamond reserve fixtures did not plan: empty="
+                        + empty.unresolved() + " thirteen=" + thirteen.unresolved()
+                        + " fourteen=" + fourteen.unresolved());
+        int unrelatedWoodBaseline = plannedLogGatherCount(fourteen);
+        require(context, plannedLogGatherCount(thirteen) - unrelatedWoodBaseline == 1,
+                "thirteen carried shelter blocks did not add exactly one reserve log: "
+                        + thirteen.describeSteps());
+        require(context, plannedLogGatherCount(empty) - unrelatedWoodBaseline
+                        == EmergencyShelterTask.MAX_PLACEMENT_BLOCKS,
+                "fourteen carried shelter blocks did not eliminate the whole reserve top-up: "
+                        + fourteen.describeSteps());
+        context.complete();
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
+    public void surfaceDiamondStackDoesNotTreatPlanksAsHardShelterReserve(
+            TestContext context) {
+        GoalPlanner.GoalPlan plan = GoalPlanner.planFromState(null,
+                new Goal.HaveItem(Items.DIAMOND, 64),
+                preparedDiamondContract(Map.of(
+                        Items.OAK_PLANKS,
+                        EmergencyShelterTask.MAX_PLACEMENT_BLOCKS)),
+                64, 64, false, false, false, ignored -> false, null);
+
+        require(context, plan.success(),
+                "plank-only reserve fixture did not plan: " + plan.unresolved());
+        require(context, plannedLogGatherCount(plan)
+                        == EmergencyShelterTask.MAX_PLACEMENT_BLOCKS,
+                "craft-spendable planks incorrectly satisfied the raw-log reserve: "
+                        + plan.describeSteps());
+        context.complete();
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
+    public void undergroundDiamondStackResumeDoesNotGatherShelterWood(
+            TestContext context) {
+        GoalPlanner.GoalPlan plan = GoalPlanner.planFromState(null,
+                new Goal.HaveItem(Items.DIAMOND, 64),
+                preparedDiamondContract(Map.of()),
+                64, -59, false, false, false, false,
+                ignored -> true, null);
+
+        require(context, plan.success(),
+                "prepared underground diamond resume did not plan: " + plan.unresolved());
+        require(context, plan.steps().stream().noneMatch(
+                        step -> step.kind() == GoalStep.Kind.GATHER),
+                "underground diamond resume attempted surface shelter gathering");
+        context.complete();
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
+    public void surfaceObsidianStackAlsoReservesFourteenShelterBlocks(
+            TestContext context) {
+        Goal goal = new Goal.HaveItem(Items.OBSIDIAN, 32);
+        GoalPlanner.GoalPlan empty = GoalPlanner.planFromState(null, goal,
+                preparedObsidianContract(Map.of()),
+                64, 64, false, false, false, ignored -> false, null);
+        GoalPlanner.GoalPlan carried = GoalPlanner.planFromState(null, goal,
+                preparedObsidianContract(Map.of(
+                        Items.OAK_LOG,
+                        EmergencyShelterTask.MAX_PLACEMENT_BLOCKS)),
+                64, 64, false, false, false, ignored -> false, null);
+
+        require(context, empty.success() && carried.success(),
+                "obsidian reserve fixtures did not plan: empty=" + empty.unresolved()
+                        + " carried=" + carried.unresolved());
+        require(context, plannedLogGatherCount(empty)
+                        == EmergencyShelterTask.MAX_PLACEMENT_BLOCKS,
+                "prepared obsidian plan did not reserve fourteen shelter blocks: "
+                        + plannedLogGatherCount(empty));
+        require(context, plannedLogGatherCount(carried) == 0,
+                "prepared obsidian plan borrowed its fourteen carried shelter blocks: "
+                        + plannedLogGatherCount(carried));
+        context.complete();
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
+    public void partialSurfaceObsidianStackRetainsThirtyTwoItemShelterContract(
+            TestContext context) {
+        GoalPlanner.GoalPlan plan = GoalPlanner.planFromState(null,
+                new Goal.HaveItem(Items.OBSIDIAN, 32),
+                preparedObsidianContract(Map.of(Items.OBSIDIAN, 1)),
+                64, 64, false, false, false, ignored -> false, null);
+
+        require(context, plan.success(),
+                "partial obsidian reserve fixture did not plan: " + plan.unresolved());
+        require(context, plannedLogGatherCount(plan)
+                        == EmergencyShelterTask.MAX_PLACEMENT_BLOCKS,
+                "31 remaining obsidian lost the original half-stack shelter contract: "
+                        + plan.describeSteps());
         context.complete();
     }
 
@@ -1347,6 +1498,47 @@ public final class GoalPlannerMiningGameTests implements FabricGameTest {
 
     private static int roundUpToTorchRecipe(int target) {
         return ((Math.max(0, target) + 3) / 4) * 4;
+    }
+
+    private static int plannedLogGatherCount(GoalPlanner.GoalPlan plan) {
+        return plan.steps().stream()
+                .filter(step -> step.kind() == GoalStep.Kind.GATHER
+                        && RecipeRegistry.LOGS.contains(step.item()))
+                .mapToInt(GoalStep::count)
+                .sum();
+    }
+
+    private static Map<Item, Integer> preparedDiamondContract(
+            Map<Item, Integer> shelterWood) {
+        Map<Item, Integer> prepared = new HashMap<>();
+        prepared.put(Items.IRON_PICKAXE, 3);
+        prepared.put(Items.IRON_INGOT, 6);
+        prepared.put(Items.STONE_PICKAXE, 5);
+        prepared.put(Items.CHEST, 1);
+        prepared.put(Items.CRAFTING_TABLE, 1);
+        prepared.put(Items.COBBLESTONE, 512);
+        prepared.put(Items.STICK, 512);
+        prepared.put(Items.TORCH, 512);
+        prepared.put(Items.COOKED_BEEF, MiningBudget.RARE_BOOTSTRAP_FOOD);
+        prepared.putAll(shelterWood);
+        return Map.copyOf(prepared);
+    }
+
+    private static Map<Item, Integer> preparedObsidianContract(
+            Map<Item, Integer> shelterWood) {
+        Map<Item, Integer> prepared = new HashMap<>();
+        prepared.put(Items.WATER_BUCKET, 1);
+        prepared.put(Items.DIAMOND_PICKAXE, 1);
+        prepared.put(Items.STONE_PICKAXE, 4);
+        prepared.put(Items.STONE_SWORD, 1);
+        prepared.put(Items.CRAFTING_TABLE, 1);
+        prepared.put(Items.COBBLESTONE, 512);
+        prepared.put(Items.STICK, 512);
+        prepared.put(Items.COAL, 64);
+        prepared.put(Items.TORCH, 512);
+        prepared.put(Items.COOKED_BEEF, 64);
+        prepared.putAll(shelterWood);
+        return Map.copyOf(prepared);
     }
 
     private static int occupiedInventorySlots(

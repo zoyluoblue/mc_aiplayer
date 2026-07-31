@@ -360,8 +360,8 @@ public final class EmergencyShelterMaterialSchedulingGameTests implements Fabric
     }
 
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
-            batchId = "shelterMaterialScheduling", tickLimit = 450)
-    public void fourthCriticalCreeperBackoffStillAssignsEvadeWithoutLosingMission(
+            batchId = "shelterMaterialScheduling", tickLimit = 260)
+    public void criticalCreeperWithoutRouteOrMaterialsRetainsOneSafetyOwner(
             TestContext context) {
         BlockPos feet = context.getAbsolutePos(new BlockPos(4, 280, 4));
         prepareIsolatedTrap(context, feet);
@@ -391,17 +391,15 @@ public final class EmergencyShelterMaterialSchedulingGameTests implements Fabric
                         context.getWorld().getServer(), bot),
                 "first critical Creeper scan was not handled");
         Task first = TaskManager.INSTANCE.getActive(bot).orElse(null);
-        require(context, first instanceof EvadeTask,
-                "first critical Creeper response was not Evade: "
+        require(context, first instanceof CreeperDefenseTask,
+                "first critical Creeper response was not the dedicated owner: "
                         + (first == null ? "idle" : first.name()));
         require(context, mission.state() == TaskState.PAUSED
                         && TaskManager.INSTANCE.peekPaused(bot).orElse(null) == mission
                         && TaskManager.INSTANCE.pausedDepth(bot) == 1,
-                "first Creeper Evade did not preserve exactly one mission frame");
+                "first Creeper defense did not preserve exactly one mission frame");
 
-        Task[] lastEvade = {first};
-        int[] evadeAssignments = {1};
-        long[] thirdFailureTick = {-1L};
+        long started = context.getTick();
         context.runAtEveryTick(() -> {
             context.getWorld().setTimeOfDay(1000L);
             bot.setHealth(4.7F);
@@ -417,46 +415,18 @@ public final class EmergencyShelterMaterialSchedulingGameTests implements Fabric
                     "critical backoff acquired or invented shelter material");
 
             Task active = TaskManager.INSTANCE.getActive(bot).orElse(null);
-            if (active != null) {
-                require(context, active instanceof EvadeTask,
-                        "critical Creeper entered forbidden "
-                                + active.name() + " instead of Evade");
-                require(context, TaskManager.INSTANCE.activeOrigin(bot)
-                                .map(TaskOrigin::safety).orElse(false),
-                        "critical Creeper Evade lost SAFETY ownership");
-                if (active != lastEvade[0]) {
-                    evadeAssignments[0]++;
-                    lastEvade[0] = active;
-                    require(context, evadeAssignments[0] <= 4,
-                            "fixture observed more than four Evade assignments");
-                    if (evadeAssignments[0] == 4) {
-                        require(context, active.state() == TaskState.RUNNING
-                                        && TaskManager.INSTANCE.pausedDepth(bot) == 1,
-                                "fourth trappedBackoff decision left no live safety owner");
-                        hostile.discard();
-                        finish(context, bot, "CreeperBackoffOwnerGT");
-                        return;
-                    }
-                }
-            }
+            require(context, active == first
+                            && active instanceof CreeperDefenseTask
+                            && active.state() == TaskState.RUNNING,
+                    "route/material failure churned or released the Creeper owner: "
+                            + (active == null ? "idle" : active.name() + "/" + active.state()));
+            require(context, TaskManager.INSTANCE.activeOrigin(bot)
+                            .map(TaskOrigin::safety).orElse(false),
+                    "critical Creeper defense lost SAFETY ownership");
 
-            if (evadeAssignments[0] == 3
-                    && lastEvade[0].state() == TaskState.FAILED
-                    && thirdFailureTick[0] < 0) {
-                require(context, "no_valid_escape_route"
-                                .equals(lastEvade[0].failureReason()),
-                        "third Evade ended for the wrong reason: "
-                                + lastEvade[0].failureReason());
-                thirdFailureTick[0] = context.getTick();
-            }
-            if (thirdFailureTick[0] >= 0
-                    && context.getTick() - thirdFailureTick[0] > 130) {
-                context.throwGameTestException(
-                        "fourth trappedBackoff swallowed the critical Creeper response: "
-                                + "active="
-                                + TaskManager.INSTANCE.getActive(bot)
-                                .map(Task::name).orElse("empty")
-                                + " paused_depth=" + TaskManager.INSTANCE.pausedDepth(bot));
+            if (context.getTick() - started >= 160) {
+                hostile.discard();
+                finish(context, bot, "CreeperBackoffOwnerGT");
             }
         });
     }

@@ -23,6 +23,7 @@
       "io.github.zoyluo.aibot.task.CreateObsidianMissionRecoveryGameTests",
       "io.github.zoyluo.aibot.task.DescendCheckpointGameTests",
       "io.github.zoyluo.aibot.task.DigDownReturnGameTests",
+      "io.github.zoyluo.aibot.task.CreeperDefenseGameTests",
       "io.github.zoyluo.aibot.task.DangerWatcherLowHealthGameTests",
       "io.github.zoyluo.aibot.task.EmergencyShelterAtomicRecoveryGameTests",
       "io.github.zoyluo.aibot.task.EmergencyShelterMaterialSchedulingGameTests",

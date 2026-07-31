@@ -28,7 +28,8 @@ public final class SurvivalGuard {
      * 自救型任务豁免——它们本身就是对危险的响应,打断=打断自救。
      */
     public String check(AIPlayerEntity bot, Task task) {
-        if (task instanceof EvadeTask || task instanceof CombatTask
+        if (task instanceof EvadeTask || task instanceof CreeperDefenseTask
+                || task instanceof CombatTask
                 || task instanceof EmergencyShelterTask || task instanceof MiningBarricadeTask
                 || task instanceof EatTask
                 || task instanceof LavaEscapeTask) {

@@ -96,6 +96,7 @@ class PrivilegedBoundarySourceTest {
                 "perception/PerceptionCollector.java",
                 "task/ContainerTask.java",
                 "task/CraftTask.java",
+                "task/CreeperDefenseTask.java",
                 "task/DangerWatcher.java",
                 "task/FarmTask.java",
                 "task/FishTask.java",

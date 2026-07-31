@@ -240,6 +240,87 @@ public final class DangerWatcher {
                 || active.get() instanceof MiningBarricadeTask)) {
             return true;
         }
+        // CreeperDefense normally remains the sole owner through LOS flicker and secondary
+        // pressure. The only hostile arbitration allowed to replace it is a factually backed,
+        // non-Creeper LOW_HP emergency that can start a complete shelter now. If admission fails,
+        // retain CreeperDefense instead of falling through to a generic task.
+        if (active.isPresent() && active.get() instanceof CreeperDefenseTask) {
+            boolean criticalNonCreeperLowHp = threat.isPresent()
+                    && threat.get().type() == Threat.Type.LOW_HP
+                    && isHostileBacked(threat.get())
+                    && !isCreeperThreat(threat.get());
+            if (criticalNonCreeperLowHp
+                    && EmergencyShelterTask.hasMaterialsForCurrentPose(bot)
+                    && canAttemptShelter(server, bot)) {
+                TaskManager.INSTANCE.assign(
+                        bot,
+                        new EmergencyShelterTask(),
+                        TaskOrigin.safety("creeper_defense_critical_shelter"));
+                noteShelterAttempt(server, bot);
+                BotLog.danger(bot, "creeper_defense_critical_shelter",
+                        "hp", (int) bot.getHealth(),
+                        "source", threat.get().pos(),
+                        "threat", threat.get().entity().getType().toString(),
+                        "paused_depth", TaskManager.INSTANCE.pausedDepth(bot));
+            }
+            return true;
+        }
+        // A controlled strip mine already owns a real rear corridor. Seal the branch before the
+        // dedicated Creeper owner (or any generic combat/evade logic) can displace its checkpoint.
+        // A paused OreDig is also eligible because SurvivalGuard preserves mission instances.
+        Task miningCandidate = active.filter(OreDigTask.class::isInstance)
+                .orElseGet(() -> TaskManager.INSTANCE.peekPaused(bot)
+                        .filter(OreDigTask.class::isInstance)
+                        .orElse(null));
+        if (threat.isPresent()
+                && isHostileBacked(threat.get())
+                && miningCandidate instanceof OreDigTask oreDig
+                && MiningBarricadeTask.hasMaterialsForOpenGate(bot)) {
+            Optional<MiningBarricadeTask> barricade =
+                    oreDig.prepareHostileBarricade(bot, threat.get().pos());
+            if (barricade.isPresent()) {
+                if (active.orElse(null) == oreDig) {
+                    TaskManager.INSTANCE.pauseFor(bot, "mining_hostile_barricade");
+                }
+                TaskManager.INSTANCE.assign(bot, barricade.get(),
+                        TaskOrigin.safety("mining_hostile_barricade"));
+                BotLog.danger(bot, "mining_hostile_barricade_started",
+                        "source", threat.get().pos(),
+                        "paused", oreDig.name());
+                return true;
+            }
+        }
+        // Creepers need one continuous owner across source changes, LOS flicker, route stalls and
+        // physical-wall escalation. Assign it before the atomic Eat/Combat branches below.
+        // Authority comes from TaskOrigin rather than the task class: SAFETY work is replaceable
+        // in place, while every non-SAFETY task is paused exactly once and resumed only after the
+        // owner proves distance or a maintained barrier beyond its observation grace.
+        Optional<CreeperDefenseTask.ObservedCreeper> visibleCreeper =
+                CreeperDefenseTask.selectObservableCreeper(bot);
+        if (visibleCreeper.isPresent()) {
+            Task current = active.orElse(null);
+            boolean replaceInPlace = current != null
+                    && TaskManager.INSTANCE.activeOrigin(bot)
+                    .map(TaskOrigin::safety)
+                    .orElse(false);
+            if (current != null
+                    && !replaceInPlace) {
+                TaskManager.INSTANCE.pauseFor(bot, "creeper_defense");
+            }
+            CreeperDefenseTask.ObservedCreeper observed =
+                    visibleCreeper.orElseThrow();
+            TaskManager.INSTANCE.assign(
+                    bot,
+                    new CreeperDefenseTask(observed.uuid(), observed.pos()),
+                    TaskOrigin.safety("creeper_defense"));
+            noteThreatOwned(bot);
+            BotLog.danger(bot, "creeper_defense_started",
+                    "source", observed.pos(),
+                    "replaced", current == null ? "none" : current.name(),
+                    "replace_in_place", replaceInPlace,
+                    "paused_depth", TaskManager.INSTANCE.pausedDepth(bot));
+            return true;
+        }
         // A healing EatTask is a short, atomic survival transaction. LOW_HP is expected to remain
         // true throughout the bite, and an already-observed hostile can also remain in range; using
         // either signal to pause Eat again grows a safety-on-safety stack and prevents the food from
@@ -264,31 +345,6 @@ public final class DangerWatcher {
                 || threat.get().type() == Threat.Type.HOSTILE
                 || threat.get().type() == Threat.Type.LOW_HP)) {
             return true;
-        }
-        // A controlled strip mine already owns a real rear corridor. Seal the branch before any
-        // generic combat/evade logic can pillar-jump into the cave or overwrite its checkpoint.
-        // A paused OreDig is also eligible because SurvivalGuard now preserves mission instances.
-        Task miningCandidate = active.filter(OreDigTask.class::isInstance)
-                .orElseGet(() -> TaskManager.INSTANCE.peekPaused(bot)
-                        .filter(OreDigTask.class::isInstance)
-                        .orElse(null));
-        if (threat.isPresent()
-                && threat.get().type() == Threat.Type.HOSTILE
-                && miningCandidate instanceof OreDigTask oreDig
-                && MiningBarricadeTask.hasMaterialsForOpenGate(bot)) {
-            Optional<MiningBarricadeTask> barricade =
-                    oreDig.prepareHostileBarricade(bot, threat.get().pos());
-            if (barricade.isPresent()) {
-                if (active.orElse(null) == oreDig) {
-                    TaskManager.INSTANCE.pauseFor(bot, "mining_hostile_barricade");
-                }
-                TaskManager.INSTANCE.assign(bot, barricade.get(),
-                        TaskOrigin.safety("mining_hostile_barricade"));
-                BotLog.danger(bot, "mining_hostile_barricade_started",
-                        "source", threat.get().pos(),
-                        "paused", oreDig.name());
-                return true;
-            }
         }
         // 夜间怪海保命(治死亡螺旋):濒死(≤4 心)+ 有敌 + 当前没在筑墙 → 立即筑墙自保,**无视威胁冷却**。
         // 元凶:combat 完(~100t 没杀光)→进 100t 冷却→gather 恢复挨打→guard 中止→冷却没过 shelter
@@ -1036,6 +1092,7 @@ public final class DangerWatcher {
     static boolean hasActiveHostileDefenseOwner(AIPlayerEntity bot) {
         return TaskManager.INSTANCE.getActive(bot)
                 .map(task -> task instanceof EvadeTask
+                        || task instanceof CreeperDefenseTask
                         || task instanceof CombatTask
                         || task instanceof EmergencyShelterTask
                         || task instanceof MiningBarricadeTask)

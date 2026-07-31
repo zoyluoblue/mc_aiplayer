@@ -287,10 +287,21 @@ public final class EmergencyShelterAtomicRecoveryGameTests implements FabricGame
         TaskManager.INSTANCE.assign(bot, task,
                 TaskOrigin.of(TaskOrigin.Kind.VERIFY,
                         "gametest_shelter_forbidden_wall_blocker"));
+        boolean[] blockerReleasedAfterRejection = {false};
         context.runAtEveryTick(() -> {
             context.getWorld().setTimeOfDay(1000L);
             require(context, creeper.getHealth() == creeperHealth,
                     "shelter performed forbidden melee against a Creeper");
+            // OPEN_EXIT proves the adjacent Creeper was already classified as a forbidden
+            // blocker and the alternate doorway transaction is committed. Release the fixture
+            // now so the bot-wide DangerWatcher cannot start its own synchronous Creeper defense
+            // after the shelter publishes the expected terminal in the same server tick.
+            if (!blockerReleasedAfterRejection[0]
+                    && task.state() == TaskState.RUNNING
+                    && task.describe().contains("phase=OPEN_EXIT")) {
+                blockerReleasedAfterRejection[0] = true;
+                creeper.discard();
+            }
             if (task.state() == TaskState.RUNNING) {
                 return;
             }
@@ -299,6 +310,8 @@ public final class EmergencyShelterAtomicRecoveryGameTests implements FabricGame
                             .equals(task.failureReason()),
                     "forbidden blocker produced the wrong terminal: "
                             + task.state() + ":" + task.failureReason());
+            require(context, blockerReleasedAfterRejection[0],
+                    "fixture never observed the committed alternate-exit transaction");
             require(context, bot.getBlockPos().equals(feet.east()),
                     "shelter entered the rejected Creeper egress instead of east: "
                             + bot.getBlockPos().toShortString());

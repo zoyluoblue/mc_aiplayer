@@ -1,17 +1,22 @@
 package io.github.zoyluo.aibot.task;
 
+import io.github.zoyluo.aibot.AIBotConfig;
 import io.github.zoyluo.aibot.action.EquipAction;
 import io.github.zoyluo.aibot.action.InventoryAction;
 import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.manager.AIPlayerManager;
 import io.github.zoyluo.aibot.mining.MiningCursor;
+import io.github.zoyluo.aibot.mode.CapabilityRuntime;
 import io.github.zoyluo.aibot.mode.ObservableWorldQuery;
+import io.github.zoyluo.aibot.mode.OperatingProfile;
+import io.github.zoyluo.aibot.mode.PrivilegedCapability;
 import io.github.zoyluo.aibot.runtime.TaskOrigin;
 import net.fabricmc.fabric.api.gametest.v1.FabricGameTest;
 import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
 import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.entity.EntityType;
+import net.minecraft.entity.LightningEntity;
 import net.minecraft.entity.SpawnReason;
 import net.minecraft.entity.mob.CreeperEntity;
 import net.minecraft.entity.mob.EndermanEntity;
@@ -645,8 +650,8 @@ public final class DangerWatcherLowHealthGameTests implements FabricGameTest {
 
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
             batchId = "combatSurvivalRecovery", tickLimit = 80)
-    public void nightCreeperWithShelterMaterialsAlwaysChoosesEvade(TestContext context) {
-        AIPlayerEntity bot = spawnOnEscapeCorridor(context, "NightCreeperEvadeGT", 36);
+    public void nightCreeperWithShelterMaterialsChoosesDedicatedDefense(TestContext context) {
+        AIPlayerEntity bot = spawnOnEscapeCorridor(context, "NightCreeperDefenseGT", 36);
         context.getWorld().setTimeOfDay(18000L);
         bot.setHealth(bot.getMaxHealth());
         bot.getHungerManager().setFoodLevel(20);
@@ -664,14 +669,14 @@ public final class DangerWatcherLowHealthGameTests implements FabricGameTest {
         DangerWatcher.INSTANCE.scanBot(context.getWorld().getServer(), bot);
 
         Task active = TaskManager.INSTANCE.getActive(bot).orElse(null);
-        require(context, active instanceof EvadeTask,
+        require(context, active instanceof CreeperDefenseTask,
                 "night Creeper with shelter material selected "
                         + (active == null ? "idle" : active.name()));
         require(context, work.state() == TaskState.PAUSED
                         && TaskManager.INSTANCE.pausedDepth(bot) == 1,
                 "night Creeper did not preserve exactly one mission frame");
         require(context, !bot.getActionPack().isPathExecutorIdle(),
-                "night Creeper Evade did not admit a real surface path");
+                "night Creeper defense did not admit a real surface path");
         require(context, InventoryAction.countItem(bot, Items.COBBLESTONE) == blocksBefore,
                 "night Creeper routing consumed shelter material");
         creeper.discard();
@@ -681,7 +686,7 @@ public final class DangerWatcherLowHealthGameTests implements FabricGameTest {
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
             batchId = "combatSurvivalRecovery", tickLimit = 80)
     public void lowHealthCreeperCannotEnterEmergencyEntomb(TestContext context) {
-        AIPlayerEntity bot = spawnOnEscapeCorridor(context, "LowCreeperEvadeGT", 52);
+        AIPlayerEntity bot = spawnOnEscapeCorridor(context, "LowCreeperDefenseGT", 52);
         context.getWorld().setTimeOfDay(18000L);
         bot.setHealth(4.7F);
         bot.getHungerManager().setFoodLevel(17);
@@ -700,13 +705,13 @@ public final class DangerWatcherLowHealthGameTests implements FabricGameTest {
         DangerWatcher.INSTANCE.scanBot(context.getWorld().getServer(), bot);
 
         Task active = TaskManager.INSTANCE.getActive(bot).orElse(null);
-        require(context, active instanceof EvadeTask,
+        require(context, active instanceof CreeperDefenseTask,
                 "low-health Creeper entered " + (active == null ? "idle" : active.name()));
         require(context, work.state() == TaskState.PAUSED
                         && TaskManager.INSTANCE.pausedDepth(bot) == 1,
                 "low-health Creeper did not preserve exactly one mission frame");
         require(context, !bot.getActionPack().isPathExecutorIdle(),
-                "low-health Creeper Evade did not admit a real surface path");
+                "low-health Creeper defense did not admit a real surface path");
         require(context, InventoryAction.countItem(bot, Items.COBBLESTONE) == blocksBefore,
                 "low-health Creeper routing consumed shelter material");
         creeper.discard();
@@ -715,8 +720,10 @@ public final class DangerWatcherLowHealthGameTests implements FabricGameTest {
 
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
             batchId = "combatSurvivalRecovery", tickLimit = 80)
-    public void observableCreeperAtFifteenBlocksTriggersEvade(TestContext context) {
-        AIPlayerEntity bot = spawnOnEscapeCorridor(context, "CreeperFifteenEvadeGT", 60);
+    public void observableCreeperAtFifteenBlocksTriggersDedicatedDefense(
+            TestContext context) {
+        AIPlayerEntity bot = spawnOnEscapeCorridor(
+                context, "CreeperFifteenDefenseGT", 60);
         HoldingTask work = new HoldingTask();
         TaskManager.INSTANCE.assign(bot, work,
                 TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_creeper_fifteen_work"));
@@ -729,7 +736,7 @@ public final class DangerWatcherLowHealthGameTests implements FabricGameTest {
         DangerWatcher.INSTANCE.scanBot(context.getWorld().getServer(), bot);
 
         Task active = TaskManager.INSTANCE.getActive(bot).orElse(null);
-        require(context, active instanceof EvadeTask,
+        require(context, active instanceof CreeperDefenseTask,
                 "fifteen-block Creeper left mission active as "
                         + (active == null ? "idle" : active.name()));
         require(context, work.state() == TaskState.PAUSED
@@ -742,8 +749,9 @@ public final class DangerWatcherLowHealthGameTests implements FabricGameTest {
     }
 
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
-            batchId = "combatSurvivalRecovery", tickLimit = 100)
-    public void completedEvadeClearsCreeperReacquisitionCooldown(TestContext context) {
+            batchId = "combatSurvivalRecovery", tickLimit = 160)
+    public void completedCreeperDefenseReacquiresWithoutMissionStackGap(
+            TestContext context) {
         AIPlayerEntity bot = spawnOnEscapeCorridor(context, "CreeperReacquireGT", 108);
         HoldingTask work = new HoldingTask();
         TaskManager.INSTANCE.assign(bot, work,
@@ -752,33 +760,42 @@ public final class DangerWatcherLowHealthGameTests implements FabricGameTest {
                 context, bot.getBlockPos().east(8), "initial Creeper cooldown fixture");
         DangerWatcher.INSTANCE.scanBot(context.getWorld().getServer(), bot);
         Task firstSafety = TaskManager.INSTANCE.getActive(bot).orElse(null);
-        require(context, firstSafety instanceof EvadeTask,
-                "initial Creeper did not schedule Evade");
+        require(context, firstSafety instanceof CreeperDefenseTask,
+                "initial Creeper did not schedule dedicated defense");
         BlockPos firstGoal = bot.getActionPack().activePathGoal();
         require(context, firstGoal != null,
-                "initial Creeper Evade had no admitted goal");
+                "initial Creeper defense had no admitted goal");
 
         first.discard();
         bot.teleport(context.getWorld(),
                 firstGoal.getX() + 0.5D, firstGoal.getY(), firstGoal.getZ() + 0.5D,
                 Set.of(), bot.getYaw(), bot.getPitch(), true);
+        bot.setVelocity(Vec3d.ZERO);
+        for (int tick = 0; tick < 99; tick++) {
+            firstSafety.tick(bot);
+        }
+        require(context, firstSafety.state() == TaskState.RUNNING
+                        && work.state() == TaskState.PAUSED
+                        && TaskManager.INSTANCE.pausedDepth(bot) == 1,
+                "Creeper defense released its mission before the 100-tick LOS grace");
         firstSafety.tick(bot);
         require(context, firstSafety.state() == TaskState.COMPLETED,
-                "settled Creeper Evade did not complete at its factual goal: "
+                "settled Creeper defense did not complete after factual grace: "
                         + firstSafety.state() + ":" + firstSafety.failureReason());
         TaskManager.INSTANCE.tickAll(context.getWorld().getServer());
         require(context, TaskManager.INSTANCE.getActive(bot).isEmpty()
                         && work.state() == TaskState.PAUSED
                         && TaskManager.INSTANCE.pausedDepth(bot) == 1,
-                "completed Evade did not leave exactly one paused mission frame");
+                "completed Creeper defense did not leave exactly one paused mission frame");
 
         CreeperEntity reappeared = spawnDisabledCreeper(
                 context, bot.getBlockPos().east(15), "reappearing Creeper cooldown fixture");
         require(context, ObservableWorldQuery.canObserveEntity(bot, reappeared),
                 "reappearing fifteen-block Creeper was not observable");
         DangerWatcher.INSTANCE.scanBot(context.getWorld().getServer(), bot);
-        require(context, TaskManager.INSTANCE.getActive(bot).orElse(null) instanceof EvadeTask,
-                "completed Evade retained a cooldown gap for the reappearing Creeper");
+        require(context, TaskManager.INSTANCE.getActive(bot)
+                        .orElse(null) instanceof CreeperDefenseTask,
+                "completed defense retained a gap for the reappearing Creeper");
         require(context, work.state() == TaskState.PAUSED
                         && TaskManager.INSTANCE.pausedDepth(bot) == 1,
                 "Creeper reacquisition resumed or duplicated the mission frame");
@@ -789,7 +806,7 @@ public final class DangerWatcherLowHealthGameTests implements FabricGameTest {
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
             batchId = "combatSurvivalRecovery", tickLimit = 80)
     public void closerZombieCannotMaskObservableCreeper(TestContext context) {
-        AIPlayerEntity bot = spawnOnEscapeCorridor(context, "MixedCreeperEvadeGT", 76);
+        AIPlayerEntity bot = spawnOnEscapeCorridor(context, "MixedCreeperDefenseGT", 76);
         context.getWorld().setTimeOfDay(18000L);
         InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 32));
         HoldingTask work = new HoldingTask();
@@ -813,7 +830,7 @@ public final class DangerWatcherLowHealthGameTests implements FabricGameTest {
 
         DangerWatcher.INSTANCE.scanBot(context.getWorld().getServer(), bot);
         Task active = TaskManager.INSTANCE.getActive(bot).orElse(null);
-        require(context, active instanceof EvadeTask,
+        require(context, active instanceof CreeperDefenseTask,
                 "closer ordinary hostile masked Creeper with "
                         + (active == null ? "idle" : active.name()));
         require(context, work.state() == TaskState.PAUSED
@@ -859,39 +876,181 @@ public final class DangerWatcherLowHealthGameTests implements FabricGameTest {
 
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
             batchId = "combatSurvivalRecovery", tickLimit = 500)
-    public void observedCreeperExtendsEvadeBeyondFirstWaypoint(TestContext context) {
-        AIPlayerEntity bot = spawnOnEscapeCorridor(context, "CreeperExtendEvadeGT", 68);
+    public void observedCreeperDefenseExtendsBeyondFirstWaypoint(TestContext context) {
+        AIPlayerEntity bot = spawnOnEscapeCorridor(
+                context, "CreeperExtendDefenseGT", 68);
         BlockPos origin = bot.getBlockPos().toImmutable();
         int deathBaseline = deathCount(bot);
         CreeperEntity creeper = spawnDisabledCreeper(
                 context, origin.east(8), "moving Creeper escape fixture");
-        EvadeTask evade = new EvadeTask(new Threat(
-                Threat.Type.HOSTILE, Threat.Severity.HIGH, creeper, creeper.getBlockPos()));
-        TaskManager.INSTANCE.assign(bot, evade,
-                TaskOrigin.safety("gametest_creeper_evade_extension"));
+        CreeperDefenseTask defense =
+                new CreeperDefenseTask(creeper, creeper.getBlockPos());
+        TaskManager.INSTANCE.assign(bot, defense,
+                TaskOrigin.safety("gametest_creeper_defense_extension"));
 
         context.runAtEveryTick(() -> {
             BlockPos trailing = bot.getBlockPos().east(15);
             creeper.refreshPositionAndAngles(
                     trailing.getX() + 0.5D, trailing.getY(), trailing.getZ() + 0.5D,
                     90.0F, 0.0F);
-            if (evade.state() == TaskState.FAILED || evade.state() == TaskState.CANCELLED) {
+            if (defense.state() == TaskState.FAILED
+                    || defense.state() == TaskState.CANCELLED) {
                 creeper.discard();
                 despawnAndComplete(context, bot);
-                context.throwGameTestException("extended Creeper Evade ended as "
-                        + evade.state() + ":" + evade.failureReason());
+                context.throwGameTestException("extended Creeper defense ended as "
+                        + defense.state() + ":" + defense.failureReason());
                 return;
             }
             // The first projection is twelve blocks west and the task can settle within 2.5 blocks
             // of it. Reaching fifteen blocks proves a second path leg was admitted.
             if (bot.getX() <= origin.getX() - 15.0D) {
-                require(context, evade.state() == TaskState.RUNNING,
-                        "Creeper Evade completed at its first moving-threat waypoint");
+                require(context, defense.state() == TaskState.RUNNING,
+                        "Creeper defense completed at its first moving-threat waypoint");
                 require(context, ObservableWorldQuery.canObserveEntity(bot, creeper),
                         "moving Creeper left factual perception before extension proof");
                 require(context, deathCount(bot) == deathBaseline,
-                        "moving Creeper extension changed the bot death counter");
+                        "moving Creeper defense changed the bot death counter");
                 creeper.discard();
+                despawnAndComplete(context, bot);
+            }
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "combatSurvivalRecovery", tickLimit = 340)
+    public void pointBlankLiveChargedCreeperDuringStalledEvadeSurvivesAndResumesMission(
+            TestContext context) {
+        AIPlayerEntity bot = spawnOnReactiveEscapeArena(
+                context, "LiveCreeperStalledEvadeGT", 196);
+        BlockPos origin = bot.getBlockPos().toImmutable();
+        bot.setHealth(20.0F);
+        bot.getHungerManager().setFoodLevel(17);
+        InventoryAction.giveItem(bot, new ItemStack(Items.OAK_LOG, 16));
+        assertStrictCapabilities(context, bot);
+        int deathBaseline = deathCount(bot);
+
+        HoldingTask mission = new HoldingTask();
+        TaskManager.INSTANCE.assign(bot, mission,
+                TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_live_creeper_mission"));
+        Vec3d stallAnchor = Vec3d.ofBottomCenter(origin);
+        Vec3d approachAnchor = Vec3d.ofBottomCenter(origin.east(8));
+        CreeperEntity[] creeperRef = {null};
+        AtomicBoolean pointBlankPressure = new AtomicBoolean();
+        AtomicBoolean explosionObserved = new AtomicBoolean();
+        int[] armedTicks = {0};
+        int[] maxPausedDepth = {0};
+
+        // Commit and physically stall the same initial westbound SAFETY path on both revisions
+        // before applying point-blank pressure. Damage waits until join invulnerability expires.
+        context.runAtTick(70, () -> {
+            CreeperEntity creeper = spawnLiveTargetingCreeper(
+                    context, origin.east(8), bot, "live Creeper fuse fixture");
+            creeperRef[0] = creeper;
+            require(context, ObservableWorldQuery.canObserveEntity(bot, creeper)
+                            && CombatCore.hasLineOfSight(bot, creeper),
+                    "live Creeper was not factually observable before safety routing");
+
+            DangerWatcher.INSTANCE.scanBot(context.getWorld().getServer(), bot);
+            Task safety = TaskManager.INSTANCE.getActive(bot).orElse(null);
+            BlockPos committedGoal = bot.getActionPack().activePathGoal();
+            require(context, safety != null && safety != mission
+                            && TaskManager.INSTANCE.activeOrigin(bot)
+                            .map(TaskOrigin::safety).orElse(false),
+                    "live Creeper did not assign a dedicated SAFETY owner");
+            require(context, mission.state() == TaskState.PAUSED
+                            && TaskManager.INSTANCE.peekPaused(bot).orElse(null) == mission
+                            && TaskManager.INSTANCE.pausedDepth(bot) == 1,
+                    "live Creeper did not preserve exactly one mission frame");
+            require(context, committedGoal != null
+                            && committedGoal.getX() < origin.getX() - 4,
+                    "live Creeper safety did not commit its initial westbound path");
+        });
+
+        context.runAtTick(80, () -> {
+            CreeperEntity creeper = creeperRef[0];
+            require(context, creeper != null && creeper.isAlive(),
+                    "live Creeper disappeared before point-blank pressure");
+            // Stronger-than-evidence regression: keep vanilla fuse/explosion behavior, but use
+            // vanilla charged state so an unshielded full-health baseline is strictly fatal.
+            BlockPos fuseFeet = origin.east();
+            creeper.refreshPositionAndAngles(
+                    fuseFeet.getX() + 0.5D, fuseFeet.getY(), fuseFeet.getZ() + 0.5D,
+                    90.0F, 0.0F);
+            creeper.setTarget(bot);
+            chargeCreeperWithoutLightningDamage(context, creeper);
+            creeper.ignite();
+            require(context, !creeper.isAiDisabled()
+                            && creeper.getTarget() == bot
+                            && creeper.isCharged()
+                            && creeper.isIgnited()
+                            && ObservableWorldQuery.canObserveEntity(bot, creeper)
+                            && CombatCore.hasLineOfSight(bot, creeper),
+                    "point-blank charged Creeper was not a live targeting pressure source");
+            pointBlankPressure.set(true);
+        });
+
+        context.runAtEveryTick(() -> {
+            CreeperEntity creeper = creeperRef[0];
+            if (creeper == null) {
+                if (bot.isAlive()) {
+                    bot.teleport(context.getWorld(),
+                            stallAnchor.x, stallAnchor.y, stallAnchor.z,
+                            Set.of(), bot.getYaw(), bot.getPitch(), true);
+                    bot.setVelocity(Vec3d.ZERO);
+                }
+                return;
+            }
+            Task active = TaskManager.INSTANCE.getActive(bot).orElse(null);
+            if (creeper.isAlive() && !pointBlankPressure.get()) {
+                creeper.refreshPositionAndAngles(
+                        approachAnchor.x, approachAnchor.y, approachAnchor.z,
+                        90.0F, 0.0F);
+                creeper.setVelocity(Vec3d.ZERO);
+                creeper.setTarget(bot);
+            }
+            if (creeper.isAlive() && bot.isAlive()
+                    && (!pointBlankPressure.get() || active instanceof EvadeTask)) {
+                bot.teleport(context.getWorld(),
+                        stallAnchor.x, stallAnchor.y, stallAnchor.z,
+                        Set.of(), bot.getYaw(), bot.getPitch(), true);
+                bot.setVelocity(Vec3d.ZERO);
+            }
+            int depth = TaskManager.INSTANCE.pausedDepth(bot);
+            maxPausedDepth[0] = Math.max(maxPausedDepth[0], depth);
+            require(context, bot.isAlive() && deathCount(bot) == deathBaseline,
+                    "point-blank live charged Creeper killed the bot after its Evade path stalled"
+                            + " at " + bot.getBlockPos().toShortString()
+                            + " deaths=" + deathCount(bot));
+            require(context, depth <= 1,
+                    "live Creeper recovery grew the paused mission stack to " + depth);
+            if (depth == 1) {
+                require(context, TaskManager.INSTANCE.peekPaused(bot).orElse(null) == mission
+                                && mission.state() == TaskState.PAUSED,
+                        "live Creeper recovery replaced or resumed the mission too early");
+            }
+
+            if (active != null && active != mission) {
+                require(context, TaskManager.INSTANCE.activeOrigin(bot)
+                                .map(TaskOrigin::safety).orElse(false),
+                        "live Creeper recovery transferred control to a non-safety task");
+            }
+            if (creeper.isAlive()) {
+                creeper.setTarget(bot);
+                if (creeper.isIgnited() || creeper.getFuseSpeed() > 0) {
+                    armedTicks[0]++;
+                }
+            } else if (explosionObserved.compareAndSet(false, true)) {
+                // The movement anchor ends with the factual blast, allowing the same paused
+                // mission to resume after its SAFETY owner repays the pressure.
+            }
+
+            if (active == mission) {
+                require(context, explosionObserved.get() && armedTicks[0] >= 20,
+                        "mission resumed without observing a real Creeper fuse and explosion");
+                require(context, mission.state() == TaskState.RUNNING
+                                && depth == 0
+                                && maxPausedDepth[0] == 1,
+                        "same mission did not resume with one fully repaid safety frame");
                 despawnAndComplete(context, bot);
             }
         });
@@ -973,9 +1132,10 @@ public final class DangerWatcherLowHealthGameTests implements FabricGameTest {
         CombatTask combat = CombatTask.defensive(primary, 10.0F, origin);
         TaskManager.INSTANCE.assign(bot, combat,
                 TaskOrigin.safety("gametest_secondary_creeper_no_counterattack"));
+        AtomicBoolean dedicatedOwnerObserved = new AtomicBoolean();
         context.runAtEveryTick(() -> {
             require(context, creeper.isAlive() && creeper.getHealth() == creeperHealth,
-                    "RETREAT counterattacked the secondary Creeper");
+                    "combat or dedicated defense attacked the secondary Creeper");
             require(context, primary.isAlive() && primary.getHealth() == primaryHealth,
                     "secondary Creeper pressure redirected damage to the primary");
             require(context, Double.compare(combat.progress(), 0.0D) == 0,
@@ -984,14 +1144,29 @@ public final class DangerWatcherLowHealthGameTests implements FabricGameTest {
                     "combat healed before reaching the Creeper eight-block/LOS boundary");
             require(context, bot.isAlive() && deathCount(bot) == deathBaseline,
                     "secondary Creeper regression changed the bot death counter");
-            require(context, TaskManager.INSTANCE.getActive(bot).orElse(null) == combat,
-                    "secondary Creeper replaced its owning CombatTask");
+            Task active = TaskManager.INSTANCE.getActive(bot).orElse(null);
+            if (active instanceof CreeperDefenseTask) {
+                dedicatedOwnerObserved.set(true);
+                require(context, combat.state() == TaskState.FAILED
+                                && "aborted".equals(combat.failureReason())
+                                && TaskManager.INSTANCE.activeOrigin(bot)
+                                .map(TaskOrigin::safety).orElse(false)
+                                && TaskManager.INSTANCE.pausedDepth(bot) == 0,
+                        "SAFETY Combat was not replaced in place by dedicated defense");
+            } else {
+                require(context, active == combat && !dedicatedOwnerObserved.get(),
+                        "secondary Creeper transferred to unexpected owner "
+                                + (active == null ? "idle" : active.name()));
+            }
             if (context.getTick() >= 40) {
+                require(context, dedicatedOwnerObserved.get(),
+                        "secondary Creeper never established dedicated defense");
                 primary.discard();
                 creeper.discard();
                 despawnAndComplete(context, bot);
-            } else if (combat.state() == TaskState.FAILED
-                    || combat.state() == TaskState.CANCELLED) {
+            } else if (!dedicatedOwnerObserved.get()
+                    && (combat.state() == TaskState.FAILED
+                    || combat.state() == TaskState.CANCELLED)) {
                 context.throwGameTestException("secondary-Creeper combat ended as "
                         + combat.state() + ":" + combat.failureReason());
             }
@@ -2223,6 +2398,63 @@ public final class DangerWatcherLowHealthGameTests implements FabricGameTest {
         return bot;
     }
 
+    private static AIPlayerEntity spawnOnReactiveEscapeArena(TestContext context,
+                                                              String name,
+                                                              int relativeY) {
+        var world = context.getWorld();
+        world.setTimeOfDay(1000L);
+        BlockPos feet = context.getAbsolutePos(new BlockPos(3, relativeY, 3));
+        for (int dx = -18; dx <= 18; dx++) {
+            for (int dz = -18; dz <= 18; dz++) {
+                BlockPos cell = feet.add(dx, 0, dz);
+                world.setBlockState(
+                        cell.down(), Blocks.OBSIDIAN.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(cell, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(cell.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(cell.up(2), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
+                        world.getServer(), name, world, Vec3d.ofBottomCenter(feet),
+                        0.0F, 0.0F, GameMode.SURVIVAL)
+                .orElseThrow(() -> new IllegalStateException("failed to spawn " + name));
+        bot.teleport(world, feet.getX() + 0.5D, feet.getY(), feet.getZ() + 0.5D,
+                Set.of(), 0.0F, 0.0F, true);
+        return bot;
+    }
+
+    private static CreeperEntity spawnLiveTargetingCreeper(TestContext context,
+                                                            BlockPos feet,
+                                                            AIPlayerEntity target,
+                                                            String fixture) {
+        CreeperEntity creeper = EntityType.CREEPER.create(
+                context.getWorld(), SpawnReason.COMMAND);
+        if (creeper == null) {
+            context.throwGameTestException("failed to create " + fixture);
+            throw new IllegalStateException("failed to create " + fixture);
+        }
+        creeper.setPersistent();
+        creeper.setAiDisabled(false);
+        creeper.refreshPositionAndAngles(
+                feet.getX() + 0.5D, feet.getY(), feet.getZ() + 0.5D, 90.0F, 0.0F);
+        context.getWorld().spawnEntity(creeper);
+        creeper.setTarget(target);
+        return creeper;
+    }
+
+    private static void chargeCreeperWithoutLightningDamage(TestContext context,
+                                                             CreeperEntity creeper) {
+        LightningEntity lightning = EntityType.LIGHTNING_BOLT.create(
+                context.getWorld(), SpawnReason.COMMAND);
+        if (lightning == null) {
+            context.throwGameTestException("failed to create charged Creeper fixture");
+            throw new IllegalStateException("failed to create charged Creeper fixture");
+        }
+        creeper.onStruckByLightning(context.getWorld(), lightning);
+        creeper.extinguish();
+        creeper.setHealth(creeper.getMaxHealth());
+    }
+
     private static CreeperEntity spawnDisabledCreeper(TestContext context,
                                                        BlockPos feet,
                                                        String fixture) {
@@ -2281,6 +2513,16 @@ public final class DangerWatcherLowHealthGameTests implements FabricGameTest {
                 owner + " was pushed behind generic resupply");
         require(context, expected.state() == TaskState.RUNNING,
                 owner + " became terminal: " + expected.state());
+    }
+
+    private static void assertStrictCapabilities(TestContext context, AIPlayerEntity bot) {
+        require(context, AIBotConfig.get().profile() == OperatingProfile.STRICT_SURVIVAL,
+                "GameTest must run under strict_survival, got " + AIBotConfig.get().profile());
+        for (PrivilegedCapability capability : PrivilegedCapability.values()) {
+            require(context, !CapabilityRuntime.decide(
+                            bot, capability, "danger_watcher_live_creeper_gametest").allowed(),
+                    "strict_survival unexpectedly allowed " + capability);
+        }
     }
 
     private static final class HoldingTask extends AbstractTask {

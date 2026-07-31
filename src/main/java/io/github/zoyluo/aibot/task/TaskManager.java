@@ -434,6 +434,7 @@ public final class TaskManager {
 
     private static boolean isCritical(Task task) {
         return task instanceof EvadeTask
+                || task instanceof CreeperDefenseTask
                 || task instanceof CombatTask
                 || task instanceof EmergencyShelterTask
                 || task instanceof MiningBarricadeTask

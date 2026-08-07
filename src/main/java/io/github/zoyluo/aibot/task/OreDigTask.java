@@ -114,6 +114,14 @@ public final class OreDigTask extends AbstractTask implements CheckpointableTask
     private static final int PICKUP_GRACE_TICKS = 30;
     private static final int TARGET_DROP_RECOVERY_LIMIT = 200;
     private static final int TARGET_DROP_LAST_SEEN_RANGE = 16;
+    // 恢复窗口内原地滞留(同格 nudge/静默寻路失败都算)超过该阈值 → 升级为观察扫描:
+    // 走到 last-seen 周边可观察站位,让被遮挡/被弹飞的掉落重新进入视野或碰撞盒。
+    private static final int PICKUP_STALL_SWEEP_TICKS = 30;
+    private static final int[][] PICKUP_SWEEP_OFFSETS = {
+            {1, 0}, {0, 1}, {-1, 0}, {0, -1},
+            {1, 1}, {-1, 1}, {-1, -1}, {1, -1},
+            {2, 0}, {0, 2}, {-2, 0}, {0, -2}
+    };
     private static final int MIN_TARGET_BREAK_DY = -1;
     private static final int MAX_TARGET_BREAK_DY = 2;
     private static final int BONUS_CAP = 8;            // R3 顺路矿单任务上限:白捡是好,改行不行
@@ -194,6 +202,11 @@ public final class OreDigTask extends AbstractTask implements CheckpointableTask
     private int pendingPickupInventory;
     private int pendingPickupStarted = -1;
     private int pendingPickupGainTick = -1;
+    // Transient recovery-stall state; deliberately not checkpointed. A restored ledger restarts
+    // the stall clock, which only delays the first sweep escalation by one threshold window.
+    private BlockPos pendingPickupStallAnchor;
+    private int pendingPickupStallTicks;
+    private int pendingPickupSweepCursor;
     private BlockPos activeTargetBreakPos;
     private int activeTargetBreakInventory = -1;
     private int budgetOffset;
@@ -3383,6 +3396,11 @@ public final class OreDigTask extends AbstractTask implements CheckpointableTask
                     HarvestCore.approachKnownPickupCell(bot, pendingPickupPos);
                 }
             }
+            // A same-cell nudge toward a stale coordinate and a silently failed exact path start
+            // both report "pursuing" while the bot physically camps one block. Count that stall
+            // and escalate to an observation sweep before the recovery deadline burns out; a
+            // launch-drifted drop is routinely collectable from the very next standable cell.
+            updatePickupRecoveryStall(bot);
         }
         // Confirmation requires more than one counter increment: allow merged ItemEntities and
         // pickup delay to settle, then observe no remaining target drop. Do not force a return to
@@ -3411,9 +3429,91 @@ public final class OreDigTask extends AbstractTask implements CheckpointableTask
             pendingPickupInventory = 0;
             pendingPickupStarted = -1;
             pendingPickupGainTick = -1;
+            resetPickupRecoveryStall();
             return false;
         }
         return true;
+    }
+
+    private void resetPickupRecoveryStall() {
+        pendingPickupStallAnchor = null;
+        pendingPickupStallTicks = 0;
+    }
+
+    /**
+     * Detects a physically idle recovery loop. Movement ownership (an active path or walk
+     * controller) and real cell changes reset the clock; everything else — same-cell nudges at a
+     * stale coordinate, path starts that fail inside their cooldown, an unreachable stand — counts
+     * toward one bounded stall window before the sweep escalation runs.
+     */
+    private void updatePickupRecoveryStall(AIPlayerEntity bot) {
+        if (!bot.getActionPack().isPathExecutorIdle()
+                || !bot.getActionPack().isWalkToIdle()) {
+            resetPickupRecoveryStall();
+            return;
+        }
+        BlockPos current = bot.getBlockPos().toImmutable();
+        if (!current.equals(pendingPickupStallAnchor)) {
+            pendingPickupStallAnchor = current;
+            pendingPickupStallTicks = 0;
+            return;
+        }
+        pendingPickupStallTicks++;
+        if (pendingPickupStallTicks < PICKUP_STALL_SWEEP_TICKS) {
+            return;
+        }
+        if (startPickupObservationSweepStep(bot)) {
+            pendingPickupStallTicks = 0;
+            return;
+        }
+        if (pendingPickupStallTicks % 20 == 0) {
+            BotLog.action(bot, "ore_dig_pickup_recovery_stalled",
+                    "camped", current.toShortString(),
+                    "pending", pendingPickupPos == null
+                            ? "none" : pendingPickupPos.toShortString(),
+                    "last_seen", pendingPickupLastSeenPos == null
+                            ? "none" : pendingPickupLastSeenPos.toShortString(),
+                    "stalled_ticks", pendingPickupStallTicks);
+        }
+    }
+
+    /**
+     * Walks to the next observable, standable ring cell around the drop's last factual
+     * coordinate. This mirrors Hunt's pickup observation sweep: ordinary exact no-dig/no-pillar
+     * movement that changes the viewpoint so an occluded or launch-drifted ItemEntity becomes
+     * visible — or simply collides with the player's pickup box from the neighbouring cell.
+     */
+    private boolean startPickupObservationSweepStep(AIPlayerEntity bot) {
+        BlockPos anchor = pendingPickupLastSeenPos != null
+                ? pendingPickupLastSeenPos : pendingPickupPos;
+        if (anchor == null) {
+            return false;
+        }
+        ServerWorld world = bot.getServerWorld();
+        int standY = bot.getBlockPos().getY();
+        for (int checked = 0; checked < PICKUP_SWEEP_OFFSETS.length; checked++) {
+            int[] offset = PICKUP_SWEEP_OFFSETS[
+                    Math.floorMod(pendingPickupSweepCursor++, PICKUP_SWEEP_OFFSETS.length)];
+            BlockPos candidate = new BlockPos(
+                    anchor.getX() + offset[0], standY, anchor.getZ() + offset[1]);
+            Standability.clearCache();
+            if (candidate.equals(bot.getBlockPos())
+                    || !ObservableWorldQuery.canObserveCell(bot, candidate)
+                    || !ObservableWorldQuery.canObserveCell(bot, candidate.up())
+                    || !ObservableWorldQuery.canObserveBlock(bot, candidate.down())
+                    || !Standability.isStandable(world, candidate)) {
+                continue;
+            }
+            if (!HarvestCore.startExactPickupPath(bot, candidate)) {
+                continue;
+            }
+            BotLog.action(bot, "ore_dig_pickup_observation_sweep",
+                    "anchor", anchor.toShortString(),
+                    "to", candidate.toShortString(),
+                    "step", pendingPickupSweepCursor);
+            return true;
+        }
+        return false;
     }
 
     private boolean isPendingDropInsideRecoverableFallNeighborhood(BlockPos dropPos) {

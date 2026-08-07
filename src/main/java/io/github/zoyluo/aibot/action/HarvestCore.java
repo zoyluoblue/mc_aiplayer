@@ -306,7 +306,12 @@ public final class HarvestCore {
         return startExactPickupPath(bot, stand);
     }
 
-    private static boolean startExactPickupPath(AIPlayerEntity bot, BlockPos stand) {
+    /**
+     * Starts an exact no-dig/no-pillar surface route to {@code stand}, rejecting endpoint
+     * snapping. Shared by pickup chases and observation sweeps: recovery movement must reach the
+     * requested cell itself, or report failure so the caller's ledger keeps owning the retry.
+     */
+    public static boolean startExactPickupPath(AIPlayerEntity bot, BlockPos stand) {
         ActionResult result = bot.getActionPack().startSurfacePathTo(stand);
         if (result.isFailed()) {
             return false;

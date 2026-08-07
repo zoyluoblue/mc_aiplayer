@@ -1307,26 +1307,6 @@ public final class HuntCrossRegionGameTests implements FabricGameTest {
         }
 
         BlockPos killCell = start.east(5);
-        ItemEntity oldBeef = new ItemEntity(
-                world,
-                killCell.getX() + 0.5D,
-                killCell.getY(),
-                killCell.getZ() + 2.5D,
-                new ItemStack(Items.BEEF));
-        oldBeef.setVelocity(Vec3d.ZERO);
-        oldBeef.setPickupDelayInfinite();
-        oldBeef.setNeverDespawn();
-        require(context, world.spawnEntity(oldBeef), "failed to spawn old beef");
-
-        var cow = EntityType.COW.create(world, SpawnReason.COMMAND);
-        require(context, cow != null, "failed to create old-drop cow");
-        cow.setAiDisabled(true);
-        cow.setHealth(1.0F);
-        cow.refreshPositionAndAngles(
-                killCell.getX() + 0.5D, killCell.getY(), killCell.getZ() + 0.5D,
-                180.0F, 0.0F);
-        require(context, world.spawnEntity(cow), "failed to spawn old-drop cow");
-
         String name = "HuntOldDropGT";
         AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
                         world.getServer(), name, world, Vec3d.ofBottomCenter(start),
@@ -1338,10 +1318,38 @@ public final class HuntCrossRegionGameTests implements FabricGameTest {
         int pickupBaseline = bot.getStatHandler().getStat(Stats.PICKED_UP, Items.BEEF);
         int killBaseline = bot.getStatHandler().getStat(Stats.KILLED, EntityType.COW);
         int inventoryBaseline = InventoryAction.countItem(bot, Items.BEEF);
+        Box arena = new Box(killCell).expand(6.0D);
+
+        // This arena lives hundreds of blocks from the test structure and stays loaded only by
+        // the fake player's own chunk tickets. Spawn the fixture entities after those tickets
+        // settle, and assert through fresh world queries: a transient unload/reload replaces the
+        // entity instances, so captured Java references can report a false !isAlive().
+        context.runAtTick(40, () -> {
+            ItemEntity oldBeef = new ItemEntity(
+                    world,
+                    killCell.getX() + 0.5D,
+                    killCell.getY(),
+                    killCell.getZ() + 2.5D,
+                    new ItemStack(Items.BEEF));
+            oldBeef.setVelocity(Vec3d.ZERO);
+            oldBeef.setPickupDelayInfinite();
+            oldBeef.setNeverDespawn();
+            require(context, world.spawnEntity(oldBeef), "failed to spawn old beef");
+
+            var cow = EntityType.COW.create(world, SpawnReason.COMMAND);
+            require(context, cow != null, "failed to create old-drop cow");
+            cow.setAiDisabled(true);
+            cow.setHealth(1.0F);
+            cow.refreshPositionAndAngles(
+                    killCell.getX() + 0.5D, killCell.getY(), killCell.getZ() + 0.5D,
+                    180.0F, 0.0F);
+            require(context, world.spawnEntity(cow), "failed to spawn old-drop cow");
+        });
 
         AtomicReference<HuntTask> taskRef = new AtomicReference<>();
         context.runAtTick(80, () -> {
-            require(context, oldBeef.isAlive() && oldBeef.getItemAge() < 0,
+            ItemEntity oldBeef = onlyOldBeef(world, arena);
+            require(context, oldBeef != null && oldBeef.getItemAge() < 0,
                     "old beef lost its non-fresh age marker");
             HuntTask task = anchoredHunt(bot, 64);
             taskRef.set(task);
@@ -1365,9 +1373,12 @@ public final class HuntCrossRegionGameTests implements FabricGameTest {
             if (!pickupObserved.get() || !task.describe().contains("phase=ACQUIRE")) {
                 return;
             }
-            require(context, !cow.isAlive(),
+            require(context, world.getEntitiesByClass(
+                            net.minecraft.entity.passive.CowEntity.class, arena,
+                            Entity::isAlive).isEmpty(),
                     "old-drop fixture reached ACQUIRE before the cow died");
-            require(context, oldBeef.isAlive() && oldBeef.cannotPickup(),
+            ItemEntity oldBeef = onlyOldBeef(world, arena);
+            require(context, oldBeef != null,
                     "unrelated old beef was consumed or mutated");
             require(context,
                     bot.getStatHandler().getStat(Stats.KILLED, EntityType.COW) > killBaseline,
@@ -1548,6 +1559,19 @@ public final class HuntCrossRegionGameTests implements FabricGameTest {
             AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
             context.complete();
         });
+    }
+
+    /**
+     * Re-queries the pickup-proof marker beef instead of trusting a captured reference: the
+     * offset arena's chunks can transiently unload, and a reloaded {@link ItemEntity} is a new
+     * instance while the marker's infinite pickup delay and never-despawn age survive in NBT.
+     */
+    private static ItemEntity onlyOldBeef(
+            net.minecraft.server.world.ServerWorld world, Box arena) {
+        var marked = world.getEntitiesByClass(
+                ItemEntity.class, arena,
+                entity -> entity.getStack().isOf(Items.BEEF) && entity.cannotPickup());
+        return marked.size() == 1 ? marked.get(0) : null;
     }
 
     private static HuntTask anchoredHunt(AIPlayerEntity bot, int targetMeat) {

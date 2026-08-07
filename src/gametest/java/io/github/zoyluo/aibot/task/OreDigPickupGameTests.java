@@ -1108,6 +1108,71 @@ public final class OreDigPickupGameTests implements FabricGameTest {
         });
     }
 
+    /**
+     * Deterministic replay of the intermittent launch-RNG failure: a mined drop can land on the
+     * raised 1x1 work-pose pedestal beside the shaft. The recovery loop must climb the two-step
+     * ascent and physically collect it instead of idling into ore_dig_drop_unrecovered.
+     */
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "orePedestalDropStrict", tickLimit = 700)
+    public void pedestalLandedDropIsPhysicallyRecovered(TestContext context) {
+        PickupFixture fixture = spawnMiner(context, "OrePedestalDropGT");
+        AIPlayerEntity bot = fixture.bot();
+        var world = bot.getServerWorld();
+        BlockPos start = fixture.start();
+        BlockPos ore = start.east(2).up(2);
+        BlockPos pedestal = start.east(3).south().up(2);
+        BlockPos riseStep = pedestal.south().down();
+
+        world.setBlockState(ore, Blocks.COAL_ORE.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(pedestal.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(riseStep.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        for (BlockPos open : new BlockPos[]{
+                pedestal, pedestal.up(), riseStep, riseStep.up()}) {
+            world.setBlockState(open, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        require(context, ObservableWorldQuery.canObserveBlock(bot, ore),
+                "pedestal fixture coal must be strictly observable");
+
+        assertStrictCapabilities(context, bot);
+        int deathBaseline = deathCount(bot);
+        OreDigTask task = new OreDigTask(Set.of(Blocks.COAL_ORE), 1);
+        TaskManager.INSTANCE.assign(bot, task,
+                TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_ore_pedestal_drop"));
+        AtomicBoolean dropPlaced = new AtomicBoolean();
+
+        context.runAtEveryTick(() -> {
+            assertAliveWithoutDeath(context, bot, deathBaseline);
+            failIfTerminalError(context, task);
+            if (!dropPlaced.get()) {
+                var drops = world.getEntitiesByClass(ItemEntity.class,
+                        Box.enclosing(start.add(-6, -2, -10), start.add(6, 4, 4)),
+                        candidate -> candidate.getStack().isOf(Items.COAL));
+                if (!drops.isEmpty()) {
+                    // Replace the random launch velocity with the worst observed landing: at
+                    // rest on top of the floating pedestal. This is fixture determinism, not a
+                    // capability: the entity stays a vanilla ItemEntity the bot must reach.
+                    ItemEntity drop = drops.get(0);
+                    drop.setVelocity(Vec3d.ZERO);
+                    drop.setPosition(
+                            pedestal.getX() + 0.5D, pedestal.getY(), pedestal.getZ() + 0.5D);
+                    dropPlaced.set(true);
+                }
+            }
+            if (task.state() != TaskState.COMPLETED) {
+                return;
+            }
+            require(context, dropPlaced.get(),
+                    "fixture never intercepted the coal drop");
+            require(context, InventoryAction.countItem(bot, Items.COAL) == 1,
+                    "pedestal drop was not physically recovered, coal="
+                            + InventoryAction.countItem(bot, Items.COAL));
+            require(context, !task.checkpoint().containsKey("pending_pickup_pos"),
+                    "completed pedestal recovery retained pickup debt: " + task.checkpoint());
+            finish(context, fixture);
+        });
+    }
+
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
             batchId = "oreHighPoseRestartStrict", tickLimit = 900)
     public void restoredObservedHighWorkPoseRoutesWithoutDigging(TestContext context) {

@@ -1663,6 +1663,98 @@ public final class CreateObsidianMissionRecoveryGameTests implements FabricGameT
         });
     }
 
+    /**
+     * F5:开放事务(active break)+ 缺物资失败(need_better_tool)的 replan 必须先物理补给再
+     * resume。修复前 resume 步被插到 fresh 计划的补给前缀之前,恢复任务第一 tick 以同因重败,
+     * 三次零进展 replan 直接终结任务;修复后 CRAFT 补镐先执行,MAKE 以同一事务身份恢复。
+     */
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 220)
+    public void missingToolFailureWithOpenTransactionResuppliesBeforeResuming(
+            TestContext context) {
+        Fixture fixture = spawnPreparedBot(context, "ObsidianResupplyFirstGT", 0, true);
+        // 除钻镐外补齐远征 readiness(火把/武器/密封原木),并预置 3 颗钻石让补给前缀收敛为
+        // 一步 CRAFT diamond_pickaxe(避免在测试竞技场里触发真实下潜采钻链)。
+        InventoryAction.giveItem(fixture.bot(), new ItemStack(Items.DIAMOND, 3));
+        InventoryAction.giveItem(fixture.bot(), new ItemStack(Items.TORCH, 64));
+        InventoryAction.giveItem(fixture.bot(), new ItemStack(Items.STONE_SWORD));
+        InventoryAction.giveItem(fixture.bot(), new ItemStack(Items.OAK_LOG, 16));
+        var world = fixture.bot().getServerWorld();
+        BlockPos obsidian = fixture.start().east(2);
+        BlockPos stand = fixture.start().east();
+        world.setBlockState(obsidian.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(obsidian, Blocks.OBSIDIAN.getDefaultState(), Block.NOTIFY_ALL);
+        Map<String, String> openTransaction = openBreakCheckpoint(
+                fixture.start(), obsidian, stand);
+
+        restore(context, fixture, openTransaction);
+        Task restored = TaskManager.INSTANCE.getActive(fixture.bot()).orElse(null);
+        require(context, restored instanceof CreateObsidianTask
+                        && restored.state() == TaskState.RUNNING,
+                "open-transaction fixture did not restore MAKE_OBSIDIAN first: "
+                        + (restored == null ? "none" : restored.getClass().getSimpleName()));
+        require(context, InventoryAction.removeItems(fixture.bot(), Items.DIAMOND_PICKAXE, 1),
+                "fixture could not remove the diamond pickaxe to inject need_better_tool");
+        GoalPlanner.GoalPlan fresh = GoalPlanner.plan(
+                fixture.bot(), new Goal.HaveItem(Items.OBSIDIAN, TARGET));
+        int firstMake = -1;
+        for (int index = 0; index < fresh.steps().size(); index++) {
+            if (fresh.steps().get(index).kind() == GoalStep.Kind.MAKE_OBSIDIAN) {
+                firstMake = index;
+                break;
+            }
+        }
+        int makeIndex = firstMake;
+        require(context, fresh.success() && makeIndex > 0
+                        && fresh.steps().stream().limit(makeIndex).anyMatch(
+                        step -> step.kind() == GoalStep.Kind.CRAFT
+                                && step.item() == Items.DIAMOND_PICKAXE),
+                "missing-tool fixture did not prove a resupply prefix ahead of MAKE_OBSIDIAN: "
+                        + fresh.steps() + " unresolved=" + fresh.unresolved());
+
+        AtomicBoolean resupplyObserved = new AtomicBoolean();
+        context.runAtEveryTick(() -> {
+            require(context, GoalExecutor.INSTANCE.hasActivePlan(fixture.bot())
+                            && GoalExecutor.INSTANCE.lastResult(fixture.bot()).isEmpty(),
+                    "open-transaction missing-tool failure killed the mission: "
+                            + GoalExecutor.INSTANCE.lastResult(fixture.bot())
+                            .map(result -> result.reason()).orElse("plan_lost"));
+            Task active = TaskManager.INSTANCE.getActive(fixture.bot()).orElse(null);
+            if (!resupplyObserved.get()) {
+                if (active instanceof CreateObsidianTask || active == null) {
+                    return; // 等待注入的 need_better_tool 失败触发 replan。
+                }
+                // replan 已发生:补给步(而非 resume)先被指派;开放事务身份必须原样保留在
+                // obsidian.* 命名空间里等待 resume。
+                MissionRuntimeRecord captured =
+                        GoalExecutor.INSTANCE.captureRuntime(fixture.bot());
+                Map<String, String> checkpoint = captured.active() == null
+                        ? Map.of() : captured.active().checkpoint();
+                require(context, encode(obsidian).equals(
+                                checkpoint.get("obsidian.active_break_pos"))
+                                && "32".equals(checkpoint.get("obsidian.target_count")),
+                        "resupply-first replan dropped the open obsidian transaction: "
+                                + checkpoint);
+                resupplyObserved.set(true);
+                return;
+            }
+            if (!(active instanceof CreateObsidianTask)
+                    || InventoryAction.countItem(fixture.bot(), Items.DIAMOND_PICKAXE) < 1) {
+                return; // 等待 CRAFT 补镐完成后 MAKE 以原事务恢复。
+            }
+            MissionRuntimeRecord captured =
+                    GoalExecutor.INSTANCE.captureRuntime(fixture.bot());
+            Map<String, String> checkpoint = captured.active() == null
+                    ? Map.of() : captured.active().checkpoint();
+            require(context, active.state() == TaskState.RUNNING
+                            && "32".equals(checkpoint.get("task.target_count"))
+                            && encode(obsidian).equals(
+                            checkpoint.get("task.active_break_pos")),
+                    "resumed MAKE lost its open-transaction identity after resupply: "
+                            + checkpoint);
+            finish(context, fixture);
+        });
+    }
+
     private static void restore(TestContext context,
                                 Fixture fixture,
                                 Map<String, String> taskCheckpoint) {
@@ -1890,6 +1982,24 @@ public final class CreateObsidianMissionRecoveryGameTests implements FabricGameT
         Map<String, String> checkpoint = Map.copyOf(values);
         if (CreateObsidianTask.ObsidianCheckpoint.decode(checkpoint, 1, 24000).isEmpty()) {
             throw new IllegalStateException("invalid active-break fixture: " + checkpoint);
+        }
+        return checkpoint;
+    }
+
+    /** 原目标 32 的开放 active-break 事务(与 activeBreakCheckpoint 同型,但走 Mission restore)。 */
+    private static Map<String, String> openBreakCheckpoint(BlockPos origin,
+                                                            BlockPos obsidian,
+                                                            BlockPos stand) {
+        Map<String, String> values = new LinkedHashMap<>(taskCheckpoint(
+                origin, CreateObsidianTask.Phase.MINE, 0, null));
+        values.put("obsidian", encode(obsidian));
+        values.put("stand", encode(stand));
+        values.put("active_break_pos", encode(obsidian));
+        values.put("active_break_inventory", "0");
+        Map<String, String> checkpoint = Map.copyOf(values);
+        if (CreateObsidianTask.ObsidianCheckpoint.decode(
+                checkpoint, TARGET, TARGET_BUDGET).isEmpty()) {
+            throw new IllegalStateException("invalid open-break fixture: " + checkpoint);
         }
         return checkpoint;
     }

@@ -199,6 +199,66 @@ OreDig 前插入 挖石头 绕行、撞 fixture 的 tick 80/100 死线;木棍 23
 
 ---
 
+## 阶段 7 · 双死锁修复:F5 黑曜石 resumeFirst 缺物资重排 + F8 容量父命名空间孤儿(2026-08-07)
+
+**完成**:
+
+- **F5 黑曜石 resumeFirst 缺物资死锁**(`GoalExecutor.reconcileObsidianSteps`):
+  开放事务(waterSource/pickupPos/activeBreakPos)下的 replan 原来无条件把 resume 步插到
+  index 0 —— 排在 fresh 计划的补给步(新桶/替换钻镐/取水)之前。若失败原因本身就是
+  "缺物资"类,恢复任务第一 tick 以同因重败,3 次零进展 replan 判死整个任务。修复:
+  - 失败原因命中精确前缀集(`need_better_tool:` / `create_obsidian_bucket_lost_after_pour` /
+    `*_missing_water`,新帮助函数 `isObsidianMissingResourceFailure`)且 resume-first 时,
+    保留 fresh 计划中首个 MAKE_OBSIDIAN 之前的补给前缀并让它先物理执行,resume 步插到
+    前缀之后;其余失败原因维持今天的 resume-first(物理续作的正确顺序)。
+  - 重排决策记录独立事件 `goal_obsidian_resume_resupply_first`(reason/supply_steps/target)。
+  - fresh 计划里没有 MAKE_OBSIDIAN(无可证实的补给前缀)或规划失败时,行为与旧逻辑
+    完全一致(resume 置顶)。restore 路径(`rebuildObsidianAcquisition`)不变:重启后若
+    资源仍缺失,第一次失败即走修复后的 replan 重排,单次 replan 内自愈,不会烧穿 3 次。
+- **F8 容量父命名空间孤儿**(`GoalExecutor.handleStepFailure` 通用 replan 段):
+  容量 handoff 服务失败 → 通用 replan `steps.clear()` 销毁精确 retry 步,但从不清
+  `capacityParentNamespace`;若 fresh 计划不再包含父矿族,结算永远不可达 —— 证据采集
+  从此拒绝所有 MINE_ORE 的 `plan.miningCheckpoint` 更新,下一个成功提交的稀有批次在
+  成功那一刻死于 `rare_batch_commit_checkpoint_invalid`。修复(与安装新队列同一事务):
+  - replan 时若 `capacityParentNamespace != null` 且 fresh 计划中不存在能重新绑定该
+    debit 的同族 MINE_ORE 步(fingerprint + `acceptsStepTarget` 与指派期
+    `isCapacityParentRetry` 同判据),回滚标记与全部 watermark
+    (delivered/face/services_used),事件 `goal_capacity_parent_rolled_back`。
+  - AUXILIARY 命名空间连同悬空的 open 普通游标一起丢弃(无物理台账,已交付产物在背包,
+    规划器按库存如实重算;保留反而令重启在缺标记的 aux 命名空间上 fail-closed);
+    MINING 命名空间沿用 `goal_failed_primary_service_retired` 同型的游标退役。
+  - **fail-closed 边界不放松**:父 checkpoint 无法解码、带未结物理台账
+    (pending_pickup/active_break)、或 `rare_mission_target != 0`(标记指向稀有游标的
+    不可解释状态)一律不回滚,维持既有语义。restore 校验未改动 —— 回滚发生在持久化之前的
+    同一事务内,不引入新持久键;既有 `mission_restore_orphaned_capacity_handoff_cursor`
+    等出口原样保留。
+
+**回归测试**:
+- 单测 `GoalExecutorObsidianResumeReconcileTest`(新增 5 用例):补给前缀重排的精确索引与
+  顺序、物理续作 resume-first 不变、无前缀/空计划回退、closed-transaction 原位替换契约、
+  失败原因前缀集的精确范围。
+- gametest `CreateObsidianMissionRecoveryGameTests.missingToolFailureWithOpenTransactionResuppliesBeforeResuming`:
+  restore 一个 target 32 的开放 active-break 事务(世界里真放黑曜石),移除钻镐注入
+  `need_better_tool:minecraft:diamond_pickaxe` → 断言任务存活、补给步先于 resume 被指派、
+  obsidian.* 命名空间原样保留事务身份,CRAFT 补镐完成后 MAKE 以原 target/active_break
+  恢复运行。
+- gametest `MiningCheckpointMissionGameTests.failedCapacityHandoffWithoutParentFamilyRollsBackDebtAndRareBatchSettles`:
+  伪造 auxiliary 容量父(open 铁矿 debit)+ 受保护 diamond64 稀有游标 + 预算耗尽的容量
+  服务,restore 后服务典型化失败 `mining_service_timeout:` → 通用 replan(fresh 计划经
+  预检不含铁族)→ 断言标记/watermark/aux 命名空间全部回滚、稀有游标保留;再 restore 一个
+  交付满额(delivered=8/8)的稀有批次,断言其 commit 正常结算
+  (`mining.batch_open=false`、epoch 归零),而非死于 `rare_batch_commit_checkpoint_invalid`。
+
+**过程教训**:F8 gametest 第一版在 tick 回调内部再注册 `context.runAtEveryTick`,直接
+NPE 崩掉 GameTest 调度器(`GameTestState.tickTests` 迭代中修改监听表)—— 改为在 probe 内
+同步驱动 commit(`AbstractTask.abort` 对 COMPLETED 是 no-op,仅清 TaskManager 槽位后手动
+`tickBot` 结算)。嵌套注册 tick 监听是本仓库 gametest 的硬禁区。
+
+**验证**:`./gradlew test` 348 单测全绿(343 + 新增 5);`./gradlew runGameTest` 582 用例
+(580 + 新增 2)连续两轮全绿。
+
+---
+
 ## 待解决问题(滚动清单)
 
 | ID | 严重度 | 问题 | 状态 |

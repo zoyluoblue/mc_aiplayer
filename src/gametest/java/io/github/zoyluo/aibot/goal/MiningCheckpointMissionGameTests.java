@@ -2761,6 +2761,206 @@ public final class MiningCheckpointMissionGameTests implements FabricGameTest {
                 });
     }
 
+    /**
+     * F8:容量 handoff 服务失败 → 通用 replan 清空队列销毁精确 retry 步;fresh 计划不再包含
+     * 父矿族时,capacity-parent 标记必须在同一事务内回滚。修复前该孤儿标记让证据采集永久拒绝
+     * miningCheckpoint 更新,下一个成功提交的稀有批次在成功那一刻死于
+     * rare_batch_commit_checkpoint_invalid。
+     */
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "capacityOrphanRollback", tickLimit = 260)
+    public void failedCapacityHandoffWithoutParentFamilyRollsBackDebtAndRareBatchSettles(
+            TestContext context) {
+        String name = "CapacityOrphanRollbackGT";
+        withRunningOrdinaryService(context, name,
+                (fixture, ignoredGoal, runtime, checkpoint) -> {
+                    // 1. 开放的普通铁矿 capacity parent:已扣 inventory-service 位、无物理台账。
+                    Map<String, String> parent = new LinkedHashMap<>(
+                            namespace(checkpoint, "mining."));
+                    parent.put("batch_open", "true");
+                    parent.put("inventory_service_used", "true");
+                    clearOrePhysicalLedger(parent, "");
+                    require(context, OreDigTask.inspectCheckpoint(parent, 0)
+                                    .filter(OreDigTask.RestoreMetadata::batchOpen).isPresent(),
+                            "orphan fixture could not forge an open capacity parent");
+
+                    // 2. 受保护的稀有(diamond64)主 mining 命名空间(epoch 0,批次开放)。
+                    Map<String, String> protectedRare = new LinkedHashMap<>(parent);
+                    protectedRare.put("batch_open", "true");
+                    protectedRare.put("target_count", "8");
+                    protectedRare.put("delivered", "0");
+                    protectedRare.put("rare_mission_target", "64");
+                    protectedRare.put("inventory_service_used", "false");
+                    protectedRare.put("ore_fingerprint",
+                            OreDigTask.oreFingerprint(Set.of(Blocks.DIAMOND_ORE)));
+                    require(context,
+                            OreDigTask.inspectCheckpoint(protectedRare, 64).isPresent(),
+                            "orphan fixture forged an invalid protected rare cursor");
+
+                    // 3. 预算耗尽的容量服务:恢复后第一 tick 即 mining_service_timeout。
+                    Map<String, String> failedService = new LinkedHashMap<>(
+                            namespace(checkpoint, "task."));
+                    for (String key : Set.of(
+                            "pocket_entry", "pocket_sink", "pocket_direction",
+                            "pocket_entities", "pocket_lineage", "pocket_baseline",
+                            "pocket_ledger", "pocket_drop_committed",
+                            "pocket_ledger_verified", "pocket_phase_started",
+                            "pocket_failure", "pocket_clear_index")) {
+                        failedService.remove(key);
+                    }
+                    failedService.put("phase", "PREPARE");
+                    failedService.put("budget_used", String.valueOf(
+                            MiningMissionBudget.SERVICE_HARD_WINDOW_TICKS));
+                    failedService.put("last_progress_budget", "0");
+                    failedService.put("channel_tools", "false");
+                    failedService.put("channel_tool_usable", "0");
+                    require(context,
+                            MiningServiceTask.inspectCheckpoint(failedService).isPresent(),
+                            "orphan fixture forged an invalid capacity service checkpoint");
+
+                    Map<String, String> forged = new LinkedHashMap<>(checkpoint);
+                    forged.keySet().removeIf(key -> key.startsWith("task.")
+                            || key.startsWith("mining.")
+                            || key.startsWith("aux_mining."));
+                    forged.put("task_kind", "MINING_SERVICE");
+                    failedService.forEach((key, value) ->
+                            forged.put("task." + key, value));
+                    protectedRare.forEach((key, value) ->
+                            forged.put("mining." + key, value));
+                    parent.forEach((key, value) ->
+                            forged.put("aux_mining." + key, value));
+                    forged.put("capacity_parent", "auxiliary");
+
+                    AIPlayerEntity bot = fixture.bot();
+                    // 完整的 diamond64 readiness 使 fresh 计划不再需要铁矿族——这正是孤儿
+                    // 触发条件:retry 步被销毁后,队列里没有任何步骤能重新绑定该 debit。
+                    clearCarriedInventory(bot);
+                    giveDiamond64Readiness(bot);
+                    Goal longRareGoal = new Goal.HaveItem(Items.DIAMOND, 64);
+                    GoalPlanner.GoalPlan fresh = GoalPlanner.plan(bot, longRareGoal);
+                    String ironFingerprint = OreDigTask.oreFingerprint(
+                            Set.of(Blocks.IRON_ORE));
+                    require(context, fresh.success()
+                                    && fresh.steps().stream().noneMatch(step ->
+                                    step.kind() == GoalStep.Kind.MINE_ORE
+                                            && ironFingerprint.equals(
+                                            OreDigTask.oreFingerprint(step.ores()))),
+                            "orphan fixture unexpectedly replans the parent iron family: "
+                                    + fresh.steps() + " unresolved=" + fresh.unresolved());
+
+                    MissionRecord prior = runtime.active();
+                    MissionRuntimeRecord restart = new MissionRuntimeRecord(
+                            new MissionRecord(prior.missionId(),
+                                    MissionSpec.fromGoal(longRareGoal),
+                                    Map.copyOf(forged)),
+                            runtime.queue(), runtime.userPaused());
+                    TaskManager.INSTANCE.cancelIntentTasks(
+                            bot, "gametest_capacity_orphan_restart");
+                    GoalExecutor.INSTANCE.unload(bot);
+                    GoalExecutor.INSTANCE.restoreRuntime(bot, restart);
+
+                    Task service = TaskManager.INSTANCE.getActive(bot).orElse(null);
+                    require(context, service instanceof MiningServiceTask,
+                            "forged capacity service was not restored first: "
+                                    + (service == null
+                                    ? "none" : service.getClass().getSimpleName()));
+                    service.tick(bot);
+                    require(context, service.state() == TaskState.FAILED
+                                    && service.failureReason().startsWith(
+                                    "mining_service_timeout:"),
+                            "capacity service did not fail typed: "
+                                    + service.state() + ":" + service.failureReason());
+                    TaskManager.INSTANCE.abort(bot);
+                    GoalExecutor.INSTANCE.tickBot(bot.getServer(), bot);
+
+                    MissionRuntimeRecord replanned =
+                            GoalExecutor.INSTANCE.captureRuntime(bot);
+                    require(context, replanned.active() != null
+                                    && GoalExecutor.INSTANCE.lastResult(bot).isEmpty(),
+                            "capacity-service failure escaped generic replan: "
+                                    + GoalExecutor.INSTANCE.lastResult(bot)
+                                    .map(result -> result.reason()).orElse("plan_lost"));
+                    Map<String, String> after = replanned.active().checkpoint();
+                    // capture 可能已把 mining.* 换成新指派同族任务的等价再编码;断言关键事实
+                    // 而非字节相等:受保护稀有游标仍在、批次仍开放、孤儿标记与 aux 债务已回滚。
+                    require(context, !after.containsKey("capacity_parent")
+                                    && !after.containsKey("capacity_parent_delivered")
+                                    && !after.containsKey("capacity_parent_face")
+                                    && !after.containsKey("capacity_parent_services_used")
+                                    && after.keySet().stream().noneMatch(
+                                    key -> key.startsWith("aux_mining."))
+                                    && "64".equals(after.get("mining.rare_mission_target"))
+                                    && "true".equals(after.get("mining.batch_open"))
+                                    && OreDigTask.oreFingerprint(Set.of(Blocks.DIAMOND_ORE))
+                                    .equals(after.get("mining.ore_fingerprint")),
+                            "orphaned capacity parent survived the generic replan: "
+                                    + checkpointSummary(after));
+
+                    // 阶段 2:交付满额的稀有批次在回滚后的账本上正常 commit + settle,
+                    // 而不是死于 rare_batch_commit_checkpoint_invalid。
+                    Map<String, String> deliveredRare =
+                            new LinkedHashMap<>(protectedRare);
+                    deliveredRare.put("delivered", "8");
+                    require(context, OreDigTask.inspectCheckpoint(deliveredRare, 64)
+                                    .filter(metadata -> metadata.batchOpen()
+                                            && metadata.remainingCount() == 0).isPresent(),
+                            "orphan fixture could not forge a fully delivered rare batch");
+                    Map<String, String> commitWindow = new LinkedHashMap<>(after);
+                    commitWindow.keySet().removeIf(key -> key.startsWith("task.")
+                            || key.startsWith("mining."));
+                    commitWindow.put("task_kind", "MINE_ORE");
+                    deliveredRare.forEach((key, value) -> {
+                        commitWindow.put("task." + key, value);
+                        commitWindow.put("mining." + key, value);
+                    });
+                    TaskManager.INSTANCE.cancelIntentTasks(
+                            bot, "gametest_capacity_orphan_commit_window");
+                    GoalExecutor.INSTANCE.unload(bot);
+                    GoalExecutor.INSTANCE.restoreRuntime(
+                            bot, withCheckpoint(replanned, Map.copyOf(commitWindow)));
+                    Task oreTask = TaskManager.INSTANCE.getActive(bot).orElse(null);
+                    require(context, oreTask instanceof OreDigTask,
+                            "commit-window restore did not replay the delivered rare batch: "
+                                    + (oreTask == null
+                                    ? "none" : oreTask.getClass().getSimpleName()));
+                    // 同步驱动 commit(嵌套 runAtEveryTick 会破坏 GameTest 调度器的迭代器):
+                    // 交付满额的批次在 finishAlreadyDeliveredBatch 快路径上几 tick 内 COMPLETED;
+                    // abort 对 COMPLETED 任务是 no-op,只清空 TaskManager 槽位让 tickBot 结算。
+                    for (int tick = 0; tick < 12
+                            && oreTask.state() == TaskState.RUNNING; tick++) {
+                        oreTask.tick(bot);
+                    }
+                    require(context, oreTask.state() == TaskState.COMPLETED,
+                            "delivered rare batch did not commit: "
+                                    + oreTask.state() + ":" + oreTask.failureReason());
+                    TaskManager.INSTANCE.abort(bot);
+                    GoalExecutor.INSTANCE.tickBot(bot.getServer(), bot);
+
+                    GoalResult settledResult = GoalExecutor.INSTANCE.lastResult(bot)
+                            .orElse(null);
+                    require(context, settledResult == null
+                                    || !"rare_batch_commit_checkpoint_invalid".equals(
+                                    settledResult.reason()),
+                            "settled rare batch still died at the moment of success: "
+                                    + (settledResult == null
+                                    ? "none" : settledResult.reason()));
+                    require(context, settledResult == null
+                                    && GoalExecutor.INSTANCE.hasActivePlan(bot),
+                            "rare batch settlement lost the active mission: "
+                                    + (settledResult == null
+                                    ? "plan_lost" : settledResult.reason()));
+                    Map<String, String> settled = GoalExecutor.INSTANCE
+                            .captureRuntime(bot).active().checkpoint();
+                    require(context, "false".equals(settled.get("mining.batch_open"))
+                                    && "0".equals(
+                                    settled.get("rare_resource_retries_used")),
+                            "rare commit did not settle the durable mining namespace: "
+                                    + checkpointSummary(settled));
+                    AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
+                    context.complete();
+                });
+    }
+
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
             batchId = "failedAuxServiceContinuation", tickLimit = 220)
     public void failedInterBatchAuxiliaryServicePreservesLaterSameFamilyCursor(

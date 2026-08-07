@@ -1342,8 +1342,8 @@ public final class GoalExecutor {
             rebuiltObsidianAcquisition = true;
         }
         if (!rebuiltObsidianAcquisition && !committedObsidianMake) {
-            restoredObsidian.ifPresent(metadata ->
-                    reconcileObsidianSteps(restoredSteps, metadata.targetCount(), false));
+            restoredObsidian.ifPresent(metadata -> reconcileObsidianSteps(
+                    restoredSteps, metadata.targetCount(), false, false));
         }
         restoredDigDown.ifPresent(metadata -> reconcileDigDownSteps(restoredSteps, metadata));
         if (interruptedDescend) {
@@ -3855,7 +3855,17 @@ public final class GoalExecutor {
             // An open water/pickup/break transaction is a physical obligation and must be settled
             // before any newly planned acquisition. A safe search checkpoint may wait behind tool
             // or water repair, but its original target identity is still retained.
-            reconcileObsidianSteps(replanned, metadata.targetCount(), metadata.transactionOpen());
+            int resumeIndex = reconcileObsidianSteps(
+                    replanned, metadata.targetCount(), metadata.transactionOpen(),
+                    isObsidianMissingResourceFailure(reason));
+            if (metadata.transactionOpen() && resumeIndex > 0) {
+                // F5:缺物资失败下,补给前缀先于开放事务的 resume 步物理执行,否则恢复任务
+                // 第一 tick 以同因重败,三次零进展 replan 即判死。
+                BotLog.task(bot, "goal_obsidian_resume_resupply_first",
+                        "reason", reason,
+                        "supply_steps", resumeIndex,
+                        "target", metadata.targetCount());
+            }
         }
         if (failedClosedPrimaryService && fresh.success()) {
             OreDigTask.RestoreMetadata failedCursor = OreDigTask.inspectCheckpoint(
@@ -3904,6 +3914,57 @@ public final class GoalExecutor {
                 BotLog.task(bot, "goal_failed_auxiliary_service_retired",
                         "reason", reason,
                         "family", OreDigTask.oreFingerprint(failedFamily));
+            }
+        }
+        if (plan.capacityParentNamespace != null && fresh.success()) {
+            // F8:通用 replan 即将清空整条步骤队列,容量服务的精确 retry 步会一并销毁。若 fresh
+            // 计划里不存在能重新绑定该 debit 的同族 MINE_ORE 步(checkpointForMineOre +
+            // isCapacityParentRetry 在指派时按 fingerprint/count 重新选中),capacity-parent 标记
+            // 将永久失去结算路径:证据采集从此拒绝所有 MINE_ORE 的 miningCheckpoint 更新,下一个
+            // 成功提交的稀有批次会在成功那一刻死于 rare_batch_commit_checkpoint_invalid。此处在
+            // 安装新队列的同一事务内回滚该标记。带未结物理台账(拾取/断块)或无法解码的 parent
+            // 保持既有 fail-closed 语义,不回滚。
+            Map<String, String> capacityParentCheckpoint = plan.capacityParentNamespace
+                    == CapacityParentNamespace.AUXILIARY
+                    ? plan.auxiliaryMiningCheckpoint : plan.miningCheckpoint;
+            // 与 settleCompletedCapacityParent 同一鉴别式:capacity parent 只可能是普通
+            // (rare_mission_target=0)批次;标记指向稀有游标属于不可解释状态,保持 fail-closed。
+            Optional<OreDigTask.RestoreMetadata> capacityParent =
+                    OreDigTask.inspectCheckpoint(capacityParentCheckpoint, 0)
+                            .filter(value -> value.rareMissionTarget() == 0);
+            boolean retryBindable = capacityParent
+                    .filter(OreDigTask.RestoreMetadata::batchOpen)
+                    .filter(parent -> replanned.stream().anyMatch(step ->
+                            step.kind() == GoalStep.Kind.MINE_ORE
+                                    && parent.acceptsStepTarget(step.count())
+                                    && OreDigTask.oreFingerprint(parent.ores()).equals(
+                                    OreDigTask.oreFingerprint(step.ores()))))
+                    .isPresent();
+            if (!retryBindable && capacityParent.isPresent()
+                    && !hasOreDigPhysicalLedger(capacityParentCheckpoint)) {
+                CapacityParentNamespace rolledBack = plan.capacityParentNamespace;
+                BotLog.task(bot, "goal_capacity_parent_rolled_back",
+                        "reason", reason,
+                        "namespace", rolledBack.persistedName,
+                        "family", OreDigTask.oreFingerprint(
+                                capacityParent.orElseThrow().ores()),
+                        "delivered_watermark", plan.capacityParentDelivered,
+                        "services_used", plan.capacityParentServicesUsed);
+                plan.capacityParentNamespace = null;
+                plan.capacityParentDelivered = -1;
+                plan.capacityParentFace = null;
+                plan.capacityParentServicesUsed = 0;
+                if (rolledBack == CapacityParentNamespace.AUXILIARY) {
+                    // 悬空的 open 普通批次游标没有物理债务;丢弃它,已交付产物在背包里,规划器按
+                    // 库存如实重算。保留它反而会让重启在缺 capacity 标记的 aux 命名空间上
+                    // fail-closed(mission_restore_invalid_auxiliary_mining_checkpoint)。
+                    plan.auxiliaryMiningCheckpoint.clear();
+                    plan.auxiliaryMiningContinuationFingerprint = "";
+                } else {
+                    // 与上方 goal_failed_primary_service_retired 同型:fresh 计划不再包含该
+                    // 家族时退役其游标,避免陈旧 open 批次绑架后续无关任务的重启校验。
+                    plan.miningCheckpoint.clear();
+                }
             }
         }
         BotLog.task(bot, "goal_replan", "goal", plan.goal, "reason", reason,
@@ -4902,15 +4963,35 @@ public final class GoalExecutor {
         return -1;
     }
 
-    /** Keeps the original transaction target while allowing prerequisite repair ahead of it. */
-    private static void reconcileObsidianSteps(List<GoalStep> steps,
-                                               int restoredTarget,
-                                               boolean resumeFirst) {
+    /**
+     * Keeps the original transaction target while allowing prerequisite repair ahead of it.
+     * Returns the index the resume step was inserted at (0 unless a missing-resource failure
+     * kept the fresh plan's supply prefix physically ahead of the resumed transaction).
+     */
+    static int reconcileObsidianSteps(List<GoalStep> steps,
+                                      int restoredTarget,
+                                      boolean resumeFirst,
+                                      boolean resupplyBeforeResume) {
         GoalStep restored = GoalStep.makeObsidian(restoredTarget);
         if (resumeFirst) {
+            // resume-first 契约:开放事务(水源/拾取/断块)是物理义务,默认排在一切新采购之前。
+            // 例外(F5):失败原因本身就是"缺物资"类(need_better_tool / bucket-lost /
+            // missing-water)时,把 resume 原样置顶只会让恢复任务第一 tick 以同因重败,三次零进展
+            // replan 即杀死整个 mission。此时保留 fresh 计划里 MAKE_OBSIDIAN 之前的补给前缀并让
+            // 它先物理执行;其余失败原因(物理续作)维持今天的 resume-first 顺序。
+            int firstMake = -1;
+            for (int index = 0; index < steps.size(); index++) {
+                if (steps.get(index).kind() == GoalStep.Kind.MAKE_OBSIDIAN) {
+                    firstMake = index;
+                    break;
+                }
+            }
+            // firstMake is the FIRST MAKE_OBSIDIAN, so every removed step sits at or after it and
+            // the prefix indices stay valid across removeIf.
+            int insertAt = resupplyBeforeResume && firstMake > 0 ? firstMake : 0;
             steps.removeIf(step -> step.kind() == GoalStep.Kind.MAKE_OBSIDIAN);
-            steps.add(0, restored);
-            return;
+            steps.add(insertAt, restored);
+            return insertAt;
         }
         int first = -1;
         for (int index = 0; index < steps.size(); index++) {
@@ -4927,6 +5008,18 @@ public final class GoalExecutor {
         if (first < 0) {
             steps.add(restored);
         }
+        return Math.max(0, first);
+    }
+
+    /**
+     * F5:黑曜石开放事务在这些"缺物资"失败前缀下恢复必然第一 tick 重败(工具/水桶/水源不会
+     * 凭空出现),必须先让 fresh 计划的补给前缀物理执行。范围精确钉死到这三个前缀,其余原因
+     * 保持 resume-first(物理续作的正确顺序)。
+     */
+    static boolean isObsidianMissingResourceFailure(String reason) {
+        return reason != null && (reason.startsWith("need_better_tool:")
+                || reason.startsWith("create_obsidian_bucket_lost_after_pour")
+                || reason.endsWith("_missing_water"));
     }
 
     private GoalEvaluation evaluate(AIPlayerEntity bot, ActivePlan plan) {

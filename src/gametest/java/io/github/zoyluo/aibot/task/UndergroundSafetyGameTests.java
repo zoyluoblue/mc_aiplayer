@@ -966,6 +966,9 @@ public final class UndergroundSafetyGameTests implements FabricGameTest {
                 Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
 
         AIPlayerEntity bot = spawn(context, "DescendGravelGT", start);
+        // The descend tool gate typed-fails a pickless stair dig; this fixture tests gravel
+        // retreat physics, so provision the ordinary descent pick like a real mission would.
+        InventoryAction.giveItem(bot, new ItemStack(Items.IRON_PICKAXE));
         bot.setHealth(bot.getMaxHealth());
         bot.setOnGround(true);
         require(context, AIBotConfig.get().profile() == OperatingProfile.STRICT_SURVIVAL,

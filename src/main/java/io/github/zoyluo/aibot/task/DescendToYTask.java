@@ -10,6 +10,7 @@ import io.github.zoyluo.aibot.entity.AIPlayerEntity;
 import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.mining.MiningBudget;
 import io.github.zoyluo.aibot.mining.MiningMissionBudget;
+import io.github.zoyluo.aibot.mining.ToolTier;
 import io.github.zoyluo.aibot.mode.FakePlayerMotion;
 import io.github.zoyluo.aibot.mode.ObservableWorldQuery;
 import io.github.zoyluo.aibot.pathfinding.Standability;
@@ -53,6 +54,10 @@ public final class DescendToYTask extends AbstractTask implements Checkpointable
     // Keep the graph walk bounded, but leave enough factual movement budget to reach a nearby
     // supported rim after exploring a short dead branch (seed-3000 needs 21 unique edges).
     private static final int MAX_LATERAL = 32;
+    // 落点漂移(击退/推挤把 bot 打到 origin/target 之外的第三格)是常见外力事件,不是安全
+    // 不变量破坏:以当前实际站位为新的台阶起点重规划即可。仅当一次下潜内反复漂移超过此
+    // 上限,才按原 fail-closed 语义终结任务(说明存在持续的外部干扰或物理异常)。
+    private static final int MAX_LANDING_DRIFT_RECOVERIES = 8;
     private static final Direction[] HORIZONTAL = {Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST};
 
     private final int targetY;
@@ -72,6 +77,7 @@ public final class DescendToYTask extends AbstractTask implements Checkpointable
     private int budgetLimit;
     private int lastProgressTick;
     private int lateralDetours; // 当前高度层已横移绕岩浆/卡点的次数
+    private int landingDriftRecoveries; // 本次下潜内已从落点漂移恢复的次数
     private int stairDirIndex;  // 台阶斜下的当前水平方向(HORIZONTAL 下标)
     private int detourHeadingIndex = -1; // 绕行保持航向，把立即原路返回放到最后
     // SafetyNet runs after task ticks.  Remember the most recent physical landing so that, when
@@ -531,6 +537,15 @@ public final class DescendToYTask extends AbstractTask implements Checkpointable
         // 补 ahead.up() 后下潜巷道沿对角线真正 2 格净空可通行。firstSolid3 跳流体防溃浆。
         BlockPos solid = firstSolid(world, ahead, ahead.up(), next);
         if (solid != null) {
+            // 工具闸(与 DigDownTask 一致):无合格镐时立即以类型化原因失败,交 GoalExecutor
+            // 倒推补镐;否则空手磨深板岩会把整个下潜窗口烧成无类型的 descend_timeout。
+            if (!ToolTier.canHarvestWithInventory(bot, world.getBlockState(solid))) {
+                miner.cancel(bot);
+                bot.getActionPack().stopAll();
+                fail("need_better_tool:" + ToolTier.requiredPickaxeItemId(
+                        world.getBlockState(solid).getBlock()));
+                return;
+            }
             miner.begin(bot, solid);
             miner.tick(bot);
             markStarted(bot, feet);
@@ -823,6 +838,18 @@ public final class DescendToYTask extends AbstractTask implements Checkpointable
             pendingLandingDirection = -1;
             miner.cancel(bot);
             bot.getActionPack().stopAll();
+            if (landingDriftRecoveries < MAX_LANDING_DRIFT_RECOVERIES) {
+                landingDriftRecoveries++;
+                lastProgressTick = totalBudget();
+                BotLog.danger(bot, "descend_landing_drift_recovered",
+                        "origin", origin.toShortString(),
+                        "target", target.toShortString(),
+                        "at", feet.toShortString(),
+                        "used", landingDriftRecoveries,
+                        "budget", MAX_LANDING_DRIFT_RECOVERIES);
+                // Yield one tick; the stair loop re-plans from the factual drifted pose.
+                return true;
+            }
             fail("descend_landing_pose_drift origin=" + origin.toShortString()
                     + " target=" + target.toShortString() + " at=" + feet.toShortString());
             return true;
@@ -1081,6 +1108,13 @@ public final class DescendToYTask extends AbstractTask implements Checkpointable
                 if (solid != null) {
                     if (adjacentLava(world, solid)) {
                         continue; // 要挖的块挨着岩浆,挖了会溃浆淹没,换方向
+                    }
+                    if (!ToolTier.canHarvestWithInventory(bot, world.getBlockState(solid))) {
+                        miner.cancel(bot);
+                        bot.getActionPack().stopAll();
+                        fail("need_better_tool:" + ToolTier.requiredPickaxeItemId(
+                                world.getBlockState(solid).getBlock()));
+                        return true;
                     }
                     if (miner.target() == null || !miner.target().equals(solid)) {
                         miner.begin(bot, solid);

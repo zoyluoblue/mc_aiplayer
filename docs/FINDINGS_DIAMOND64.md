@@ -9,7 +9,7 @@ Citation shorthand (as used in the source reports): `COT` = src/main/java/io/git
 
 ## Blockers
 
-**F1 — Pedestal-landed drop pickup livelock, escalated to whole-mission failure** (blocker; OreDigTask/HarvestCore pickup + GoalExecutor failure policy; from: oredig D1+S2, executor F2)
+**[已修·阶段1] F1 — Pedestal-landed drop pickup livelock, escalated to whole-mission failure** (blocker; OreDigTask/HarvestCore pickup + GoalExecutor failure policy; from: oredig D1+S2, executor F2)
 - Citations: OreDigTask:3315-3417, OreDigTask:3328-3333, OreDigTask:3356, OreDigTask:3364-3373; HarvestCore:419-471 (esp. 430-438, 439-470), HarvestCore:286-301 (unconditional `return true` at 294-301); FakePlayerMotion:239, 248, 264-266, 270; OreDigPickupGameTests:1116-1174; GE:3701-3707.
 - Trigger: a mined drop rests on top of a 1×1 pedestal adjacent to the bot. `pickupStandPos`'s "one-higher" branch requires the below-cell to be standable (it is the pedestal itself), so the candidate ring picks the bot's current cell (distance 0). The `current.equals(stand)` branch does a 0.15-block in-cell nudge that can never cross the cell boundary, unconditionally returns true (swallowing nudge failure), so the fallback at OreDigTask:3364 never fires. Repeats every tick until the 200-tick deadline fails with `ore_dig_drop_unrecovered` — which GE:3701-3707 classifies as fail-closed terminal, killing the entire 64-diamond mission. This is the confirmed root cause of the known intermittent gametest failure.
 - Smallest fix: add a pedestal branch to `pickupStandPos` (return `itemPos` when `itemPos.getY()==current.getY()+1 && !isStandable(below) && isStandable(itemPos)`, letting the existing exact-pickup-path branch climb it); make HarvestCore:294-299 return the real nudge result; in GE, demote `ore_dig_drop_unrecovered` for rare missions to a skipped-drop receipt + one make-up target instead of terminal.
@@ -19,7 +19,7 @@ Citation shorthand (as used in the source reports): `COT` = src/main/java/io/git
 - Trigger: each batch of 8 diamonds must be found within its own 2 resource epochs. Expected yield is ~3–9 diamonds/epoch (6–18 per batch), so quota 8 sits at the low end of the expectation band; estimated single-batch shortfall probability is 10–30%, compounding over 8 batches to roughly 0.8^8≈17% … 0.95^8≈66% mission success — even with zero bugs.
 - Smallest fix: carry diamond surplus across batches (count already-owned diamonds toward the next batch quota) and/or allow drawing extra retry epochs from mission-level margin instead of the hard per-batch retry=1 gate.
 
-**F3 — Descend landing drift is mission-terminal; single-tick knockback window** (blocker; DescendToYTask + GoalExecutor; from: descend A2)
+**[已修·阶段2] F3 — Descend landing drift is mission-terminal; single-tick knockback window** (blocker; DescendToYTask + GoalExecutor; from: descend A2)
 - Citations: DescendToYTask.java:539-546, 818-828, 367-378, 380-392; GE:3678-3679, 3706.
 - Trigger: after `descendInto` succeeds, one tick later feet must be at origin or target; a bare mob knockback (no pause) between task ticks pushing the bot to a third cell fires `descend_landing_pose_drift`, which is fail-closed terminal. A Y=64→-58 descent has ~122 such windows; both missions descend multiple times.
 - Smallest fix: demote drift to a recoverable restart/replan of the descent step instead of mission-terminal.
@@ -39,7 +39,7 @@ Citation shorthand (as used in the source reports): `COT` = src/main/java/io/git
 - Trigger: 64-block obsidian work exhausts 8 cooked units; the boundary service can only draw from a depot that was never provisioned, and no step kind can return to the surface for food → `mining_service_food_reserve_depleted` / `deep_mining_food_reserve_depleted` with no recovery.
 - Smallest fix: scale obsidian food with missionTarget (like the diamond line) and/or provision the CHEST/depot the boundary service expects.
 
-**F7 — DescendToYTask has no tool gate; broken pick burns the full window then dies as untyped `descend_timeout`** (blocker; DescendToYTask/BlockMiner; from: descend A3)
+**[已修·阶段2] F7 — DescendToYTask has no tool gate; broken pick burns the full window then dies as untyped `descend_timeout`** (blocker; DescendToYTask/BlockMiner; from: descend A3)
 - Citations: DescendToYTask.java:532-537, 894-900, 475-483, 1080-1090; BlockMiner.java:32, 95-101; DigDownTask.java:614-616, 839-840 (contrast: has gate + typed `need_better_tool:`); MiningMissionBudget.java:39-43; GE:3681.
 - Trigger: pick durability runs out mid-descent (routine in a 64-diamond mission). `miner.begin` refreshes the progress clock every ~200-tick BlockMiner timeout cycle; lateral detours are not consumed; the loop only ends at the 12,160–40,000-tick window, then `descend_timeout` is goal-terminal and carries no type for the planner to infer "craft a pick".
 - Smallest fix: add the same ToolTier gate + typed `need_better_tool:` failure as DigDownTask, and only count real block breaks as progress.

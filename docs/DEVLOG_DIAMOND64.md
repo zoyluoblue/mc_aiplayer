@@ -57,6 +57,24 @@
 
 ---
 
+## 阶段 2 · 下潜链路加固:F3 + F7(2026-08-07)
+
+**完成**:
+- **F3 落点漂移降级**(`DescendToYTask`):origin/target 之外的第三格站位不再立即
+  `descend_landing_pose_drift` 终结任务 —— 视为外力位移,清空 pending landing、以当前
+  实际站位重新锚定台阶循环,单次下潜内限 8 次(`MAX_LANDING_DRIFT_RECOVERIES`),
+  超限才回落原 fail-closed 语义。事件 `descend_landing_drift_recovered`。
+- **F7 下潜镐门禁**(`DescendToYTask`):两处生产性台阶挖掘(主台阶 + 横移绕行)在
+  `miner.begin` 前检查 `ToolTier.canHarvestWithInventory`,不合格立即类型化失败
+  `need_better_tool:<pickaxe_id>`(与 DigDownTask 契约一致),交 GoalExecutor 倒推补镐;
+  身体被埋的求生清障**不设门禁**(徒手也必须能脱困)。
+- 新增 gametest `knockbackLandingDriftReanchorsInsteadOfFailingTheMission`;
+  两个既有 descend fixture 补发铁镐(真实任务中下潜前必有镐,fixture 与生产语义对齐)。
+
+**验证**:578 gametest 全绿;336 单测全绿。
+
+---
+
 ## 待解决问题(滚动清单)
 
 | ID | 严重度 | 问题 | 状态 |

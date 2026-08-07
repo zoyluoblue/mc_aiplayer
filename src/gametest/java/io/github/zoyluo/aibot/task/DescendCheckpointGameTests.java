@@ -387,6 +387,54 @@ public final class DescendCheckpointGameTests implements FabricGameTest {
         finish(context, bot, name);
     }
 
+    /**
+     * A knockback between task ticks can leave the bot on a third cell that is neither the
+     * pending landing origin nor its target. That is external displacement, not a broken safety
+     * invariant: the descent must re-anchor on the factual pose and keep running instead of
+     * terminating the whole mission as descend_landing_pose_drift.
+     */
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 30)
+    public void knockbackLandingDriftReanchorsInsteadOfFailingTheMission(
+            TestContext context) {
+        BlockPos floor = context.getAbsolutePos(new BlockPos(11, 7, 6));
+        BlockPos origin = floor.east().up();
+        BlockPos drifted = floor.west();
+        prepareLanding(context, floor);
+        prepareLanding(context, origin);
+        prepareLanding(context, drifted);
+        // Keep the next stair below the drifted pose solid so the recovered tick plans calmly.
+        context.getWorld().setBlockState(drifted.north(),
+                Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+
+        String name = "DescendDriftGT";
+        AIPlayerEntity bot = spawn(context, name, drifted);
+        InventoryAction.giveItem(bot, new ItemStack(Items.IRON_PICKAXE));
+        Map<String, String> checkpoint = new LinkedHashMap<>(
+                freshCheckpoint(bot, floor.getY() - 1));
+        checkpoint.put("pending_landing_origin", encode(origin));
+        checkpoint.put("pending_landing_target", encode(floor));
+        checkpoint.put("pending_landing_direction", "3");
+        require(context, DescendToYTask.inspectCheckpoint(checkpoint).isPresent(),
+                "drift fixture checkpoint was rejected: " + checkpoint);
+
+        DescendToYTask restored = new DescendToYTask(floor.getY() - 1, checkpoint);
+        restored.start(bot);
+        restored.tick(bot);
+        require(context, restored.state() == TaskState.RUNNING,
+                "single knockback drift terminated the descent: "
+                        + restored.state() + ":" + restored.failureReason());
+        require(context, "none".equals(
+                        restored.checkpoint().get("pending_landing_target")),
+                "drift recovery retained the stale pending landing: "
+                        + restored.checkpoint());
+        restored.tick(bot);
+        require(context, restored.state() == TaskState.RUNNING,
+                "re-anchored descent could not continue from the drifted pose: "
+                        + restored.state() + ":" + restored.failureReason());
+        restored.cancel(bot, "gametest_drift_recovered");
+        finish(context, bot, name);
+    }
+
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 30)
     public void upperRetreatLandingBackOnTheObstacleFloorKeepsItsDetourDebt(
             TestContext context) {
@@ -402,6 +450,9 @@ public final class DescendCheckpointGameTests implements FabricGameTest {
 
         String name = "DescendFloorDebtGT";
         AIPlayerEntity bot = spawn(context, name, floor);
+        // The descend tool gate typed-fails a pickless stair dig; this fixture tests detour
+        // debt accounting, so provision the ordinary descent pick like a real mission would.
+        InventoryAction.giveItem(bot, new ItemStack(Items.IRON_PICKAXE));
         Map<String, String> checkpoint = new LinkedHashMap<>(
                 freshCheckpoint(bot, floor.getY() - 1));
         String detourHistory = String.join(";",

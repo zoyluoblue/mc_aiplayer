@@ -223,6 +223,7 @@ final class MiningEvidenceAuditTest {
                                                          int deathDelta) {
         return new MiningEvidenceAudit.Snapshot(
                 MiningEvidenceAudit.Target.DIAMOND,
+                MiningEvidenceAudit.DIAMOND_TARGET,
                 1,
                 modeViolations,
                 privilegedAllowed,
@@ -246,6 +247,7 @@ final class MiningEvidenceAuditTest {
                                                           int privilegedAllowed) {
         return new MiningEvidenceAudit.Snapshot(
                 MiningEvidenceAudit.Target.OBSIDIAN,
+                MiningEvidenceAudit.OBSIDIAN_TARGET,
                 1,
                 modeViolations,
                 privilegedAllowed,

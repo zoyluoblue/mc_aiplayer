@@ -32,6 +32,8 @@ public final class MiningEvidenceAudit {
     public static final int SCHEMA_VERSION = 2;
     public static final int DIAMOND_TARGET = 64;
     public static final int OBSIDIAN_TARGET = 32;
+    /** User-mandated full-stack obsidian commitment; the 32 contract stays sealed as-is. */
+    public static final int OBSIDIAN_STACK_TARGET = 64;
 
     private static final ConcurrentHashMap<UUID, Session> SESSIONS = new ConcurrentHashMap<>();
 
@@ -44,7 +46,18 @@ public final class MiningEvidenceAudit {
     }
 
     public static void begin(AIPlayerEntity bot, Target target) {
-        Session session = new Session(UUID.randomUUID(), target, StatsSnapshot.read(bot));
+        begin(bot, target,
+                target == Target.DIAMOND ? DIAMOND_TARGET : OBSIDIAN_TARGET);
+    }
+
+    /**
+     * Starts an audit session with an explicit required count. The legacy overload keeps the
+     * sealed 64-diamond / 32-obsidian thresholds; the 64-obsidian commitment audits the same
+     * physical evidence chain against its own quota instead of forking a parallel ledger.
+     */
+    public static void begin(AIPlayerEntity bot, Target target, int requiredCount) {
+        Session session = new Session(
+                UUID.randomUUID(), target, Math.max(1, requiredCount), StatsSnapshot.read(bot));
         SESSIONS.put(bot.getUuid(), session);
         observeTick(bot);
     }
@@ -245,6 +258,7 @@ public final class MiningEvidenceAudit {
     }
 
     public record Snapshot(Target target,
+                           int requiredCount,
                            int observedTicks,
                            int gameModeViolations,
                            int privilegedAllowed,
@@ -263,14 +277,14 @@ public final class MiningEvidenceAudit {
                 return false;
             }
             return switch (target) {
-                case DIAMOND -> diamondNaturalOreBreaks >= DIAMOND_TARGET
-                        && diamondNativeDrops >= DIAMOND_TARGET
-                        && diamondPhysicalPickups >= DIAMOND_TARGET;
+                case DIAMOND -> diamondNaturalOreBreaks >= requiredCount
+                        && diamondNativeDrops >= requiredCount
+                        && diamondPhysicalPickups >= requiredCount;
                 case OBSIDIAN -> waterPlacements >= 1
-                        && lavaConversions >= OBSIDIAN_TARGET
-                        && obsidianBreaks >= OBSIDIAN_TARGET
-                        && vanillaObsidianBreaks >= OBSIDIAN_TARGET
-                        && obsidianPhysicalPickups >= OBSIDIAN_TARGET;
+                        && lavaConversions >= requiredCount
+                        && obsidianBreaks >= requiredCount
+                        && vanillaObsidianBreaks >= requiredCount
+                        && obsidianPhysicalPickups >= requiredCount;
             };
         }
 
@@ -282,6 +296,7 @@ public final class MiningEvidenceAudit {
     private static final class Session {
         private final UUID token;
         private final Target target;
+        private final int requiredCount;
         private final StatsSnapshot baseline;
         private StatsSnapshot latest;
         private int observedTicks;
@@ -291,9 +306,10 @@ public final class MiningEvidenceAudit {
         private final DiamondTransactions diamondTransactions = new DiamondTransactions();
         private final ObsidianTransactions obsidianTransactions = new ObsidianTransactions();
 
-        private Session(UUID token, Target target, StatsSnapshot baseline) {
+        private Session(UUID token, Target target, int requiredCount, StatsSnapshot baseline) {
             this.token = token;
             this.target = target;
+            this.requiredCount = requiredCount;
             this.baseline = baseline;
             this.latest = baseline;
         }
@@ -309,6 +325,7 @@ public final class MiningEvidenceAudit {
             int deathDelta = nonNegative(latest.deaths - baseline.deaths);
             return new Snapshot(
                     target,
+                    requiredCount,
                     observedTicks,
                     gameModeViolations,
                     privilegedAllowed,

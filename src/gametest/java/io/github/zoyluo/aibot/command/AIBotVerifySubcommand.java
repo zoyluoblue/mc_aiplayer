@@ -92,12 +92,21 @@ import static net.minecraft.server.command.CommandManager.literal;
 public final class AIBotVerifySubcommand {
     private static final int DIAMOND_STACK_TARGET = 64;
     private static final int OBSIDIAN_HALF_STACK_TARGET = 32;
+    // 用户承诺口径:整组 64 黑曜石。32 契约保持原样(已封存),64 是其超集场景。
+    private static final int OBSIDIAN_STACK_TARGET =
+            MiningEvidenceAudit.OBSIDIAN_STACK_TARGET;
+    // from-zero 64 = 32 版固定超时 + 增量 32 块 × CreateObsidian 单块摊销预算(2,400 tick)。
+    private static final int OBSIDIAN_STACK_64_FROM_ZERO_TIMEOUT =
+            240_000 + 32 * 2_400;
+    // prepared 隔离流水线:32 版 24,000 tick 合约按相同单块速率翻倍。
+    private static final int OBSIDIAN_STACK_64_PREPARED_TIMEOUT = 48_000;
     static final String STRICT_STRIP_MINE_REJECTION_FEATURE = "strip_mine_strict_rejection";
 
     private static final List<String> ALL_FEATURES = List.of(
             "capability_profile",
             "diamond_stack_64_controlled",
             "obsidian_half_stack_32_controlled",
+            "obsidian_stack_64_controlled",
             "persist",
             "container",
             "combat",
@@ -198,8 +207,10 @@ public final class AIBotVerifySubcommand {
     private static final List<String> OPT_IN_LONG_MINING_FEATURES = List.of(
             "diamond_stack_64_prepared",
             "obsidian_half_stack_32_prepared",
+            "obsidian_stack_64_prepared",
             "diamond_stack_64_from_zero",
-            "obsidian_half_stack_32_from_zero");
+            "obsidian_half_stack_32_from_zero",
+            "obsidian_stack_64_from_zero");
 
     // 挖矿回归套件:一条命令 /aibot verify mining 跑完所有挖矿相关场景。
     private static final List<String> MINING_SUITE = List.of(
@@ -510,6 +521,8 @@ public final class AIBotVerifySubcommand {
                     "diamond_stack_64_controlled", Items.DIAMOND, DIAMOND_STACK_TARGET);
             case "obsidian_half_stack_32_controlled" -> verifyMiningCountContract(
                     "obsidian_half_stack_32_controlled", Items.OBSIDIAN, OBSIDIAN_HALF_STACK_TARGET);
+            case "obsidian_stack_64_controlled" -> verifyMiningCountContract(
+                    "obsidian_stack_64_controlled", Items.OBSIDIAN, OBSIDIAN_STACK_TARGET);
             case "persist" -> verifyPersist(source);
             case "memory" -> verifyMemory(bot);
             case "job" -> verifyJob();
@@ -570,6 +583,8 @@ public final class AIBotVerifySubcommand {
             case "real_build" -> assignRealBuild(bot);
             case "real_obsidian" -> assignRealObsidian(bot);
             case "obsidian_half_stack_32_prepared" -> assignObsidianHalfStack32Prepared(bot);
+            case "obsidian_stack_64_prepared" -> assignObsidianStack64Prepared(bot);
+            case "obsidian_stack_64_from_zero" -> assignObsidianStack64FromZero(bot);
             case "obsidian_half_stack_32_from_zero" -> assignObsidianHalfStack32FromZero(bot);
             case "llm_move" -> assignLlmMove(bot);
             case "llm_food" -> assignLlmFood(bot);
@@ -1884,6 +1899,79 @@ public final class AIBotVerifySubcommand {
                             && InventoryAction.countItem(bot, Items.OBSIDIAN) >= OBSIDIAN_HALF_STACK_TARGET
                             && deathCount(bot) == deathBase;
                 });
+    }
+
+    // 用户承诺口径的 prepared 层:与 32 版同构,池扩到 10×7(70 源 ≥ 64),物资按 64 目标
+    // 合约缩放(食物走 MiningBudget.obsidianExpeditionFoodTarget),超时按同一单块速率翻倍。
+    private static Result assignObsidianStack64Prepared(AIPlayerEntity bot) {
+        prepareArea(bot);
+        clearInventory(bot);
+        ServerWorld world = bot.getServerWorld();
+        BlockPos origin = bot.getBlockPos();
+        clearNearbyMobs(world, origin);
+        for (int dx = 4; dx <= 13; dx++) {
+            for (int dz = -3; dz <= 3; dz++) {
+                world.setBlockState(origin.add(dx, -1, dz),
+                        Blocks.LAVA.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        world.setBlockState(origin.add(3, 0, 0),
+                Blocks.COBBLESTONE.getDefaultState(), Block.NOTIFY_ALL);
+        bot.teleport(world, origin.getX() + 3.5D, origin.getY() + 1.0D, origin.getZ() + 0.5D,
+                java.util.Collections.emptySet(), bot.getYaw(), bot.getPitch(), true);
+        for (int dx = -3; dx <= -2; dx++) {
+            for (int dz = 0; dz <= 1; dz++) {
+                world.setBlockState(origin.add(dx, 0, dz),
+                        Blocks.WATER.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        InventoryAction.giveItem(bot, new ItemStack(Items.DIAMOND_PICKAXE, 1));
+        InventoryAction.giveItem(bot, new ItemStack(Items.WATER_BUCKET, 1));
+        InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 64));
+        InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 64));
+        InventoryAction.giveItem(bot, new ItemStack(Items.COOKED_BEEF,
+                MiningBudget.obsidianExpeditionFoodTarget(OBSIDIAN_STACK_TARGET)));
+        InventoryAction.giveItem(bot, new ItemStack(Items.STONE_PICKAXE, 4));
+        InventoryAction.giveItem(bot, new ItemStack(Items.STICK, 64));
+        InventoryAction.giveItem(bot, new ItemStack(Items.CRAFTING_TABLE));
+        final int deathBase = deathCount(bot);
+        boolean started = GoalExecutor.INSTANCE.submit(
+                bot, new Goal.HaveItem(Items.OBSIDIAN, OBSIDIAN_STACK_TARGET));
+        if (!started) {
+            return Result.fail("obsidian_stack_64_prepared", "goal_submit_failed");
+        }
+        return Result.runningGoal("obsidian_stack_64_prepared",
+                OBSIDIAN_STACK_64_PREPARED_TIMEOUT,
+                ignored -> {
+                    world.setTimeOfDay(1000L);
+                    return bot.isAlive()
+                            && InventoryAction.countItem(bot, Items.OBSIDIAN)
+                            >= OBSIDIAN_STACK_TARGET
+                            && deathCount(bot) == deathBase;
+                });
+    }
+
+    // 用户承诺口径的 from-zero 层:与 32 版同构,配额与审计阈值均为 64,超时按增量派生。
+    // 与 32 契约一样,未达标时必须诚实 FAIL/MISSING;认证长跑门禁另行标定。
+    private static Result assignObsidianStack64FromZero(AIPlayerEntity bot) {
+        prepareMiningFromZero(bot);
+        MiningEvidenceAudit.begin(bot, MiningEvidenceAudit.Target.OBSIDIAN,
+                OBSIDIAN_STACK_TARGET);
+        final int deathBase = deathCount(bot);
+        boolean started = GoalExecutor.INSTANCE.submit(
+                bot, new Goal.HaveItem(Items.OBSIDIAN, OBSIDIAN_STACK_TARGET));
+        if (!started) {
+            return Result.fail("obsidian_stack_64_from_zero", "goal_submit_failed");
+        }
+        return Result.runningGoalFailFast("obsidian_stack_64_from_zero",
+                OBSIDIAN_STACK_64_FROM_ZERO_TIMEOUT,
+                miningFromZeroFailFast(deathBase),
+                ignored -> bot.isAlive()
+                        && InventoryAction.countItem(bot, Items.OBSIDIAN)
+                        >= OBSIDIAN_STACK_TARGET
+                        && deathCount(bot) == deathBase
+                        && MiningEvidenceAudit.snapshot(bot)
+                        .filter(MiningEvidenceAudit.Snapshot::passes).isPresent());
     }
 
     // Mining First M1-final:自然地形、空背包，自主取得钻石镐/桶、寻找岩浆并获得半组黑曜石。

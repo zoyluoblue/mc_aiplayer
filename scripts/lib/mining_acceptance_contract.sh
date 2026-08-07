@@ -13,6 +13,9 @@ MINING_MAX_VERIFY_TIMEOUT_SECONDS=172800
 MINING_MAX_SCENARIO_TIMEOUT_TICKS=2147483647
 MINING_DIAMOND_VERIFY_TIMEOUT_SECONDS=172800
 MINING_OBSIDIAN_VERIFY_TIMEOUT_SECONDS=18000
+# User-mandated full-stack obsidian: 316,800 scenario ticks / 15 TPS = 21,120 s minimum;
+# 25,200 s (7 h) keeps a ~19% margin instead of the 32-contract's thin 12.5%.
+MINING_OBSIDIAN64_VERIFY_TIMEOUT_SECONDS=25200
 
 mining_manifest_get() {
   local file="$1" key="$2"
@@ -51,18 +54,20 @@ mining_pass_has_physical_provenance() {
           && "$(mining_manifest_get "$manifest" diamond_physical_pickups)" =~ ^[0-9]+$ \
           && "$(mining_manifest_get "$manifest" diamond_physical_pickups)" -ge 64 ]]
       ;;
-    obsidian)
-      [[ "$final_inventory" -ge 32 \
+    obsidian|obsidian64)
+      local obsidian_quota=32
+      [[ "$target" == obsidian64 ]] && obsidian_quota=64
+      [[ "$final_inventory" -ge "$obsidian_quota" \
           && "$(mining_manifest_get "$manifest" water_placements)" =~ ^[0-9]+$ \
           && "$(mining_manifest_get "$manifest" water_placements)" -ge 1 \
           && "$(mining_manifest_get "$manifest" lava_conversions)" =~ ^[0-9]+$ \
-          && "$(mining_manifest_get "$manifest" lava_conversions)" -ge 32 \
+          && "$(mining_manifest_get "$manifest" lava_conversions)" -ge "$obsidian_quota" \
           && "$(mining_manifest_get "$manifest" obsidian_breaks)" =~ ^[0-9]+$ \
-          && "$(mining_manifest_get "$manifest" obsidian_breaks)" -ge 32 \
+          && "$(mining_manifest_get "$manifest" obsidian_breaks)" -ge "$obsidian_quota" \
           && "$(mining_manifest_get "$manifest" vanilla_obsidian_breaks)" =~ ^[0-9]+$ \
-          && "$(mining_manifest_get "$manifest" vanilla_obsidian_breaks)" -ge 32 \
+          && "$(mining_manifest_get "$manifest" vanilla_obsidian_breaks)" -ge "$obsidian_quota" \
           && "$(mining_manifest_get "$manifest" obsidian_physical_pickups)" =~ ^[0-9]+$ \
-          && "$(mining_manifest_get "$manifest" obsidian_physical_pickups)" -ge 32 ]]
+          && "$(mining_manifest_get "$manifest" obsidian_physical_pickups)" -ge "$obsidian_quota" ]]
       ;;
     *) return 1 ;;
   esac
@@ -72,6 +77,7 @@ mining_scenario_for_target() {
   case "${1:-}" in
     diamond) printf 'diamond_stack_64_from_zero\n' ;;
     obsidian) printf 'obsidian_half_stack_32_from_zero\n' ;;
+    obsidian64) printf 'obsidian_stack_64_from_zero\n' ;;
     *) return 1 ;;
   esac
 }
@@ -80,6 +86,7 @@ mining_target_for_scenario() {
   case "${1:-}" in
     diamond_stack_64_from_zero) printf 'diamond\n' ;;
     obsidian_half_stack_32_from_zero) printf 'obsidian\n' ;;
+    obsidian_stack_64_from_zero) printf 'obsidian64\n' ;;
     *) return 1 ;;
   esac
 }
@@ -88,6 +95,7 @@ mining_default_verify_timeout_for_target() {
   case "${1:-}" in
     diamond) printf '%s\n' "$MINING_DIAMOND_VERIFY_TIMEOUT_SECONDS" ;;
     obsidian) printf '%s\n' "$MINING_OBSIDIAN_VERIFY_TIMEOUT_SECONDS" ;;
+    obsidian64) printf '%s\n' "$MINING_OBSIDIAN64_VERIFY_TIMEOUT_SECONDS" ;;
     *) return 1 ;;
   esac
 }

@@ -513,7 +513,7 @@ OBSIDIAN_PHYSICAL_PICKUPS=0
 VANILLA_OBSIDIAN_BREAKS=0
 MINING_FINAL_INVENTORY=0
 case "$SCENARIO" in
-  diamond_stack_64_from_zero|obsidian_half_stack_32_from_zero)
+  diamond_stack_64_from_zero|obsidian_half_stack_32_from_zero|obsidian_stack_64_from_zero)
     MINING_PROVENANCE_SCHEMA=2
     MINING_PROVENANCE_VERDICT=FAIL
     provenance_record="$(python3 - "$STAGING/server.log" "$SCENARIO" <<'PY'

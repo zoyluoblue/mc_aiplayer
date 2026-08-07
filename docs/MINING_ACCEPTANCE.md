@@ -3,6 +3,15 @@
 状态：M0 骨架已建立，64 钻石与 32 黑曜石均未认证。
 最终能力 ID：`diamond_stack_64`、`obsidian_half_stack_32`。
 
+> **2026-08 用户承诺口径扩展:整组 64 黑曜石(`obsidian_stack_64`)。**
+> 32 契约保持原样(封存),64 是其超集,新场景已接入 verify/evidence 链:
+> `obsidian_stack_64_controlled` / `obsidian_stack_64_prepared`(48,000 ticks)/
+> `obsidian_stack_64_from_zero`(316,800 ticks = 32 版 240,000 + 增量 32 块 × 2,400
+> 单块摊销;evidence target=`obsidian64`,wall-clock 上限 25,200 s = 15 TPS 最低速率下
+> ~19% 余量)。审计阈值经 `MiningEvidenceAudit.begin(bot, OBSIDIAN, 64)` 参数化,
+> 物理证据链(真实放水 ≥1、水成转化/挖掘/vanilla MINED/物理拾取 全部 ≥64)与 32 版同构。
+> 发布门禁(20-seed ≥90% 等)对 64 同样适用,认证批次由用户择机启动。
+
 本文件定义“能挖”具体意味着什么。源码中能接收 `count=64/32`、快速契约场景 PASS，或单个理想画布场景 PASS，都不能替代真实长跑验收。
 
 ## 1. 三层场景

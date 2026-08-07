@@ -34,7 +34,7 @@ Citation shorthand (as used in the source reports): `COT` = src/main/java/io/git
 - Trigger: with a transaction open (waterSource/pickupPos/activeBreakPos set), replan deletes all new MAKE_OBSIDIAN steps and inserts the resume step at index 0 — ahead of the resupply steps (new bucket / diamond pick). The resumed task refails instantly (`need_better_tool:`, `create_obsidian_bucket_lost_after_pour`, or onStart fail without bucket); zero progress → 3 consecutive replans → task dead.
 - Smallest fix: when resuming first, keep supply steps that precede MAKE_OBSIDIAN in the fresh plan and match the failure-reason prefix (`need_better_tool:` / `*_missing_water` / `bucket_lost`).
 
-**F6 — Obsidian food budget fixed at 8 units with no underground resupply source** (blocker; GoalPlanner/MiningServiceTask; from: planner F1; interacts with F15)
+**[已修·阶段5] F6 — Obsidian food budget fixed at 8 units with no underground resupply source** (blocker; GoalPlanner/MiningServiceTask; from: planner F1; interacts with F15)
 - Citations: GP:66 (`OBSIDIAN_EXPEDITION_FOOD=8`), 566 (contrast: diamond 72), 1203-1210, 1227-1228; MiningFoodReserve.java:18; MiningServiceTask.java:509/529, 3091-3095; GP:1633-1656 (no CHEST/depot ensured), 1230-1233; GoalStep.java:23-41 (no ascend/return-to-surface step kind).
 - Trigger: 64-block obsidian work exhausts 8 cooked units; the boundary service can only draw from a depot that was never provisioned, and no step kind can return to the surface for food → `mining_service_food_reserve_depleted` / `deep_mining_food_reserve_depleted` with no recovery.
 - Smallest fix: scale obsidian food with missionTarget (like the diamond line) and/or provision the CHEST/depot the boundary service expects.

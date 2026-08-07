@@ -166,6 +166,22 @@ OreDig 前插入 挖石头 绕行、撞 fixture 的 tick 80/100 死线;木棍 23
 
 ---
 
+## 阶段 5 · F6 黑曜石食物预算按任务量缩放(2026-08-07)
+
+**完成**:
+- `MiningBudget.obsidianExpeditionFoodTarget(missionTarget)`:每个 8 块 service 段 4 个
+  熟食 + 4 buffer,地板保持旧 8 单位(prepared 短程合约不变)。64 块 → **36** 单位、
+  32 块 → 20、16 块 → 12,均 1 格以内。旧的写死 8 单位在 64 块任务中途必然断粮,深层
+  既无猎物也无预置 depot,`mining_service_food_reserve_depleted` 无解(F6)。
+- 公式落在无 registry 依赖的 `MiningBudget`(可纯单测;GoalPlanner `<clinit>` 需要
+  bootstrap,教训同 HuntTask)。`MiningPlanningSourceContractTest` 改钉缩放调用;
+  新增 `ObsidianFoodBudgetTest`(地板/缩放/取整/单格上限);3 个 planner gametest 的
+  fixture 口粮与断言随常量派生(20 单位)。
+
+**验证**:343 单测全绿;580 gametest 全绿。
+
+---
+
 ## 待解决问题(滚动清单)
 
 | ID | 严重度 | 问题 | 状态 |

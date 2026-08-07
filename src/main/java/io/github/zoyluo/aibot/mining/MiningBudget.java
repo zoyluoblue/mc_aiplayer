@@ -98,6 +98,25 @@ public record MiningBudget(
             TUNNELING_SERVICE_TARGET * 2;
     public static final int OBSIDIAN_BOOTSTRAP_CHANNEL_RETRY_STONE_LIKE =
             TUNNELING_SERVICE_TARGET * 3;
+    /** Prepared short-run floor; long expeditions scale per service segment below. */
+    public static final int OBSIDIAN_EXPEDITION_FOOD_FLOOR = 8;
+    public static final int OBSIDIAN_FOOD_PER_SERVICE_SEGMENT = 4;
+    public static final int OBSIDIAN_FOOD_BUFFER = 4;
+    public static final int OBSIDIAN_SERVICE_SEGMENT_BLOCKS = 8;
+
+    /**
+     * Cooked-food carry for one obsidian expedition. The legacy flat 8-unit reserve only covered
+     * prepared short runs: a 64-block mission crosses eight service segments at a depth where
+     * hunting and depot withdrawal are both impossible, so exhausting food is an unrecoverable
+     * {@code mining_service_food_reserve_depleted}. Four units per 8-block segment plus a fixed
+     * buffer keeps a 64-target ration at 36 units — still a single inventory slot.
+     */
+    public static int obsidianExpeditionFoodTarget(int missionTarget) {
+        int segments = Math.max(1,
+                ceilDiv(Math.max(1, missionTarget), OBSIDIAN_SERVICE_SEGMENT_BLOCKS));
+        return Math.max(OBSIDIAN_EXPEDITION_FOOD_FLOOR,
+                segments * OBSIDIAN_FOOD_PER_SERVICE_SEGMENT + OBSIDIAN_FOOD_BUFFER);
+    }
 
     public MiningBudget {
         targetCount = Math.max(1, targetCount);

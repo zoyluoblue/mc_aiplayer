@@ -105,13 +105,15 @@ public final class GoalPlannerMiningGameTests implements FabricGameTest {
         int firstDescend = indexOf(plan, step -> step.kind() == GoalStep.Kind.DESCEND_TO_Y);
 
         require(context, plan.success(), "unresolved=" + plan.unresolved());
-        require(context, cook >= 0 && plan.steps().get(cook).count() == 8
+        int obsidianRation = MiningBudget.obsidianExpeditionFoodTarget(32);
+        require(context, cook >= 0 && plan.steps().get(cook).count() == obsidianRation
                         && !plan.steps().get(cook).bestEffort(),
-                "obsidian readiness must hard-gate 8 cooked food: " + plan.describeSteps());
+                "obsidian readiness must hard-gate the scaled " + obsidianRation
+                        + " cooked food: " + plan.describeSteps());
         List<GoalStep> obsidianHunts = plan.steps().stream()
                 .filter(step -> step.kind() == GoalStep.Kind.HUNT)
                 .toList();
-        require(context, obsidianHunts.stream().mapToInt(GoalStep::count).sum() == 8
+        require(context, obsidianHunts.stream().mapToInt(GoalStep::count).sum() == obsidianRation
                         && obsidianHunts.stream().allMatch(step -> step.count() <= 4),
                 "obsidian readiness hunt batches must be bounded at 4: " + plan.describeSteps());
         require(context, hunt >= 0 && hunt < firstStoneMine && firstStoneMine < cook,
@@ -546,7 +548,7 @@ public final class GoalPlannerMiningGameTests implements FabricGameTest {
                 Map.entry(Items.COBBLESTONE, 76),
                 Map.entry(Items.STICK, 44),
                 Map.entry(Items.CRAFTING_TABLE, 1),
-                Map.entry(Items.COOKED_BEEF, 8),
+                Map.entry(Items.COOKED_BEEF, MiningBudget.obsidianExpeditionFoodTarget(32)),
                 Map.entry(Items.TORCH, 8),
                 Map.entry(Items.OAK_LOG, EmergencyShelterTask.MAX_PLACEMENT_BLOCKS));
         Map<net.minecraft.item.Item, Integer> exactKit = Map.ofEntries(
@@ -557,7 +559,7 @@ public final class GoalPlannerMiningGameTests implements FabricGameTest {
                 Map.entry(Items.COBBLESTONE, 76),
                 Map.entry(Items.STICK, 40),
                 Map.entry(Items.CRAFTING_TABLE, 1),
-                Map.entry(Items.COOKED_BEEF, 8),
+                Map.entry(Items.COOKED_BEEF, MiningBudget.obsidianExpeditionFoodTarget(32)),
                 Map.entry(Items.TORCH, 8),
                 Map.entry(Items.OAK_LOG, EmergencyShelterTask.MAX_PLACEMENT_BLOCKS));
         Goal goal = new Goal.HaveItem(Items.OBSIDIAN, 32);
@@ -604,7 +606,7 @@ public final class GoalPlannerMiningGameTests implements FabricGameTest {
                 Map.entry(Items.COBBLESTONE, 76),
                 Map.entry(Items.STICK, 40),
                 Map.entry(Items.CRAFTING_TABLE, 1),
-                Map.entry(Items.COOKED_BEEF, 8),
+                Map.entry(Items.COOKED_BEEF, MiningBudget.obsidianExpeditionFoodTarget(32)),
                 Map.entry(Items.TORCH, 8),
                 Map.entry(Items.OAK_LOG, EmergencyShelterTask.MAX_PLACEMENT_BLOCKS));
         Map<net.minecraft.item.Item, Integer> belowKit = new java.util.HashMap<>(exactKit);

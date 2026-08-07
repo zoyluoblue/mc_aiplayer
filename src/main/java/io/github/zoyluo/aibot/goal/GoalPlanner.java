@@ -59,11 +59,8 @@ public final class GoalPlanner {
     private static final int FOOD_TARGET = 4;
     /** Matches DescendToYTask's dark-shaft placement cadence. */
     private static final int DESCEND_TORCH_EVERY = 6;
-    // 半组黑曜石是一次长途深层远征：这些补给是进入取水/钻石链前的硬门槛。
-    // Prepared runs consumed no food at all, while the old 24-item gate dominated from-zero startup
-    // (46 logs and 5,284 ticks on seed 3000). Eight cooked items are the bounded initial reserve;
-    // long mining then rechecks supplies at service checkpoints instead of front-loading a farm.
-    private static final int OBSIDIAN_EXPEDITION_FOOD = 8;
+    // 黑曜石远征补给是进入取水/钻石链前的硬门槛。食物按任务量缩放,公式与历史依据
+    // (旧 24-item 门 5,284-tick 启动、8 单位地板)见 MiningBudget.obsidianExpeditionFoodTarget。
     private static final int OBSIDIAN_EXPEDITION_STONE_PICKS = 4;
     private static final int DESCEND_THRESHOLD = 8; // bot 高于矿层超过这么多格,先下竖井到矿层再挖
     private static final int SPARE_IRON_INGOTS = 3; // 深潜挖矿前多备 1 把铁镐的料(3 铁锭),镐磨穿时深处背包直接合新镐
@@ -1609,7 +1606,11 @@ public final class GoalPlanner {
                 beginSurfaceEmergencyShelterWoodReserve();
             }
             int unresolvedBefore = unresolved.size();
-            if (!ensureMiningFoodReserveTo(OBSIDIAN_EXPEDITION_FOOD,
+            // 8 个熟食只够 prepared 短程;64 块黑曜石要跨 8 个 service 段,深层既不能猎食也
+            // 没有预置 depot 可取,断粮即 mining_service_food_reserve_depleted 无解。按任务量
+            // 缩放(公式与单测在 MiningBudget),小目标保持旧 8 单位地板。
+            if (!ensureMiningFoodReserveTo(
+                    MiningBudget.obsidianExpeditionFoodTarget(missionTarget),
                     depth + 1, visiting, true)
                     || unresolved.size() > unresolvedBefore) {
                 return false;

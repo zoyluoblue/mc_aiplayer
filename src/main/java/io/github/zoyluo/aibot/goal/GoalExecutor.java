@@ -18,6 +18,8 @@ import io.github.zoyluo.aibot.task.DescendToYTask;
 import io.github.zoyluo.aibot.task.DigDownTask;
 import io.github.zoyluo.aibot.task.FarmTask;
 import io.github.zoyluo.aibot.task.GatherQuotaTask;
+import io.github.zoyluo.aibot.task.HuntSearchCursor;
+import io.github.zoyluo.aibot.task.HuntPickupCheckpoint;
 import io.github.zoyluo.aibot.task.HuntTask;
 import io.github.zoyluo.aibot.task.MilkCowTask;
 import io.github.zoyluo.aibot.task.MiningServiceTask;
@@ -42,15 +44,18 @@ import net.minecraft.block.Blocks;
 import net.minecraft.item.Item;
 import net.minecraft.item.Items;
 import net.minecraft.registry.Registries;
+import net.minecraft.stat.Stats;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.server.MinecraftServer;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
-import java.util.HashSet;
 import java.util.ArrayList;
+import java.util.Base64;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -64,6 +69,30 @@ public final class GoalExecutor {
     public static final GoalExecutor INSTANCE = new GoalExecutor();
     private static final int BASE_LIFETIME_REPLAN_LIMIT = 12;
     private static final int MAX_CONSECUTIVE_REPLANS = 3;
+    private static final int MAX_POSTCONDITION_REPLANS = 3;
+    private static final int MAX_POSTCONDITION_FINGERPRINT_BYTES = 32_768;
+    private static final String POSTCONDITION_REPLANS_KEY =
+            "postcondition_replans";
+    private static final String POSTCONDITION_LAST_MATCHED_KEY =
+            "postcondition_last_matched";
+    private static final String POSTCONDITION_FINGERPRINT_KEY =
+            "postcondition_fingerprint";
+    private static final String POSTCONDITION_PREFIX = "postcondition_";
+    private static final Set<String> POSTCONDITION_REPAIR_KEYS = Set.of(
+            POSTCONDITION_REPLANS_KEY,
+            POSTCONDITION_LAST_MATCHED_KEY,
+            POSTCONDITION_FINGERPRINT_KEY);
+    private static final String SKIPPED_TARGET_PREFIX = "skipped_target.";
+    private static final int MAX_SKIPPED_TARGET_RECEIPTS = 32;
+    private static final int MAX_SKIPPED_TARGET_TEXT_BYTES = 8_192;
+    private static final Set<String> SKIPPED_TARGET_ENTRY_KEYS = Set.of(
+            "kind", "item", "count", "block", "ores", "input", "output",
+            "pos", "tag_present", "tag", "best_effort", "reason");
+    private static final Set<String> LEGACY_REPLAN_SNAPSHOT_KEYS = Set.of(
+            "snap_steps", "snap_target", "snap_x", "snap_y", "snap_z");
+    private static final Set<String> MODERN_REPLAN_SNAPSHOT_KEYS = Set.of(
+            "snap_steps", "snap_target", "snap_x", "snap_y", "snap_z",
+            "snap_dimension", "snap_hunt_raw_meat", "snap_hunt_visited_sectors");
     private static final String AUXILIARY_MINING_CONTINUATION_KEY =
             "aux_mining_continuation";
     private static final String CAPACITY_PARENT_DELIVERED_KEY =
@@ -73,6 +102,7 @@ public final class GoalExecutor {
     private static final String CAPACITY_PARENT_SERVICES_USED_KEY =
             "capacity_parent_services_used";
     private static final String SETTLED_SERVICE_PREFIX = "settled_service.";
+    private static final String HUNT_CURSOR_PREFIX = "hunt.";
     private static final int MAX_SETTLED_SERVICE_TOMBSTONES = 16;
     private static final Set<String> SETTLED_SERVICE_ENTRY_KEYS = Set.of(
             "schema", "descriptor", "dimension", "work_face", "pocket_axis",
@@ -239,6 +269,26 @@ public final class GoalExecutor {
         GoalPredicate predicate = GoalPredicates.forGoal(goal);
         GoalSnapshotCollector.Context context = restore == null ? initialContext(bot, goal) : restore.context();
         GoalEvaluation initialEvaluation = predicate.evaluate(GoalSnapshotCollector.collect(bot, goal, context));
+        if (restore != null && (!restore.validationFailure().isBlank()
+                || restore.huntSearchCursor() == null
+                || restore.skippedTargetReceipts() == null
+                || !skippedTargetReceiptsAuthorized(
+                goal, restore.skippedTargetReceipts()))) {
+            queued.removeFirstOccurrence(goal);
+            recordImmediateResult(bot, missionId, goal, startedTick, initialEvaluation,
+                    GoalResult.classify(initialEvaluation, false),
+                    restore.validationFailure().isBlank()
+                            ? restore.huntSearchCursor() == null
+                            ? "mission_restore_invalid_hunt_search_cursor"
+                            : "mission_restore_invalid_skipped_target_receipts"
+                            : restore.validationFailure());
+            return false;
+        }
+        List<SkippedTargetReceipt> restoredSkippedTargets = restore == null
+                ? List.of() : restore.skippedTargetReceipts();
+        List<GoalResult.SkippedStep> restoredSkippedResults =
+                restoredSkippedTargets.stream()
+                        .map(SkippedTargetReceipt::asSkippedStep).toList();
         int persistedCapacityParentDelivered = restore == null
                 ? -1 : restore.capacityParentDelivered();
         int persistedCapacityParentServicesUsed = restore == null
@@ -280,6 +330,35 @@ public final class GoalExecutor {
             recordImmediateResult(bot, missionId, goal, startedTick, initialEvaluation,
                     GoalResult.classify(initialEvaluation, false),
                     "mission_restore_invalid_settled_service_tombstone");
+            return false;
+        }
+        Map<String, String> restoredHuntCheckpoint = restore != null
+                && restore.taskCheckpointKind() == GoalStep.Kind.HUNT
+                ? restore.taskCheckpoint() : Map.of();
+        Optional<HuntPickupCheckpoint.Metadata> restoredHunt =
+                HuntPickupCheckpoint.inspect(restoredHuntCheckpoint);
+        if (restore != null && restore.taskCheckpointKind() == GoalStep.Kind.HUNT
+                && restoredHunt.isEmpty()) {
+            queued.removeFirstOccurrence(goal);
+            recordImmediateResult(bot, missionId, goal, startedTick, initialEvaluation,
+                    GoalResult.classify(initialEvaluation, false),
+                    "mission_restore_invalid_hunt_pickup_checkpoint");
+            return false;
+        }
+        boolean unsettledHuntPickup =
+                restoredHunt.filter(HuntPickupCheckpoint.Metadata::open).isPresent();
+        boolean committedHuntPickup = restoredHunt.isPresent() && !unsettledHuntPickup;
+        if (restoredHunt.filter(metadata ->
+                hasSameDimensionOpenHuntTimeRollback(
+                        metadata,
+                        bot.getServerWorld().getRegistryKey().getValue().toString(),
+                        bot.getServerWorld().getTime())
+                || !metadata.open()
+                && !trustedClosedHuntPickupReceipt(bot, metadata)).isPresent()) {
+            queued.removeFirstOccurrence(goal);
+            recordImmediateResult(bot, missionId, goal, startedTick, initialEvaluation,
+                    GoalResult.classify(initialEvaluation, false),
+                    "mission_restore_invalid_hunt_pickup_checkpoint");
             return false;
         }
         Map<String, String> restoredServiceCheckpoint = restore != null
@@ -839,7 +918,7 @@ public final class GoalExecutor {
             return false;
         }
         boolean discardRestoredTaskCheckpoint = mergedSettledTerminalReceipt
-                || committedCapacityRepairOre;
+                || committedCapacityRepairOre || committedHuntPickup;
         if (restoredCommittedCapacityParent) {
             // TaskManager can publish COMPLETED before NavSafety/DangerWatcher owns the rest of
             // the tick. A periodic or stopping snapshot taken during that safety transaction sees
@@ -1003,13 +1082,14 @@ public final class GoalExecutor {
             restoredMining = Optional.empty();
         }
         if (initialEvaluation.state() == GoalEvaluation.State.SATISFIED
-                && !unsettledObsidian && !unsettledService
+                && !unsettledObsidian && !unsettledService && !unsettledHuntPickup
                 && restoredDigDown.isEmpty() && !interruptedDescend
                 && restoredOreDig.filter(
                 OreDigTask.RestoreMetadata::batchOpen).isEmpty()) {
             queued.removeFirstOccurrence(goal);
             recordImmediateResult(bot, missionId, goal, startedTick, initialEvaluation,
-                    GoalResult.Status.COMPLETED, "already_satisfied");
+                    GoalResult.Status.COMPLETED, "already_satisfied",
+                    restoredSkippedResults);
             return true;
         }
         boolean restoredPreflight = restoredService
@@ -1092,12 +1172,14 @@ public final class GoalExecutor {
         // the unrecoverable tail; isolate the restore before scheduling either task.
         boolean compoundObsidianTailUnavailable = !plan.success()
                 && !isDirectObsidianGoal(goal)
+                && !unsettledHuntPickup
                 && (restoredPreflight || restoredObsidianBoundary || interruptedObsidian);
         if (compoundObsidianTailUnavailable) {
             queued.removeFirstOccurrence(goal);
             recordImmediateResult(bot, missionId, goal, startedTick, initialEvaluation,
                     GoalResult.classify(initialEvaluation, false),
-                    "mission_restore_compound_obsidian_tail_unavailable");
+                    "mission_restore_compound_obsidian_tail_unavailable",
+                    restoredSkippedResults);
             return false;
         }
         // The service policy binds the original transaction target, while a fresh plan sees only
@@ -1110,10 +1192,11 @@ public final class GoalExecutor {
             queued.removeFirstOccurrence(goal);
             recordImmediateResult(bot, missionId, goal, startedTick, initialEvaluation,
                     GoalResult.classify(initialEvaluation, false),
-                    "mission_restore_incompatible_obsidian_service_checkpoint");
+                    "mission_restore_incompatible_obsidian_service_checkpoint",
+                    restoredSkippedResults);
             return false;
         }
-        if (!plan.success() && interruptedServiceOres.isEmpty()
+        if (!plan.success() && !unsettledHuntPickup && interruptedServiceOres.isEmpty()
                 && !committedPreflight && !interruptedObsidian
                 && !interruptedDigDown && !interruptedDescend
                 && !restoredOreDigPhysicalDebt) {
@@ -1126,13 +1209,25 @@ public final class GoalExecutor {
                     ? "mission_restore_rare_descent_kit_not_ready"
                     : "plan_failed:" + String.join(",", plan.unresolved());
             recordImmediateResult(bot, missionId, goal, startedTick, initialEvaluation,
-                    GoalResult.classify(initialEvaluation, false), reason);
+                    GoalResult.classify(initialEvaluation, false), reason,
+                    restoredSkippedResults);
             BotLog.warn(io.github.zoyluo.aibot.log.LogCategory.TASK, bot, "goal_plan_failed",
                     "goal", goal,
                     "unresolved", plan.unresolved());
             return false;
         }
-        List<GoalStep> restoredSteps = new ArrayList<>(plan.success() ? plan.steps() : List.of());
+        List<GoalStep> restoredSteps;
+        if (unsettledHuntPickup) {
+            HuntPickupCheckpoint.Metadata metadata = restoredHunt.orElseThrow();
+            GoalStep settlement = GoalStep.hunt(metadata.targetCount());
+            if (!metadata.requireFullQuota()) {
+                settlement = settlement.asBestEffort();
+            }
+            restoredSteps = new ArrayList<>(List.of(settlement));
+        } else {
+            restoredSteps = new ArrayList<>(applySkippedTargetReceipts(
+                    plan.success() ? plan.steps() : List.of(), restoredSkippedTargets));
+        }
         if (restoredOreDig.map(OreDigTask.RestoreMetadata::batchOpen).orElse(false)
                 && (!capacityRetryRestore || restoredCapacityRepairOre
                 || restoredOreDigPhysicalDebt)) {
@@ -1256,12 +1351,17 @@ public final class GoalExecutor {
                     : settledServiceFailureWithoutContinuation(
                     restoredSettledServices.orElseThrow());
             recordImmediateResult(bot, missionId, goal, startedTick,
-                    initialEvaluation, status, reason);
+                    initialEvaluation, status, reason,
+                    restoredSkippedResults);
             return false;
         }
+        HuntSearchCursor huntSearchCursor = restore == null
+                ? HuntSearchCursor.initial() : restore.huntSearchCursor();
         ActivePlan active = new ActivePlan(missionId, startedTick, goal, predicate, context,
                 new ArrayDeque<>(restoredSteps), restoredSteps.size(),
-                restoredSteps.stream().map(GoalStep::describe).toList());
+                restoredSteps.stream().map(GoalStep::describe).toList(),
+                huntSearchCursor, restoredSkippedTargets);
+        active.huntPickupSettlement = unsettledHuntPickup;
         if (restore != null) {
             active.completedSteps = (int) Math.min(Integer.MAX_VALUE,
                     (long) restore.completedSteps()
@@ -1269,12 +1369,26 @@ public final class GoalExecutor {
             active.lifetimeReplans = restore.lifetimeReplans();
             active.rareResourceRetriesUsed = restoredRareResourceEpoch;
             active.replanCount = restore.replanCount();
+            if (restore.postconditionRepair().persisted()) {
+                active.postconditionReplans =
+                        restore.postconditionRepair().replans();
+                active.lastEvaluationMatched =
+                        restore.postconditionRepair().lastMatched();
+                active.lastRepairFingerprint =
+                        restore.postconditionRepair().fingerprint();
+            }
             restore.replanSnapshot().ifPresent(snapshot -> {
                 active.snapSteps = snapshot.steps();
                 active.snapTargetCount = snapshot.targetCount();
                 active.snapX = snapshot.x();
                 active.snapY = snapshot.y();
                 active.snapZ = snapshot.z();
+                active.snapDimension = snapshot.dimension();
+                active.snapHuntRawMeat = snapshot.huntRawMeat() >= 0
+                        ? snapshot.huntRawMeat() : rawMeatCount(bot);
+                active.snapHuntVisitedSectors = snapshot.huntVisitedSectors() >= 0
+                        ? snapshot.huntVisitedSectors()
+                        : active.huntSearchCursor.visitedCount();
             });
             if (!discardRestoredTaskCheckpoint) {
                 active.taskCheckpointKind = restore.taskCheckpointKind();
@@ -1324,7 +1438,9 @@ public final class GoalExecutor {
                 active.taskCheckpointKind = null;
             }
         }
-        active.lastEvaluationMatched = initialEvaluation.matched();
+        if (restore == null || !restore.postconditionRepair().persisted()) {
+            active.lastEvaluationMatched = initialEvaluation.matched();
+        }
         // Legacy snapshots did not persist the replan baseline. Start them from current factual
         // state so old completed steps or a negative mining Y cannot manufacture progress on the
         // first post-restart failure. New snapshots retain the exact prior comparison boundary.
@@ -1335,6 +1451,10 @@ public final class GoalExecutor {
             active.snapY = sp0.getY();
             active.snapZ = sp0.getZ();
             active.snapTargetCount = goalTargetCount(bot, goal);
+            active.snapDimension = bot.getServerWorld().getRegistryKey()
+                    .getValue().toString();
+            active.snapHuntRawMeat = rawMeatCount(bot);
+            active.snapHuntVisitedSectors = active.huntSearchCursor.visitedCount();
         }
         activePlans.put(bot.getUuid(), active);
         // 工作记忆 episode 边界:新目标=新 episode,上一件事的排除项/轨迹作废。
@@ -1346,8 +1466,7 @@ public final class GoalExecutor {
         if (!pocketRestorePreflights.contains(bot.getUuid())) {
             report(bot, "我会按 " + restoredSteps.size() + " 步完成目标。");
         }
-        assignNext(bot, active);
-        markDirty(bot);
+        captureTransitionAndAssignNext(bot, active);
         return true;
     }
 
@@ -1390,6 +1509,14 @@ public final class GoalExecutor {
                 return startNextQueuedIfIdle(bot);
             }
             return false;
+        }
+        if (plan.huntSearchCursor.consumeDirty()) {
+            markDirty(bot);
+        }
+        if (plan.currentTask instanceof HuntTask hunt
+                && hunt.consumeCheckpointDirty()) {
+            captureTaskEvidence(bot, plan);
+            markDirty(bot);
         }
         Optional<Task> active = TaskManager.INSTANCE.getActive(bot);
         if (active.isPresent()) {
@@ -1435,6 +1562,10 @@ public final class GoalExecutor {
         if (status.state() == TaskState.COMPLETED) {
             BotLog.task(bot, "goal_step_completed", "step", plan.current.describe());
             captureTaskEvidence(bot, plan);
+            if (plan.huntPickupSettlement) {
+                settleRestoredHuntPickup(bot, plan);
+                return true;
+            }
             if (plan.current.kind() == GoalStep.Kind.MINE_ORE
                     && rareMissionTargetForMiningStep(plan.goal, plan.current.ores()) > 0) {
                 int completedEpoch = plan.rareResourceRetriesUsed;
@@ -1491,8 +1622,7 @@ public final class GoalExecutor {
                             "target", metadata.orElseThrow().targetCount());
                     plan.current = null;
                     plan.currentTask = null;
-                    assignNext(bot, plan);
-                    markDirty(bot);
+                    captureTransitionAndAssignNext(bot, plan);
                     return true;
                 }
             }
@@ -1548,11 +1678,12 @@ public final class GoalExecutor {
             }
             plan.current = null;
             plan.currentTask = null;
-            assignNext(bot, plan);
+            captureTransitionAndAssignNext(bot, plan);
             return true;
         }
         if (status.state() == TaskState.FAILED) {
-            if (status.failureReason().startsWith("mining_service_dimension_mismatch:")
+            if ((status.failureReason().startsWith("mining_service_dimension_mismatch:")
+                    || status.failureReason().startsWith("hunt_pickup_dimension_mismatch:"))
                     && suspendDimensionBoundPocket(bot, plan)) {
                 return true;
             }
@@ -1562,6 +1693,113 @@ public final class GoalExecutor {
         // GOALFIX-GF1 P0-B:其它状态(如上一任务残留的 lastStatus)→ 防御性 no-op,
         // 步骤推进只由 COMPLETED 分支驱动,失败由 FAILED 分支驱动。
         return true;
+    }
+
+    private void settleRestoredHuntPickup(AIPlayerEntity bot, ActivePlan plan) {
+        Optional<HuntPickupCheckpoint.Metadata> receipt =
+                HuntPickupCheckpoint.inspect(plan.taskCheckpoint);
+        if (plan.current == null || plan.current.kind() != GoalStep.Kind.HUNT
+                || !(plan.currentTask instanceof HuntTask hunt)
+                || !hunt.isSettlementOnly()
+                || receipt.isEmpty() || receipt.orElseThrow().open()
+                || !trustedClosedHuntPickupReceipt(
+                bot, receipt.orElseThrow())) {
+            finishActive(bot, plan, evaluate(bot, plan),
+                    "hunt_pickup_settlement_receipt_invalid",
+                    false, true, GoalResult.Status.FAILED);
+            return;
+        }
+        plan.taskCheckpoint.clear();
+        plan.taskCheckpointKind = null;
+        plan.huntPickupSettlement = false;
+        plan.current = null;
+        plan.currentTask = null;
+        plan.steps.clear();
+
+        GoalEvaluation evaluation = evaluate(bot, plan);
+        if (evaluation.state() == GoalEvaluation.State.SATISFIED) {
+            finishActive(bot, plan, evaluation,
+                    "postcondition_satisfied_after_hunt_pickup_settlement",
+                    false, true);
+            return;
+        }
+        GoalPlanner.GoalPlan fresh = GoalPlanner.plan(
+                bot, plan.goal, snapshotContext(plan), plan.missionId.toString());
+        List<GoalStep> continuation = applySkippedTargetReceipts(
+                fresh.success() ? fresh.steps() : List.of(),
+                plan.skippedTargetReceipts);
+        if (!fresh.success() || continuation.isEmpty()) {
+            finishActive(bot, plan, evaluation,
+                    fresh.success() ? "hunt_pickup_settlement_replan_empty"
+                            : "hunt_pickup_settlement_replan_failed:"
+                            + String.join(",", fresh.unresolved()),
+                    false, true);
+            return;
+        }
+        plan.steps.addAll(continuation);
+        plan.totalSteps = continuation.size();
+        plan.stepLabels.clear();
+        plan.stepLabels.addAll(
+                continuation.stream().map(GoalStep::describe).toList());
+        BotLog.task(bot, "goal_hunt_pickup_settlement_replanned",
+                "steps", continuation.stream().map(GoalStep::describe).toList(),
+                "postcondition_replans", plan.postconditionReplans,
+                "failure_replans", plan.replanCount);
+        captureTransitionAndAssignNext(bot, plan);
+    }
+
+    static boolean hasSameDimensionOpenHuntTimeRollback(
+            HuntPickupCheckpoint.Metadata metadata,
+            String liveDimension,
+            long currentWorldTime) {
+        return metadata != null && metadata.open()
+                && metadata.dimension().equals(liveDimension)
+                && currentWorldTime < metadata.pickupStartedWorldTime();
+    }
+
+    static boolean trustedClosedHuntPickupReceipt(
+            HuntPickupCheckpoint.Metadata metadata,
+            String liveDimension,
+            int currentInventory,
+            int currentPickupStat,
+            long currentWorldTime) {
+        if (metadata == null || metadata.open()
+                || !metadata.dimension().equals(liveDimension)) {
+            return false;
+        }
+        return switch (metadata.transactionState()) {
+            case CLOSED_COLLECTED -> HuntPickupCheckpoint.collectionCoversBoundUnits(
+                    metadata.inventoryBaseline(), currentInventory,
+                    metadata.pickupStatBaseline(), currentPickupStat,
+                    Math.max(1, metadata.boundUnits()));
+            case CLOSED_NO_RAW -> metadata.boundUnits() == 0
+                    && HuntPickupCheckpoint.ageAt(
+                    metadata.pickupStartedWorldTime(), currentWorldTime)
+                    >= HuntPickupCheckpoint.RECOVERY_LIMIT_TICKS;
+            case OPEN -> false;
+        };
+    }
+
+    private static boolean trustedClosedHuntPickupReceipt(
+            AIPlayerEntity bot, HuntPickupCheckpoint.Metadata metadata) {
+        Identifier expectedId = metadata == null
+                ? null : Identifier.tryParse(metadata.expectedRawItemId());
+        Item expected = expectedId == null
+                ? null : Registries.ITEM.getOptionalValue(expectedId).orElse(null);
+        if (expected == null
+                || !Registries.ITEM.getId(expected).toString().equals(
+                metadata.expectedRawItemId())) {
+            return false;
+        }
+        int inventory = io.github.zoyluo.aibot.action.HarvestCore.countInventoryItems(
+                bot, Set.of(expected));
+        int pickupStat = bot.getStatHandler().getStat(Stats.PICKED_UP, expected);
+        return trustedClosedHuntPickupReceipt(
+                metadata,
+                bot.getServerWorld().getRegistryKey().getValue().toString(),
+                inventory,
+                pickupStat,
+                bot.getServerWorld().getTime());
     }
 
     public boolean hasActivePlan(AIPlayerEntity bot) {
@@ -1663,15 +1901,22 @@ public final class GoalExecutor {
      * after the bot returns to the checkpoint's dimension.
      */
     private boolean suspendDimensionBoundPocket(AIPlayerEntity bot, ActivePlan plan) {
-        if (bot == null || plan == null || plan.current == null
-                || plan.current.kind() != GoalStep.Kind.MINING_SERVICE) {
+        if (bot == null || plan == null || plan.current == null) {
             return false;
         }
         captureTaskEvidence(bot, plan);
-        Optional<MiningServiceTask.RestoreMetadata> metadata =
+        Optional<String> required = Optional.empty();
+        if (plan.current.kind() == GoalStep.Kind.MINING_SERVICE) {
+            required =
                 MiningServiceTask.inspectCheckpoint(plan.taskCheckpoint)
-                        .filter(ignored -> hasActiveServicePocket(plan.taskCheckpoint));
-        if (metadata.isEmpty()) {
+                        .filter(ignored -> hasActiveServicePocket(plan.taskCheckpoint))
+                        .map(MiningServiceTask.RestoreMetadata::serviceDimension);
+        } else if (plan.current.kind() == GoalStep.Kind.HUNT) {
+            required = HuntPickupCheckpoint.inspect(plan.taskCheckpoint)
+                    .filter(HuntPickupCheckpoint.Metadata::open)
+                    .map(HuntPickupCheckpoint.Metadata::dimension);
+        }
+        if (required.isEmpty()) {
             return false;
         }
         MissionRuntimeRecord runtime = captureRuntime(bot);
@@ -1679,7 +1924,7 @@ public final class GoalExecutor {
             return false;
         }
         UUID uuid = bot.getUuid();
-        String requiredDimension = metadata.orElseThrow().serviceDimension();
+        String requiredDimension = required.orElseThrow();
         deathSuspended.put(uuid, runtime);
         dimensionSuspended.put(uuid, requiredDimension);
         restoreQuarantined.remove(uuid);
@@ -1937,6 +2182,17 @@ public final class GoalExecutor {
     private static Optional<String> activePocketServiceDimension(
             MissionRuntimeRecord runtime) {
         Map<String, String> task = activeTaskCheckpoint(runtime);
+        MissionRecord active = runtime == null ? null : runtime.active();
+        String taskKind = active == null || active.checkpoint() == null
+                ? "" : active.checkpoint().getOrDefault("task_kind", "");
+        Optional<String> huntDimension = "HUNT".equals(taskKind)
+                ? HuntPickupCheckpoint.inspect(task)
+                .filter(HuntPickupCheckpoint.Metadata::open)
+                .map(HuntPickupCheckpoint.Metadata::dimension)
+                : Optional.empty();
+        if (huntDimension.isPresent()) {
+            return huntDimension;
+        }
         if (!hasActiveServicePocket(task)) {
             return Optional.empty();
         }
@@ -1963,11 +2219,21 @@ public final class GoalExecutor {
         checkpoint.put("rare_resource_retries_used", String.valueOf(
                 active.rareResourceRetriesUsed));
         checkpoint.put("replan_count", String.valueOf(active.replanCount));
+        checkpoint.putAll(encodePostconditionRepairCheckpoint(
+                active.postconditionReplans,
+                active.lastEvaluationMatched,
+                active.lastRepairFingerprint));
         checkpoint.put("snap_steps", String.valueOf(active.snapSteps));
         checkpoint.put("snap_target", String.valueOf(active.snapTargetCount));
         checkpoint.put("snap_x", String.valueOf(active.snapX));
         checkpoint.put("snap_y", String.valueOf(active.snapY));
         checkpoint.put("snap_z", String.valueOf(active.snapZ));
+        checkpoint.put("snap_dimension", active.snapDimension);
+        checkpoint.put("snap_hunt_raw_meat", String.valueOf(active.snapHuntRawMeat));
+        checkpoint.put("snap_hunt_visited_sectors",
+                String.valueOf(active.snapHuntVisitedSectors));
+        checkpoint.putAll(encodeHuntSearchCursorNamespace(active.huntSearchCursor));
+        checkpoint.putAll(encodeSkippedTargetReceipts(active.skippedTargetReceipts));
         if (active.taskCheckpointKind != null && !active.taskCheckpoint.isEmpty()) {
             checkpoint.put("task_kind", active.taskCheckpointKind.name());
             active.taskCheckpoint.entrySet().stream()
@@ -2019,8 +2285,343 @@ public final class GoalExecutor {
         return Map.copyOf(checkpoint);
     }
 
+    static Map<String, String> encodeHuntSearchCursorNamespace(HuntSearchCursor cursor) {
+        java.util.LinkedHashMap<String, String> encoded = new java.util.LinkedHashMap<>();
+        cursor.encode().entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> encoded.put(
+                        HUNT_CURSOR_PREFIX + entry.getKey(), entry.getValue()));
+        return Map.copyOf(encoded);
+    }
+
+    /**
+     * A missing namespace is legacy only when no hunt watermark exists. Any modern watermark
+     * without its cursor, or any present but partial, unknown, or malformed namespace, fails closed
+     * so a restart cannot erase factual search history.
+     */
+    static Optional<HuntSearchCursor> decodeHuntSearchCursorNamespace(
+            Map<String, String> checkpoint) {
+        if (checkpoint == null || checkpoint.isEmpty()) {
+            return Optional.of(HuntSearchCursor.initial());
+        }
+        java.util.LinkedHashMap<String, String> encoded = new java.util.LinkedHashMap<>();
+        boolean present = false;
+        for (Map.Entry<String, String> entry : checkpoint.entrySet()) {
+            String key = entry.getKey();
+            if ("hunt".equals(key) || "hunt.".equals(key)) {
+                return Optional.empty();
+            }
+            if (key != null && key.startsWith(HUNT_CURSOR_PREFIX)) {
+                present = true;
+                String nested = key.substring(HUNT_CURSOR_PREFIX.length());
+                if (nested.isBlank() || entry.getValue() == null
+                        || encoded.put(nested, entry.getValue()) != null) {
+                    return Optional.empty();
+                }
+            }
+        }
+        return present
+                ? HuntSearchCursor.decode(encoded)
+                : hasAnyHuntReplanWatermark(checkpoint)
+                ? Optional.empty()
+                : Optional.of(HuntSearchCursor.initial());
+    }
+
+    static Map<String, String> encodeSkippedTargetReceipts(
+            List<SkippedTargetReceipt> receipts) {
+        List<SkippedTargetReceipt> values =
+                receipts == null ? List.of() : List.copyOf(receipts);
+        if (values.size() > MAX_SKIPPED_TARGET_RECEIPTS) {
+            throw new IllegalArgumentException("too many skipped target receipts");
+        }
+        java.util.LinkedHashMap<String, String> encoded = new java.util.LinkedHashMap<>();
+        encoded.put(SKIPPED_TARGET_PREFIX + "schema", "1");
+        encoded.put(SKIPPED_TARGET_PREFIX + "count", String.valueOf(values.size()));
+        for (int index = 0; index < values.size(); index++) {
+            String prefix = SKIPPED_TARGET_PREFIX + String.format("%02d.", index);
+            encodeSkippedTargetReceipt(values.get(index)).forEach(
+                    (key, value) -> encoded.put(prefix + key, value));
+        }
+        return Map.copyOf(encoded);
+    }
+
+    /**
+     * Missing is the sole legacy representation. Once present, the bounded collection and every
+     * target field are exact-key and canonical so a damaged receipt cannot suppress another step.
+     */
+    static Optional<List<SkippedTargetReceipt>> decodeSkippedTargetReceipts(
+            Map<String, String> checkpoint) {
+        Map<String, String> source = checkpoint == null ? Map.of() : checkpoint;
+        java.util.LinkedHashMap<String, String> values = new java.util.LinkedHashMap<>();
+        boolean present = false;
+        for (Map.Entry<String, String> entry : source.entrySet()) {
+            String key = entry.getKey();
+            if ("skipped_target".equals(key) || SKIPPED_TARGET_PREFIX.equals(key)) {
+                return Optional.empty();
+            }
+            if (key != null && key.startsWith(SKIPPED_TARGET_PREFIX)) {
+                present = true;
+                String nested = key.substring(SKIPPED_TARGET_PREFIX.length());
+                if (nested.isBlank() || entry.getValue() == null
+                        || values.put(nested, entry.getValue()) != null) {
+                    return Optional.empty();
+                }
+            }
+        }
+        if (!present) {
+            return Optional.of(List.of());
+        }
+        try {
+            if (!"1".equals(values.get("schema"))) {
+                return Optional.empty();
+            }
+            OptionalInt decodedCount = canonicalNonNegativeInt(values.get("count"));
+            if (decodedCount.isEmpty()
+                    || decodedCount.getAsInt() > MAX_SKIPPED_TARGET_RECEIPTS) {
+                return Optional.empty();
+            }
+            int count = decodedCount.getAsInt();
+            Set<String> expected = new HashSet<>();
+            expected.add("schema");
+            expected.add("count");
+            for (int index = 0; index < count; index++) {
+                String prefix = String.format("%02d.", index);
+                for (String key : SKIPPED_TARGET_ENTRY_KEYS) {
+                    expected.add(prefix + key);
+                }
+            }
+            if (!values.keySet().equals(expected)) {
+                return Optional.empty();
+            }
+            List<SkippedTargetReceipt> decoded = new ArrayList<>(count);
+            for (int index = 0; index < count; index++) {
+                String prefix = String.format("%02d.", index);
+                java.util.LinkedHashMap<String, String> entry =
+                        new java.util.LinkedHashMap<>();
+                for (String key : SKIPPED_TARGET_ENTRY_KEYS) {
+                    entry.put(key, values.get(prefix + key));
+                }
+                decoded.add(decodeSkippedTargetReceipt(entry).orElseThrow());
+            }
+            return Optional.of(List.copyOf(decoded));
+        } catch (RuntimeException exception) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Applies durable skip receipts only to ordinary fresh Planner output. Each receipt removes the
+     * earliest still-present same target at most once; count is intentionally ignored by
+     * GoalStep.sameTarget, while every other identity field remains exact.
+     */
+    static List<GoalStep> applySkippedTargetReceipts(
+            List<GoalStep> freshSteps, List<SkippedTargetReceipt> receipts) {
+        List<GoalStep> remaining =
+                new ArrayList<>(freshSteps == null ? List.of() : freshSteps);
+        for (SkippedTargetReceipt receipt
+                : receipts == null ? List.<SkippedTargetReceipt>of() : receipts) {
+            for (int index = 0; index < remaining.size(); index++) {
+                if (receipt.step().sameTarget(remaining.get(index))) {
+                    remaining.remove(index);
+                    break;
+                }
+            }
+        }
+        return List.copyOf(remaining);
+    }
+
+    static boolean skippedTargetReceiptsAuthorized(
+            Goal goal, List<SkippedTargetReceipt> receipts) {
+        return goal != null && receipts != null
+                && receipts.stream().allMatch(receipt ->
+                receipt != null && shouldSkipFailedStep(
+                        goal, receipt.step(), receipt.reason()));
+    }
+
+    private static Map<String, String> encodeSkippedTargetReceipt(
+            SkippedTargetReceipt receipt) {
+        GoalStep step = java.util.Objects.requireNonNull(receipt, "receipt").step();
+        String tag = step.tag();
+        return Map.ofEntries(
+                Map.entry("kind", step.kind().name()),
+                Map.entry("item", encodeRegistryItem(step.item())),
+                Map.entry("count", String.valueOf(step.count())),
+                Map.entry("block", encodeRegistryBlock(step.block())),
+                Map.entry("ores", encodeRegistryBlocks(step.ores())),
+                Map.entry("input", encodeRegistryItem(step.input())),
+                Map.entry("output", encodeRegistryItem(step.output())),
+                Map.entry("pos", step.pos() == null ? "" : encodePos(step.pos())),
+                Map.entry("tag_present", String.valueOf(tag != null)),
+                Map.entry("tag", tag == null ? "" : encodeCanonicalText(tag)),
+                Map.entry("best_effort", String.valueOf(step.bestEffort())),
+                Map.entry("reason", encodeCanonicalText(receipt.reason())));
+    }
+
+    private static Optional<SkippedTargetReceipt> decodeSkippedTargetReceipt(
+            Map<String, String> values) {
+        if (values == null || !values.keySet().equals(SKIPPED_TARGET_ENTRY_KEYS)) {
+            return Optional.empty();
+        }
+        try {
+            GoalStep.Kind kind = GoalStep.Kind.valueOf(values.get("kind"));
+            OptionalInt count = canonicalNonNegativeInt(values.get("count"));
+            if (count.isEmpty()) {
+                return Optional.empty();
+            }
+            Item item = decodeRegistryItem(values.get("item"));
+            Block block = decodeRegistryBlock(values.get("block"));
+            Set<Block> ores = decodeRegistryBlocks(values.get("ores"));
+            Item input = decodeRegistryItem(values.get("input"));
+            Item output = decodeRegistryItem(values.get("output"));
+            BlockPos pos = values.get("pos").isEmpty()
+                    ? null : decodePos(values.get("pos")).orElseThrow();
+            if (pos != null && !encodePos(pos).equals(values.get("pos"))) {
+                return Optional.empty();
+            }
+            boolean tagPresent = decodeCanonicalBoolean(
+                    values.get("tag_present")).orElseThrow();
+            String decodedTag = decodeCanonicalText(values.get("tag")).orElseThrow();
+            if (!tagPresent && !decodedTag.isEmpty()) {
+                return Optional.empty();
+            }
+            String tag = tagPresent ? decodedTag : null;
+            boolean bestEffort = decodeCanonicalBoolean(
+                    values.get("best_effort")).orElseThrow();
+            String reason = decodeCanonicalText(values.get("reason")).orElseThrow();
+            GoalStep step = new GoalStep(
+                    kind, item, count.getAsInt(), block, ores,
+                    input, output, pos, tag, bestEffort);
+            if (step.count() != count.getAsInt()) {
+                return Optional.empty();
+            }
+            SkippedTargetReceipt receipt = new SkippedTargetReceipt(step, reason);
+            return encodeSkippedTargetReceipt(receipt).equals(values)
+                    ? Optional.of(receipt) : Optional.empty();
+        } catch (RuntimeException exception) {
+            return Optional.empty();
+        }
+    }
+
+    private static String encodeRegistryItem(Item item) {
+        return item == null ? "" : Registries.ITEM.getId(item).toString();
+    }
+
+    private static Item decodeRegistryItem(String encoded) {
+        if (encoded == null) {
+            throw new IllegalArgumentException("missing item id");
+        }
+        if (encoded.isEmpty()) {
+            return null;
+        }
+        Identifier id = Identifier.tryParse(encoded);
+        Item item = id == null ? null : Registries.ITEM.getOptionalValue(id).orElse(null);
+        if (item == null || !id.toString().equals(encoded)
+                || !Registries.ITEM.getId(item).toString().equals(encoded)) {
+            throw new IllegalArgumentException("invalid item id");
+        }
+        return item;
+    }
+
+    private static String encodeRegistryBlock(Block block) {
+        return block == null ? "" : Registries.BLOCK.getId(block).toString();
+    }
+
+    private static Block decodeRegistryBlock(String encoded) {
+        if (encoded == null) {
+            throw new IllegalArgumentException("missing block id");
+        }
+        if (encoded.isEmpty()) {
+            return null;
+        }
+        Identifier id = Identifier.tryParse(encoded);
+        Block block = id == null ? null : Registries.BLOCK.getOptionalValue(id).orElse(null);
+        if (block == null || !id.toString().equals(encoded)
+                || !Registries.BLOCK.getId(block).toString().equals(encoded)) {
+            throw new IllegalArgumentException("invalid block id");
+        }
+        return block;
+    }
+
+    private static String encodeRegistryBlocks(Set<Block> blocks) {
+        return (blocks == null ? Set.<Block>of() : blocks).stream()
+                .map(GoalExecutor::encodeRegistryBlock)
+                .sorted()
+                .collect(java.util.stream.Collectors.joining(","));
+    }
+
+    private static Set<Block> decodeRegistryBlocks(String encoded) {
+        if (encoded == null) {
+            throw new IllegalArgumentException("missing block set");
+        }
+        if (encoded.isEmpty()) {
+            return Set.of();
+        }
+        java.util.LinkedHashSet<Block> blocks = new java.util.LinkedHashSet<>();
+        for (String value : encoded.split(",", -1)) {
+            Block block = decodeRegistryBlock(value);
+            if (block == null || !blocks.add(block)) {
+                throw new IllegalArgumentException("invalid block set");
+            }
+        }
+        Set<Block> decoded = Set.copyOf(blocks);
+        if (!encodeRegistryBlocks(decoded).equals(encoded)) {
+            throw new IllegalArgumentException("non-canonical block set");
+        }
+        return decoded;
+    }
+
+    private static String encodeCanonicalText(String value) {
+        String text = value == null ? "" : value;
+        byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length > MAX_SKIPPED_TARGET_TEXT_BYTES) {
+            throw new IllegalArgumentException("skipped target text too large");
+        }
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+    }
+
+    private static Optional<String> decodeCanonicalText(String encoded) {
+        if (encoded == null) {
+            return Optional.empty();
+        }
+        try {
+            byte[] bytes = Base64.getUrlDecoder().decode(encoded);
+            if (bytes.length > MAX_SKIPPED_TARGET_TEXT_BYTES) {
+                return Optional.empty();
+            }
+            String decoded = new String(bytes, StandardCharsets.UTF_8);
+            return encodeCanonicalText(decoded).equals(encoded)
+                    ? Optional.of(decoded) : Optional.empty();
+        } catch (RuntimeException exception) {
+            return Optional.empty();
+        }
+    }
+
+    private static Optional<Boolean> decodeCanonicalBoolean(String value) {
+        if ("true".equals(value)) {
+            return Optional.of(true);
+        }
+        if ("false".equals(value)) {
+            return Optional.of(false);
+        }
+        return Optional.empty();
+    }
+
     private static RestoreSeed restoreSeed(AIPlayerEntity bot, Goal goal, MissionRecord record) {
         Map<String, String> checkpoint = record.checkpoint() == null ? Map.of() : record.checkpoint();
+        Optional<String> validationFailure =
+                restoreCheckpointValidationFailure(checkpoint);
+        OptionalInt completedSteps = decodePersistedMissionCounter(checkpoint, "revision");
+        OptionalInt lifetimeReplans =
+                decodePersistedMissionCounter(checkpoint, "lifetime_replans");
+        OptionalInt replanCount =
+                decodePersistedMissionCounter(checkpoint, "replan_count");
+        Optional<ReplanSnapshot> replanSnapshot = decodeReplanSnapshot(checkpoint);
+        Optional<HuntSearchCursor> huntSearchCursor =
+                decodeHuntSearchCursorNamespace(checkpoint);
+        Optional<List<SkippedTargetReceipt>> skippedTargetReceipts =
+                decodeSkippedTargetReceipts(checkpoint);
+        Optional<PostconditionRepairCheckpoint> postconditionRepair =
+                decodePostconditionRepairCheckpoint(checkpoint);
         GoalSnapshotCollector.Context fallback = initialContext(bot, goal);
         BlockPos origin = decodePos(checkpoint.get("origin")).orElse(fallback.origin());
         Set<BlockPos> containers = new HashSet<>();
@@ -2094,11 +2695,15 @@ public final class GoalExecutor {
         return new RestoreSeed(
                 missionId,
                 context,
-                nonNegativeInt(checkpoint.get("revision")),
-                nonNegativeInt(checkpoint.get("lifetime_replans")),
+                completedSteps.orElse(0),
+                lifetimeReplans.orElse(0),
                 decodePersistedRareResourceEpoch(checkpoint).orElse(-1),
-                nonNegativeInt(checkpoint.get("replan_count")),
-                decodeReplanSnapshot(checkpoint),
+                replanCount.orElse(0),
+                replanSnapshot,
+                huntSearchCursor.orElse(null),
+                skippedTargetReceipts.orElse(null),
+                validationFailure.orElse(""),
+                postconditionRepair.orElse(PostconditionRepairCheckpoint.legacy()),
                 restoredStartedTick,
                 taskCheckpointKind,
                 Map.copyOf(taskCheckpoint),
@@ -2111,6 +2716,157 @@ public final class GoalExecutor {
                 checkpoint.getOrDefault(AUXILIARY_MINING_CONTINUATION_KEY, ""),
                 Map.copyOf(obsidianCheckpoint),
                 Map.copyOf(settledServiceTombstone));
+    }
+
+    /**
+     * Validates the mission-level restart envelope before any decoded fallback can erase the
+     * distinction between an absent legacy field and a malformed persisted value.
+     */
+    static Optional<String> restoreCheckpointValidationFailure(
+            Map<String, String> checkpoint) {
+        Map<String, String> values = checkpoint == null ? Map.of() : checkpoint;
+        Map<String, String> task = new java.util.LinkedHashMap<>();
+        values.forEach((key, value) -> {
+            if (key != null && key.startsWith("task.")
+                    && key.length() > "task.".length()) {
+                task.put(key.substring("task.".length()), value);
+            }
+        });
+        boolean huntKind = "HUNT".equals(values.get("task_kind"));
+        boolean huntIdentity = "hunt_pickup".equals(task.get("cursor_kind"));
+        if ((huntKind || huntIdentity)
+                && (!huntKind || !huntIdentity
+                || HuntPickupCheckpoint.inspect(task).isEmpty())) {
+            return Optional.of("mission_restore_invalid_hunt_pickup_checkpoint");
+        }
+        if (decodeHuntSearchCursorNamespace(values).isEmpty()) {
+            return Optional.of("mission_restore_invalid_hunt_search_cursor");
+        }
+        if (decodeSkippedTargetReceipts(values).isEmpty()) {
+            return Optional.of("mission_restore_invalid_skipped_target_receipts");
+        }
+        if (hasAnyReplanSnapshotField(values)
+                && decodeReplanSnapshot(values).isEmpty()) {
+            return Optional.of("mission_restore_invalid_replan_snapshot");
+        }
+        if (decodePersistedMissionCounter(values, "revision").isEmpty()) {
+            return Optional.of("mission_restore_invalid_completed_step_count");
+        }
+        if (decodePersistedMissionCounter(values, "lifetime_replans").isEmpty()) {
+            return Optional.of("mission_restore_invalid_lifetime_replan_count");
+        }
+        if (decodePersistedMissionCounter(values, "replan_count").isEmpty()) {
+            return Optional.of("mission_restore_invalid_replan_count");
+        }
+        if (decodePostconditionRepairCheckpoint(values).isEmpty()) {
+            return Optional.of("mission_restore_invalid_postcondition_repair_checkpoint");
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Missing is a legacy zero. Once persisted, mission budget counters must remain non-negative
+     * integers; malformed values must not refresh a retry budget on restart.
+     */
+    static OptionalInt decodePersistedMissionCounter(
+            Map<String, String> checkpoint, String key) {
+        if (checkpoint == null || !checkpoint.containsKey(key)) {
+            return OptionalInt.of(0);
+        }
+        return canonicalNonNegativeInt(checkpoint.get(key));
+    }
+
+    static Map<String, String> encodePostconditionRepairCheckpoint(
+            int replans, int lastMatched, String fingerprint) {
+        if (!validPostconditionRepairState(replans, lastMatched, fingerprint)) {
+            throw new IllegalArgumentException("invalid postcondition repair state");
+        }
+        String encodedFingerprint = fingerprint.isEmpty() ? ""
+                : Base64.getUrlEncoder().withoutPadding().encodeToString(
+                fingerprint.getBytes(StandardCharsets.UTF_8));
+        return Map.of(
+                POSTCONDITION_REPLANS_KEY, String.valueOf(replans),
+                POSTCONDITION_LAST_MATCHED_KEY, String.valueOf(lastMatched),
+                POSTCONDITION_FINGERPRINT_KEY, encodedFingerprint);
+    }
+
+    /**
+     * Missing is the legacy representation. Once any namespaced field exists, the complete
+     * canonical triple is required so a restart cannot reset the repair count or forget the last
+     * rejected plan fingerprint.
+     */
+    static Optional<PostconditionRepairCheckpoint> decodePostconditionRepairCheckpoint(
+            Map<String, String> checkpoint) {
+        Map<String, String> values = checkpoint == null ? Map.of() : checkpoint;
+        Set<String> presentKeys = values.keySet().stream()
+                .filter(key -> key != null && key.startsWith(POSTCONDITION_PREFIX))
+                .collect(java.util.stream.Collectors.toSet());
+        if (presentKeys.isEmpty()) {
+            return Optional.of(PostconditionRepairCheckpoint.legacy());
+        }
+        if (!presentKeys.equals(POSTCONDITION_REPAIR_KEYS)) {
+            return Optional.empty();
+        }
+
+        OptionalInt replans = canonicalNonNegativeInt(
+                values.get(POSTCONDITION_REPLANS_KEY));
+        OptionalInt lastMatched = canonicalNonNegativeInt(
+                values.get(POSTCONDITION_LAST_MATCHED_KEY));
+        if (replans.isEmpty() || lastMatched.isEmpty()) {
+            return Optional.empty();
+        }
+        String fingerprint = decodeCanonicalPostconditionFingerprint(
+                values.get(POSTCONDITION_FINGERPRINT_KEY)).orElse(null);
+        if (fingerprint == null || !validPostconditionRepairState(
+                replans.getAsInt(), lastMatched.getAsInt(), fingerprint)) {
+            return Optional.empty();
+        }
+        return Optional.of(new PostconditionRepairCheckpoint(
+                true, replans.getAsInt(), lastMatched.getAsInt(), fingerprint));
+    }
+
+    private static OptionalInt canonicalNonNegativeInt(String value) {
+        try {
+            int parsed = Integer.parseInt(value);
+            return parsed >= 0 && String.valueOf(parsed).equals(value)
+                    ? OptionalInt.of(parsed) : OptionalInt.empty();
+        } catch (RuntimeException exception) {
+            return OptionalInt.empty();
+        }
+    }
+
+    private static Optional<String> decodeCanonicalPostconditionFingerprint(
+            String encoded) {
+        if (encoded == null) {
+            return Optional.empty();
+        }
+        if (encoded.isEmpty()) {
+            return Optional.of("");
+        }
+        try {
+            byte[] decoded = Base64.getUrlDecoder().decode(encoded);
+            if (decoded.length > MAX_POSTCONDITION_FINGERPRINT_BYTES) {
+                return Optional.empty();
+            }
+            String fingerprint = new String(decoded, StandardCharsets.UTF_8);
+            String canonical = Base64.getUrlEncoder().withoutPadding()
+                    .encodeToString(fingerprint.getBytes(StandardCharsets.UTF_8));
+            return canonical.equals(encoded)
+                    ? Optional.of(fingerprint) : Optional.empty();
+        } catch (RuntimeException exception) {
+            return Optional.empty();
+        }
+    }
+
+    private static boolean validPostconditionRepairState(
+            int replans, int lastMatched, String fingerprint) {
+        if (replans < 0 || replans > MAX_POSTCONDITION_REPLANS
+                || lastMatched < 0 || fingerprint == null
+                || fingerprint.getBytes(StandardCharsets.UTF_8).length
+                > MAX_POSTCONDITION_FINGERPRINT_BYTES) {
+            return false;
+        }
+        return replans == 0 ? fingerprint.isEmpty() : !fingerprint.isBlank();
     }
 
     /** Missing is the only legacy value; every persisted value must be a non-negative watermark. */
@@ -2159,22 +2915,64 @@ public final class GoalExecutor {
     }
 
     private static Optional<ReplanSnapshot> decodeReplanSnapshot(Map<String, String> checkpoint) {
-        Optional<Integer> steps = signedInt(checkpoint.get("snap_steps"));
-        Optional<Integer> target = signedInt(checkpoint.get("snap_target"));
-        Optional<Integer> x = signedInt(checkpoint.get("snap_x"));
-        Optional<Integer> y = signedInt(checkpoint.get("snap_y"));
-        Optional<Integer> z = signedInt(checkpoint.get("snap_z"));
-        if (steps.isEmpty() || steps.get() < 0 || target.isEmpty() || target.get() < 0
+        Map<String, String> values = checkpoint == null ? Map.of() : checkpoint;
+        Set<String> snapshotKeys = values.keySet().stream()
+                .filter(key -> key != null && key.startsWith("snap_"))
+                .collect(java.util.stream.Collectors.toSet());
+        boolean legacy = snapshotKeys.equals(LEGACY_REPLAN_SNAPSHOT_KEYS);
+        boolean modern = snapshotKeys.equals(MODERN_REPLAN_SNAPSHOT_KEYS);
+        if (!legacy && !modern) {
+            return Optional.empty();
+        }
+        OptionalInt steps = canonicalNonNegativeInt(values.get("snap_steps"));
+        OptionalInt target = canonicalNonNegativeInt(values.get("snap_target"));
+        Optional<Integer> x = canonicalSignedInt(values.get("snap_x"));
+        Optional<Integer> y = canonicalSignedInt(values.get("snap_y"));
+        Optional<Integer> z = canonicalSignedInt(values.get("snap_z"));
+        if (steps.isEmpty() || target.isEmpty()
                 || x.isEmpty() || y.isEmpty() || z.isEmpty()) {
             return Optional.empty();
         }
+        if (legacy) {
+            return Optional.of(new ReplanSnapshot(
+                    steps.getAsInt(), target.getAsInt(),
+                    x.orElseThrow(), y.orElseThrow(), z.orElseThrow(),
+                    "", -1, -1));
+        }
+        OptionalInt huntRaw = canonicalNonNegativeInt(
+                values.get("snap_hunt_raw_meat"));
+        OptionalInt huntSectors = canonicalNonNegativeInt(
+                values.get("snap_hunt_visited_sectors"));
+        String dimension = values.get("snap_dimension");
+        Identifier dimensionId = dimension == null
+                ? null : Identifier.tryParse(dimension);
+        if (huntRaw.isEmpty() || huntSectors.isEmpty()
+                || dimensionId == null || !dimensionId.toString().equals(dimension)) {
+            return Optional.empty();
+        }
         return Optional.of(new ReplanSnapshot(
-                steps.get(), target.get(), x.get(), y.get(), z.get()));
+                steps.getAsInt(), target.getAsInt(),
+                x.orElseThrow(), y.orElseThrow(), z.orElseThrow(),
+                dimension, huntRaw.getAsInt(), huntSectors.getAsInt()));
     }
 
-    private static Optional<Integer> signedInt(String value) {
+    static boolean hasAnyReplanSnapshotField(Map<String, String> checkpoint) {
+        return checkpoint != null && checkpoint.keySet().stream()
+                .anyMatch(key -> key != null && key.startsWith("snap_"));
+    }
+
+    private static boolean hasAnyHuntReplanWatermark(
+            Map<String, String> checkpoint) {
+        return checkpoint != null
+                && (checkpoint.containsKey("snap_hunt_raw_meat")
+                || checkpoint.containsKey("snap_hunt_visited_sectors"));
+    }
+
+    private static Optional<Integer> canonicalSignedInt(String value) {
         try {
-            return Optional.of(Integer.parseInt(value));
+            int parsed = Integer.parseInt(value);
+            return String.valueOf(parsed).equals(value)
+                    ? Optional.of(parsed) : Optional.empty();
         } catch (RuntimeException exception) {
             return Optional.empty();
         }
@@ -2304,6 +3102,26 @@ public final class GoalExecutor {
         return false;
     }
 
+    /**
+     * Captures a committed mission transition before successor dispatch can synchronously start
+     * work or throw. A second capture records the assigned task's initial checkpoint when dispatch
+     * succeeds. BotPersistence keeps both captures asynchronous with respect to disk I/O.
+     */
+    private void captureTransitionAndAssignNext(AIPlayerEntity bot, ActivePlan plan) {
+        captureBeforeAndAfterDispatch(
+                () -> markDirty(bot),
+                () -> assignNext(bot, plan));
+    }
+
+    /** Package-private ordering seam for transition unit tests. */
+    static void captureBeforeAndAfterDispatch(Runnable capture, Runnable dispatch) {
+        java.util.Objects.requireNonNull(capture, "capture");
+        java.util.Objects.requireNonNull(dispatch, "dispatch");
+        capture.run();
+        dispatch.run();
+        capture.run();
+    }
+
     private void assignNext(AIPlayerEntity bot, ActivePlan plan) {
         GoalStep step = plan.steps.pollFirst();
         if (step == null) {
@@ -2312,13 +3130,20 @@ public final class GoalExecutor {
                 finishActive(bot, plan, evaluation, "postcondition_satisfied", false, true);
                 return;
             }
-            if (!(plan.goal instanceof Goal.Build) && bot.isAlive() && plan.postconditionReplans < 3) {
+            if (!(plan.goal instanceof Goal.Build) && bot.isAlive()
+                    && withinPostconditionRepairBudget(plan.postconditionReplans)) {
                 GoalPlanner.GoalPlan fresh = GoalPlanner.plan(
                         bot, plan.goal, snapshotContext(plan), plan.missionId.toString());
-                String fingerprint = fresh.describeSteps();
+                List<GoalStep> repairSteps = applySkippedTargetReceipts(
+                        fresh.success() ? fresh.steps() : List.of(),
+                        plan.skippedTargetReceipts);
+                String fingerprint =
+                        repairSteps.stream().map(GoalStep::describe).toList().toString();
                 boolean progress = evaluation.matched() > plan.lastEvaluationMatched;
-                if (fresh.success() && !fresh.steps().isEmpty()
-                        && (progress || !fingerprint.equals(plan.lastRepairFingerprint))) {
+                if (fresh.success() && !repairSteps.isEmpty()
+                        && shouldAcceptPostconditionRepair(
+                        evaluation.matched(), plan.lastEvaluationMatched,
+                        fingerprint, plan.lastRepairFingerprint)) {
                     plan.postconditionReplans++;
                     plan.lastEvaluationMatched = Math.max(plan.lastEvaluationMatched, evaluation.matched());
                     plan.lastRepairFingerprint = fingerprint;
@@ -2326,11 +3151,11 @@ public final class GoalExecutor {
                             "matched", evaluation.matched(), "required", evaluation.required(),
                             "steps", fingerprint, "repair", plan.postconditionReplans);
                     plan.steps.clear();
-                    plan.steps.addAll(fresh.steps());
-                    plan.totalSteps = fresh.steps().size();
+                    plan.steps.addAll(repairSteps);
+                    plan.totalSteps = repairSteps.size();
                     plan.current = null;
                     plan.currentTask = null;
-                    assignNext(bot, plan);
+                    captureTransitionAndAssignNext(bot, plan);
                     return;
                 }
                 BotLog.task(bot, "goal_postcondition_repair_rejected",
@@ -2363,6 +3188,17 @@ public final class GoalExecutor {
         }
     }
 
+    static boolean withinPostconditionRepairBudget(int replans) {
+        return replans >= 0 && replans < MAX_POSTCONDITION_REPLANS;
+    }
+
+    static boolean shouldAcceptPostconditionRepair(
+            int currentMatched, int lastMatched,
+            String candidateFingerprint, String lastFingerprint) {
+        return currentMatched > lastMatched
+                || !java.util.Objects.equals(candidateFingerprint, lastFingerprint);
+    }
+
     // Phase A 进度信号:目标产物当前库存计数(HaveItem/Stockpile 用其物品,MineOre 用矿石掉落)。
     private static int goalTargetCount(AIPlayerEntity bot, Goal goal) {
         if (goal instanceof Goal.HaveItem hi) {
@@ -2376,6 +3212,73 @@ public final class GoalExecutor {
                     io.github.zoyluo.aibot.action.HarvestCore.expectedDropsFor(mo.ores()));
         }
         return 0;
+    }
+
+    private static int rawMeatCount(AIPlayerEntity bot) {
+        return HuntTask.rawMeatCount(bot);
+    }
+
+    static boolean isUnsettledHuntPhysicalDebt(GoalStep.Kind kind, String reason) {
+        if (kind != GoalStep.Kind.HUNT || reason == null) {
+            return false;
+        }
+        return reason.startsWith("hunt_surface_return_timeout")
+                || reason.startsWith("hunt_surface_return_unreachable")
+                || reason.startsWith("hunt_surface_anchor_missing")
+                || reason.startsWith("hunt_dimension_changed")
+                || reason.startsWith("hunt_drop_unrecovered")
+                || reason.startsWith("hunt_pickup_observation_timeout")
+                || reason.startsWith("hunt_water_rescue_timeout")
+                || reason.startsWith("hunt_pickup_checkpoint_capacity")
+                || reason.startsWith("hunt_pickup_time_rollback")
+                || reason.startsWith("hunt_pickup_dimension_mismatch")
+                || reason.startsWith("hunt_pickup_invalid_checkpoint")
+                || reason.startsWith("hunt_search_capacity_exhausted")
+                || reason.startsWith("hunt_search_ordinal_exhausted");
+    }
+
+    /** Pure policy boundary for the generic best-effort failure branch. */
+    static boolean shouldSkipFailedStep(Goal goal, GoalStep step, String reason) {
+        if (step == null || isUnsettledHuntPhysicalDebt(step.kind(), reason)) {
+            return false;
+        }
+        boolean cookFinalOfFood = goal instanceof Goal.Food
+                && step.kind() == GoalStep.Kind.COOK_FOOD;
+        boolean foodGoalBestEffort = goal instanceof Goal.Food;
+        return !cookFinalOfFood && (step.bestEffort()
+                || foodGoalBestEffort
+                || step.kind() == GoalStep.Kind.STOCKPILE);
+    }
+
+    /**
+     * Pure replan-watermark policy. Goal output and completed steps are universal progress.
+     * HUNT then accepts only factual food/search gains; all other tasks retain the existing
+     * controlled movement signal used by branch mining.
+     */
+    static boolean madeReplanProgress(
+            GoalStep.Kind kind,
+            int completedSteps, int snapshotSteps,
+            int targetCount, int snapshotTargetCount,
+            int huntRawMeat, int snapshotHuntRawMeat,
+            int huntVisitedSectors, int snapshotHuntVisitedSectors,
+            String dimension, String snapshotDimension,
+            int x, int y, int z,
+            int snapshotX, int snapshotY, int snapshotZ) {
+        if (completedSteps > snapshotSteps || targetCount > snapshotTargetCount) {
+            return true;
+        }
+        if (kind == GoalStep.Kind.HUNT) {
+            return huntRawMeat > snapshotHuntRawMeat
+                    || huntVisitedSectors > snapshotHuntVisitedSectors;
+        }
+        if (dimension == null || dimension.isBlank()
+                || snapshotDimension == null || snapshotDimension.isBlank()
+                || !dimension.equals(snapshotDimension)) {
+            return false;
+        }
+        long dx = (long) x - snapshotX;
+        long dz = (long) z - snapshotZ;
+        return y < snapshotY || dx * dx + dz * dz >= 64L;
     }
 
     /**
@@ -2760,6 +3663,15 @@ public final class GoalExecutor {
             }
             return;
         }
+        GoalStep failedStep = plan.current;
+        if (isUnsettledHuntPhysicalDebt(
+                failedStep == null ? null : failedStep.kind(), reason)) {
+            // Meat in inventory cannot erase a return-to-surface debt. In particular, Goal.Food
+            // normally treats HUNT as best-effort; letting these failures reach that branch would
+            // skip directly to cooking while the bot is still underground.
+            finishActive(bot, plan, evaluate(bot, plan), reason, false, true);
+            return;
+        }
         // A descent that is physically below its requested hand-off layer is a broken safety
         // invariant, not useful mining progress. Replanning from that Y would skip DESCEND_TO_Y and
         // continue the mission on an unverified floor, so terminate the mission fail-closed.
@@ -2809,31 +3721,46 @@ public final class GoalExecutor {
         // 例外:Food 目标的 COOK_FOOD 是终局产出步——失败(no_raw_food)=整个目标必败,skip 等于无声放弃。
         // 放行到下面的 replan:重新感知择源(打猎扑空后动物多半已不在,replan 会落到浆果/面包等兜底源;
         // 实测打猎 1t 扑空 → 烤无肉 → 静默结束,从未给过兜底源机会)。
-        boolean cookFinalOfFood = plan.goal instanceof Goal.Food
-                && plan.current != null && plan.current.kind() == GoalStep.Kind.COOK_FOOD;
-        boolean foodGoalBestEffort = plan.goal instanceof Goal.Food;
-        if (!cookFinalOfFood && plan.current != null && (plan.current.bestEffort()
-                || foodGoalBestEffort
-                || plan.current.kind() == GoalStep.Kind.STOCKPILE)) {
+        if (shouldSkipFailedStep(plan.goal, plan.current, reason)) {
             if (settledTerminalService.isEmpty()) {
                 captureTaskEvidence(bot, plan);
             }
-            plan.skippedSteps.add(new GoalResult.SkippedStep(plan.current.describe(), reason));
+            if (plan.skippedTargetReceipts.size()
+                    >= MAX_SKIPPED_TARGET_RECEIPTS) {
+                finishActive(bot, plan, evaluate(bot, plan),
+                        "skipped_target_receipt_capacity_exhausted",
+                        false, true, GoalResult.Status.FAILED);
+                return;
+            }
+            SkippedTargetReceipt receipt =
+                    new SkippedTargetReceipt(plan.current, reason);
+            plan.skippedTargetReceipts.add(receipt);
+            plan.skippedSteps.add(receipt.asSkippedStep());
             BotLog.task(bot, "goal_step_skipped_besteffort", "step", plan.current.describe(), "reason", reason);
-            assignNext(bot, plan);
+            clearCompletedTaskCheckpoint(plan);
+            plan.current = null;
+            plan.currentTask = null;
+            captureTransitionAndAssignNext(bot, plan);
             return;
         }
-        // Phase A 进度感知预算(断点恢复核心):有进展→清零"连续无进展"计数,产出区被瞬时打断
-        // (骷髅/卡顿)不与原地空转同罪。进展=完成新步 || 挖到更多目标物 || 下潜更深 || 横向位移≥8格
-        //(位移信号对 ore_dig strip-mining 前进尤其关键——它是 real_diamond 主导失败面)。只认单向增量防往返误判。
+        // Phase A 进度感知预算(断点恢复核心):有进展→清零"连续无进展"计数。HUNT
+        // 只把净新增生肉或首次访问的搜索 sector 视为额外进展，绝不让追逐造成的横移/下潜
+        // 刷新预算；其他步骤保留矿道横移与下潜语义。
         net.minecraft.util.math.BlockPos bp = bot.getBlockPos();
         int curTarget = goalTargetCount(bot, plan.goal);
-        long hMoved2 = (long) (bp.getX() - plan.snapX) * (bp.getX() - plan.snapX)
-                     + (long) (bp.getZ() - plan.snapZ) * (bp.getZ() - plan.snapZ);
-        boolean madeProgress = plan.completedSteps > plan.snapSteps
-                || curTarget > plan.snapTargetCount
-                || bp.getY() < plan.snapY
-                || hMoved2 >= 64;
+        int currentHuntRawMeat = rawMeatCount(bot);
+        int currentHuntVisitedSectors = plan.huntSearchCursor.visitedCount();
+        String currentDimension = bot.getServerWorld().getRegistryKey()
+                .getValue().toString();
+        boolean madeProgress = madeReplanProgress(
+                plan.current == null ? null : plan.current.kind(),
+                plan.completedSteps, plan.snapSteps,
+                curTarget, plan.snapTargetCount,
+                currentHuntRawMeat, plan.snapHuntRawMeat,
+                currentHuntVisitedSectors, plan.snapHuntVisitedSectors,
+                currentDimension, plan.snapDimension,
+                bp.getX(), bp.getY(), bp.getZ(),
+                plan.snapX, plan.snapY, plan.snapZ);
         if (madeProgress) {
             plan.replanCount = 0; // 进展赦免
         }
@@ -2842,6 +3769,9 @@ public final class GoalExecutor {
         plan.snapX = bp.getX();
         plan.snapY = bp.getY();
         plan.snapZ = bp.getZ();
+        plan.snapDimension = currentDimension;
+        plan.snapHuntRawMeat = currentHuntRawMeat;
+        plan.snapHuntVisitedSectors = currentHuntVisitedSectors;
         // 死亡闸:连续 3 次无进展 replan，或耗尽与原始长配额批次数绑定的终生预算，
         // 或 replan 关闭 → 判死。计数在闸后递增，因此上限表示实际允许的 replan 次数。
         if (!withinReplanBudget(plan.goal, plan.replanCount, plan.lifetimeReplans)
@@ -2855,7 +3785,9 @@ public final class GoalExecutor {
                 bot, plan.goal, snapshotContext(plan), plan.missionId.toString());
         Optional<CreateObsidianTask.RestoreMetadata> obsidianRestore =
                 CreateObsidianTask.inspectCheckpoint(plan.obsidianCheckpoint);
-        List<GoalStep> replanned = new ArrayList<>(fresh.success() ? fresh.steps() : List.of());
+        List<GoalStep> replanned = new ArrayList<>(applySkippedTargetReceipts(
+                fresh.success() ? fresh.steps() : List.of(),
+                plan.skippedTargetReceipts));
         if (obsidianRestore.isPresent()) {
             CreateObsidianTask.RestoreMetadata metadata = obsidianRestore.get();
             if (!fresh.success() && !metadata.transactionOpen()) {
@@ -2943,8 +3875,7 @@ public final class GoalExecutor {
         plan.current = null;
         plan.currentTask = null;
         report(bot, "遇到问题,我重新规划了一次。");
-        assignNext(bot, plan);
-        markDirty(bot);
+        captureTransitionAndAssignNext(bot, plan);
     }
 
     private static Optional<MiningServiceTask.RestoreMetadata> settledTerminalServiceFailure(
@@ -3012,9 +3943,10 @@ public final class GoalExecutor {
                 "mission_id", plan.missionId,
                 "budget_used", metadata.budgetUsed(),
                 "face", metadata.cursor().face().toShortString());
-        TaskManager.INSTANCE.assign(bot, plan.currentTask,
-                TaskOrigin.mission(plan.missionId, plan.current.describe()));
-        markDirty(bot);
+        captureBeforeAndAfterDispatch(
+                () -> markDirty(bot),
+                () -> TaskManager.INSTANCE.assign(bot, plan.currentTask,
+                        TaskOrigin.mission(plan.missionId, plan.current.describe())));
         return true;
     }
 
@@ -3127,18 +4059,21 @@ public final class GoalExecutor {
             return false;
         }
         plan.currentTask = resumed.orElseThrow();
-        TaskManager.INSTANCE.assign(bot, plan.currentTask,
-                TaskOrigin.mission(plan.missionId, plan.current.describe()));
-        TaskManager.INSTANCE.pauseFor(bot, "ore_channel_tool_resupply");
-        TaskManager.INSTANCE.assign(bot, ResupplyTask.tool(requested),
-                TaskOrigin.of(TaskOrigin.Kind.SYSTEM_BACKGROUND,
-                        "ore_channel_tool_resupply"));
+        captureBeforeAndAfterDispatch(
+                () -> markDirty(bot),
+                () -> {
+                    TaskManager.INSTANCE.assign(bot, plan.currentTask,
+                            TaskOrigin.mission(plan.missionId, plan.current.describe()));
+                    TaskManager.INSTANCE.pauseFor(bot, "ore_channel_tool_resupply");
+                    TaskManager.INSTANCE.assign(bot, ResupplyTask.tool(requested),
+                            TaskOrigin.of(TaskOrigin.Kind.SYSTEM_BACKGROUND,
+                                    "ore_channel_tool_resupply"));
+                });
         BotLog.task(bot, "goal_ore_channel_resupply_scheduled",
                 "required", requiredId,
                 "mission_id", plan.missionId,
                 "budget_used", metadata.orElseThrow().budgetUsed(),
                 "face", metadata.orElseThrow().cursor().face().toShortString());
-        markDirty(bot);
         return true;
     }
 
@@ -3184,7 +4119,8 @@ public final class GoalExecutor {
         if (!fresh.success()) {
             return false;
         }
-        List<GoalStep> continuation = new ArrayList<>(fresh.steps());
+        List<GoalStep> continuation = new ArrayList<>(applySkippedTargetReceipts(
+                fresh.steps(), plan.skippedTargetReceipts));
         String fingerprint = OreDigTask.oreFingerprint(ore.ores());
         int serviceBoundary = goalTargetCount(bot, plan.goal);
         int serviceIndex = -1;
@@ -3245,8 +4181,7 @@ public final class GoalExecutor {
                 "budget", ore.budgetUsed(),
                 "face", ore.cursor().face().toShortString(),
                 "service_boundary", service.count());
-        assignNext(bot, plan);
-        markDirty(bot);
+        captureTransitionAndAssignNext(bot, plan);
         return true;
     }
 
@@ -3278,7 +4213,8 @@ public final class GoalExecutor {
         if (!fresh.success()) {
             return false;
         }
-        List<GoalStep> continuation = new ArrayList<>(fresh.steps());
+        List<GoalStep> continuation = new ArrayList<>(applySkippedTargetReceipts(
+                fresh.steps(), plan.skippedTargetReceipts));
         String fingerprint = OreDigTask.oreFingerprint(ore.ores());
         int serviceIndex = -1;
         int miningIndex = -1;
@@ -3322,8 +4258,7 @@ public final class GoalExecutor {
                 "budget", ore.budgetUsed(),
                 "face", ore.cursor().face().toShortString(),
                 "service_boundary", service.count());
-        assignNext(bot, plan);
-        markDirty(bot);
+        captureTransitionAndAssignNext(bot, plan);
         return true;
     }
 
@@ -3442,8 +4377,7 @@ public final class GoalExecutor {
                 "service_limit", ore.targetCount(),
                 "repeat", repeatedHandoff,
                 "ore_fingerprint", expectedFingerprint);
-        assignNext(bot, plan);
-        markDirty(bot);
+        captureTransitionAndAssignNext(bot, plan);
         return true;
     }
 
@@ -3545,7 +4479,9 @@ public final class GoalExecutor {
             case FARM -> Optional.of(new FarmTask(bot.getBlockPos(), 4, step.input(), step.block(),
                     true, false, step.item(), step.count()));
             // 第4层:HUNT 步 → HuntTask 猎杀动物取生肉(备粮)。
-            case HUNT -> Optional.of(new HuntTask(step.count(), !step.bestEffort()));
+            case HUNT -> Optional.of(new HuntTask(
+                    step.count(), !step.bestEffort(), plan.huntSearchCursor,
+                    plan.peekTaskCheckpoint(GoalStep.Kind.HUNT)));
             // P0 食物闭环:COOK_FOOD 步 → SmeltTask cookAll 模式,把背包生肉逐种烤成熟肉。
             case COOK_FOOD -> Optional.of(new SmeltTask(step.count(), !step.bestEffort()));
             // 蛋糕链:MILK_COW 步 → MilkCowTask 用空桶挤 count 桶牛奶。
@@ -4270,12 +5206,25 @@ public final class GoalExecutor {
                                        GoalEvaluation evaluation,
                                        GoalResult.Status status,
                                        String reason) {
+        recordImmediateResult(
+                bot, missionId, goal, startedTick, evaluation, status, reason, List.of());
+    }
+
+    private void recordImmediateResult(AIPlayerEntity bot,
+                                       UUID missionId,
+                                       Goal goal,
+                                       int startedTick,
+                                       GoalEvaluation evaluation,
+                                       GoalResult.Status status,
+                                       String reason,
+                                       List<GoalResult.SkippedStep> skippedSteps) {
         if (pocketRestorePreflights.contains(bot.getUuid())) {
             return;
         }
         publishResult(bot, new GoalResult(
                 resultSequence.incrementAndGet(), missionId, goal, status, evaluation, reason,
-                startedTick, bot.getServer().getTicks(), List.of(), null));
+                startedTick, bot.getServer().getTicks(),
+                skippedSteps == null ? List.of() : List.copyOf(skippedSteps), null));
     }
 
     private void publishResult(AIPlayerEntity bot, GoalResult result) {
@@ -4366,6 +5315,7 @@ public final class GoalExecutor {
         private final ArrayDeque<GoalStep> steps;
         private final java.util.List<String> stepLabels; // 完整步骤描述(steps 会随执行 poll 空,这里留全量供面板任务链条展示)
         private final List<GoalResult.SkippedStep> skippedSteps = new ArrayList<>();
+        private final List<SkippedTargetReceipt> skippedTargetReceipts = new ArrayList<>();
         private GoalStep current;
         private Task currentTask;
         private BlueprintSchema blueprint;
@@ -4386,6 +5336,13 @@ public final class GoalExecutor {
         private int snapSteps;         // 上次 replan 时 completedSteps 快照
         private int snapTargetCount;   // 上次 replan 时目标产物库存计数
         private int snapX, snapY, snapZ; // 上次 replan 时 bot 坐标(横向位移/下潜=进展判据)
+        private String snapDimension = "";
+        private int snapHuntRawMeat;
+        private int snapHuntVisitedSectors;
+        /** Mission-scoped surface search facts shared by every HUNT task and replan. */
+        private final HuntSearchCursor huntSearchCursor;
+        /** Synthetic restore step that settles one durable PICKUP before any live replan. */
+        private boolean huntPickupSettlement;
         private GoalStep.Kind taskCheckpointKind;
         private final Map<String, String> taskCheckpoint = new java.util.LinkedHashMap<>();
         /** Latest branch-mining cursor; survives intervening MINING_SERVICE checkpoints. */
@@ -4419,7 +5376,9 @@ public final class GoalExecutor {
                            GoalSnapshotCollector.Context context,
                            ArrayDeque<GoalStep> steps,
                            int totalSteps,
-                           java.util.List<String> stepLabels) {
+                           java.util.List<String> stepLabels,
+                           HuntSearchCursor huntSearchCursor,
+                           List<SkippedTargetReceipt> skippedTargetReceipts) {
             this.missionId = missionId;
             this.startedTick = startedTick;
             this.goal = goal;
@@ -4433,6 +5392,14 @@ public final class GoalExecutor {
             this.steps = steps;
             this.totalSteps = totalSteps;
             this.stepLabels = new ArrayList<>(stepLabels);
+            this.huntSearchCursor = java.util.Objects.requireNonNull(
+                    huntSearchCursor, "huntSearchCursor");
+            this.skippedTargetReceipts.addAll(
+                    java.util.Objects.requireNonNull(
+                            skippedTargetReceipts, "skippedTargetReceipts"));
+            this.skippedTargetReceipts.stream()
+                    .map(SkippedTargetReceipt::asSkippedStep)
+                    .forEach(this.skippedSteps::add);
         }
 
         private Map<String, String> takeTaskCheckpoint(GoalStep.Kind kind) {
@@ -4834,7 +5801,36 @@ public final class GoalExecutor {
                                   int targetCount,
                                   int x,
                                   int y,
-                                  int z) {
+                                  int z,
+                                  String dimension,
+                                  int huntRawMeat,
+                                  int huntVisitedSectors) {
+    }
+
+    record SkippedTargetReceipt(GoalStep step, String reason) {
+        SkippedTargetReceipt {
+            java.util.Objects.requireNonNull(step, "step");
+            reason = reason == null ? "" : reason;
+            if (reason.getBytes(StandardCharsets.UTF_8).length
+                    > MAX_SKIPPED_TARGET_TEXT_BYTES
+                    || step.tag() != null && step.tag().getBytes(StandardCharsets.UTF_8).length
+                    > MAX_SKIPPED_TARGET_TEXT_BYTES) {
+                throw new IllegalArgumentException("skipped target receipt text too large");
+            }
+        }
+
+        GoalResult.SkippedStep asSkippedStep() {
+            return new GoalResult.SkippedStep(step.describe(), reason);
+        }
+    }
+
+    record PostconditionRepairCheckpoint(boolean persisted,
+                                         int replans,
+                                         int lastMatched,
+                                         String fingerprint) {
+        private static PostconditionRepairCheckpoint legacy() {
+            return new PostconditionRepairCheckpoint(false, 0, 0, "");
+        }
     }
 
     private record RestoreSeed(UUID missionId,
@@ -4844,6 +5840,10 @@ public final class GoalExecutor {
                                int rareResourceRetriesUsed,
                                int replanCount,
                                Optional<ReplanSnapshot> replanSnapshot,
+                               HuntSearchCursor huntSearchCursor,
+                               List<SkippedTargetReceipt> skippedTargetReceipts,
+                               String validationFailure,
+                               PostconditionRepairCheckpoint postconditionRepair,
                                int startedTick,
                                GoalStep.Kind taskCheckpointKind,
                                Map<String, String> taskCheckpoint,

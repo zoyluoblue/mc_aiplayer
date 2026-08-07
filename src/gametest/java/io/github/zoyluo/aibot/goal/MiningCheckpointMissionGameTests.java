@@ -5298,6 +5298,8 @@ public final class MiningCheckpointMissionGameTests implements FabricGameTest {
             legacy.remove("snap_x");
             legacy.remove("snap_y");
             legacy.remove("snap_z");
+            legacy.remove("snap_hunt_raw_meat");
+            legacy.remove("snap_hunt_visited_sectors");
             BlockPos legacyBaseline = bot.getBlockPos().toImmutable();
 
             TaskManager.INSTANCE.cancelIntentTasks(bot, "gametest_legacy_replan_checkpoint");
@@ -5322,6 +5324,11 @@ public final class MiningCheckpointMissionGameTests implements FabricGameTest {
                             && String.valueOf(legacyBaseline.getY()).equals(migratedCheckpoint.get("snap_y"))
                             && String.valueOf(legacyBaseline.getZ()).equals(migratedCheckpoint.get("snap_z")),
                     "legacy checkpoint did not baseline live progress facts: "
+                            + checkpointSummary(migratedCheckpoint));
+            require(context, "0".equals(migratedCheckpoint.get("snap_hunt_raw_meat"))
+                            && "0".equals(migratedCheckpoint.get(
+                            "snap_hunt_visited_sectors")),
+                    "legacy checkpoint did not rewrite hunt progress watermarks: "
                             + checkpointSummary(migratedCheckpoint));
 
             AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);

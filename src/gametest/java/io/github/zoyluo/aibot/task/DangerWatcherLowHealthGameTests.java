@@ -1606,7 +1606,11 @@ public final class DangerWatcherLowHealthGameTests implements FabricGameTest {
         });
     }
 
-    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 40)
+    // This fixture opens a fourteen-block hostile corridor, wider than GameTest's default
+    // structure spacing. Keep it in an isolated batch so neighbouring mobs/walls cannot change
+    // the admission fact between the two synchronous scans.
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "nakedEatThreatCooldownIsolation", tickLimit = 40)
     public void observedHostileInsideThreatCooldownBlocksNewNakedHealingEat(
             TestContext context) {
         AIPlayerEntity bot = spawnOnPlatform(context, "NakedEatAdmissionGT", 2);
@@ -1679,7 +1683,10 @@ public final class DangerWatcherLowHealthGameTests implements FabricGameTest {
         despawnAndComplete(context, bot);
     }
 
-    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 80)
+    // The terminal-episode decision counts every observable hostile. An isolated batch proves
+    // the intended close zombie without inheriting ranged mobs from adjacent empty structures.
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "terminalShelterEpisodeIsolation", tickLimit = 80)
     public void terminalShelterEpisodeUsesCloseDefensiveCombatUntilRelocation(
             TestContext context) {
         AIPlayerEntity bot = spawnOnPlatform(context, "ShelterEpisodeFallbackGT", 2);

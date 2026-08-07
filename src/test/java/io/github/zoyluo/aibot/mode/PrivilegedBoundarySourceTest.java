@@ -31,7 +31,6 @@ class PrivilegedBoundarySourceTest {
                 "network/AIBotServerNetworking.java",
                 "task/DangerWatcher.java",
                 "task/GatherQuotaTask.java",
-                "task/HuntTask.java",
                 "task/NavSafetyNet.java");
         Map<String, String> matches = matchingSources(DIRECT_TELEPORT);
         assertEquals(expected, matches.keySet(),

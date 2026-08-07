@@ -93,22 +93,52 @@ public final class AStarPathfinder {
     }
 
     public PathfindingResult findPath() {
+        return findPath(true, Integer.MIN_VALUE);
+    }
+
+    /**
+     * Runs a topology-fresh search without reading or populating the ordinary TTL result cache.
+     *
+     * <p>Safety contracts use this seam for outbound/return admission and runtime return leases.
+     * A cached route is useful for ordinary navigation, but cannot prove that a reversible corridor
+     * still exists after an external block, piston, explosion or fluid update.</p>
+     */
+    public PathfindingResult findPathUncached() {
+        return findPath(false, Integer.MIN_VALUE);
+    }
+
+    /**
+     * Runs an uncached search whose graph cannot expand below {@code minimumY}.
+     * This finds a longer legal surface route when the ordinary shortest route uses a forbidden
+     * descent, rather than finding that descent first and rejecting the whole destination.
+     */
+    public PathfindingResult findPathUncachedAtOrAbove(int minimumY) {
+        return findPath(false, minimumY);
+    }
+
+    private PathfindingResult findPath(boolean useResultCache, int minimumY) {
         long startTime = System.currentTimeMillis();
         BotLog.path(null, "findpath_start", "start", LogFields.pos(start), "goal", LogFields.pos(goal));
         Standability.clearCache();
         BlockPos effectiveStart = resolveEndpoint(start, true);
-        if (effectiveStart == null) {
+        if (effectiveStart == null || effectiveStart.getY() < minimumY) {
             return done(PathfindingResult.failure(FailureReason.NO_START, 0, elapsed(startTime)));
         }
         BlockPos effectiveGoal = resolveEndpoint(goal, false);
-        if (effectiveGoal == null) {
+        if (effectiveGoal == null || effectiveGoal.getY() < minimumY) {
             return done(PathfindingResult.failure(FailureReason.GOAL_NOT_STANDABLE, 0, elapsed(startTime)));
         }
         enumerator.setPathGoal(effectiveGoal);
-        CacheKey cacheKey = new CacheKey(world.getRegistryKey().getValue().toString(), effectiveStart, effectiveGoal, (int) (maxNodes + heuristicWeight * 1000), maxMillis, canPillar, allowDig, cacheVersion);
-        PathfindingResult cached = cached(cacheKey, startTime);
-        if (cached != null) {
-            return cached;
+        CacheKey cacheKey = new CacheKey(
+                world.getRegistryKey().getValue().toString(),
+                effectiveStart, effectiveGoal,
+                (int) (maxNodes + heuristicWeight * 1000), maxMillis,
+                canPillar, allowDig, minimumY, cacheVersion);
+        if (useResultCache) {
+            PathfindingResult cached = cached(cacheKey, startTime);
+            if (cached != null) {
+                return cached;
+            }
         }
 
         PriorityQueue<Node> open = new PriorityQueue<>(Comparator
@@ -124,11 +154,17 @@ public final class AStarPathfinder {
         int explored = 0;
         while (!open.isEmpty()) {
             if (explored >= maxNodes) {
-                return done(cache(cacheKey, PathfindingResult.failure(FailureReason.SEARCH_LIMIT, explored, elapsed(startTime)), startTime));
+                return finish(cacheKey,
+                        PathfindingResult.failure(
+                                FailureReason.SEARCH_LIMIT, explored, elapsed(startTime)),
+                        startTime, useResultCache);
             }
             if (elapsed(startTime) > maxMillis) {
                 BotLog.comm(null, "findpath_timeout_diag", "explored", explored, "ms", elapsed(startTime), "open", open.size(), "dig", allowDig);
-                return done(cache(cacheKey, PathfindingResult.failure(FailureReason.TIMEOUT, explored, elapsed(startTime)), startTime));
+                return finish(cacheKey,
+                        PathfindingResult.failure(
+                                FailureReason.TIMEOUT, explored, elapsed(startTime)),
+                        startTime, useResultCache);
             }
 
             Node current = open.poll();
@@ -137,11 +173,15 @@ public final class AStarPathfinder {
             }
             explored++;
             if (current.pos().equals(effectiveGoal)) {
-                return done(cache(cacheKey, PathfindingResult.success(reconstruct(current), explored, elapsed(startTime)), startTime));
+                return finish(cacheKey,
+                        PathfindingResult.success(
+                                reconstruct(current), explored, elapsed(startTime)),
+                        startTime, useResultCache);
             }
 
             for (NeighborCandidate neighbor : enumerator.getNeighbors(current.pos(), world)) {
-                if (closed.contains(neighbor.pos())) {
+                if (neighbor.pos().getY() < minimumY
+                        || closed.contains(neighbor.pos())) {
                     continue;
                 }
                 double tentativeG = current.gCost() + CostModel.stepCost(current, neighbor, world);
@@ -158,7 +198,16 @@ public final class AStarPathfinder {
                         current));
             }
         }
-        return done(cache(cacheKey, PathfindingResult.failure(FailureReason.GOAL_UNREACHABLE, explored, elapsed(startTime)), startTime));
+        return finish(cacheKey,
+                PathfindingResult.failure(
+                        FailureReason.GOAL_UNREACHABLE, explored, elapsed(startTime)),
+                startTime, useResultCache);
+    }
+
+    private static PathfindingResult finish(
+            CacheKey key, PathfindingResult result, long nowMillis,
+            boolean useResultCache) {
+        return done(useResultCache ? cache(key, result, nowMillis) : result);
     }
 
     private BlockPos resolveEndpoint(BlockPos requested, boolean startPoint) {
@@ -245,7 +294,16 @@ public final class AStarPathfinder {
         return System.currentTimeMillis() - startTime;
     }
 
-    private record CacheKey(String dimension, BlockPos start, BlockPos goal, int maxNodes, long maxMillis, boolean canPillar, boolean allowDig, long version) {
+    private record CacheKey(
+            String dimension,
+            BlockPos start,
+            BlockPos goal,
+            int maxNodes,
+            long maxMillis,
+            boolean canPillar,
+            boolean allowDig,
+            int minimumY,
+            long version) {
         private CacheKey {
             start = start.toImmutable();
             goal = goal.toImmutable();

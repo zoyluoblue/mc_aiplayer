@@ -472,6 +472,61 @@ public final class EmergencyShelterAtomicRecoveryGameTests implements FabricGame
     }
 
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "shelterFoodNineteenEfficiency", tickLimit = 1600)
+    public void foodNineteenWaitsForNaturalHealingWithoutEating(TestContext context) {
+        BlockPos feet = context.getAbsolutePos(new BlockPos(4, 4, 4));
+        preparePlatform(context, feet, 4);
+        List<BlockPos> shell = shelterShell(feet);
+        AIPlayerEntity bot = spawn(context, "ShelterFoodNineteenGT", feet);
+        InventoryAction.giveItem(bot, new ItemStack(Items.DIRT, 16));
+        InventoryAction.giveItem(bot, new ItemStack(Items.COOKED_BEEF));
+
+        EmergencyShelterTask task = new EmergencyShelterTask();
+        TaskManager.INSTANCE.assign(bot, task,
+                TaskOrigin.of(TaskOrigin.Kind.VERIFY,
+                        "gametest_shelter_food_nineteen_efficiency"));
+        boolean[] boundaryInjected = {false};
+        boolean[] naturalHealingObserved = {false};
+        context.runAtEveryTick(() -> {
+            context.getWorld().setTimeOfDay(1000L);
+            if (task.state() == TaskState.FAILED || task.state() == TaskState.CANCELLED) {
+                context.throwGameTestException("food-19 shelter ended as " + task.state()
+                        + ":" + task.failureReason() + " " + task.describe());
+                return;
+            }
+            boolean sealed = shell.stream().allMatch(pos -> isSealed(context, pos));
+            if (!boundaryInjected[0] && sealed) {
+                bot.setHealth(17.0F);
+                bot.getHungerManager().setFoodLevel(19);
+                bot.getHungerManager().setSaturationLevel(5.0F);
+                boundaryInjected[0] = true;
+                return;
+            }
+            if (boundaryInjected[0]) {
+                require(context, InventoryAction.countItem(bot, Items.COOKED_BEEF) == 1,
+                        "food 19 consumed a reserve item despite active natural regeneration");
+                if (bot.getHealth() > 17.0F) {
+                    naturalHealingObserved[0] = true;
+                }
+                if (bot.getHealth() < 18.0F) {
+                    require(context, task.state() == TaskState.RUNNING && sealed,
+                            "food-19 shelter opened before natural healing reached 18 HP");
+                }
+            }
+            if (task.state() != TaskState.COMPLETED) {
+                return;
+            }
+            require(context, boundaryInjected[0] && naturalHealingObserved[0]
+                            && bot.getHealth() >= 18.0F,
+                    "food-19 fixture did not recover through natural regeneration");
+            require(context, InventoryAction.countItem(bot, Items.COOKED_BEEF) == 1,
+                    "food-19 completion spent its untouched reserve");
+            assertPhysicalExit(context, bot, feet);
+            finish(context, bot, "ShelterFoodNineteenGT");
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
             batchId = "shelterNightHoldIsolation", tickLimit = 1200)
     public void surfaceShelterStaysSealedUntilDaylight(TestContext context) {
         BlockPos feet = highSurfaceFeet(context);

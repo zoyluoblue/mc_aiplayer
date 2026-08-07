@@ -41,6 +41,8 @@ public final class EmergencyShelterTask extends AbstractTask {
     private static final int DAYLIGHT_GRACE_TICKS = 100;
     private static final int LOW_HEALTH_HOLD_LIMIT = 600;
     private static final float SAFE_EXIT_HEALTH = 18.0F;
+    private static final float CRITICAL_EAT_HEALTH = 8.0F;
+    private static final int EFFICIENT_EAT_FOOD_LEVEL = 18;
     private static final String ENVIRONMENTAL_ESCAPE_REQUIRED =
             "shelter_environmental_escape_required";
     private static final Direction[] HORIZONTAL = {
@@ -468,8 +470,8 @@ public final class EmergencyShelterTask extends AbstractTask {
 
     private boolean tickHoldEating(AIPlayerEntity bot) {
         if (holdEatTask == null) {
-            if (bot.getHealth() >= SAFE_EXIT_HEALTH
-                    || bot.getHungerManager().getFoodLevel() >= 20
+            if (!shouldStartHoldEating(
+                    bot.getHealth(), bot.getHungerManager().getFoodLevel())
                     || InventoryAction.findFoodSlot(bot) < 0) {
                 return false;
             }
@@ -489,6 +491,15 @@ public final class EmergencyShelterTask extends AbstractTask {
         }
         holdEatTask = null;
         return true;
+    }
+
+    static boolean shouldStartHoldEating(float health, int foodLevel) {
+        if (health >= SAFE_EXIT_HEALTH || foodLevel >= 20) {
+            return false;
+        }
+        // Food 18+ already permits natural regeneration. Save the physical item unless the bot
+        // is at the same critical-health boundary that admits an immediate emergency shelter.
+        return foodLevel < EFFICIENT_EAT_FOOD_LEVEL || health <= CRITICAL_EAT_HEALTH;
     }
 
     private void tickOpenExit(AIPlayerEntity bot) {

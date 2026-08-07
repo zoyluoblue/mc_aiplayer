@@ -1134,6 +1134,34 @@ public final class GoalPlannerMiningGameTests implements FabricGameTest {
     }
 
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
+    public void diamondStackReplansExactNetHuntAfterShelterConsumesRawMeat(
+            TestContext context) {
+        GoalPlanner.GoalPlan plan = GoalPlanner.planFromState(
+                null,
+                new Goal.MineOre(Set.of(Blocks.DIAMOND_ORE), 64),
+                Map.of(Items.BEEF, 37),
+                64, 64,
+                false, false, false, ignored -> false, null);
+
+        require(context, plan.success(), "unresolved=" + plan.unresolved());
+        List<GoalStep> hunts = plan.steps().stream()
+                .filter(step -> step.kind() == GoalStep.Kind.HUNT)
+                .toList();
+        int cook = indexOf(plan, step -> step.kind() == GoalStep.Kind.COOK_FOOD);
+        require(context, hunts.stream().mapToInt(GoalStep::count).sum() == 35
+                        && hunts.stream().allMatch(step -> step.count() <= 4),
+                "37 carried raw meat must leave an exact 35-meat hunt deficit: "
+                        + plan.describeSteps());
+        require(context, cook >= 0
+                        && plan.steps().get(cook).count()
+                        == MiningBudget.RARE_BOOTSTRAP_FOOD
+                        && !plan.steps().get(cook).bestEffort(),
+                "carried raw meat must still cook the full 72-unit hard reserve: "
+                        + plan.describeSteps());
+        context.complete();
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
     public void nearBrokenStonePicksStillPlanRareKitImmediatelyBeforeFinalDescent(
             TestContext context) {
         MiningBudget rareBudget = MiningBudget.forQuota(64, true, ToolTier.IRON);

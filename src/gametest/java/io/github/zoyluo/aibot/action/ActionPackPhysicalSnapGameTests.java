@@ -5,6 +5,7 @@ import io.github.zoyluo.aibot.manager.AIPlayerManager;
 import io.github.zoyluo.aibot.mode.FakePlayerMotion;
 import io.github.zoyluo.aibot.pathfinding.AStarPathfinder;
 import io.github.zoyluo.aibot.pathfinding.MoveType;
+import io.github.zoyluo.aibot.pathfinding.Node;
 import io.github.zoyluo.aibot.pathfinding.PathExecutor;
 import io.github.zoyluo.aibot.pathfinding.PathfindingResult;
 import io.github.zoyluo.aibot.pathfinding.Standability;
@@ -23,9 +24,11 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.GameMode;
 
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Strict-survival regression for a one-cell physical recovery from an invalid A* start. */
 public final class ActionPackPhysicalSnapGameTests implements FabricGameTest {
@@ -473,6 +476,279 @@ public final class ActionPackPhysicalSnapGameTests implements FabricGameTest {
                     "fixture never exercised the active route before failing");
             require(context, bot.getActionPack().isMiningIdle(),
                     "failed-closed surface replan left a mining action active");
+            AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
+            context.complete();
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "constrainedRouteSafetyLive", tickLimit = 20)
+    public void constrainedInvalidStartFailsWithoutCrossCellSnap(TestContext context) {
+        var world = context.getWorld();
+        BlockPos invalid = context.getAbsolutePos(new BlockPos(5, 7, 5));
+        BlockPos lowerLanding = invalid.add(1, -1, 0);
+        BlockPos goal = invalid.east(3);
+        world.setBlockState(invalid.down(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(invalid, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(invalid.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        for (BlockPos feet : new BlockPos[]{lowerLanding, goal}) {
+            world.setBlockState(feet.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+            world.setBlockState(feet, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+            world.setBlockState(feet.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        }
+
+        String name = "ConstrainedNoSnapGT";
+        AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
+                        world.getServer(), name, world, Vec3d.ofBottomCenter(invalid),
+                        0.0F, 0.0F, GameMode.SURVIVAL)
+                .orElseThrow(() -> new IllegalStateException("failed to spawn " + name));
+        bot.teleport(world,
+                invalid.getX() + 0.5D, invalid.getY(), invalid.getZ() + 0.5D,
+                Set.of(), 0.0F, 0.0F, false);
+        BlockPos before = bot.getBlockPos().toImmutable();
+
+        ActionResult result =
+                bot.getActionPack().startSurfacePathTo(goal, invalid.getY());
+
+        require(context, result.isFailed(),
+                "constrained invalid start unexpectedly installed a path");
+        require(context, result.reason().contains("NO_START"),
+                "constrained invalid start produced wrong reason: " + result.reason());
+        require(context, bot.getBlockPos().equals(before),
+                "constrained admission moved before contract proof: from="
+                        + before.toShortString() + " to="
+                        + bot.getBlockPos().toShortString());
+        require(context, bot.getBlockPos().getY() >= invalid.getY(),
+                "constrained admission crossed its minimumY");
+        AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
+        context.complete();
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "constrainedRouteSafetyLive", tickLimit = 20)
+    public void sameGoalDifferentReturnAnchorReplacesInsteadOfThrottling(
+            TestContext context) {
+        var world = context.getWorld();
+        BlockPos start = context.getAbsolutePos(new BlockPos(4, 4, 4));
+        BlockPos goal = start.east(4);
+        BlockPos secondAnchor = start.south();
+        for (int dx = 0; dx <= 4; dx++) {
+            for (int dz = 0; dz <= 1; dz++) {
+                BlockPos feet = start.add(dx, 0, dz);
+                world.setBlockState(
+                        feet.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+
+        String name = "ConstrainedIdentityGT";
+        AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
+                        world.getServer(), name, world, Vec3d.ofBottomCenter(start),
+                        0.0F, 0.0F, GameMode.SURVIVAL)
+                .orElseThrow(() -> new IllegalStateException("failed to spawn " + name));
+        ActionResult first =
+                bot.getActionPack().startSurfacePathTo(goal, start.getY(), start);
+        require(context, !first.isFailed(),
+                "first constrained request failed: " + first.reason());
+
+        ActionResult replacement = bot.getActionPack().startSurfacePathTo(
+                goal, start.getY(), secondAnchor);
+
+        require(context, !replacement.isFailed(),
+                "different returnAnchor was rejected: " + replacement.reason());
+        require(context, !"pathfinding_throttled".equals(replacement.reason()),
+                "goal-only cooldown retained the old route contract");
+        require(context, goal.equals(bot.getActionPack().activePathGoal()),
+                "replacement did not own the exact active goal");
+        AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
+        context.complete();
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "constrainedRouteSafetyLive", tickLimit = 20)
+    public void constrainedEmptyAndSingletonExecutorsRequireExactTerminal(
+            TestContext context) {
+        var world = context.getWorld();
+        BlockPos current = context.getAbsolutePos(new BlockPos(4, 4, 4));
+        BlockPos goal = current.east();
+        for (BlockPos feet : new BlockPos[]{current, goal}) {
+            world.setBlockState(
+                    feet.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+            world.setBlockState(feet, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+            world.setBlockState(feet.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        String name = "ConstrainedExactTerminalGT";
+        AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
+                        world.getServer(), name, world, Vec3d.ofBottomCenter(current),
+                        0.0F, 0.0F, GameMode.SURVIVAL)
+                .orElseThrow(() -> new IllegalStateException("failed to spawn " + name));
+        PathExecutor.RouteContract contract =
+                PathExecutor.RouteContract.constrainedSurface(current.getY(), null);
+        PathExecutor empty = new PathExecutor(
+                List.of(), goal, false, false, 0, contract);
+        ActionResult emptyResult = empty.tick(bot.getActionPack());
+        require(context, emptyResult.isFailed()
+                        && emptyResult.reason().contains("terminal_goal_not_exact"),
+                "empty constrained path accepted adjacent terminal: "
+                        + emptyResult.reason());
+
+        Node singleton = new Node(
+                goal, 0.0D, 0.0D, MoveType.WALK, null);
+        PathExecutor oneNode = new PathExecutor(
+                List.of(singleton), goal, false, false, 0, contract);
+        ActionResult singletonResult = oneNode.tick(bot.getActionPack());
+        require(context, singletonResult.isFailed()
+                        && singletonResult.reason().contains("terminal_goal_not_exact"),
+                "singleton constrained path accepted adjacent terminal: "
+                        + singletonResult.reason());
+        AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
+        context.complete();
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "constrainedRouteSafetyLive", tickLimit = 20)
+    public void minimumYSearchFindsLongSafeRouteInsteadOfShortDescent(
+            TestContext context) {
+        var world = context.getWorld();
+        BlockPos start = context.getAbsolutePos(new BlockPos(4, 7, 4));
+        BlockPos goal = start.east(4);
+        for (int dx = -1; dx <= 5; dx++) {
+            for (int dz = -1; dz <= 3; dz++) {
+                BlockPos column = start.add(dx, 0, dz);
+                for (int dy = -2; dy <= 2; dy++) {
+                    world.setBlockState(
+                            column.add(0, dy, 0),
+                            Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                }
+            }
+        }
+        // Short route: one block below the contract floor.
+        for (int dx = 1; dx <= 3; dx++) {
+            BlockPos lowerFeet = start.add(dx, -1, 0);
+            world.setBlockState(
+                    lowerFeet.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        // Longer route: a supported U-shaped detour that remains on the start/goal Y.
+        for (int dz = 0; dz <= 2; dz++) {
+            for (int dx : new int[]{0, 4}) {
+                BlockPos feet = start.add(dx, 0, dz);
+                world.setBlockState(
+                        feet.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        for (int dx = 0; dx <= 4; dx++) {
+            BlockPos feet = start.add(dx, 0, 2);
+            world.setBlockState(
+                    feet.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        }
+
+        PathfindingResult ordinary = new AStarPathfinder(
+                world, start, goal, 10_000, 50L, false, false)
+                .findPathUncached();
+        require(context, ordinary.success(), "fixture ordinary route failed");
+        require(context, ordinary.path().stream()
+                        .anyMatch(node -> node.pos().getY() < start.getY()),
+                "fixture ordinary shortest route did not use its short descent");
+
+        PathfindingResult constrained = new AStarPathfinder(
+                world, start, goal, 10_000, 50L, false, false)
+                .findPathUncachedAtOrAbove(start.getY());
+        require(context, constrained.success(),
+                "minimumY search rejected an available longer safe route: "
+                        + constrained.reason());
+        require(context, goal.equals(constrained.resolvedGoal()),
+                "minimumY route did not resolve the exact goal");
+        require(context, constrained.path().stream()
+                        .allMatch(node -> node.pos().getY() >= start.getY()),
+                "minimumY search expanded into the forbidden descent");
+        require(context, constrained.path().size() > ordinary.path().size(),
+                "minimumY route did not take the longer safe detour");
+        context.complete();
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "constrainedRouteSafetyLive", tickLimit = 300)
+    public void dynamicRearClosureFailsBeforeConstrainedTerminalSuccess(
+            TestContext context) {
+        var world = context.getWorld();
+        BlockPos start = context.getAbsolutePos(new BlockPos(4, 4, 4));
+        BlockPos goal = start.east(7);
+        for (int dx = -1; dx <= 8; dx++) {
+            BlockPos corridor = start.add(dx, 0, 0);
+            world.setBlockState(
+                    corridor.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+            world.setBlockState(
+                    corridor, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+            world.setBlockState(
+                    corridor.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+            for (int dz : new int[]{-1, 1}) {
+                BlockPos wall = corridor.add(0, 0, dz);
+                world.setBlockState(
+                        wall, Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(
+                        wall.up(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        world.setBlockState(
+                goal.east(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(
+                goal.east().up(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        String name = "ConstrainedReturnLeaseGT";
+        AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
+                        world.getServer(), name, world, Vec3d.ofBottomCenter(start),
+                        270.0F, 0.0F, GameMode.SURVIVAL)
+                .orElseThrow(() -> new IllegalStateException("failed to spawn " + name));
+        bot.teleport(world,
+                start.getX() + 0.5D, start.getY(), start.getZ() + 0.5D,
+                Set.of(), 270.0F, 0.0F, true);
+        PathfindingResult outbound = new AStarPathfinder(
+                world, start, goal, 10_000, 50L, false, false)
+                .findPathUncached();
+        require(context, outbound.success(), "fixture outbound route failed");
+        PathfindingResult cachedReturn = new AStarPathfinder(
+                world, goal, start, 10_000, 50L, false, false).findPath();
+        require(context, cachedReturn.success(),
+                "fixture could not warm the ordinary TTL return cache");
+        PathfindingResult returnProof = new AStarPathfinder(
+                world, goal, start, 10_000, 50L, false, false)
+                .findPathUncached();
+        PathExecutor.RouteContract contract =
+                PathExecutor.RouteContract.constrainedSurface(start.getY(), start);
+        require(context, PathExecutor.validateRouteContract(
+                        outbound, goal, contract, returnProof).accepted(),
+                "fixture contract was not initially reversible");
+        PathExecutor executor = new PathExecutor(
+                outbound.path(), goal, false, false, 0, contract);
+        AtomicBoolean sealed = new AtomicBoolean();
+        AtomicReference<ActionResult> terminal = new AtomicReference<>();
+
+        context.runAtEveryTick(() -> {
+            ActionResult result = executor.tick(bot.getActionPack());
+            if (!result.isInProgress()) {
+                terminal.compareAndSet(null, result);
+            }
+            if (!sealed.get() && bot.getBlockPos().equals(goal)
+                    && result.isInProgress()) {
+                BlockPos rear = goal.west();
+                world.setBlockState(
+                        rear, Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(
+                        rear.up(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                sealed.set(true);
+                return;
+            }
+            ActionResult finished = terminal.get();
+            if (finished == null) {
+                return;
+            }
+            require(context, sealed.get(), "executor ended before rear closure");
+            require(context, finished.isFailed()
+                            && finished.reason().startsWith("route_contract_lost:"),
+                    "rear closure did not produce typed contract loss: "
+                            + finished.reason());
+            require(context, bot.getBlockPos().equals(goal),
+                    "terminal return lease was not exercised at the exact goal");
             AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
             context.complete();
         });

@@ -87,7 +87,8 @@ class MiningPlanningSourceContractTest {
                 "resolved optional branches must retain runtime best-effort semantics");
         assertTrue(planner.contains("if (bestEffortDepth > 0)"),
                 "optional work must be tagged before addStep can merge it with required work");
-        assertTrue(executor.contains("plan.current.bestEffort()"),
+        assertTrue(executor.contains(
+                        "shouldSkipFailedStep(plan.goal, plan.current, reason)"),
                 "executor must skip failed optional provisioning steps");
     }
 
@@ -155,8 +156,13 @@ class MiningPlanningSourceContractTest {
                 "hard mining readiness must not be skipped merely because its task kind is HUNT");
         assertFalse(executor.contains("|| plan.current.kind() == GoalStep.Kind.COOK_FOOD"),
                 "hard mining readiness must not be skipped merely because its task kind is COOK_FOOD");
-        assertTrue(executor.contains("new HuntTask(step.count(), !step.bestEffort())"),
-                "hard readiness must require the full hunted-food quota");
+        assertTrue(executor.contains(
+                        "step.count(), !step.bestEffort(), plan.huntSearchCursor"),
+                "hard readiness must require the full quota and retain mission hunt search facts");
+        assertTrue(executor.contains("plan.huntSearchCursor.consumeDirty()"),
+                "mission persistence must observe HuntSearchCursor mutations");
+        assertTrue(executor.contains("mission_restore_invalid_hunt_search_cursor"),
+                "malformed persisted hunt history must produce a typed restore result");
         assertTrue(executor.contains("new SmeltTask(step.count(), !step.bestEffort())"),
                 "hard readiness must require the full cooked-food quota");
 

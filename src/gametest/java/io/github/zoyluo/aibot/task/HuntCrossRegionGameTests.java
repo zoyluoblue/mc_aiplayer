@@ -12,8 +12,10 @@ import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.ItemEntity;
 import net.minecraft.entity.SpawnReason;
+import net.minecraft.enchantment.Enchantments;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
+import net.minecraft.registry.RegistryKeys;
 import net.minecraft.stat.Stats;
 import net.minecraft.test.GameTest;
 import net.minecraft.test.TestContext;
@@ -23,12 +25,118 @@ import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.GameMode;
 
 import java.util.Set;
+import java.util.Map;
+import java.util.LinkedHashMap;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /** Proves strict hunting can cross an initially empty perception region and collect physical loot. */
 public final class HuntCrossRegionGameTests implements FabricGameTest {
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "huntPickupCheckpointRestore", tickLimit = 200)
+    public void restoredPickupCollectsTheSameBoundDrop(TestContext context) {
+        var world = context.getWorld();
+        BlockPos start = context.getAbsolutePos(new BlockPos(4, 4, 4));
+        for (int dx = -2; dx <= 4; dx++) {
+            BlockPos feet = start.add(dx, 0, 0);
+            world.setBlockState(feet.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+            world.setBlockState(feet, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+            world.setBlockState(feet.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        String name = "HuntPickupRestoreGT";
+        AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
+                        world.getServer(), name, world, Vec3d.ofBottomCenter(start),
+                        0.0F, 0.0F, GameMode.SURVIVAL)
+                .orElseThrow(() -> new IllegalStateException("failed to spawn " + name));
+        ItemEntity drop = new ItemEntity(world,
+                start.getX() + 2.5D, start.getY() + 0.1D, start.getZ() + 0.5D,
+                new ItemStack(Items.BEEF, 2));
+        require(context, world.spawnEntity(drop), "failed to spawn bound beef");
+        int pickupBaseline = bot.getStatHandler().getStat(Stats.PICKED_UP, Items.BEEF);
+        HuntSearchCursor cursor = HuntSearchCursor.initial();
+        cursor.setSurfaceAnchorIfAbsent(
+                world.getRegistryKey().getValue().toString(),
+                start.getX(), start.getY(), start.getZ());
+        Map<String, String> checkpoint = pickupCheckpoint(
+                world.getRegistryKey().getValue().toString(), start, start,
+                world.getTime(), drop.getUuid(), 2);
+        HuntTask task = new HuntTask(1, true, cursor, checkpoint);
+        TaskManager.INSTANCE.assign(bot, task,
+                TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_hunt_pickup_restore"));
+
+        context.runAtEveryTick(() -> {
+            if (task.state() == TaskState.FAILED) {
+                context.throwGameTestException(
+                        "restored pickup failed: " + task.failureReason());
+            }
+            if (task.state() != TaskState.COMPLETED) {
+                return;
+            }
+            require(context, InventoryAction.countItem(bot, Items.BEEF) >= 2,
+                    "restored task did not collect all bound raw units");
+            require(context, bot.getStatHandler().getStat(Stats.PICKED_UP, Items.BEEF)
+                            >= pickupBaseline + 2,
+                    "restored raw units bypassed vanilla pickup stats");
+            require(context, "CLOSED_COLLECTED".equals(
+                            task.checkpoint().get("transaction_state")),
+                    "OPEN checkpoint was not covered by a CLOSED receipt");
+            AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
+            context.complete();
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "huntPickupDeadlineRestore", tickLimit = 320)
+    public void nearDeadlineRestoreDoesNotRefreshBoundDebt(TestContext context) {
+        var world = context.getWorld();
+        BlockPos start = context.getAbsolutePos(new BlockPos(4, 4, 4));
+        world.setBlockState(start.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        String name = "HuntPickupDeadlineGT";
+        AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
+                        world.getServer(), name, world, Vec3d.ofBottomCenter(start),
+                        0.0F, 0.0F, GameMode.SURVIVAL)
+                .orElseThrow(() -> new IllegalStateException("failed to spawn " + name));
+        HuntSearchCursor cursor = HuntSearchCursor.initial();
+        cursor.setSurfaceAnchorIfAbsent(
+                world.getRegistryKey().getValue().toString(),
+                start.getX(), start.getY(), start.getZ());
+        AtomicReference<HuntTask> assignedTask = new AtomicReference<>();
+        AtomicInteger assignedTick = new AtomicInteger(-1);
+
+        context.runAtEveryTick(() -> {
+            HuntTask task = assignedTask.get();
+            if (task == null) {
+                if (world.getTime() < 239L) {
+                    return;
+                }
+                Map<String, String> checkpoint = pickupCheckpoint(
+                        world.getRegistryKey().getValue().toString(), start, start,
+                        world.getTime() - 239L,
+                        UUID.fromString("00000000-0000-0000-0000-000000000099"), 1);
+                task = new HuntTask(1, true, cursor, checkpoint);
+                TaskManager.INSTANCE.assign(bot, task,
+                        TaskOrigin.of(
+                                TaskOrigin.Kind.VERIFY,
+                                "gametest_hunt_pickup_deadline"));
+                assignedTask.set(task);
+                assignedTick.set(world.getServer().getTicks());
+                return;
+            }
+            if (task.state() != TaskState.FAILED) {
+                return;
+            }
+            require(context, task.failureReason().startsWith("hunt_drop_unrecovered"),
+                    "missing bound UUID did not remain a physical debt: "
+                            + task.failureReason());
+            require(context, world.getServer().getTicks() - assignedTick.get() <= 3,
+                    "restored pickup received a fresh recovery deadline");
+            AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
+            context.complete();
+        });
+    }
+
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
             batchId = "huntTargetReloadLive", tickLimit = 1200)
     public void unloadedTargetIsReacquiredInsteadOfInventingPickupDebt(TestContext context) {
@@ -61,7 +169,7 @@ public final class HuntCrossRegionGameTests implements FabricGameTest {
         InventoryAction.giveItem(bot, new ItemStack(Items.WOODEN_SWORD));
         int pickupBaseline = bot.getStatHandler().getStat(Stats.PICKED_UP, Items.CHICKEN);
 
-        HuntTask task = new HuntTask(1, true);
+        HuntTask task = anchoredHunt(bot, 1);
         TaskManager.INSTANCE.assign(bot, task,
                 TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_hunt_target_reload"));
         AtomicBoolean unloaded = new AtomicBoolean();
@@ -185,7 +293,7 @@ public final class HuntCrossRegionGameTests implements FabricGameTest {
                         + bot.getBlockPos().toShortString());
         InventoryAction.giveItem(bot, new ItemStack(Items.WOODEN_SWORD));
 
-        HuntTask task = new HuntTask(1, true);
+        HuntTask task = anchoredHunt(bot, 1);
         TaskManager.INSTANCE.assign(bot, task,
                 TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_hunt_rotated_retry"));
         context.runAtEveryTick(() -> {
@@ -239,7 +347,7 @@ public final class HuntCrossRegionGameTests implements FabricGameTest {
                 Set.of(), 0.0F, 0.0F, true);
         InventoryAction.giveItem(bot, new ItemStack(Items.WOODEN_SWORD));
 
-        HuntTask task = new HuntTask(1, true);
+        HuntTask task = anchoredHunt(bot, 1);
         TaskManager.INSTANCE.assign(bot, task,
                 TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_hunt_hidden_drop"));
         AtomicBoolean wallBuilt = new AtomicBoolean();
@@ -321,7 +429,7 @@ public final class HuntCrossRegionGameTests implements FabricGameTest {
                 Set.of(), 0.0F, 0.0F, true);
         InventoryAction.giveItem(bot, new ItemStack(Items.WOODEN_SWORD));
 
-        HuntTask task = new HuntTask(1, true);
+        HuntTask task = anchoredHunt(bot, 1);
         TaskManager.INSTANCE.assign(bot, task,
                 TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_hunt_split_loot"));
         AtomicReference<ItemEntity> heldMutton = new AtomicReference<>();
@@ -427,7 +535,7 @@ public final class HuntCrossRegionGameTests implements FabricGameTest {
                 Set.of(), 0.0F, 0.0F, true);
         InventoryAction.giveItem(bot, new ItemStack(Items.WOODEN_SWORD));
 
-        HuntTask task = new HuntTask(1, true);
+        HuntTask task = anchoredHunt(bot, 1);
         TaskManager.INSTANCE.assign(bot, task,
                 TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_hunt_wet_prey_rejection"));
         BlockPos wetCell = start.south(2);
@@ -466,6 +574,895 @@ public final class HuntCrossRegionGameTests implements FabricGameTest {
                     "wet prey UUID was not retained through dry-ground recovery");
             require(context, sheep.isAlive(),
                     "hunt immediately retargeted and killed the same sheep after water rescue");
+            AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
+            context.complete();
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "huntFreshSurfaceAnchorPositive", tickLimit = 100)
+    public void freshHuntAcceptsFactualHighSurfaceAndStartsAcquiring(TestContext context) {
+        var world = context.getWorld();
+        BlockPos template = context.getAbsolutePos(new BlockPos(8, 5, -368));
+        BlockPos start = new BlockPos(template.getX(), 64, template.getZ());
+        for (int dx = -8; dx <= 8; dx++) {
+            for (int dz = -8; dz <= 8; dz++) {
+                BlockPos feet = start.add(dx, 0, dz);
+                world.setBlockState(feet.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        require(context, start.getY() >= 32,
+                "fresh surface fixture unexpectedly started below the planner boundary");
+        require(context, world.getTopY(
+                        net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES,
+                        start.getX(), start.getZ()) == start.getY(),
+                "fresh surface fixture did not publish a factual terrain height");
+
+        String name = "HuntFreshSurfaceAnchorGT";
+        AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
+                        world.getServer(), name, world, Vec3d.ofBottomCenter(start),
+                        0.0F, 0.0F, GameMode.SURVIVAL)
+                .orElseThrow(() -> new IllegalStateException("failed to spawn " + name));
+        bot.teleport(world, start.getX() + 0.5D, start.getY(), start.getZ() + 0.5D,
+                Set.of(), 0.0F, 0.0F, true);
+
+        HuntSearchCursor cursor = HuntSearchCursor.initial();
+        String dimension = world.getRegistryKey().getValue().toString();
+        require(context, cursor.surfaceAnchor(dimension).isEmpty(),
+                "fresh surface cursor unexpectedly contained a preset anchor");
+        HuntTask task = new HuntTask(1, true, cursor);
+        TaskManager.INSTANCE.assign(bot, task,
+                TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_hunt_fresh_surface_anchor"));
+
+        context.runAtEveryTick(() -> {
+            if (task.state() == TaskState.FAILED || task.state() == TaskState.CANCELLED) {
+                context.throwGameTestException("fresh surface hunt ended as " + task.state()
+                        + ":" + task.failureReason());
+            }
+            HuntSearchCursor.SurfaceAnchor anchor =
+                    cursor.surfaceAnchor(dimension).orElse(null);
+            require(context, anchor != null,
+                    "fresh surface hunt did not establish its own anchor");
+            require(context, anchor.x() == start.getX()
+                            && anchor.y() == start.getY()
+                            && anchor.z() == start.getZ(),
+                    "fresh surface hunt established the wrong anchor");
+            String description = task.describe();
+            if (!description.contains("phase=ACQUIRE")
+                    && !description.contains("phase=ROAM")) {
+                return;
+            }
+            require(context, task.state() == TaskState.RUNNING,
+                    "fresh surface hunt did not continue into acquisition");
+            AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
+            context.complete();
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "huntFreshDeepAnchorStrict", tickLimit = 100)
+    public void freshHuntRejectsSkyVisibleDeepMineAsSurfaceAnchor(TestContext context) {
+        var world = context.getWorld();
+        BlockPos start = context.getAbsolutePos(new BlockPos(8, 5, -208));
+        world.setBlockState(start.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(start, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        world.setBlockState(start.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        require(context, start.getY() < 32,
+                "deep-anchor fixture unexpectedly started above the planner boundary");
+        require(context, world.isSkyVisible(start),
+                "deep-anchor fixture must prove sky visibility alone is insufficient");
+
+        String name = "HuntFreshDeepAnchorGT";
+        AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
+                        world.getServer(), name, world, Vec3d.ofBottomCenter(start),
+                        0.0F, 0.0F, GameMode.SURVIVAL)
+                .orElseThrow(() -> new IllegalStateException("failed to spawn " + name));
+        bot.teleport(world, start.getX() + 0.5D, start.getY(), start.getZ() + 0.5D,
+                Set.of(), 0.0F, 0.0F, true);
+
+        HuntTask task = new HuntTask(1, true);
+        TaskManager.INSTANCE.assign(bot, task,
+                TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_hunt_fresh_deep_anchor"));
+        context.runAtEveryTick(() -> {
+            if (task.state() == TaskState.RUNNING) {
+                return;
+            }
+            require(context, task.state() == TaskState.FAILED,
+                    "fresh deep hunt ended as " + task.state());
+            require(context, task.failureReason().startsWith("hunt_surface_anchor_unavailable"),
+                    "fresh deep hunt produced wrong failure: " + task.failureReason());
+            require(context, bot.getBlockPos().equals(start),
+                    "rejected deep hunt moved before establishing a surface fact: "
+                            + bot.getBlockPos().toShortString());
+            AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
+            context.complete();
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "huntQuotaSurfaceReturnStrict", tickLimit = 700)
+    public void satisfiedQuotaReturnsToSurfaceBeforePublishingCompletion(TestContext context) {
+        var world = context.getWorld();
+        BlockPos deep = context.getAbsolutePos(new BlockPos(8, 5, -240));
+        BlockPos anchor = deep.add(18, 18, 0);
+        for (int step = 0; step <= 18; step++) {
+            BlockPos feet = deep.add(step, step, 0);
+            world.setBlockState(feet.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+            world.setBlockState(feet, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+            world.setBlockState(feet.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        }
+
+        String name = "HuntQuotaSurfaceReturnGT";
+        AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
+                        world.getServer(), name, world, Vec3d.ofBottomCenter(deep),
+                        0.0F, 0.0F, GameMode.SURVIVAL)
+                .orElseThrow(() -> new IllegalStateException("failed to spawn " + name));
+        bot.teleport(world, deep.getX() + 0.5D, deep.getY(), deep.getZ() + 0.5D,
+                Set.of(), 0.0F, 0.0F, true);
+
+        HuntSearchCursor cursor = HuntSearchCursor.initial();
+        String dimension = world.getRegistryKey().getValue().toString();
+        require(context, cursor.setSurfaceAnchorIfAbsent(
+                        dimension, anchor.getX(), anchor.getY(), anchor.getZ()),
+                "failed to establish quota-return surface anchor");
+        HuntTask task = new HuntTask(1, true, cursor);
+        TaskManager.INSTANCE.assign(bot, task,
+                TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_hunt_quota_surface_return"));
+        InventoryAction.giveItem(bot, new ItemStack(Items.CHICKEN));
+
+        AtomicBoolean sawReturnDebt = new AtomicBoolean();
+        AtomicBoolean movedPhysically = new AtomicBoolean();
+        context.runAtEveryTick(() -> {
+            sawReturnDebt.compareAndSet(false, task.describe().contains("phase=RETURN_SURFACE"));
+            movedPhysically.compareAndSet(false, !bot.getBlockPos().equals(deep));
+            if (task.state() == TaskState.FAILED || task.state() == TaskState.CANCELLED) {
+                context.throwGameTestException("quota-return hunt ended as " + task.state()
+                        + ":" + task.failureReason());
+            }
+            if (task.state() != TaskState.COMPLETED) {
+                return;
+            }
+            require(context, sawReturnDebt.get() && movedPhysically.get(),
+                    "satisfied quota skipped its physical surface return");
+            require(context, bot.getBlockPos().getSquaredDistance(anchor) <= 4.0D,
+                    "quota completed away from its surface anchor: "
+                            + bot.getBlockPos().toShortString());
+            require(context, InventoryAction.countItem(bot, Items.CHICKEN) == 1,
+                    "quota-return fixture lost its physical raw meat");
+            AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
+            context.complete();
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "huntSurfaceFloorPreyLive", tickLimit = 500)
+    public void visiblePreyBelowMissionSurfaceFloorIsNeverPursued(TestContext context) {
+        var world = context.getWorld();
+        // The bot has already walked down to the last legal level of a persisted surface
+        // expedition. The chicken is locally exposed and visible just beyond that boundary, but
+        // it is 17 blocks below the mission-owned anchor and must therefore remain off-limits.
+        BlockPos start = context.getAbsolutePos(new BlockPos(8, 55, -224));
+        BlockPos missionAnchor = start.up(16);
+        int surfaceFloorY = missionAnchor.getY() - 16;
+        for (int x = -3; x <= 1; x++) {
+            for (int z = -3; z <= 3; z++) {
+                BlockPos feet = start.add(x, 0, z);
+                world.setBlockState(feet.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        BlockPos unsafePreyCell = start.add(4, -1, 0);
+        for (int x = -1; x <= 1; x++) {
+            for (int z = -1; z <= 1; z++) {
+                BlockPos feet = unsafePreyCell.add(x, 0, z);
+                world.setBlockState(feet.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+
+        var chicken = EntityType.CHICKEN.create(world, SpawnReason.COMMAND);
+        require(context, chicken != null, "failed to create below-floor chicken");
+        chicken.setAiDisabled(true);
+        chicken.setHealth(1.0F);
+        chicken.refreshPositionAndAngles(
+                unsafePreyCell.getX() + 0.5D, unsafePreyCell.getY(),
+                unsafePreyCell.getZ() + 0.5D, 180.0F, 0.0F);
+        require(context, world.spawnEntity(chicken), "failed to spawn below-floor chicken");
+
+        String name = "HuntSurfaceFloorGT";
+        AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
+                        world.getServer(), name, world, Vec3d.ofBottomCenter(start),
+                        0.0F, 0.0F, GameMode.SURVIVAL)
+                .orElseThrow(() -> new IllegalStateException("failed to spawn " + name));
+        bot.teleport(world, start.getX() + 0.5D, start.getY(), start.getZ() + 0.5D,
+                Set.of(), 0.0F, 0.0F, true);
+        InventoryAction.giveItem(bot, new ItemStack(Items.WOODEN_SWORD));
+        require(context,
+                io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveEntity(bot, chicken),
+                "below-floor chicken was not visible from the legal cliff ledge");
+        require(context, unsafePreyCell.getY() < surfaceFloorY,
+                "fixture chicken did not cross the mission surface floor");
+
+        HuntSearchCursor cursor = HuntSearchCursor.initial();
+        String dimension = world.getRegistryKey().getValue().toString();
+        require(context, cursor.setSurfaceAnchorIfAbsent(
+                        dimension,
+                        missionAnchor.getX(), missionAnchor.getY(), missionAnchor.getZ()),
+                "failed to establish shared hunt surface anchor");
+        HuntTask task = new HuntTask(1, true, cursor);
+        TaskManager.INSTANCE.assign(bot, task,
+                TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_hunt_surface_floor_prey"));
+        AtomicInteger minimumY = new AtomicInteger(bot.getBlockPos().getY());
+        AtomicInteger observedTicks = new AtomicInteger();
+        context.runAtEveryTick(() -> {
+            minimumY.accumulateAndGet(bot.getBlockPos().getY(), Math::min);
+            observedTicks.incrementAndGet();
+            require(context, chicken.isAlive(),
+                    "hunt killed prey below the mission surface floor");
+            require(context, minimumY.get() >= surfaceFloorY,
+                    "hunt descended below the mission surface floor: minY=" + minimumY.get()
+                            + " floorY=" + surfaceFloorY);
+            if (task.state() == TaskState.COMPLETED || task.state() == TaskState.CANCELLED) {
+                context.throwGameTestException("below-floor hunt ended as " + task.state()
+                        + ":" + task.failureReason());
+            }
+            if (task.state() == TaskState.FAILED) {
+                require(context, !task.failureReason().isBlank(),
+                        "below-floor hunt failed without a typed reason");
+            } else if (observedTicks.get() < 240) {
+                return;
+            }
+            require(context, InventoryAction.countItem(bot, Items.CHICKEN) == 0,
+                    "below-floor chicken entered inventory");
+            AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
+            context.complete();
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "huntOneWayDropDebtLive", tickLimit = 700)
+    public void killedPreyDropInOneWayPitFailsWithoutFollowingIt(TestContext context) {
+        var world = context.getWorld();
+        BlockPos start = context.getAbsolutePos(new BlockPos(8, 70, -272));
+        for (int x = -4; x <= 5; x++) {
+            for (int z = -4; z <= 4; z++) {
+                BlockPos feet = start.add(x, 0, z);
+                world.setBlockState(feet.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        BlockPos killCell = start.east(3);
+        BlockPos observationLedge = start.east(5);
+        BlockPos pitCell = start.add(10, -13, 0);
+        for (int y = pitCell.getY(); y <= start.getY() + 1; y++) {
+            world.setBlockState(
+                    new BlockPos(pitCell.getX(), y, pitCell.getZ()),
+                    Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        }
+        for (int x = -1; x <= 1; x++) {
+            for (int z = -1; z <= 1; z++) {
+                BlockPos feet = pitCell.add(x, 0, z);
+                world.setBlockState(feet.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        require(context, !HuntTask.hasWalkableReturnRoute(world, pitCell, killCell),
+                "deep pickup pit unexpectedly had a walkable return route");
+
+        var cow = EntityType.COW.create(world, SpawnReason.COMMAND);
+        require(context, cow != null, "failed to create one-way-drop cow");
+        cow.setAiDisabled(true);
+        cow.setHealth(1.0F);
+        cow.refreshPositionAndAngles(
+                killCell.getX() + 0.5D, killCell.getY(), killCell.getZ() + 0.5D,
+                180.0F, 0.0F);
+        require(context, world.spawnEntity(cow), "failed to spawn one-way-drop cow");
+
+        String name = "HuntOneWayDropGT";
+        AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
+                        world.getServer(), name, world, Vec3d.ofBottomCenter(start),
+                        0.0F, 0.0F, GameMode.SURVIVAL)
+                .orElseThrow(() -> new IllegalStateException("failed to spawn " + name));
+        bot.teleport(world, start.getX() + 0.5D, start.getY(), start.getZ() + 0.5D,
+                Set.of(), 0.0F, 0.0F, true);
+        InventoryAction.giveItem(bot, new ItemStack(Items.WOODEN_SWORD));
+        int pickupBaseline = bot.getStatHandler().getStat(Stats.PICKED_UP, Items.BEEF);
+
+        HuntSearchCursor cursor = HuntSearchCursor.initial();
+        String dimension = world.getRegistryKey().getValue().toString();
+        require(context, cursor.setSurfaceAnchorIfAbsent(
+                        dimension, start.getX(), start.getY(), start.getZ()),
+                "failed to establish one-way-drop surface anchor");
+        HuntTask task = new HuntTask(1, true, cursor);
+        TaskManager.INSTANCE.assign(bot, task,
+                TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_hunt_one_way_drop_debt"));
+        AtomicReference<ItemEntity> trappedBeef = new AtomicReference<>();
+        AtomicBoolean dropWasObserved = new AtomicBoolean();
+        AtomicBoolean fixtureMovedBotToLedge = new AtomicBoolean();
+        AtomicInteger minimumY = new AtomicInteger(start.getY());
+        context.runAtEveryTick(() -> {
+            minimumY.accumulateAndGet(bot.getBlockPos().getY(), Math::min);
+            if (!cow.isAlive() && trappedBeef.get() == null) {
+                ItemEntity beef = world.getEntitiesByClass(
+                                ItemEntity.class, new Box(killCell).expand(3.0D),
+                                entity -> entity.getStack().isOf(Items.BEEF))
+                        .stream().findFirst().orElse(null);
+                if (beef != null) {
+                    beef.setPosition(
+                            pitCell.getX() + 0.5D, pitCell.getY(), pitCell.getZ() + 0.5D);
+                    beef.setVelocity(Vec3d.ZERO);
+                    trappedBeef.set(beef);
+                    bot.getActionPack().stopAll();
+                    bot.teleport(world,
+                            observationLedge.getX() + 0.5D, observationLedge.getY(),
+                            observationLedge.getZ() + 0.5D,
+                            Set.of(), bot.getYaw(), bot.getPitch(), true);
+                    fixtureMovedBotToLedge.set(true);
+                }
+            }
+            ItemEntity beef = trappedBeef.get();
+            if (beef != null
+                    && io.github.zoyluo.aibot.mode.ObservableWorldQuery
+                    .canObserveEntity(bot, beef)) {
+                dropWasObserved.set(true);
+            }
+            require(context, minimumY.get() >= start.getY() - 1,
+                    "hunt followed meat into the one-way pit: minY=" + minimumY.get());
+            if (task.state() == TaskState.COMPLETED || task.state() == TaskState.CANCELLED) {
+                context.throwGameTestException("one-way-drop hunt ended as " + task.state()
+                        + ":" + task.failureReason());
+            }
+            if (task.state() != TaskState.FAILED) {
+                return;
+            }
+            require(context, task.failureReason().startsWith("hunt_drop_unrecovered"),
+                    "one-way drop produced the wrong typed failure: " + task.failureReason());
+            require(context, trappedBeef.get() != null && trappedBeef.get().isAlive(),
+                    "fixture never retained physical beef in the one-way pit");
+            require(context, fixtureMovedBotToLedge.get(),
+                    "fixture never moved the bot to its safe observation ledge");
+            require(context, dropWasObserved.get(),
+                    "deep beef was never visibly observed by the hunt task");
+            require(context, InventoryAction.countItem(bot, Items.BEEF) == 0,
+                    "one-way beef entered inventory");
+            require(context, bot.getStatHandler().getStat(Stats.PICKED_UP, Items.BEEF)
+                            == pickupBaseline,
+                    "one-way beef changed vanilla pickup statistics");
+            AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
+            context.complete();
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "huntMovingPreyRetargetLive", tickLimit = 1200)
+    public void movingPreyIsRetargetedOnSafeSurfaceAndPhysicallyCollected(TestContext context) {
+        var world = context.getWorld();
+        BlockPos start = context.getAbsolutePos(new BlockPos(8, 80, -320));
+        int arenaRadius = 15;
+        for (int x = -arenaRadius; x <= arenaRadius; x++) {
+            for (int z = -arenaRadius; z <= arenaRadius; z++) {
+                BlockPos feet = start.add(x, 0, z);
+                world.setBlockState(feet.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                if (Math.abs(x) == arenaRadius || Math.abs(z) == arenaRadius) {
+                    world.setBlockState(feet, Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                    world.setBlockState(feet.up(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                }
+            }
+        }
+
+        BlockPos initialPreyCell = start.east(6);
+        BlockPos movedPreyCell = start.add(-6, 0, 4);
+        int surfaceFloorY = start.getY() - 16;
+        require(context, HuntTask.hasRoundTripSurfaceRoute(
+                        world, start, initialPreyCell, surfaceFloorY),
+                "initial moving-prey cell was not safely reversible");
+        require(context, HuntTask.hasRoundTripSurfaceRoute(
+                        world, start, movedPreyCell, surfaceFloorY),
+                "relocated moving-prey cell was not safely reversible");
+
+        var chicken = EntityType.CHICKEN.create(world, SpawnReason.COMMAND);
+        require(context, chicken != null, "failed to create moving chicken");
+        chicken.setAiDisabled(false);
+        chicken.setHealth(1.0F);
+        chicken.refreshPositionAndAngles(
+                initialPreyCell.getX() + 0.5D, initialPreyCell.getY(),
+                initialPreyCell.getZ() + 0.5D, 180.0F, 0.0F);
+        require(context, world.spawnEntity(chicken), "failed to spawn moving chicken");
+        require(context, !chicken.isAiDisabled(),
+                "moving-prey fixture accidentally disabled chicken AI");
+
+        String name = "HuntMovingPreyGT";
+        AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
+                        world.getServer(), name, world, Vec3d.ofBottomCenter(start),
+                        0.0F, 0.0F, GameMode.SURVIVAL)
+                .orElseThrow(() -> new IllegalStateException("failed to spawn " + name));
+        bot.teleport(world, start.getX() + 0.5D, start.getY(), start.getZ() + 0.5D,
+                Set.of(), 0.0F, 0.0F, true);
+        InventoryAction.giveItem(bot, new ItemStack(Items.WOODEN_SWORD));
+        int pickupBaseline = bot.getStatHandler().getStat(Stats.PICKED_UP, Items.CHICKEN);
+
+        HuntSearchCursor cursor = HuntSearchCursor.initial();
+        String dimension = world.getRegistryKey().getValue().toString();
+        require(context, cursor.setSurfaceAnchorIfAbsent(
+                        dimension, start.getX(), start.getY(), start.getZ()),
+                "failed to establish moving-prey surface anchor");
+        HuntTask task = new HuntTask(1, true, cursor);
+        TaskManager.INSTANCE.assign(bot, task,
+                TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_hunt_moving_prey_retarget"));
+        AtomicBoolean preyRelocated = new AtomicBoolean();
+        AtomicReference<BlockPos> botAtRelocation = new AtomicReference<>();
+        AtomicBoolean relocatedMeleeEnvelopeReached = new AtomicBoolean();
+        AtomicInteger maximumPostRelocationTravelSquared = new AtomicInteger();
+        AtomicInteger minimumY = new AtomicInteger(start.getY());
+        context.runAtEveryTick(() -> {
+            minimumY.accumulateAndGet(bot.getBlockPos().getY(), Math::min);
+            require(context, minimumY.get() >= surfaceFloorY,
+                    "moving-prey hunt crossed its mission floor: minY=" + minimumY.get());
+            require(context,
+                    Math.abs(bot.getBlockPos().getX() - start.getX()) < arenaRadius
+                            && Math.abs(bot.getBlockPos().getZ() - start.getZ()) < arenaRadius,
+                    "moving-prey hunt left the bounded arena: "
+                            + bot.getBlockPos().toShortString());
+            if (chicken.isAlive()) {
+                require(context,
+                        Math.abs(chicken.getBlockPos().getX() - start.getX()) < arenaRadius
+                                && Math.abs(chicken.getBlockPos().getZ() - start.getZ())
+                                < arenaRadius,
+                        "AI-enabled chicken escaped the bounded arena: "
+                                + chicken.getBlockPos().toShortString());
+            }
+
+            if (!preyRelocated.get() && task.describe().contains("phase=APPROACH")) {
+                BlockPos relocationOrigin = bot.getBlockPos().toImmutable();
+                chicken.refreshPositionAndAngles(
+                        movedPreyCell.getX() + 0.5D, movedPreyCell.getY(),
+                        movedPreyCell.getZ() + 0.5D, chicken.getYaw(), chicken.getPitch());
+                chicken.setVelocity(Vec3d.ZERO);
+                require(context, !chicken.isAiDisabled(),
+                        "relocating the chicken disabled its AI");
+                require(context, chicken.getBlockPos().getSquaredDistance(initialPreyCell) >= 100.0D,
+                        "fixture did not force the chicken far enough to require reselection");
+                require(context, chicken.getBlockPos().getY() >= surfaceFloorY
+                                && HuntTask.hasRoundTripSurfaceRoute(
+                                world, relocationOrigin, chicken.getBlockPos(), surfaceFloorY),
+                        "forced chicken destination was not safely reversible");
+                botAtRelocation.set(relocationOrigin);
+                preyRelocated.set(true);
+                return;
+            }
+
+            if (preyRelocated.get()) {
+                int traveledSquared = (int) Math.floor(
+                        bot.getBlockPos().getSquaredDistance(botAtRelocation.get()));
+                maximumPostRelocationTravelSquared.accumulateAndGet(
+                        traveledSquared, Math::max);
+            }
+            if (preyRelocated.get()
+                    && !relocatedMeleeEnvelopeReached.get()
+                    && chicken.isAlive()
+                    && bot.distanceTo(chicken) <= CombatCore.ATTACK_RANGE) {
+                require(context, maximumPostRelocationTravelSquared.get() >= 9,
+                        "hunt entered melee without physically traveling toward relocated prey");
+                require(context, bot.getBlockPos().getY() >= surfaceFloorY
+                                && chicken.getBlockPos().getY() >= surfaceFloorY
+                                && HuntTask.hasRoundTripSurfaceRoute(
+                                world, botAtRelocation.get(),
+                                bot.getBlockPos(), surfaceFloorY),
+                        "relocated melee envelope was not reached on reversible safe surface");
+                relocatedMeleeEnvelopeReached.set(true);
+            }
+
+            if (task.state() == TaskState.FAILED || task.state() == TaskState.CANCELLED) {
+                context.throwGameTestException("moving-prey hunt ended as " + task.state()
+                        + ":" + task.failureReason());
+            }
+            if (task.state() != TaskState.COMPLETED) {
+                return;
+            }
+            require(context, preyRelocated.get() && relocatedMeleeEnvelopeReached.get(),
+                    "hunt completed without physically reaching relocated prey on safe surface");
+            require(context, !chicken.isAlive(),
+                    "moving chicken remained alive after hunt completion");
+            require(context, InventoryAction.countItem(bot, Items.CHICKEN) >= 1,
+                    "moving-prey hunt completed without raw chicken");
+            require(context, bot.getStatHandler().getStat(Stats.PICKED_UP, Items.CHICKEN)
+                            > pickupBaseline,
+                    "moving-prey meat did not enter through vanilla pickup statistics");
+            AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
+            context.complete();
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "huntPickupStatCompetitionLive", tickLimit = 900)
+    public void vanillaPickupStatSettlesDebtAfterInventoryMeatIsConsumed(TestContext context) {
+        var world = context.getWorld();
+        BlockPos start = context.getAbsolutePos(new BlockPos(8, 70, -368));
+        for (int x = -10; x <= 10; x++) {
+            for (int z = -10; z <= 10; z++) {
+                BlockPos feet = start.add(x, 0, z);
+                world.setBlockState(feet.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+
+        BlockPos killCell = start.east(4);
+        BlockPos pickupCell = start.west(4);
+        var cow = EntityType.COW.create(world, SpawnReason.COMMAND);
+        require(context, cow != null, "failed to create pickup-stat cow");
+        cow.setAiDisabled(true);
+        cow.setHealth(1.0F);
+        cow.refreshPositionAndAngles(
+                killCell.getX() + 0.5D, killCell.getY(), killCell.getZ() + 0.5D,
+                180.0F, 0.0F);
+        require(context, world.spawnEntity(cow), "failed to spawn pickup-stat cow");
+
+        String name = "HuntPickupStatGT";
+        AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
+                        world.getServer(), name, world, Vec3d.ofBottomCenter(start),
+                        0.0F, 0.0F, GameMode.SURVIVAL)
+                .orElseThrow(() -> new IllegalStateException("failed to spawn " + name));
+        bot.teleport(world, start.getX() + 0.5D, start.getY(), start.getZ() + 0.5D,
+                Set.of(), 0.0F, 0.0F, true);
+        InventoryAction.giveItem(bot, new ItemStack(Items.WOODEN_SWORD));
+        int pickupBaseline = bot.getStatHandler().getStat(Stats.PICKED_UP, Items.BEEF);
+        int inventoryBaseline = InventoryAction.countItem(bot, Items.BEEF);
+
+        HuntTask task = anchoredHunt(bot, 2);
+        TaskManager.INSTANCE.assign(bot, task,
+                TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_hunt_pickup_stat_competition"));
+        AtomicBoolean pickupPaused = new AtomicBoolean();
+        AtomicBoolean vanillaPickupObserved = new AtomicBoolean();
+        AtomicBoolean inventoryReturnedToBaseline = new AtomicBoolean();
+        AtomicBoolean acquireObserved = new AtomicBoolean();
+        AtomicInteger ticksAfterResume = new AtomicInteger();
+        context.runAtEveryTick(() -> {
+            if (task.state() == TaskState.FAILED || task.state() == TaskState.CANCELLED) {
+                context.throwGameTestException("pickup-stat hunt ended as " + task.state()
+                        + ":" + task.failureReason());
+            }
+
+            if (!pickupPaused.get()
+                    && !cow.isAlive()
+                    && task.describe().contains("phase=PICKUP")) {
+                require(context,
+                        bot.getStatHandler().getStat(Stats.PICKED_UP, Items.BEEF)
+                                == pickupBaseline,
+                        "fixture missed the pre-pickup pause boundary");
+                ItemEntity beef = HarvestCore.nearestDropAnyOf(
+                        bot, Set.of(Items.BEEF), 16).orElse(null);
+                if (beef == null) {
+                    return;
+                }
+                beef.setPosition(
+                        pickupCell.getX() + 0.5D, pickupCell.getY(),
+                        pickupCell.getZ() + 0.5D);
+                beef.setVelocity(Vec3d.ZERO);
+                task.pause(bot);
+                require(context, task.state() == TaskState.PAUSED,
+                        "pickup debt did not pause before physical collection");
+                pickupPaused.set(true);
+            }
+
+            if (pickupPaused.get() && !vanillaPickupObserved.get()) {
+                require(context, task.state() == TaskState.PAUSED,
+                        "Hunt tick ran before the pickup competition was injected");
+                int pickedUp = bot.getStatHandler().getStat(Stats.PICKED_UP, Items.BEEF);
+                if (pickedUp == pickupBaseline) {
+                    ItemEntity beef = HarvestCore.nearestDropAnyOf(
+                            bot, Set.of(Items.BEEF), 16).orElse(null);
+                    if (beef != null
+                            && bot.getActionPack().isPathExecutorIdle()
+                            && bot.getActionPack().isWalkToIdle()) {
+                        HarvestCore.approachDropPhysically(bot, beef);
+                    }
+                    return;
+                }
+                int physicalMeat = InventoryAction.countItem(bot, Items.BEEF);
+                require(context, !cow.isAlive() && physicalMeat > inventoryBaseline,
+                        "pickup statistic advanced without physical cow death and inventory meat");
+                vanillaPickupObserved.set(true);
+                require(context, InventoryAction.removeItems(
+                                bot, Items.BEEF, physicalMeat - inventoryBaseline),
+                        "fixture failed to consume the physically picked-up beef");
+                require(context, InventoryAction.countItem(bot, Items.BEEF) == inventoryBaseline,
+                        "inventory delta did not return to its exact pre-hunt baseline");
+                inventoryReturnedToBaseline.set(true);
+                task.resume(bot);
+                require(context, task.state() == TaskState.RUNNING,
+                        "pickup debt did not resume after the competing consumption");
+                return;
+            }
+
+            if (!inventoryReturnedToBaseline.get()) {
+                return;
+            }
+            ticksAfterResume.incrementAndGet();
+            require(context,
+                    bot.getStatHandler().getStat(Stats.PICKED_UP, Items.BEEF) > pickupBaseline,
+                    "vanilla pickup evidence disappeared after inventory consumption");
+            require(context, InventoryAction.countItem(bot, Items.BEEF) == inventoryBaseline,
+                    "fixture unexpectedly restored an inventory delta");
+            require(context, !task.describe().contains("phase=APPROACH")
+                            && !task.describe().contains("phase=STRIKE"),
+                    "hunt tried to pursue or strike the already-dead cow again: "
+                            + task.describe());
+            if (!task.describe().contains("phase=ACQUIRE")) {
+                require(context, ticksAfterResume.get() <= 250,
+                        "pickup statistic did not settle the bounded debt: " + task.describe());
+                return;
+            }
+
+            acquireObserved.set(true);
+            require(context, task.state() == TaskState.RUNNING
+                            && !task.failureReason().startsWith("hunt_drop_unrecovered"),
+                    "pickup debt did not leave PICKUP cleanly: "
+                            + task.state() + ":" + task.failureReason());
+            require(context, vanillaPickupObserved.get()
+                            && inventoryReturnedToBaseline.get()
+                            && acquireObserved.get(),
+                    "fixture did not prove the pickup-stat competition");
+            task.cancel(bot, "gametest_pickup_stat_debt_settled");
+            AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
+            context.complete();
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "huntExternalDeathCreditStrict", tickLimit = 500)
+    public void externallyKilledTargetNeverCreatesPickupDebt(TestContext context) {
+        var world = context.getWorld();
+        BlockPos start = context.getAbsolutePos(new BlockPos(8, 70, -400));
+        for (int x = -8; x <= 8; x++) {
+            for (int z = -8; z <= 8; z++) {
+                BlockPos feet = start.add(x, 0, z);
+                world.setBlockState(feet.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+
+        BlockPos preyCell = start.east(6);
+        var chicken = EntityType.CHICKEN.create(world, SpawnReason.COMMAND);
+        require(context, chicken != null, "failed to create external-death chicken");
+        chicken.setAiDisabled(true);
+        chicken.refreshPositionAndAngles(
+                preyCell.getX() + 0.5D, preyCell.getY(), preyCell.getZ() + 0.5D,
+                180.0F, 0.0F);
+        require(context, world.spawnEntity(chicken), "failed to spawn external-death chicken");
+
+        String name = "HuntExternalDeathGT";
+        AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
+                        world.getServer(), name, world, Vec3d.ofBottomCenter(start),
+                        0.0F, 0.0F, GameMode.SURVIVAL)
+                .orElseThrow(() -> new IllegalStateException("failed to spawn " + name));
+        bot.teleport(world, start.getX() + 0.5D, start.getY(), start.getZ() + 0.5D,
+                Set.of(), 0.0F, 0.0F, true);
+        InventoryAction.giveItem(bot, new ItemStack(Items.WOODEN_SWORD));
+        int killBaseline = bot.getStatHandler().getStat(Stats.KILLED, EntityType.CHICKEN);
+
+        HuntTask task = anchoredHunt(bot, 64);
+        TaskManager.INSTANCE.assign(bot, task,
+                TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_hunt_external_death_credit"));
+        AtomicBoolean externallyKilled = new AtomicBoolean();
+        AtomicBoolean pickupDebtObserved = new AtomicBoolean();
+        AtomicInteger ticksAfterDeath = new AtomicInteger();
+        context.runAtEveryTick(() -> {
+            pickupDebtObserved.compareAndSet(
+                    false, task.describe().contains("phase=PICKUP"));
+            if (!externallyKilled.get() && task.describe().contains("phase=APPROACH")) {
+                require(context,
+                        chicken.damage(world, world.getDamageSources().generic(), 1000.0F),
+                        "fixture failed to kill chicken without player credit");
+                externallyKilled.set(true);
+                return;
+            }
+            if (!externallyKilled.get()) {
+                return;
+            }
+            ticksAfterDeath.incrementAndGet();
+            require(context,
+                    bot.getStatHandler().getStat(Stats.KILLED, EntityType.CHICKEN)
+                            == killBaseline,
+                    "external death unexpectedly credited the hunting bot");
+            require(context, !pickupDebtObserved.get(),
+                    "external target death created a PICKUP debt");
+            if (task.state() == TaskState.FAILED || task.state() == TaskState.COMPLETED
+                    || task.state() == TaskState.CANCELLED) {
+                context.throwGameTestException("external-death hunt ended as " + task.state()
+                        + ":" + task.failureReason());
+            }
+            if (ticksAfterDeath.get() < 5
+                    || (task.describe().contains("phase=APPROACH")
+                    || task.describe().contains("phase=STRIKE"))) {
+                return;
+            }
+            task.cancel(bot, "gametest_external_death_reacquired");
+            AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
+            context.complete();
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "huntOldDropIsolationStrict", tickLimit = 1000)
+    public void oldNearbyRawDropCannotPoisonFreshKillTransaction(TestContext context) {
+        var world = context.getWorld();
+        BlockPos start = context.getAbsolutePos(new BlockPos(8, 70, -432));
+        for (int x = -9; x <= 9; x++) {
+            for (int z = -9; z <= 9; z++) {
+                BlockPos feet = start.add(x, 0, z);
+                world.setBlockState(feet.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+
+        BlockPos killCell = start.east(5);
+        ItemEntity oldBeef = new ItemEntity(
+                world,
+                killCell.getX() + 0.5D,
+                killCell.getY(),
+                killCell.getZ() + 2.5D,
+                new ItemStack(Items.BEEF));
+        oldBeef.setVelocity(Vec3d.ZERO);
+        oldBeef.setPickupDelayInfinite();
+        oldBeef.setNeverDespawn();
+        require(context, world.spawnEntity(oldBeef), "failed to spawn old beef");
+
+        var cow = EntityType.COW.create(world, SpawnReason.COMMAND);
+        require(context, cow != null, "failed to create old-drop cow");
+        cow.setAiDisabled(true);
+        cow.setHealth(1.0F);
+        cow.refreshPositionAndAngles(
+                killCell.getX() + 0.5D, killCell.getY(), killCell.getZ() + 0.5D,
+                180.0F, 0.0F);
+        require(context, world.spawnEntity(cow), "failed to spawn old-drop cow");
+
+        String name = "HuntOldDropGT";
+        AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
+                        world.getServer(), name, world, Vec3d.ofBottomCenter(start),
+                        0.0F, 0.0F, GameMode.SURVIVAL)
+                .orElseThrow(() -> new IllegalStateException("failed to spawn " + name));
+        bot.teleport(world, start.getX() + 0.5D, start.getY(), start.getZ() + 0.5D,
+                Set.of(), 0.0F, 0.0F, true);
+        InventoryAction.giveItem(bot, new ItemStack(Items.WOODEN_SWORD));
+        int pickupBaseline = bot.getStatHandler().getStat(Stats.PICKED_UP, Items.BEEF);
+        int killBaseline = bot.getStatHandler().getStat(Stats.KILLED, EntityType.COW);
+        int inventoryBaseline = InventoryAction.countItem(bot, Items.BEEF);
+
+        AtomicReference<HuntTask> taskRef = new AtomicReference<>();
+        context.runAtTick(80, () -> {
+            require(context, oldBeef.isAlive() && oldBeef.getItemAge() < 0,
+                    "old beef lost its non-fresh age marker");
+            HuntTask task = anchoredHunt(bot, 64);
+            taskRef.set(task);
+            TaskManager.INSTANCE.assign(bot, task,
+                    TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_hunt_old_drop_isolation"));
+        });
+
+        AtomicBoolean pickupObserved = new AtomicBoolean();
+        context.runAtEveryTick(() -> {
+            HuntTask task = taskRef.get();
+            if (task == null) {
+                return;
+            }
+            pickupObserved.compareAndSet(
+                    false, task.describe().contains("phase=PICKUP"));
+            if (task.state() == TaskState.FAILED || task.state() == TaskState.COMPLETED
+                    || task.state() == TaskState.CANCELLED) {
+                context.throwGameTestException("old-drop hunt ended as " + task.state()
+                        + ":" + task.failureReason());
+            }
+            if (!pickupObserved.get() || !task.describe().contains("phase=ACQUIRE")) {
+                return;
+            }
+            require(context, !cow.isAlive(),
+                    "old-drop fixture reached ACQUIRE before the cow died");
+            require(context, oldBeef.isAlive() && oldBeef.cannotPickup(),
+                    "unrelated old beef was consumed or mutated");
+            require(context,
+                    bot.getStatHandler().getStat(Stats.KILLED, EntityType.COW) > killBaseline,
+                    "fresh cow kill lacked bot kill credit");
+            require(context,
+                    bot.getStatHandler().getStat(Stats.PICKED_UP, Items.BEEF) > pickupBaseline
+                            && InventoryAction.countItem(bot, Items.BEEF) > inventoryBaseline,
+                    "fresh cow beef was not physically collected");
+            task.cancel(bot, "gametest_old_drop_ignored");
+            AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
+            context.complete();
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "huntCookedDropNoRawStrict", tickLimit = 1000)
+    public void creditedFireAspectKillWithoutRawMeatReturnsToAcquire(TestContext context) {
+        var world = context.getWorld();
+        BlockPos start = context.getAbsolutePos(new BlockPos(8, 70, -464));
+        for (int x = -9; x <= 9; x++) {
+            for (int z = -9; z <= 9; z++) {
+                BlockPos feet = start.add(x, 0, z);
+                world.setBlockState(feet.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+
+        BlockPos killCell = start.east(5);
+        var cow = EntityType.COW.create(world, SpawnReason.COMMAND);
+        require(context, cow != null, "failed to create Fire Aspect cow");
+        cow.setAiDisabled(true);
+        cow.setHealth(1.0F);
+        cow.refreshPositionAndAngles(
+                killCell.getX() + 0.5D, killCell.getY(), killCell.getZ() + 0.5D,
+                180.0F, 0.0F);
+        require(context, world.spawnEntity(cow), "failed to spawn Fire Aspect cow");
+
+        String name = "HuntCookedDropGT";
+        AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
+                        world.getServer(), name, world, Vec3d.ofBottomCenter(start),
+                        0.0F, 0.0F, GameMode.SURVIVAL)
+                .orElseThrow(() -> new IllegalStateException("failed to spawn " + name));
+        bot.teleport(world, start.getX() + 0.5D, start.getY(), start.getZ() + 0.5D,
+                Set.of(), 0.0F, 0.0F, true);
+        ItemStack fireSword = new ItemStack(Items.DIAMOND_SWORD);
+        var enchantmentRegistry =
+                world.getRegistryManager().getOrThrow(RegistryKeys.ENCHANTMENT);
+        var fireAspect = enchantmentRegistry.getEntry(
+                        Enchantments.FIRE_ASPECT.getValue())
+                .orElseThrow(() -> new IllegalStateException("missing Fire Aspect registry entry"));
+        fireSword.addEnchantment(fireAspect, 1);
+        InventoryAction.giveItem(bot, fireSword);
+        int killBaseline = bot.getStatHandler().getStat(Stats.KILLED, EntityType.COW);
+        int rawPickupBaseline = bot.getStatHandler().getStat(Stats.PICKED_UP, Items.BEEF);
+        int cookedPickupBaseline =
+                bot.getStatHandler().getStat(Stats.PICKED_UP, Items.COOKED_BEEF);
+
+        HuntTask task = anchoredHunt(bot, 64);
+        TaskManager.INSTANCE.assign(bot, task,
+                TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_hunt_cooked_drop_no_raw"));
+        AtomicBoolean pickupObserved = new AtomicBoolean();
+        AtomicBoolean cookedDropObserved = new AtomicBoolean();
+        context.runAtEveryTick(() -> {
+            pickupObserved.compareAndSet(
+                    false, task.describe().contains("phase=PICKUP"));
+            cookedDropObserved.compareAndSet(false,
+                    InventoryAction.countItem(bot, Items.COOKED_BEEF) > 0
+                            || bot.getStatHandler().getStat(
+                            Stats.PICKED_UP, Items.COOKED_BEEF) > cookedPickupBaseline
+                            || !world.getEntitiesByClass(
+                                    ItemEntity.class,
+                                    new Box(killCell).expand(4.0D),
+                                    item -> item.getStack().isOf(Items.COOKED_BEEF))
+                            .isEmpty());
+            if (task.state() == TaskState.FAILED || task.state() == TaskState.COMPLETED
+                    || task.state() == TaskState.CANCELLED) {
+                context.throwGameTestException("cooked-drop hunt ended as " + task.state()
+                        + ":" + task.failureReason());
+            }
+            if (!pickupObserved.get() || !task.describe().contains("phase=ACQUIRE")) {
+                return;
+            }
+            require(context, !cow.isAlive() && cookedDropObserved.get(),
+                    "Fire Aspect fixture did not produce factual cooked beef");
+            require(context,
+                    bot.getStatHandler().getStat(Stats.KILLED, EntityType.COW) > killBaseline,
+                    "Fire Aspect cow kill lacked bot credit");
+            require(context,
+                    bot.getStatHandler().getStat(Stats.PICKED_UP, Items.BEEF)
+                            == rawPickupBaseline,
+                    "Fire Aspect fixture unexpectedly produced raw beef pickup");
+            require(context, !task.failureReason().startsWith("hunt_drop_unrecovered"),
+                    "zero-raw credited kill became a false pickup debt");
+            task.cancel(bot, "gametest_cooked_drop_reacquired");
             AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
             context.complete();
         });
@@ -517,7 +1514,7 @@ public final class HuntCrossRegionGameTests implements FabricGameTest {
         InventoryAction.giveItem(bot, new ItemStack(Items.WOODEN_SWORD));
         int pickupBaseline = bot.getStatHandler().getStat(Stats.PICKED_UP, Items.CHICKEN);
 
-        HuntTask task = new HuntTask(1, true);
+        HuntTask task = anchoredHunt(bot, 1);
         TaskManager.INSTANCE.assign(bot, task,
                 TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_hunt_cross_region"));
         context.runAtEveryTick(() -> {
@@ -551,6 +1548,42 @@ public final class HuntCrossRegionGameTests implements FabricGameTest {
             AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
             context.complete();
         });
+    }
+
+    private static HuntTask anchoredHunt(AIPlayerEntity bot, int targetMeat) {
+        HuntSearchCursor cursor = HuntSearchCursor.initial();
+        BlockPos anchor = bot.getBlockPos();
+        boolean established = cursor.setSurfaceAnchorIfAbsent(
+                bot.getServerWorld().getRegistryKey().getValue().toString(),
+                anchor.getX(), anchor.getY(), anchor.getZ());
+        if (!established) {
+            throw new IllegalStateException("failed to establish Hunt GameTest surface anchor");
+        }
+        return new HuntTask(targetMeat, true, cursor);
+    }
+
+    private static Map<String, String> pickupCheckpoint(
+            String dimension, BlockPos origin, BlockPos anchor,
+            long startedWorldTime, UUID dropId, int units) {
+        Map<String, String> checkpoint = new LinkedHashMap<>();
+        checkpoint.put("task_schema", "1");
+        checkpoint.put("cursor_kind", "hunt_pickup");
+        checkpoint.put("transaction_state", "OPEN");
+        checkpoint.put("target_count", "1");
+        checkpoint.put("require_full_quota", "true");
+        checkpoint.put("dimension", dimension);
+        checkpoint.put("expected_raw_item", "minecraft:beef");
+        checkpoint.put("pickup_origin",
+                origin.getX() + "," + origin.getY() + "," + origin.getZ());
+        checkpoint.put("pickup_return_anchor",
+                anchor.getX() + "," + anchor.getY() + "," + anchor.getZ());
+        checkpoint.put("inventory_baseline", "0");
+        checkpoint.put("pickup_stat_baseline", "0");
+        checkpoint.put("aux_inventory_baseline", "0");
+        checkpoint.put("aux_pickup_stat_baseline", "0");
+        checkpoint.put("pickup_started_world_time", String.valueOf(startedWorldTime));
+        checkpoint.put("bound_drop_units", dropId + "=" + units);
+        return Map.copyOf(checkpoint);
     }
 
     private static void require(TestContext context, boolean condition, String message) {

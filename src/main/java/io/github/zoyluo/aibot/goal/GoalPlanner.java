@@ -140,7 +140,7 @@ public final class GoalPlanner {
      * threshold lie in both directions. The no-leaves heightmap gives a cheap, deterministic fact
      * and tolerates a small shelter/overhang without classifying a Y=16 mine as surface.
      */
-    private static boolean canAcquireSurfaceResources(AIPlayerEntity bot) {
+    public static boolean canAcquireSurfaceResources(AIPlayerEntity bot) {
         net.minecraft.util.math.BlockPos origin = bot.getBlockPos();
         // Even an open ravine or isolated test canvas at deepslate height has sky visibility but
         // no trees, animals or crops at the work face. Keep the heightmap test, with a conservative

@@ -41,7 +41,8 @@ public final class ActionPack {
     private PathExecutor pathExecutor;
     private int itemUseCooldown;
     private int blockHitDelay;
-    private BlockPos lastPathGoal;
+    private PathRequestIdentity lastPathRequest;
+    private PathRequestIdentity activePathRequest;
     private BlockPos activePathGoal;
     private int nextPathfindTick;
 
@@ -91,9 +92,9 @@ public final class ActionPack {
 
     /** Starts a direct walk with a caller-defined horizontal arrival tolerance. */
     public ActionResult startWalkTo(Vec3d target, double arrivalThreshold) {
+        clearActivePathExecutor();
         this.walkTo = new WalkToController(target, arrivalThreshold);
         this.mining = null;
-        this.pathExecutor = null;
         return ActionResult.IN_PROGRESS;
     }
 
@@ -112,26 +113,30 @@ public final class ActionPack {
         int reserve = Math.max(0, protectedStoneLikeReserve);
         int now = player.getServer().getTicks();
         BlockPos immutableGoal = goal.toImmutable();
-        if (lastPathGoal != null && lastPathGoal.equals(immutableGoal) && now < nextPathfindTick) {
+        boolean canPillar = PathExecutor.hasPlaceableBlock(player, reserve);
+        PathRequestIdentity request = new PathRequestIdentity(
+                immutableGoal, canPillar, true, reserve,
+                PathExecutor.RouteContract.unrestricted());
+        if (preparePathRequest(request, now)) {
             return ActionResult.failed("pathfinding_throttled");
         }
         if (!snapPlayerToNearestStandable("path_start_invalid")) {
+            lastPathRequest = request;
             nextPathfindTick = now + PATHFIND_FAILURE_COOLDOWN_TICKS;
             return ActionResult.failed("pathfinding_failed: NO_START");
         }
-        boolean canPillar = PathExecutor.hasPlaceableBlock(player, reserve);
         PathfindingResult result = new AStarPathfinder(player.getServerWorld(), player.getBlockPos(), goal,
                 DIG_APPROACH_MAX_NODES, PATHFIND_MAX_MILLIS, canPillar, true, 10.0D).findPath();
         if (!result.success()) {
-            lastPathGoal = immutableGoal;
-            activePathGoal = null;
+            lastPathRequest = request;
             nextPathfindTick = now + PATHFIND_FAILURE_COOLDOWN_TICKS;
             return ActionResult.failed("pathfinding_failed: " + result.reason());
         }
-        lastPathGoal = immutableGoal;
+        lastPathRequest = request;
         nextPathfindTick = now + PATHFIND_SUCCESS_COOLDOWN_TICKS;
         BlockPos resolvedGoal = result.resolvedGoal() == null ? immutableGoal : result.resolvedGoal();
         activePathGoal = resolvedGoal;
+        activePathRequest = request;
         this.pathExecutor = new PathExecutor(
                 result.path(), resolvedGoal, canPillar, true, reserve);
         this.walkTo = null;
@@ -163,18 +168,55 @@ public final class ActionPack {
         return startPathTo(goal, false, false, 0);
     }
 
+    /**
+     * Starts a no-dig/no-pillar surface route that must remain at or above {@code minimumY}.
+     * This overload does not require a round-trip proof.
+     */
+    public ActionResult startSurfacePathTo(BlockPos goal, int minimumY) {
+        return startSurfacePathTo(goal, minimumY, null);
+    }
+
+    /**
+     * Starts a contract-bound surface route. A non-null {@code returnAnchor} additionally requires
+     * an exact no-dig/no-pillar route from the requested goal back to that anchor under the same
+     * Y floor and search budget.
+     */
+    public ActionResult startSurfacePathTo(
+            BlockPos goal, int minimumY, BlockPos returnAnchor) {
+        return startPathTo(goal, false, false, 0,
+                PathExecutor.RouteContract.constrainedSurface(minimumY, returnAnchor));
+    }
+
     private ActionResult startPathTo(BlockPos goal, boolean canPillar,
                                      boolean allowDigFallback,
                                      int protectedStoneLikeReserve) {
+        return startPathTo(goal, canPillar, allowDigFallback, protectedStoneLikeReserve,
+                PathExecutor.RouteContract.unrestricted());
+    }
+
+    private ActionResult startPathTo(BlockPos goal, boolean canPillar,
+                                     boolean allowDigFallback,
+                                     int protectedStoneLikeReserve,
+                                     PathExecutor.RouteContract routeContract) {
         int reserve = Math.max(0, protectedStoneLikeReserve);
         int now = player.getServer().getTicks();
         BlockPos immutableGoal = goal.toImmutable();
-        if (lastPathGoal != null && lastPathGoal.equals(immutableGoal) && now < nextPathfindTick) {
+        PathRequestIdentity request = new PathRequestIdentity(
+                immutableGoal, canPillar, allowDigFallback, reserve, routeContract);
+        if (preparePathRequest(request, now)) {
             return ActionResult.failed("pathfinding_throttled");
         }
-        if (!snapPlayerToNearestStandable("path_start_invalid")) {
-            lastPathGoal = immutableGoal;
-            activePathGoal = null;
+        if (routeContract.constrained()
+                && player.getBlockPos().getY() < routeContract.minimumY()) {
+            lastPathRequest = request;
+            nextPathfindTick = now + PATHFIND_FAILURE_COOLDOWN_TICKS;
+            return ActionResult.failed("path_contract_failed: start_below_minimum_y");
+        }
+        boolean startReady = routeContract.constrained()
+                ? recenterPlayerInCurrentStandableCell("path_start_invalid")
+                : snapPlayerToNearestStandable("path_start_invalid");
+        if (!startReady) {
+            lastPathRequest = request;
             nextPathfindTick = now + PATHFIND_FAILURE_COOLDOWN_TICKS;
             return ActionResult.failed("pathfinding_failed: NO_START");
         }
@@ -182,8 +224,13 @@ public final class ActionPack {
         BlockPos from = player.getBlockPos();
         // NAV-OPT 两阶段寻路:先纯步行(禁挖,搜索空间=空气格,收敛快、不会被挖穿邻居撑爆到 SEARCH_LIMIT);
         // 纯步行无解再允许挖穿兜底(隧道/破障),挖穿预算更小以限制被困/地下时的 3D 体积爆搜。
-        PathfindingResult result =
-                new AStarPathfinder(world, from, goal, WALK_MAX_NODES, PATHFIND_MAX_MILLIS, canPillar, false).findPath();
+        AStarPathfinder walkFinder =
+                new AStarPathfinder(
+                        world, from, goal, WALK_MAX_NODES, PATHFIND_MAX_MILLIS,
+                        canPillar, false);
+        PathfindingResult result = routeContract.constrained()
+                ? walkFinder.findPathUncachedAtOrAbove(routeContract.minimumY())
+                : walkFinder.findPath();
         if (!result.success() && allowDigFallback) {
             PathfindingResult dig =
                     new AStarPathfinder(world, from, goal, DIG_MAX_NODES, PATHFIND_MAX_MILLIS, canPillar, true).findPath();
@@ -192,16 +239,32 @@ public final class ActionPack {
             }
         }
         if (!result.success()) {
-            lastPathGoal = immutableGoal;
-            activePathGoal = null;
+            lastPathRequest = request;
             nextPathfindTick = now + PATHFIND_FAILURE_COOLDOWN_TICKS;
             return ActionResult.failed("pathfinding_failed: " + result.reason());
         }
-        lastPathGoal = immutableGoal;
+        PathfindingResult returnProof = routeContract.requiresReturnProof()
+                ? new AStarPathfinder(
+                world, immutableGoal, routeContract.returnAnchor(),
+                WALK_MAX_NODES, PATHFIND_MAX_MILLIS, false, false)
+                .findPathUncachedAtOrAbove(routeContract.minimumY())
+                : null;
+        PathExecutor.RouteValidation validation = PathExecutor.validateRouteContract(
+                result, immutableGoal, routeContract, returnProof);
+        if (!validation.accepted()) {
+            lastPathRequest = request;
+            nextPathfindTick = now + PATHFIND_FAILURE_COOLDOWN_TICKS;
+            return ActionResult.failed("path_contract_failed: " + validation.reason());
+        }
+        lastPathRequest = request;
         nextPathfindTick = now + PATHFIND_SUCCESS_COOLDOWN_TICKS;
         BlockPos resolvedGoal = result.resolvedGoal() == null ? immutableGoal : result.resolvedGoal();
         activePathGoal = resolvedGoal;
-        this.pathExecutor = new PathExecutor(
+        activePathRequest = request;
+        this.pathExecutor = routeContract.constrained()
+                ? new PathExecutor(
+                result.path(), resolvedGoal, canPillar, allowDigFallback, reserve, routeContract)
+                : new PathExecutor(
                 result.path(), resolvedGoal, canPillar, allowDigFallback, reserve);
         this.walkTo = null;
         this.mining = null;
@@ -210,6 +273,30 @@ public final class ActionPack {
 
     public BlockPos activePathGoal() {
         return activePathGoal;
+    }
+
+    /**
+     * Repairs only fractional body overlap inside the current supported cell.
+     * Constrained routes must never relocate to another block before their full contract is proven.
+     */
+    public boolean recenterPlayerInCurrentStandableCell(String reason) {
+        ServerWorld world = player.getServerWorld();
+        BlockPos current = player.getBlockPos();
+        Standability.clearCache();
+        if (!Standability.isStandable(world, current)) {
+            return false;
+        }
+        if (FakePlayerMotion.isBlockCollisionFree(player)) {
+            return true;
+        }
+        if (!FakePlayerMotion.returnToBlockCenter(
+                player, current, "path_start_body_collision:" + reason)) {
+            return false;
+        }
+        Standability.clearCache();
+        return player.getBlockPos().equals(current)
+                && Standability.isStandable(world, current)
+                && FakePlayerMotion.isBlockCollisionFree(player);
     }
 
     public boolean snapPlayerToNearestStandable(String reason) {
@@ -324,7 +411,7 @@ public final class ActionPack {
 
     public ActionResult startMining(BlockPos pos, Direction face) {
         this.mining = new MiningController(pos, face);
-        this.pathExecutor = null;
+        clearActivePathExecutor();
         this.forward = 0.0F;
         this.strafing = 0.0F;
         return ActionResult.IN_PROGRESS;
@@ -348,11 +435,7 @@ public final class ActionPack {
     }
 
     public void stopAll() {
-        if (pathExecutor != null) {
-            pathExecutor.abort(this);
-            pathExecutor = null;
-        }
-        activePathGoal = null;
+        clearActivePathExecutor();
         stopMining();
         this.walkTo = null;
         stopMovement();
@@ -461,6 +544,7 @@ public final class ActionPack {
         }
         pathExecutor = null;
         activePathGoal = null;
+        activePathRequest = null;
         forward = 0.0F;
         strafing = 0.0F;
         jumping = false;
@@ -483,6 +567,45 @@ public final class ActionPack {
             BotLog.warn(LogCategory.ERROR, player, "mine_failed", "reason", result.reason());
         }
         mining = null;
+    }
+
+    /**
+     * Returns true when an identical request is still inside its cooldown.
+     * A different active identity is stopped before cooldown evaluation so an old, weaker route
+     * can never keep moving merely because the replacement happens to share the same goal.
+     */
+    private boolean preparePathRequest(PathRequestIdentity request, int now) {
+        if (pathExecutor != null && !request.equals(activePathRequest)) {
+            clearActivePathExecutor();
+        }
+        if (request.equals(lastPathRequest) && now < nextPathfindTick) {
+            return true;
+        }
+        // An explicit restart after cooldown owns the controller from this point onward.
+        clearActivePathExecutor();
+        return false;
+    }
+
+    private void clearActivePathExecutor() {
+        if (pathExecutor != null) {
+            pathExecutor.abort(this);
+            pathExecutor = null;
+        }
+        activePathGoal = null;
+        activePathRequest = null;
+    }
+
+    private record PathRequestIdentity(
+            BlockPos goal,
+            boolean canPillar,
+            boolean allowDig,
+            int protectedStoneLikeReserve,
+            PathExecutor.RouteContract routeContract) {
+        private PathRequestIdentity {
+            goal = goal.toImmutable();
+            protectedStoneLikeReserve = Math.max(0, protectedStoneLikeReserve);
+            routeContract = java.util.Objects.requireNonNull(routeContract, "routeContract");
+        }
     }
 
     private static float clampInput(float value) {

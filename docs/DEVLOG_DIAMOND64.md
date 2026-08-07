@@ -182,6 +182,23 @@ OreDig 前插入 挖石头 绕行、撞 fixture 的 tick 80/100 死线;木棍 23
 
 ---
 
+## 阶段 6 · F11 已交付批次的重启冻结(2026-08-07)
+
+**完成**(`OreDigTask.finishAlreadyDeliveredBatch`):
+- `targetCount==0` 快路径先于硬超时执行,其 UNKNOWN 分支(重启后的 restore 站位观察
+  不到 `active_break_pos`)原来每 tick 空转 `return`,没有任何东西能终结它 → 无界冻结。
+- 修复:观察恢复窗口有界化 —— 空转时每 20 tick 沿断块格的可观察环形站位走一步
+  (`startObservationSweepStep`,由 P1 的拾取扫描泛化共用);超过 `RESTORE_FACE_LIMIT`
+  (1200 tick)仍不可观察,则取**少记不多记**的 exact-once 保守结果:
+  `clearActiveTargetBreak`(矿留在世界里,绝不虚计),事件
+  `ore_dig_delivered_batch_break_unobservable`。
+
+**验证**:343 单测全绿;580 gametest 全绿。
+**TODO**:补一个确定性 gametest(restore 注入 targetCount=0 + 断块格被遮挡的 fixture,
+断言有界窗口内脱困)——列入 P5。
+
+---
+
 ## 待解决问题(滚动清单)
 
 | ID | 严重度 | 问题 | 状态 |

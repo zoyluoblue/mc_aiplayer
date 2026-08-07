@@ -207,6 +207,9 @@ public final class OreDigTask extends AbstractTask implements CheckpointableTask
     private BlockPos pendingPickupStallAnchor;
     private int pendingPickupStallTicks;
     private int pendingPickupSweepCursor;
+    // Bounded perception-recovery window for a delivered batch whose last open break is not
+    // observable from the restore pose. Transient: a restart merely restarts the bounded walk.
+    private int deliveredBatchObservationTicks;
     private BlockPos activeTargetBreakPos;
     private int activeTargetBreakInventory = -1;
     private int budgetOffset;
@@ -1449,7 +1452,24 @@ public final class OreDigTask extends AbstractTask implements CheckpointableTask
             OreScan.Observation activeState = OreScan.observeOre(bot, active, targetOres);
             if (activeState == OreScan.Observation.UNKNOWN) {
                 // Delivered inventory does not authorize guessing whether the last open break
-                // committed. Wait for ordinary perception before clearing or promoting its ledger.
+                // committed. But waiting blind is unbounded after a restart whose restore pose
+                // cannot see the cell at all — this fast path also runs before the hard timeout,
+                // so nothing else would ever end it. Walk the observable ring to regain
+                // perception; past the bounded window prefer the under-claiming exact-once
+                // outcome (leave the ore in the world, never count it).
+                deliveredBatchObservationTicks++;
+                if (deliveredBatchObservationTicks > RESTORE_FACE_LIMIT) {
+                    BotLog.action(bot, "ore_dig_delivered_batch_break_unobservable",
+                            "pos", active.toShortString(),
+                            "waited", deliveredBatchObservationTicks);
+                    clearActiveTargetBreak(active);
+                    return;
+                }
+                if (deliveredBatchObservationTicks % 20 == 0
+                        && bot.getActionPack().isPathExecutorIdle()
+                        && bot.getActionPack().isWalkToIdle()) {
+                    startObservationSweepStep(bot, active);
+                }
                 return;
             }
             if (activeState == OreScan.Observation.OBSERVED_PRESENT) {
@@ -3503,8 +3523,11 @@ public final class OreDigTask extends AbstractTask implements CheckpointableTask
      * visible — or simply collides with the player's pickup box from the neighbouring cell.
      */
     private boolean startPickupObservationSweepStep(AIPlayerEntity bot) {
-        BlockPos anchor = pendingPickupLastSeenPos != null
-                ? pendingPickupLastSeenPos : pendingPickupPos;
+        return startObservationSweepStep(bot, pendingPickupLastSeenPos != null
+                ? pendingPickupLastSeenPos : pendingPickupPos);
+    }
+
+    private boolean startObservationSweepStep(AIPlayerEntity bot, BlockPos anchor) {
         if (anchor == null) {
             return false;
         }

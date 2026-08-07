@@ -59,7 +59,7 @@ Citation shorthand (as used in the source reports): `COT` = src/main/java/io/git
 - Trigger: a visible but unreachable creeper (behind a gap/fence at 8–15 blocks) underground: not wall-urgent, visibility forbids completion, escape goal stays null → infinite ESCAPE; `scanBot` early-returns so eat/resupply never run; the bot starves with the mining task paused beneath it.
 - Smallest fix: add a "stalemate N ticks at ≥ safe distance" downgrade exit, and permit hold-eat during ESCAPE stalls.
 
-**F11 — `targetCount==0` fast path bypasses hard timeout and face restore → unbounded post-restart freeze** (blocker; OreDigTask; from: oredig B1)
+**[已修·阶段6] F11 — `targetCount==0` fast path bypasses hard timeout and face restore → unbounded post-restart freeze** (blocker; OreDigTask; from: oredig B1)
 - Citations: OreDigTask onTick:879-881 (before 883-886 hard timeout and 887-890 restoringFace), 1433-1441, 1442-1445, 366-370 (`isWaiting` suppresses StuckWatcher), onStart:746-755.
 - Trigger: last target ore's active break committed → process restart → restart stance cannot observe `active_break_pos` (UNKNOWN preserved) → `finishAlreadyDeliveredBatch` returns without motion or deadline every tick, forever.
 - Smallest fix: in the UNKNOWN branch, perform `returnToSavedFace`-style movement when idle, bounded by `RESTORE_FACE_LIMIT`; on expiry conservatively `clearActiveTargetBreak` per the existing exact-once semantics.

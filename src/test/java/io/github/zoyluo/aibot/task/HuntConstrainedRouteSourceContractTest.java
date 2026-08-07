@@ -1,21 +1,22 @@
 package io.github.zoyluo.aibot.task;
 
-import io.github.zoyluo.aibot.pathfinding.MoveType;
-import io.github.zoyluo.aibot.pathfinding.Node;
-import io.github.zoyluo.aibot.pathfinding.PathfindingResult;
-import net.minecraft.util.math.BlockPos;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** Locks every Hunt movement segment to its runtime surface/return contract. */
+/**
+ * Locks every Hunt movement segment to its runtime surface/return contract.
+ *
+ * <p>These assertions read {@code HuntTask.java} as text on purpose: loading the class would
+ * initialise its {@code EntityType}/{@code Item} constants, which needs a bootstrapped Minecraft
+ * registry that plain unit tests do not have. The executable geometry checks live in
+ * {@code PathExecutorRouteContractTest} instead.</p>
+ */
 class HuntConstrainedRouteSourceContractTest {
     private static final Path SOURCE = Path.of(
             "src/main/java/io/github/zoyluo/aibot/task/HuntTask.java");
@@ -111,32 +112,17 @@ class HuntConstrainedRouteSourceContractTest {
     }
 
     @Test
-    void exactSurfaceProofRejectsSnappedOriginGoalAndBelowFloorNodes() {
-        BlockPos origin = new BlockPos(0, 64, 0);
-        BlockPos destination = new BlockPos(3, 64, 0);
+    void exactSurfaceProofDelegatesToTheSharedRouteContract() throws IOException {
+        String source = Files.readString(SOURCE);
+        String proof = between(
+                source,
+                "private static SurfaceRouteProof proveExactSurfaceRoute",
+                "private static SurfacePathStart startExactSurfacePath");
 
-        assertTrue(HuntTask.isExactSurfaceRouteResult(
-                success(origin, destination), origin, destination, 64));
-        assertFalse(HuntTask.isExactSurfaceRouteResult(
-                success(origin.east(), destination), origin, destination, 64),
-                "snapped origin must not be pre-reported as SAFE");
-        assertFalse(HuntTask.isExactSurfaceRouteResult(
-                success(origin, destination.east()), origin, destination, 64));
-        assertFalse(HuntTask.isExactSurfaceRouteResult(
-                success(origin, origin.east().down(), destination),
-                origin, destination, 64));
-    }
-
-    private static PathfindingResult success(BlockPos... positions) {
-        List<Node> nodes = new ArrayList<>();
-        Node parent = null;
-        for (BlockPos position : positions) {
-            Node node = new Node(
-                    position, nodes.size(), 0.0D, MoveType.WALK, parent);
-            nodes.add(node);
-            parent = node;
-        }
-        return PathfindingResult.success(nodes, nodes.size(), 1L);
+        assertTrue(proof.contains("PathExecutor.isExactConstrainedRoute("),
+                "exactness must be decided by the shared route contract, not a local copy");
+        assertTrue(proof.contains("result, origin, destination, minimumY"),
+                "the shared contract must be given this proof's own origin and floor");
     }
 
     private static String between(String source, String startMarker, String endMarker) {

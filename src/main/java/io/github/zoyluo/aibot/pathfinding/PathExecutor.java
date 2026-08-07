@@ -596,6 +596,25 @@ public final class PathExecutor {
         return ActionResult.failed("route_contract_lost: " + reason);
     }
 
+    /**
+     * Returns true when {@code result} is a successful route that resolved to exactly the
+     * requested start and goal cells and never dips below {@code minimumY}.
+     *
+     * <p>Callers proving a reversible surface corridor need this stricter check than
+     * {@link #validateRouteContract}, which deliberately leaves the outbound start cell
+     * unconstrained because the executor already stands there.</p>
+     */
+    public static boolean isExactConstrainedRoute(
+            PathfindingResult result, BlockPos start, BlockPos goal, int minimumY) {
+        Objects.requireNonNull(start, "start");
+        Objects.requireNonNull(goal, "goal");
+        return result != null
+                && result.success()
+                && start.equals(result.resolvedStart())
+                && goal.equals(result.resolvedGoal())
+                && allNodesAtOrAbove(result, minimumY);
+    }
+
     public static RouteValidation validateRouteContract(
             PathfindingResult outbound,
             BlockPos requestedGoal,

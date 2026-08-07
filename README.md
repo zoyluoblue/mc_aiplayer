@@ -128,7 +128,10 @@ On first run, AIBot writes `aibot.json` to the Fabric config directory. A minima
   },
   "deepseek": {
     "baseUrl": "https://api.deepseek.com",
-    "model": "deepseek-chat"
+    "model": "deepseek-v4-flash",
+    "maxTokens": 8192,
+    "thinking": true,
+    "reasoningEffort": "low"
   }
 }
 ```

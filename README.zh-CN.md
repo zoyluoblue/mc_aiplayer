@@ -128,7 +128,10 @@ export DEEPSEEK_API_KEY="sk-your-key"
   },
   "deepseek": {
     "baseUrl": "https://api.deepseek.com",
-    "model": "deepseek-chat"
+    "model": "deepseek-v4-flash",
+    "maxTokens": 8192,
+    "thinking": true,
+    "reasoningEffort": "low"
   }
 }
 ```

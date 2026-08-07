@@ -45,11 +45,13 @@ public final class DeepSeekApiClient {
         body.addProperty("max_tokens", config.maxTokens());
         body.addProperty("temperature", config.temperature());
         body.addProperty("stream", false);
+        body.add("thinking", serializeThinking(config));
         BotLog.api(null, "api_request",
                 "model", config.model(),
                 "msg_count", history.size(),
                 "tools_count", tools == null ? 0 : tools.size(),
-                "max_tokens", config.maxTokens());
+                "max_tokens", config.maxTokens(),
+                "thinking", Boolean.TRUE.equals(config.thinking()) ? config.reasoningEffort() : "disabled");
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(normalizedBaseUrl() + "/v1/chat/completions"))
@@ -144,6 +146,21 @@ public final class DeepSeekApiClient {
         return "http_error: status=" + status + " body=" + excerpt;
     }
 
+    /**
+     * Always sends an explicit thinking block. V4 defaults to {@code enabled} at {@code high}
+     * effort, and reasoning shares the {@code max_tokens} budget, so relying on the server
+     * default would let a long chain of thought truncate the tool call the bot is waiting on.
+     */
+    private static JsonObject serializeThinking(AIBotConfig.DeepSeek config) {
+        JsonObject thinking = new JsonObject();
+        boolean enabled = Boolean.TRUE.equals(config.thinking());
+        thinking.addProperty("type", enabled ? "enabled" : "disabled");
+        if (enabled) {
+            thinking.addProperty("reasoning_effort", config.reasoningEffort());
+        }
+        return thinking;
+    }
+
     private static JsonArray serializeMessages(List<ChatMessage> history) {
         JsonArray messages = new JsonArray();
         for (ChatMessage message : history) {
@@ -222,11 +239,24 @@ public final class DeepSeekApiClient {
             int promptTokens = intField(usage, "prompt_tokens");
             int completionTokens = intField(usage, "completion_tokens");
             int cacheHitTokens = intField(usage, "prompt_cache_hit_tokens");
+            int reasoningTokens = usage.has("completion_tokens_details")
+                    && usage.get("completion_tokens_details").isJsonObject()
+                    ? intField(usage.getAsJsonObject("completion_tokens_details"), "reasoning_tokens")
+                    : 0;
             BotLog.api(null, "api_response_received",
                     "tokens_in", promptTokens,
                     "tokens_out", completionTokens,
+                    "reasoning_tokens", reasoningTokens,
                     "cache_hit", cacheHitTokens,
                     "finish_reason", finishReason);
+            // 思考与正文共享额度:被 length 截断且没拿到任何可执行输出时必须显式告警,
+            // 否则调用方只会看到一次“无动作”的空决策。
+            if ("length".equals(finishReason) && toolCalls.isEmpty()
+                    && (content == null || content.isBlank())) {
+                BotLog.warn(LogCategory.API, null, "api_truncated_before_output",
+                        "reasoning_tokens", reasoningTokens,
+                        "completion_tokens", completionTokens);
+            }
             return new ChatResponse(content, toolCalls, finishReason, promptTokens, completionTokens, cacheHitTokens);
         } catch (DeepSeekApiException exception) {
             BotLog.warn(LogCategory.API, null, "api_parse_error", "reason", exception.getMessage(), "body_excerpt", body.substring(0, Math.min(200, body.length())));

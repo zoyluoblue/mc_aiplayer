@@ -108,6 +108,28 @@ class PathExecutorRouteContractTest {
                         START, contract).reason());
     }
 
+    @Test
+    void exactConstrainedRouteRejectsSnappedOriginGoalAndBelowFloorNodes() {
+        BlockPos origin = new BlockPos(0, 64, 0);
+        BlockPos destination = new BlockPos(3, 64, 0);
+
+        assertTrue(PathExecutor.isExactConstrainedRoute(
+                success(origin, destination), origin, destination, 64));
+        assertFalse(PathExecutor.isExactConstrainedRoute(
+                        success(origin.east(), destination), origin, destination, 64),
+                "snapped origin must not be pre-reported as SAFE");
+        assertFalse(PathExecutor.isExactConstrainedRoute(
+                success(origin, destination.east()), origin, destination, 64));
+        assertFalse(PathExecutor.isExactConstrainedRoute(
+                success(origin, origin.east().down(), destination),
+                origin, destination, 64));
+        assertFalse(PathExecutor.isExactConstrainedRoute(
+                PathfindingResult.failure(FailureReason.TIMEOUT, 200, 51L),
+                origin, destination, 64));
+        assertFalse(PathExecutor.isExactConstrainedRoute(
+                null, origin, destination, 64));
+    }
+
     private static PathfindingResult success(BlockPos... positions) {
         List<Node> nodes = new ArrayList<>();
         Node parent = null;

@@ -8,6 +8,7 @@ import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.mode.ObservableWorldQuery;
 import io.github.zoyluo.aibot.pathfinding.AStarPathfinder;
 import io.github.zoyluo.aibot.pathfinding.FailureReason;
+import io.github.zoyluo.aibot.pathfinding.PathExecutor;
 import io.github.zoyluo.aibot.pathfinding.PathfindingResult;
 import io.github.zoyluo.aibot.pathfinding.Standability;
 import net.minecraft.entity.EntityType;
@@ -932,24 +933,14 @@ public final class HuntTask extends AbstractTask implements CheckpointableTask {
                 SURFACE_ROUTE_MAX_NODES, SURFACE_ROUTE_MAX_MILLIS,
                 false, false).findPathUncachedAtOrAbove(minimumY);
         if (result.success()) {
-            return isExactSurfaceRouteResult(result, origin, destination, minimumY)
+            return PathExecutor.isExactConstrainedRoute(
+                            result, origin, destination, minimumY)
                     ? SurfaceRouteProof.SAFE : SurfaceRouteProof.UNREACHABLE;
         }
         return result.reason() == FailureReason.NO_START
                 || result.reason() == FailureReason.TIMEOUT
                 || result.reason() == FailureReason.SEARCH_LIMIT
                 ? SurfaceRouteProof.RETRY : SurfaceRouteProof.UNREACHABLE;
-    }
-
-    static boolean isExactSurfaceRouteResult(
-            PathfindingResult result, BlockPos origin,
-            BlockPos destination, int minimumY) {
-        return result != null
-                && result.success()
-                && origin.equals(result.resolvedStart())
-                && destination.equals(result.resolvedGoal())
-                && result.path().stream()
-                        .allMatch(node -> node.pos().getY() >= minimumY);
     }
 
     private static SurfacePathStart startExactSurfacePath(

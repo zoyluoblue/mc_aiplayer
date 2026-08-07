@@ -5293,11 +5293,15 @@ public final class MiningCheckpointMissionGameTests implements FabricGameTest {
             legacy.remove("lifetime_replans");
             legacy.remove("rare_resource_retries_used");
             legacy.remove("replan_count");
+            // A real legacy build wrote none of the snapshot namespace. Leaving any single
+            // snap_ key behind (snap_dimension included) is a hybrid checkpoint that restore
+            // validation correctly fails closed on.
             legacy.remove("snap_steps");
             legacy.remove("snap_target");
             legacy.remove("snap_x");
             legacy.remove("snap_y");
             legacy.remove("snap_z");
+            legacy.remove("snap_dimension");
             legacy.remove("snap_hunt_raw_meat");
             legacy.remove("snap_hunt_visited_sectors");
             BlockPos legacyBaseline = bot.getBlockPos().toImmutable();

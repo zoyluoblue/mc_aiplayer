@@ -130,7 +130,10 @@ public record AIBotConfig(
         return new AIBotConfig(
                 OperatingProfile.STRICT_SURVIVAL,
                 OperatorCapabilities.defaults(),
-                new DeepSeek("", "https://api.deepseek.com", "deepseek-chat", 2048, 0.3D, 60, 3, 500),
+                // V4 的 reasoning 与正文共享 max_tokens,故显式降低 effort 并放宽预算,
+                // 避免思考过程吃光额度、让本该发出的 tool_call 被截断。
+                new DeepSeek("", "https://api.deepseek.com", "deepseek-v4-flash", 8192, 0.3D, 60, 3, 500,
+                        Boolean.TRUE, "low"),
                 new Perception(16, 20, 10, 10, false),
                 new Brain(36, 6, 12, false, true, false, 3, true), // 优化4:maxTurns 24→12——挖矿失败后大脑手动逐格挖会瞬间耗轮,早止损早复位(善后已有 clear+resetIdle)
                 new Watchdog(200),
@@ -190,6 +193,14 @@ public record AIBotConfig(
                 "effective_capabilities", effectiveCapabilities);
     }
 
+    /**
+     * DeepSeek chat settings.
+     *
+     * <p>{@code thinking} and {@code reasoningEffort} are sent explicitly rather than left to the
+     * server default. V4 enables thinking at {@code high} effort by default, and reasoning output
+     * shares the {@code maxTokens} budget — an implicit default would let reasoning starve the
+     * tool call the bot actually needs.</p>
+     */
     public record DeepSeek(
             String apiKey,
             String baseUrl,
@@ -198,10 +209,15 @@ public record AIBotConfig(
             double temperature,
             int timeoutSeconds,
             int retryCount,
-            int retryBackoffMs
+            int retryBackoffMs,
+            Boolean thinking,
+            String reasoningEffort
     ) {
+        public static final List<String> REASONING_EFFORTS = List.of("low", "high", "max");
+
         DeepSeek withApiKey(String apiKey) {
-            return new DeepSeek(apiKey, baseUrl, model, maxTokens, temperature, timeoutSeconds, retryCount, retryBackoffMs);
+            return new DeepSeek(apiKey, baseUrl, model, maxTokens, temperature, timeoutSeconds,
+                    retryCount, retryBackoffMs, thinking, reasoningEffort);
         }
 
         DeepSeek withDefaults(DeepSeek defaults) {
@@ -213,7 +229,10 @@ public record AIBotConfig(
                     temperature,
                     positiveOrDefault(timeoutSeconds, defaults.timeoutSeconds),
                     Math.max(0, retryCount),
-                    positiveOrDefault(retryBackoffMs, defaults.retryBackoffMs));
+                    positiveOrDefault(retryBackoffMs, defaults.retryBackoffMs),
+                    boolOrDefault(thinking, defaults.thinking),
+                    reasoningEffort != null && REASONING_EFFORTS.contains(reasoningEffort)
+                            ? reasoningEffort : defaults.reasoningEffort);
         }
     }
 

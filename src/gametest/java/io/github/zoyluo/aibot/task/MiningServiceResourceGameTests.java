@@ -4127,7 +4127,7 @@ public final class MiningServiceResourceGameTests implements FabricGameTest {
         MiningServiceTask service = rareDescentKitTask(mission, cursor, Map.of());
         // Drive the service through the real runtime owner. A directly ticked task is invisible to
         // DangerWatcher, which can then classify the bot as idle and spend this fixture's exact
-        // 640-torch reserve on a concurrent LightAreaTask.
+        // 720-torch reserve on a concurrent LightAreaTask.
         TaskManager.INSTANCE.assign(bot, service,
                 TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_rare_descent_pressure"));
         BlockPos ore = face.north(2);
@@ -4153,7 +4153,7 @@ public final class MiningServiceResourceGameTests implements FabricGameTest {
                                 "mission_depot_retirement_completed")),
                         "pressure service did not durably commit the schema-9 kit: "
                                 + terminal);
-                require(context, inventoryCount(depot, Items.WOODEN_PICKAXE) == 4
+                require(context, inventoryCount(depot, Items.WOODEN_PICKAXE) == 1
                                 && inventoryCount(depot, Items.STONE_PICKAXE) == 5,
                         "mission chest did not preserve every retired old wood/stone pick");
                 require(context, inventoryCount(depot, Items.LEATHER) == 7
@@ -4185,7 +4185,7 @@ public final class MiningServiceResourceGameTests implements FabricGameTest {
                                 && freeMainSlots(bot) >= 4
                                 && MiningServiceTask.rareDescentKitReady(bot)
                                 && MiningServiceTask.ownedMissionDepot(bot, mission),
-                        "pressure service missed the 650/8/640/72/60/228/free4 descent contract");
+                        "pressure service missed the 650/8/720/80/60/256/free4 descent contract");
                 require(context, bot.getBlockPos().equals(face),
                         "descent kit did not complete at its exact mining workface");
 
@@ -4290,9 +4290,10 @@ public final class MiningServiceResourceGameTests implements FabricGameTest {
 
     private static void giveFullRareDescentPressureInventory(AIPlayerEntity bot) {
         InventoryAction.giveItem(bot, new ItemStack(Items.CHEST));
-        for (int index = 0; index < 4; index++) {
-            giveExhaustedPick(bot, Items.WOODEN_PICKAXE);
-        }
+        // The margin-funded torch/stick pools occupy three more slots than the pre-margin carry,
+        // so only one of the old four exhausted wooden picks still fits the 36-slot boundary.
+        // Wood and stone cheap-pick retirement both stay exercised.
+        giveExhaustedPick(bot, Items.WOODEN_PICKAXE);
         for (int index = 0; index < 5; index++) {
             giveExhaustedPick(bot, Items.STONE_PICKAXE);
         }

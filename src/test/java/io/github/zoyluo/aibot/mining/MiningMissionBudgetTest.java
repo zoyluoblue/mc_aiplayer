@@ -20,17 +20,18 @@ class MiningMissionBudgetTest {
 
         assertEquals(8, budget.targetOreDigBatches());
         assertEquals(0, budget.bootstrapOreDigBatches());
-        assertEquals(8, budget.retryOreDigBatches());
+        // Eight per-batch retries plus the capped two-epoch mission margin pool.
+        assertEquals(10, budget.retryOreDigBatches());
         assertEquals(8, budget.targetServiceCheckpoints());
         assertEquals(0, budget.bootstrapServiceCheckpoints());
-        assertEquals(8, budget.retryServiceCheckpoints());
+        assertEquals(10, budget.retryServiceCheckpoints());
         assertEquals(8, budget.inventoryServiceCheckpoints());
         assertEquals(2, budget.descents());
-        assertEquals(384_000, budget.oreDigTicks());
-        assertEquals(115_200, budget.serviceTicks());
+        assertEquals(432_000, budget.oreDigTicks());
+        assertEquals(124_800, budget.serviceTicks());
         assertEquals(80_000, budget.descendTicks());
         assertEquals(24_000, budget.bootstrapMarginTicks());
-        assertEquals(603_200, budget.timeoutTicks());
+        assertEquals(660_800, budget.timeoutTicks());
         assertTrue(budget.timeoutTicks() > 240_000,
                 "the former magic timeout expired before its bounded children");
     }
@@ -45,6 +46,29 @@ class MiningMissionBudgetTest {
                 () -> MiningMissionBudget.rareOreDigCumulativeHardWindowTicks(-1));
         assertThrows(IllegalArgumentException.class,
                 () -> MiningMissionBudget.rareOreDigCumulativeHardWindowTicks(2));
+    }
+
+    @Test
+    void marginEpochsExtendTheCumulativeWindowOnlyInsideTheMissionCapacity() {
+        int capacity = MiningBudget.rareMissionResourceEpochCapacity(
+                MiningBudget.rareMissionBatchCount(64));
+        assertEquals(4, capacity);
+        assertEquals(48_000,
+                MiningMissionBudget.rareOreDigCumulativeHardWindowTicks(1, capacity));
+        assertEquals(72_000,
+                MiningMissionBudget.rareOreDigCumulativeHardWindowTicks(2, capacity));
+        assertEquals(96_000,
+                MiningMissionBudget.rareOreDigCumulativeHardWindowTicks(3, capacity));
+        assertThrows(IllegalArgumentException.class,
+                () -> MiningMissionBudget.rareOreDigCumulativeHardWindowTicks(4, capacity));
+        assertThrows(IllegalArgumentException.class,
+                () -> MiningMissionBudget.rareOreDigCumulativeHardWindowTicks(-1, capacity));
+        assertThrows(IllegalArgumentException.class,
+                () -> MiningMissionBudget.rareOreDigCumulativeHardWindowTicks(2,
+                        MiningBudget.RARE_RESOURCE_EPOCHS_PER_BATCH));
+        // The explicit bound cannot be abused to shrink below the two regular epochs either.
+        assertThrows(IllegalArgumentException.class,
+                () -> MiningMissionBudget.rareOreDigCumulativeHardWindowTicks(0, 1));
     }
 
     @Test

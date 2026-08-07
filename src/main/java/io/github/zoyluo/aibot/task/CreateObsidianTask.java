@@ -151,6 +151,11 @@ public final class CreateObsidianTask extends AbstractTask implements Checkpoint
     private BlockPos waterTarget;
     private BlockPos waterSource;
     private BlockPos lavaClue;
+    // One flow-control pour's causal record: how long its water needs to reach the clue, and
+    // which clue must answer for a cycle that converts nothing. Transient by design — a restart
+    // resumes through RECOVER_WATER, which repays the bucket before any new pour.
+    private int pourSpreadWaitTicks = WATER_SPREAD_TICKS;
+    private BlockPos lastPourClue;
     private BlockPos lavaTarget;
     private BlockPos obsidian;
     private BlockPos pickupPos;
@@ -1142,13 +1147,21 @@ public final class CreateObsidianTask extends AbstractTask implements Checkpoint
         }
         waterSource = pourPlan.destination().toImmutable();
         waterBucketBaseline = waterBefore;
+        // 平摊池地形的倒水点离线索最远 4 格,而原版水每 5 tick 才推进一格:固定 4-tick 等待
+        // 意味着水永远到不了岩浆、回收时世界零变化,同一线索无限重放(F4 活锁)。等待时长
+        // 按实际距离缩放,并记住这次浇的是哪个线索,供排空后判定"颗粒无收"时拒绝。
+        int flowDistance = Math.max(
+                Math.abs(waterSource.getX() - lavaClue.getX()),
+                Math.abs(waterSource.getZ() - lavaClue.getZ()));
+        pourSpreadWaitTicks = Math.max(WATER_SPREAD_TICKS, flowDistance * 5 + 4);
+        lastPourClue = lavaClue.toImmutable();
         MiningEvidenceAudit.recordWaterPlacement(bot, observableLava);
         noteTopologyProgress();
         enter(Phase.WAIT_WATER_SPREAD);
     }
 
     private void waitForWaterSpread() {
-        int requiredTicks = obsidian == null ? WATER_SPREAD_TICKS : PROTECTION_SPREAD_TICKS;
+        int requiredTicks = obsidian == null ? pourSpreadWaitTicks : PROTECTION_SPREAD_TICKS;
         if (phaseAge() >= requiredTicks) {
             lavaClue = null;
             pourPlan = null;
@@ -1373,6 +1386,7 @@ public final class CreateObsidianTask extends AbstractTask implements Checkpoint
         if (pickupPos != null) {
             // The block is already broken. Let the drained item settle, then resume the durable
             // physical pickup ledger instead of clearing it as if the pool cycle had completed.
+            lastPourClue = null;
             enter(Phase.PICKUP);
             return;
         }
@@ -1381,9 +1395,24 @@ public final class CreateObsidianTask extends AbstractTask implements Checkpoint
             // have walked us beyond current line-of-sight; return to that known pose first, then
             // re-observe the block. Rejecting it from here would turn temporary occlusion into a
             // permanent false negative.
+            lastPourClue = null;
             standPos = obsidianStandHint;
             enter(Phase.APPROACH_OBSIDIAN);
             return;
+        }
+        if (lastPourClue != null) {
+            // The full spread-and-drain lifetime of one real pour produced no conversion and no
+            // pickup at this clue. Replaying the identical pour resets the stall detector every
+            // cycle and can burn the whole 153,600-tick task budget (F4); rotate the barren clue
+            // out through the bounded reject ledger instead. Rejection only acts on an observed
+            // still-lava cell — occlusion must not turn into a false negative.
+            if (bot.getServerWorld().getFluidState(lastPourClue).isIn(FluidTags.LAVA)
+                    && ObservableWorldQuery.canObserveCell(bot, lastPourClue)) {
+                rejectLava(lastPourClue);
+                BotLog.action(bot, "create_obsidian_barren_pour_rejected",
+                        "clue", lastPourClue.toShortString());
+            }
+            lastPourClue = null;
         }
         if (obsidianStandHint != null && !bot.getBlockPos().equals(obsidianStandHint)) {
             // Source recovery can leave the fake player on the one-block-deep pool floor. Return

@@ -794,6 +794,8 @@ public final class HuntCrossRegionGameTests implements FabricGameTest {
                         missionAnchor.getX(), missionAnchor.getY(), missionAnchor.getZ()),
                 "failed to establish shared hunt surface anchor");
         HuntTask task = new HuntTask(1, true, cursor);
+        int chickenKillBaseline = bot.getStatHandler().getStat(
+                Stats.KILLED, EntityType.CHICKEN);
         TaskManager.INSTANCE.assign(bot, task,
                 TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_hunt_surface_floor_prey"));
         AtomicInteger minimumY = new AtomicInteger(bot.getBlockPos().getY());
@@ -801,7 +803,12 @@ public final class HuntCrossRegionGameTests implements FabricGameTest {
         context.runAtEveryTick(() -> {
             minimumY.accumulateAndGet(bot.getBlockPos().getY(), Math::min);
             observedTicks.incrementAndGet();
-            require(context, chicken.isAlive(),
+            // Assert on positive kill evidence, not on the captured entity reference: this
+            // offset arena stays loaded only through the fake player's chunk tickets, and a
+            // transient unload replaces the chicken instance, making a stale isAlive() read
+            // false without any kill having happened.
+            require(context, bot.getStatHandler().getStat(
+                            Stats.KILLED, EntityType.CHICKEN) == chickenKillBaseline,
                     "hunt killed prey below the mission surface floor");
             require(context, minimumY.get() >= surfaceFloorY,
                     "hunt descended below the mission surface floor: minY=" + minimumY.get()

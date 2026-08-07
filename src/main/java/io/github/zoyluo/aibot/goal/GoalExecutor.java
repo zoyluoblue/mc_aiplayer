@@ -309,13 +309,24 @@ public final class GoalExecutor {
         }
         int persistedRareResourceEpoch = restore == null
                 ? 0 : restore.rareResourceRetriesUsed();
+        int rareEpochMarginPool = rareMissionEpochMarginPool(goal);
         if (persistedRareResourceEpoch < 0
                 || persistedRareResourceEpoch
-                > MiningBudget.MAX_RARE_RESOURCE_RETRIES_PER_BATCH) {
+                > MiningBudget.MAX_RARE_RESOURCE_RETRIES_PER_BATCH + rareEpochMarginPool) {
             queued.removeFirstOccurrence(goal);
             recordImmediateResult(bot, missionId, goal, startedTick, initialEvaluation,
                     GoalResult.classify(initialEvaluation, false),
                     "mission_restore_invalid_rare_resource_retry_count");
+            return false;
+        }
+        int persistedRareEpochMarginUsed = restore == null
+                ? 0 : restore.rareEpochMarginUsed();
+        if (!validRestoredRareEpochMargin(persistedRareResourceEpoch,
+                persistedRareEpochMarginUsed, rareEpochMarginPool)) {
+            queued.removeFirstOccurrence(goal);
+            recordImmediateResult(bot, missionId, goal, startedTick, initialEvaluation,
+                    GoalResult.classify(initialEvaluation, false),
+                    "mission_restore_invalid_rare_epoch_margin");
             return false;
         }
         Map<String, String> restoredSettledServiceValues = restore == null
@@ -1368,6 +1379,7 @@ public final class GoalExecutor {
                             + (restoredCommittedCapacityParent ? 1L : 0L));
             active.lifetimeReplans = restore.lifetimeReplans();
             active.rareResourceRetriesUsed = restoredRareResourceEpoch;
+            active.rareEpochMarginUsed = restore.rareEpochMarginUsed();
             active.replanCount = restore.replanCount();
             if (restore.postconditionRepair().persisted()) {
                 active.postconditionReplans =
@@ -2218,6 +2230,8 @@ public final class GoalExecutor {
         checkpoint.put("lifetime_replans", String.valueOf(active.lifetimeReplans));
         checkpoint.put("rare_resource_retries_used", String.valueOf(
                 active.rareResourceRetriesUsed));
+        checkpoint.put("rare_epoch_margin_used", String.valueOf(
+                active.rareEpochMarginUsed));
         checkpoint.put("replan_count", String.valueOf(active.replanCount));
         checkpoint.putAll(encodePostconditionRepairCheckpoint(
                 active.postconditionReplans,
@@ -2698,6 +2712,7 @@ public final class GoalExecutor {
                 completedSteps.orElse(0),
                 lifetimeReplans.orElse(0),
                 decodePersistedRareResourceEpoch(checkpoint).orElse(-1),
+                decodePersistedRareEpochMarginUsed(checkpoint).orElse(-1),
                 replanCount.orElse(0),
                 replanSnapshot,
                 huntSearchCursor.orElse(null),
@@ -2899,19 +2914,50 @@ public final class GoalExecutor {
         }
     }
 
-    /** Missing means a legacy epoch-zero snapshot; malformed or out-of-range values fail closed. */
+    /**
+     * Missing means a legacy epoch-zero snapshot; malformed or negative values fail closed. The
+     * mission-derived upper bound (per-batch retry plus the bounded margin pool) is enforced at
+     * the restore site because only the goal knows the durable mission target.
+     */
     static OptionalInt decodePersistedRareResourceEpoch(Map<String, String> checkpoint) {
         if (checkpoint == null || !checkpoint.containsKey("rare_resource_retries_used")) {
             return OptionalInt.of(0);
         }
         try {
             int parsed = Integer.parseInt(checkpoint.get("rare_resource_retries_used"));
-            return parsed >= 0
-                    && parsed <= MiningBudget.MAX_RARE_RESOURCE_RETRIES_PER_BATCH
-                    ? OptionalInt.of(parsed) : OptionalInt.empty();
+            return parsed >= 0 ? OptionalInt.of(parsed) : OptionalInt.empty();
         } catch (RuntimeException exception) {
             return OptionalInt.empty();
         }
+    }
+
+    /** Missing is a legacy zero-margin snapshot; malformed or negative values fail closed. */
+    static OptionalInt decodePersistedRareEpochMarginUsed(Map<String, String> checkpoint) {
+        if (checkpoint == null || !checkpoint.containsKey("rare_epoch_margin_used")) {
+            return OptionalInt.of(0);
+        }
+        return canonicalNonNegativeInt(checkpoint.get("rare_epoch_margin_used"));
+    }
+
+    /** Bounded mission-level epoch margin pool derived from the durable original rare target. */
+    static int rareMissionEpochMarginPool(Goal goal) {
+        int missionTarget = originalLongRareOreTargetCount(goal);
+        return missionTarget >= MiningBudget.EXPEDITION_THRESHOLD
+                ? MiningBudget.rareMissionEpochMargin(
+                MiningBudget.rareMissionBatchCount(missionTarget))
+                : 0;
+    }
+
+    /**
+     * A batch epoch beyond the per-batch retry must have been paid from the mission margin pool;
+     * accepting a smaller persisted ledger would let a restart manufacture extra bounded epochs.
+     */
+    static boolean validRestoredRareEpochMargin(int persistedEpoch,
+                                               int marginUsed,
+                                               int marginPool) {
+        return marginUsed >= 0 && marginUsed <= marginPool
+                && persistedEpoch - MiningBudget.MAX_RARE_RESOURCE_RETRIES_PER_BATCH
+                <= marginUsed;
     }
 
     private static Optional<ReplanSnapshot> decodeReplanSnapshot(Map<String, String> checkpoint) {
@@ -3363,25 +3409,32 @@ public final class GoalExecutor {
     /**
      * Reconciles the compatibility persistence key with the durable owner of the current rare batch.
      * The key historically accumulated one retry for the whole mission; epoch zero therefore accepts
-     * and normalizes a persisted one. Epoch one cannot do the inverse because that would lose a
-     * physically committed retry debit and manufacture another resource epoch after restart.
+     * and normalizes a persisted one. A later epoch — the per-batch retry or a mission-margin
+     * epoch — cannot do the inverse because that would lose a physically committed epoch debit and
+     * manufacture another resource epoch after restart.
      */
     static OptionalInt normalizeRestoredRareResourceEpoch(
             int persistedEpoch,
             Optional<OreDigTask.RestoreMetadata> owner) {
-        if (persistedEpoch < 0
-                || persistedEpoch > MiningBudget.MAX_RARE_RESOURCE_RETRIES_PER_BATCH) {
+        if (persistedEpoch < 0) {
             return OptionalInt.empty();
         }
         if (owner == null || owner.isEmpty() || !owner.orElseThrow().batchOpen()) {
-            return OptionalInt.of(0);
+            // Without an open durable batch only the legacy mission-global one may normalize down;
+            // a margin-funded epoch always has its open batch, so anything larger fails closed.
+            return persistedEpoch <= MiningBudget.MAX_RARE_RESOURCE_RETRIES_PER_BATCH
+                    ? OptionalInt.of(0) : OptionalInt.empty();
         }
         int durableEpoch = owner.orElseThrow().resourceEpoch();
         if (durableEpoch == 0) {
-            return OptionalInt.of(0);
+            return persistedEpoch <= MiningBudget.MAX_RARE_RESOURCE_RETRIES_PER_BATCH
+                    ? OptionalInt.of(0) : OptionalInt.empty();
         }
-        if (durableEpoch == 1 && persistedEpoch == 1) {
-            return OptionalInt.of(1);
+        int epochCapacity = MiningBudget.rareMissionResourceEpochCapacity(
+                MiningBudget.rareMissionBatchCount(owner.orElseThrow().rareMissionTarget()));
+        if (durableEpoch >= 1 && durableEpoch < epochCapacity
+                && persistedEpoch == durableEpoch) {
+            return OptionalInt.of(durableEpoch);
         }
         return OptionalInt.empty();
     }
@@ -3657,8 +3710,10 @@ public final class GoalExecutor {
         }
         if (isLongRareResourceEpochTimeout(plan, reason)) {
             if (!scheduleRareResourceRetry(bot, plan, reason)) {
-                // Epoch one owns the final 24,000-tick window. Its cumulative 48,000-tick
-                // checkpoint is terminal and must not fall through to a refreshable replan.
+                // Every funded epoch owns one independent 24,000-tick window: the batch's own
+                // retry first, then bounded mission-margin epochs while the shared pool lasts.
+                // Once both are spent the cumulative checkpoint is terminal and must not fall
+                // through to a refreshable replan.
                 finishActive(bot, plan, evaluate(bot, plan), reason, false, true);
             }
             return;
@@ -3992,14 +4047,17 @@ public final class GoalExecutor {
         if (ore == null || reason == null
                 || !reason.startsWith("ore_dig_timeout collected=")
                 || !ore.batchOpen()
-                || ore.rareMissionTarget() < MiningBudget.EXPEDITION_THRESHOLD
-                || ore.resourceEpoch() < 0
-                || ore.resourceEpoch() >= MiningBudget.RARE_RESOURCE_EPOCHS_PER_BATCH) {
+                || ore.rareMissionTarget() < MiningBudget.EXPEDITION_THRESHOLD) {
+            return false;
+        }
+        int epochCapacity = MiningBudget.rareMissionResourceEpochCapacity(
+                MiningBudget.rareMissionBatchCount(ore.rareMissionTarget()));
+        if (ore.resourceEpoch() < 0 || ore.resourceEpoch() >= epochCapacity) {
             return false;
         }
         return ore.budgetUsed()
                 == MiningMissionBudget.rareOreDigCumulativeHardWindowTicks(
-                ore.resourceEpoch());
+                ore.resourceEpoch(), epochCapacity);
     }
 
     /**
@@ -4078,8 +4136,9 @@ public final class GoalExecutor {
     }
 
     /**
-     * Atomically trades this exact open batch's single resource retry for one fresh rare-service
-     * step while preserving the OreDig hard budget, cursor and physical pickup/break ledgers.
+     * Atomically trades this exact open batch's single resource retry — or, once that is spent,
+     * one bounded mission-level margin epoch (F2) — for one fresh rare-service step while
+     * preserving the OreDig hard budget, cursor and physical pickup/break ledgers.
      */
     private boolean scheduleRareResourceRetry(AIPlayerEntity bot,
                                               ActivePlan plan,
@@ -4099,11 +4158,15 @@ public final class GoalExecutor {
                 ore.torchPlacements(), ore.resourceEpoch()));
         boolean channelToolFailure = isLongRareChannelToolFailure(plan, reason);
         boolean epochTimeout = isLongRareResourceEpochTimeout(ore, reason);
+        // Epochs beyond the per-batch retry are paid from the finite mission margin pool; the
+        // durable ledger below makes every draw exactly-once across replans and restarts.
+        int marginPool = rareMissionEpochMarginPool(plan.goal);
+        boolean marginDraw = ore.resourceEpoch()
+                >= MiningBudget.MAX_RARE_RESOURCE_RETRIES_PER_BATCH;
         if (!ore.batchOpen()
                 || ore.rareMissionTarget() != originalLongRareOreTargetCount(plan.goal)
                 || plan.rareResourceRetriesUsed != ore.resourceEpoch()
-                || ore.resourceEpoch()
-                >= MiningBudget.MAX_RARE_RESOURCE_RETRIES_PER_BATCH
+                || marginDraw && plan.rareEpochMarginUsed >= marginPool
                 || (!torchFailure && !channelToolFailure && !epochTimeout)
                 || !miningStepFeedsGoal(plan.goal, ore.ores())) {
             return false;
@@ -4161,14 +4224,22 @@ public final class GoalExecutor {
         continuation.add(0, service);
 
         // Commit only after the complete successor schedule has been proven. A crash can therefore
-        // observe either epoch 0 plus the failed task, or epoch 1 plus the service-first schedule,
-        // never a refreshed cursor with no corresponding batch-level retry debit.
+        // observe either the failed epoch plus its task, or the advanced epoch plus the
+        // service-first schedule (margin ledger included), never a refreshed cursor with no
+        // corresponding epoch or margin debit.
         plan.taskCheckpoint.clear();
         plan.taskCheckpoint.putAll(advanced.orElseThrow());
         plan.taskCheckpointKind = GoalStep.Kind.MINE_ORE;
         plan.miningCheckpoint.clear();
         plan.miningCheckpoint.putAll(advanced.orElseThrow());
         plan.rareResourceRetriesUsed = ore.resourceEpoch() + 1;
+        if (marginDraw) {
+            plan.rareEpochMarginUsed++;
+            BotLog.task(bot, "rare_epoch_margin_drawn",
+                    "used", plan.rareEpochMarginUsed,
+                    "pool", marginPool,
+                    "epoch", plan.rareResourceRetriesUsed);
+        }
         plan.steps.clear();
         plan.steps.addAll(continuation);
         plan.totalSteps = continuation.size();
@@ -4967,6 +5038,9 @@ public final class GoalExecutor {
                 OreDigTask.oreFingerprint(task.orElseThrow().ores()))) {
             return false;
         }
+        // The epoch counter is batch-scoped and resets with the closed commit. The margin ledger
+        // (plan.rareEpochMarginUsed) is deliberately NOT reset here: it is mission-scoped and a
+        // committed batch must not refund margin epochs the mission has already spent.
         plan.rareResourceRetriesUsed = 0;
         return true;
     }
@@ -5331,8 +5405,12 @@ public final class GoalExecutor {
         // Phase A 韧性·进度感知预算(断点恢复):
         private int completedSteps;    // 累计完成步数(单调增)
         private int lifetimeReplans;   // 终生 replan 数(永不重置,长稀有矿按原始批次数扩展)
-        // 当前稀有矿批次的资源 epoch(0/1)：replan 保留，只在该批 closed commit 后归零。
+        // 当前稀有矿批次的资源 epoch(0=首个,1=批内 retry,>=2=margin epoch)：replan 保留，
+        // 只在该批 closed commit 后归零。
         private int rareResourceRetriesUsed;
+        // 任务级 margin epoch 抽取账本(F2)：跨批次单调递增,批次 commit 不归零,
+        // 只有全新 mission 才从 0 开始;上限 = MiningBudget.rareMissionEpochMargin(batchCount)。
+        private int rareEpochMarginUsed;
         private int snapSteps;         // 上次 replan 时 completedSteps 快照
         private int snapTargetCount;   // 上次 replan 时目标产物库存计数
         private int snapX, snapY, snapZ; // 上次 replan 时 bot 坐标(横向位移/下潜=进展判据)
@@ -5838,6 +5916,7 @@ public final class GoalExecutor {
                                int completedSteps,
                                int lifetimeReplans,
                                int rareResourceRetriesUsed,
+                               int rareEpochMarginUsed,
                                int replanCount,
                                Optional<ReplanSnapshot> replanSnapshot,
                                HuntSearchCursor huntSearchCursor,

@@ -2167,13 +2167,20 @@ public final class OreDigTask extends AbstractTask implements CheckpointableTask
         return OreDigCheckpoint.decode(checkpoint, ores).map(OreDigCheckpoint::cursor);
     }
 
-    /** Advances the one allowed resource retry without changing any physical or time cursor. */
+    /**
+     * Advances one bounded resource epoch — the per-batch retry or a mission-margin epoch —
+     * without changing any physical or time cursor. This codec only proves the successor epoch
+     * stays inside the mission-derived capacity; the margin ledger itself (whether the mission may
+     * still pay for an epoch beyond the per-batch retry) is owned by GoalExecutor's checkpoint.
+     */
     public static Optional<Map<String, String>> advanceResourceEpoch(Map<String, String> checkpoint) {
         return checkpointOres(checkpoint).flatMap(ores ->
                 OreDigCheckpoint.decode(checkpoint, ores)
                         .filter(restored -> restored.batchOpen()
                                 && isRareExpeditionBatch(ores, restored.rareMissionTarget())
-                                && restored.resourceEpoch() == 0)
+                                && restored.resourceEpoch() + 1
+                                < rareMissionResourceEpochCapacity(
+                                restored.rareMissionTarget()))
                         .map(restored -> new OreDigCheckpoint(
                                 CHECKPOINT_SCHEMA,
                                 restored.targetCount(),
@@ -2183,7 +2190,7 @@ public final class OreDigTask extends AbstractTask implements CheckpointableTask
                                 restored.inventoryServiceUsed(),
                                 MiningBudget.RARE_BATCH_TORCH_LIMIT,
                                 0,
-                                1,
+                                restored.resourceEpoch() + 1,
                                 restored.cursor(),
                                 restored.oreFingerprint(),
                                 restored.budgetUsed(),
@@ -2355,6 +2362,12 @@ public final class OreDigTask extends AbstractTask implements CheckpointableTask
         return isRareOreFamily(ores);
     }
 
+    /** Exclusive epoch bound for one batch: the per-batch pair plus the mission margin pool. */
+    private static int rareMissionResourceEpochCapacity(int rareMissionTarget) {
+        return MiningBudget.rareMissionResourceEpochCapacity(
+                MiningBudget.rareMissionBatchCount(rareMissionTarget));
+    }
+
     private static boolean isRareOreFamily(Set<Block> ores) {
         Set<Block> expanded = ores == null || ores.isEmpty()
                 ? Set.of() : OreScan.expandOreFamilies(ores);
@@ -2369,7 +2382,8 @@ public final class OreDigTask extends AbstractTask implements CheckpointableTask
                                            int rareMissionTarget,
                                            int resourceEpoch) {
         if (isRareExpeditionBatch(ores, rareMissionTarget)) {
-            return MiningMissionBudget.rareOreDigCumulativeHardWindowTicks(resourceEpoch);
+            return MiningMissionBudget.rareOreDigCumulativeHardWindowTicks(
+                    resourceEpoch, rareMissionResourceEpochCapacity(rareMissionTarget));
         }
         Set<Block> expanded = ores == null || ores.isEmpty()
                 ? OreScan.COMMON_ORES : OreScan.expandOreFamilies(ores);
@@ -2742,6 +2756,11 @@ public final class OreDigTask extends AbstractTask implements CheckpointableTask
                         && rareMissionTarget <= MAX_CHECKPOINT_TARGET_COUNT
                         && isRareOreFamily(ores);
                 boolean rareExpedition = isRareExpeditionBatch(ores, rareMissionTarget);
+                // Margin epochs raise the per-batch bound only by the mission-derived pool; the
+                // non-rare branch below still pins ordinary batches to epoch zero.
+                int epochCapacity = rareExpedition
+                        ? rareMissionResourceEpochCapacity(rareMissionTarget)
+                        : MiningBudget.RARE_RESOURCE_EPOCHS_PER_BATCH;
                 if (taskSchema != CHECKPOINT_SCHEMA
                         && taskSchema != MISSION_CHECKPOINT_SCHEMA
                         && taskSchema != RESOURCE_EPOCH_CHECKPOINT_SCHEMA
@@ -2752,7 +2771,7 @@ public final class OreDigTask extends AbstractTask implements CheckpointableTask
                         && rareMissionTarget != expectedRareMissionTarget
                         || torchLimit != MiningBudget.RARE_BATCH_TORCH_LIMIT
                         || torchPlacements < 0 || torchPlacements > torchLimit
-                        || resourceEpoch < 0 || resourceEpoch > 1
+                        || resourceEpoch < 0 || resourceEpoch >= epochCapacity
                         || !OreDigTask.oreFingerprint(ores).equals(fingerprint)
                         || budget < 0 || budget > maxBudget
                         || lastProgress < 0 || lastProgress > budget

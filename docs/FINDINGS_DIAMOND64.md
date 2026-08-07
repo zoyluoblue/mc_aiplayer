@@ -14,7 +14,7 @@ Citation shorthand (as used in the source reports): `COT` = src/main/java/io/git
 - Trigger: a mined drop rests on top of a 1×1 pedestal adjacent to the bot. `pickupStandPos`'s "one-higher" branch requires the below-cell to be standable (it is the pedestal itself), so the candidate ring picks the bot's current cell (distance 0). The `current.equals(stand)` branch does a 0.15-block in-cell nudge that can never cross the cell boundary, unconditionally returns true (swallowing nudge failure), so the fallback at OreDigTask:3364 never fires. Repeats every tick until the 200-tick deadline fails with `ore_dig_drop_unrecovered` — which GE:3701-3707 classifies as fail-closed terminal, killing the entire 64-diamond mission. This is the confirmed root cause of the known intermittent gametest failure.
 - Smallest fix: add a pedestal branch to `pickupStandPos` (return `itemPos` when `itemPos.getY()==current.getY()+1 && !isStandable(below) && isStandable(itemPos)`, letting the existing exact-pickup-path branch climb it); make HarvestCore:294-299 return the real nudge result; in GE, demote `ore_dig_drop_unrecovered` for rare missions to a skipped-drop receipt + one make-up target instead of terminal.
 
-**F2 — Per-batch diamond quota with no surplus carryover structurally caps mission success at ~17–66%** (blocker; budget model; from: evidence)
+**[已修·阶段3] F2 — Per-batch diamond quota with no surplus carryover structurally caps mission success at ~17–66%** (blocker; budget model; from: evidence)
 - Citations: MiningBudget.java:42 (`MAX_RARE_RESOURCE_RETRIES_PER_BATCH=1`), :46-47, :29-30, :34, :40, :103-104; MiningMissionBudget.java:15; OreScan.java:61-107 (vein flood-fill, :85).
 - Trigger: each batch of 8 diamonds must be found within its own 2 resource epochs. Expected yield is ~3–9 diamonds/epoch (6–18 per batch), so quota 8 sits at the low end of the expectation band; estimated single-batch shortfall probability is 10–30%, compounding over 8 batches to roughly 0.8^8≈17% … 0.95^8≈66% mission success — even with zero bugs.
 - Smallest fix: carry diamond surplus across batches (count already-owned diamonds toward the next batch quota) and/or allow drawing extra retry epochs from mission-level margin instead of the hard per-batch retry=1 gate.
@@ -24,7 +24,7 @@ Citation shorthand (as used in the source reports): `COT` = src/main/java/io/git
 - Trigger: after `descendInto` succeeds, one tick later feet must be at origin or target; a bare mob knockback (no pause) between task ticks pushing the bot to a third cell fires `descend_landing_pose_drift`, which is fail-closed terminal. A Y=64→-58 descent has ~122 such windows; both missions descend multiple times.
 - Smallest fix: demote drift to a recoverable restart/replan of the descent step instead of mission-terminal.
 
-**F4 — Obsidian flow-control livelock burns the entire task budget** (blocker; CreateObsidianTask; from: obsidian D1)
+**[已修·阶段4] F4 — Obsidian flow-control livelock burns the entire task budget** (blocker; CreateObsidianTask; from: obsidian D1)
 - Citations: COT:670-696, 1128-1148, 61 (`WATER_SPREAD_TICKS=4`), 1150-1165, 2923-2944, 1146, 2545-2550, 56, 495-500.
 - Trigger: at a lava-lake edge with only flowing lava visible, pour plans of geometry 3/4 place water not adjacent to the lava; water spreads 1 block per 5 ticks, so the 4-tick wait always recovers the water with zero world change; the clue is never rejected, `noteTopologyProgress` keeps resetting the 800-tick stall detector, and the ~70–170-tick loop repeats until the 153,600-tick `create_obsidian_timeout`.
 - Smallest fix: when `pourPlan.destination()` is not adjacent to the clue, wait `PROTECTION_SPREAD_TICKS` (20) or distance×5 ticks; or `rejectLava(clue)` when post-recovery fluid state is unchanged.
@@ -111,7 +111,7 @@ Citation shorthand (as used in the source reports): `COT` = src/main/java/io/git
 - Trigger: anchored routes beyond a budget-determined radius always fail `runtime_return_failed:TIMEOUT/SEARCH_LIMIT` mid-route; worst case burns 50ms (a full server tick) per cell walked and thrashes the global standability cache.
 - Smallest fix: scale lease budget with distance or reduce proof frequency; stop clearing the global cache per proof.
 
-**F21 — RECOVER_WATER / RETURN_TO_RIM resume with stale timers → instant deadline death after combat displacement** (major; CreateObsidianTask; from: obsidian D4)
+**[复核否决·阶段4] F21 — RECOVER_WATER / RETURN_TO_RIM resume with stale timers → instant deadline death after combat displacement** (major; CreateObsidianTask; from: obsidian D4)
 - Citations: COT:348-353, 60 (`RECOVERY_LIMIT=100`), 1343-1355, 354-358, 1894-1897.
 - Trigger: safety preemption at the lava lake displaces the bot; resuming into the same phase keeps old `phaseStartedTick`, so the 100-tick window is already expired on the first tick.
 - Smallest fix: unconditionally `enter()` these phases on restore (windows are bounded, so no budget inflation).

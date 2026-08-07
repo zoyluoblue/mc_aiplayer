@@ -461,14 +461,21 @@ public final class MiningServiceTask extends AbstractTask implements Checkpointa
                     || completedBoundary < 0 || completedBoundary >= targetCount
                     || resourceRetriesUsed < 0
                     || resourceRetriesUsed
-                    > MiningBudget.MAX_RARE_RESOURCE_RETRIES_PER_BATCH) {
+                    >= MiningBudget.rareMissionResourceEpochCapacity(
+                    MiningBudget.rareMissionBatchCount(targetCount))) {
                 throw new IllegalArgumentException("invalid_rare_ore_service_boundary:target="
                         + targetCount + ":boundary=" + completedBoundary
                         + ":resource_retries=" + resourceRetriesUsed);
             }
+            // Margin epochs (>= 2) reuse the epoch-one retry shape: the open batch owns exactly
+            // one more bounded epoch after this service, while the mission-level margin ledger
+            // stays in GoalExecutor's checkpoint. Margin torches/sticks were bootstrapped extra,
+            // so these per-boundary minimums remain floors, never refills.
+            int shapeEpoch = Math.min(resourceRetriesUsed,
+                    MiningBudget.MAX_RARE_RESOURCE_RETRIES_PER_BATCH);
             int remainingBatches = remainingRareBatches(targetCount, completedBoundary);
             int remainingResourceEpochs = remainingBatches
-                    * MiningBudget.RARE_RESOURCE_EPOCHS_PER_BATCH - resourceRetriesUsed;
+                    * MiningBudget.RARE_RESOURCE_EPOCHS_PER_BATCH - shapeEpoch;
             int sticksPerRepair = MiningBudget.RARE_TUNNELING_SERVICE_TARGET
                     * STONE_PICKAXE_STICK_COST;
             return new ServicePolicy(
@@ -476,10 +483,10 @@ public final class MiningServiceTask extends AbstractTask implements Checkpointa
                     Math.min(8, targetCount - completedBoundary),
                     MiningBudget.RARE_TUNNELING_SERVICE_TARGET
                             * STONE_PICKAXE_USABLE_DURABILITY,
-                    MiningBudget.rareServiceFoodMinimum(resourceRetriesUsed),
+                    MiningBudget.rareServiceFoodMinimum(shapeEpoch),
                     remainingResourceEpochs * MiningBudget.RARE_BATCH_TORCH_LIMIT,
                     MIN_FREE_MAIN_SLOTS,
-                    resourceRetriesUsed > 0
+                    shapeEpoch > 0
                             ? EMERGENCY_BLOCK_RESERVE
                             : MiningBudget.RARE_SERVICE_PROTECTED_STONE_LIKE,
                     Math.max(0, remainingResourceEpochs - 1)

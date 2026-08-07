@@ -75,6 +75,97 @@
 
 ---
 
+## 阶段 3 · F2 稀有矿任务级 margin epoch 池(2026-08-07)
+
+**问题**:64 钻任务切成 8 批 × 8 钻,每批只有 2 个有界资源 epoch(初始 + 1 次 retry,
+`MAX_RARE_RESOURCE_RETRIES_PER_BATCH=1`)。钻石产量随机(单 epoch 期望 3–9 颗),单批
+10–30% 概率挖不满配额;epoch 1 窗口超时直接 `finishActive` 终结整个任务——哪怕已挖到
+63/64。结构性把任务成功率压到 ~17–66%(与 bug 无关的数学上限)。
+
+**方案:有界的任务级 margin epoch 池**
+- 新增 `MiningBudget.rareMissionEpochMargin(batchCount) = min(batchCount / 2, 2)`
+  (64 目标 → 2,cap 见下),pinned 常量 `DIAMOND_STACK_EPOCH_MARGIN = 2`;每批 epoch
+  上限 = `rareMissionResourceEpochCapacity(batchCount) = 2 + margin`(64 目标 → 4)。
+- `GoalExecutor.scheduleRareResourceRetry`:批内 retry 耗尽后(epoch >= 1),若任务级
+  margin 池还有余额,允许再抽一个 epoch(epoch 2/3/…),机制与既有 retry 完全一致
+  (fresh RARE_ORE_BATCH service + 新 24,000-tick OreDig 窗口,硬预算单调不刷新)。
+  抽取事件 `rare_epoch_margin_drawn`(used/pool)。
+- **持久化账本**:`ActivePlan.rareEpochMarginUsed`,checkpoint 键 `rare_epoch_margin_used`。
+  任务级单调递增:批次 closed commit 不归零(与批内 epoch 相反),只有全新 mission 从 0
+  开始。restore fail-closed:缺失=legacy 0;非 canonical 非负整数、超池、或
+  `epoch - 1 > margin_used`(即出现账本没付过钱的 epoch)一律
+  `mission_restore_invalid_rare_epoch_margin`;`normalizeRestoredRareResourceEpoch` 扩展为
+  margin epoch 必须与 durable open batch 的 epoch 精确一致。
+- **窗口数学**:`MiningMissionBudget.rareOreDigCumulativeHardWindowTicks` 新增显式
+  `maxResourceEpochs` 重载(单参旧接口仍只认 2 个常规 epoch);OreDig checkpoint 解码/
+  `advanceResourceEpoch` 的 epoch 边界改为任务目标推导的 capacity,普通矿批仍钉死 epoch 0。
+- **物资预置(margin epoch 全额上买单,防止变成无界续期)**:
+  - 食物:`RARE_BOOTSTRAP_FOOD` 72 → **80**(18 epoch × 4 + 8 buffer);
+  - 火把:`DIAMOND_STACK_MIN_BOOTSTRAP_TORCHES` 640 → **720**(18 epoch × 40);
+  - 木棍:`DIAMOND_STACK_CHANNEL_REPAIR_STICKS` 224 → **252**,
+    `DIAMOND_STACK_BOOTSTRAP_STICKS` 228 → **256**;
+  - `forQuota`/`rareMissionFoodTarget` 对任意稀有配额同步加 margin 项(如 18 目标:
+    火把 240→280、食物 32→36;32 目标食物 40→48)。
+  - **石材不加 margin(对 brief 的偏离,见下)**。
+- **服务合约**:`ServicePolicy.rareOreBatch` 接受 margin epoch(上限任务推导),margin
+  epoch 复用 epoch-1 retry 的政策形态(食物地板 clamp 到 8、火把/木棍地板不变——margin
+  物资是额外携带的,minimum 是地板不是刷新);`rareServiceFoodMinimum` 对 epoch>=2 clamp。
+- **外层超时**:`diamondStack64FromZero()` retry 项加 margin(retryOreDig/retryService
+  8 → 10),floor 603,200 → 660,800 ticks;live-plan 版本随 nominal plan 自动扩张。
+
+**对 brief 的两处偏离(均源自 36 格主背包物理墙)**:
+1. **margin 池 = 2 而非 batchCount/2 = 4**。第一轮全量 gametest 以事实证明 4 个 margin
+   epoch 的携带(+160 火把 +56 木棍 = +4 格)让 rare boundary service 的
+   `requiredWorkingFreeSlots` 合约不可满足——多个 64 目标 fixture 在 boundary-zero 直接
+   `mining_service_inventory_reserve_depleted:free=5:required=7` / 强启弃置 pocket 失败
+   (margin 物资全部属于受保护类别,不可弃置)。实测富余仅 2 格 →
+   `RARE_MISSION_EPOCH_MARGIN_CAP = 2`(+80 火把 +28 木棍 +8 食物,恰好 +2 格)。
+   把池扩回 4 需要 mission-depot 银行化 margin 物资(跨层往返新机制),另行立项。
+2. **石材不加 margin**:石材是地下唯一自补给资源,既有设计本就只 bootstrap 首批两个
+   pool(后续批由 service 用挖矿 spoil 现造,epoch>=1 的 service 政策只保 EMERGENCY
+   储备),margin epoch 与 epoch-1 retry 同型,沿用同一来源;且携带上也放不下。
+
+margin=2 下的结构性收益:单批失败需要连续烧穿"批内 retry + 任务仅有的 2 个 margin
+epoch"才终结任务;按调研的 10–30% 单批缺口概率,任务级失败率显著低于原 1-shortfall 即死。
+
+**验证**:`./gradlew test` 340 单测全绿(新增 margin 池数学、窗口重载、margin 账本
+decode/restore fail-closed、normalize margin epoch 归属、epoch 超时分类共 5 个用例);
+`./gradlew runGameTest` 580 gametest 全绿(新增
+`epochOneTimeoutWithMissionMarginSurvivesAndDrawsOneEpoch`——epoch 1 精确 48,000-tick
+超时 + margin 可用 → 任务存活、原子抽取 1 个 margin epoch、硬预算不刷新;
+`epochTimeoutWithExhaustedMarginPoolStaysTerminal`——margin 耗尽后同型超时仍 terminal;
+既有 `sameBatchEpochOneChannelToolFailureIsTerminalWithoutAnotherService` 注入
+margin_used=2 保持 terminal 语义;checkpoint round-trip 补 margin 键断言)。
+descent-kit 压力 fixture 因 margin 物资多占 3 格改为只携带 1 把木镐(木/石镐退役合约
+不变);`diamond64RestoresMissionKit` 拥挤边界由 free=4 收紧为 free=2。
+两个 diamond64 coal-bootstrap fixture(`diamond64BootstrapCoal…` 与
+`spawnDiamond64CoalBootstrapMiner`)按扩大后的合约补给:720 火把把煤链扩到 12 批,
+channel-repair 镐头需 56×3=168 石材,圆石 160→**192**(仍 3 格),否则规划器会在煤
+OreDig 前插入 挖石头 绕行、撞 fixture 的 tick 80/100 死线;木棍 234→262
+(=BOOTSTRAP_STICKS+6)、原木收敛到 64(1 格)保持携带量贴近 margin 前基线。
+
+---
+
+## 阶段 4 · 黑曜石链死锁:F4 + F21(2026-08-07)
+
+**完成**(`CreateObsidianTask`):
+- **F4 倒水活锁**:flat-pool 地形的倒水点离岩浆线索最远 4 格,而原版水每 5 tick 推进
+  一格 —— 固定 4-tick 等待意味着水永远到不了岩浆、回收时世界零变化、同一线索无限重放
+  (每轮还会 `noteTopologyProgress` 重置 800-tick 停滞检测,直到烧穿 153,600-tick 任务
+  预算)。修复:①等待时长按 `max(4, 距离×5+4)` 缩放(`pourSpreadWaitTicks`,上界
+  24 tick);②记录本轮浇灌的线索(`lastPourClue`),排空周期结束仍无转化、无拾取且该
+  线索可观察地仍为岩浆时,`rejectLava` 进入有界拒绝账本(TTL 600)轮换搜索,事件
+  `create_obsidian_barren_pour_rejected`。遮挡不判负(只拒绝"观察到仍是岩浆")。
+- **F21 复核后否决**:曾按调研建议改为 restore 无条件 `enter()`,被既有 checkpoint
+  往返 gametest 当场击落(`restore changed task checkpoint key phase_started`)。复核
+  结论:任务时钟是任务 tick 制,**暂停期间不走表**,安全抢占不会烧相位窗口;跨进程
+  restore 按设计"续剩余窗口而非刷新时钟"(防重启刷预算)。调研对 F21 的定性有误,
+  已回退,findings 标注 `[复核否决]`。教训:agent 结论必须过既有契约测试的裁决。
+
+**验证**:并入 F2 收尾后的统一全量套件验证(见阶段 3/5 记录)。
+
+---
+
 ## 待解决问题(滚动清单)
 
 | ID | 严重度 | 问题 | 状态 |

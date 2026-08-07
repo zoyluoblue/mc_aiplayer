@@ -47,13 +47,27 @@ public final class MiningMissionBudget {
      * Cumulative hard ceiling for one long rare batch's current resource epoch.
      *
      * <p>Each epoch owns an independent 24,000-tick window, while the persisted OreDig budget is
-     * monotonic across the one allowed retry. Epoch zero therefore expires at 24,000 and epoch one
-     * at 48,000; a restart can resume the remaining window but cannot refresh either clock.</p>
+     * monotonic across every allowed retry. Epoch zero therefore expires at 24,000 and epoch one
+     * at 48,000; a restart can resume the remaining window but cannot refresh either clock. This
+     * legacy overload accepts only the two regular per-batch epochs.</p>
      */
     public static int rareOreDigCumulativeHardWindowTicks(int resourceEpoch) {
-        if (resourceEpoch < 0
-                || resourceEpoch >= MiningBudget.RARE_RESOURCE_EPOCHS_PER_BATCH) {
-            throw new IllegalArgumentException("invalid_rare_resource_epoch:" + resourceEpoch);
+        return rareOreDigCumulativeHardWindowTicks(
+                resourceEpoch, MiningBudget.RARE_RESOURCE_EPOCHS_PER_BATCH);
+    }
+
+    /**
+     * Margin-aware cumulative window. {@code maxResourceEpochs} is the mission-derived epoch
+     * capacity ({@link MiningBudget#rareMissionResourceEpochCapacity(int)}): the two regular
+     * epochs plus the bounded mission margin pool. The bound stays explicit so no caller can
+     * silently unbound the epoch clock.
+     */
+    public static int rareOreDigCumulativeHardWindowTicks(int resourceEpoch,
+                                                          int maxResourceEpochs) {
+        if (maxResourceEpochs < MiningBudget.RARE_RESOURCE_EPOCHS_PER_BATCH
+                || resourceEpoch < 0 || resourceEpoch >= maxResourceEpochs) {
+            throw new IllegalArgumentException("invalid_rare_resource_epoch:" + resourceEpoch
+                    + ":max=" + maxResourceEpochs);
         }
         return Math.multiplyExact(resourceEpoch + 1, ORE_DIG_HARD_WINDOW_TICKS);
     }
@@ -63,20 +77,24 @@ public final class MiningMissionBudget {
      *
      * <p>The target is split into eight durable OreDig batches. Every batch, including boundary
      * zero, owns one nominal service checkpoint and one independently bounded resource-epoch retry
-     * service plus its matching OreDig window. Each OreDig batch also owns at most one exceptional
-     * sealed inventory-service window. The from-zero chain additionally needs at least the
-     * shallow-tool and deep-diamond descents.</p>
+     * service plus its matching OreDig window. The bounded mission-level epoch margin pool adds
+     * one more service-plus-OreDig window per drawable margin epoch. Each OreDig batch also owns
+     * at most one exceptional sealed inventory-service window. The from-zero chain additionally
+     * needs at least the shallow-tool and deep-diamond descents.</p>
      */
     public static OuterTimeoutBudget diamondStack64FromZero() {
         MiningBudget target = MiningBudget.forQuota(
                 DIAMOND_STACK_TARGET, true, ToolTier.IRON);
+        int marginEpochs = MiningBudget.rareMissionEpochMargin(target.batchCount());
         return new OuterTimeoutBudget(
                 target.batchCount(),
                 0,
-                target.batchCount() * MiningBudget.MAX_RARE_RESOURCE_RETRIES_PER_BATCH,
+                target.batchCount() * MiningBudget.MAX_RARE_RESOURCE_RETRIES_PER_BATCH
+                        + marginEpochs,
                 target.batchCount(),
                 0,
-                target.batchCount() * MiningBudget.MAX_RARE_RESOURCE_RETRIES_PER_BATCH,
+                target.batchCount() * MiningBudget.MAX_RARE_RESOURCE_RETRIES_PER_BATCH
+                        + marginEpochs,
                 target.batchCount(),
                 MIN_FROM_ZERO_DESCENTS,
                 0,

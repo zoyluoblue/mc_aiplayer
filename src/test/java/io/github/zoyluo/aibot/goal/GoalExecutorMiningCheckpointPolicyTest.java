@@ -185,10 +185,41 @@ class GoalExecutorMiningCheckpointPolicyTest {
                 Map.of("rare_resource_retries_used", "1")).orElseThrow());
         assertTrue(GoalExecutor.decodePersistedRareResourceEpoch(
                 Map.of("rare_resource_retries_used", "-1")).isEmpty());
-        assertTrue(GoalExecutor.decodePersistedRareResourceEpoch(
-                Map.of("rare_resource_retries_used", "2")).isEmpty());
+        // Margin epochs may persist beyond the per-batch retry; the mission-derived bound
+        // (per-batch retry + margin pool) is enforced at the restore site.
+        assertEquals(2, GoalExecutor.decodePersistedRareResourceEpoch(
+                Map.of("rare_resource_retries_used", "2")).orElseThrow());
         assertTrue(GoalExecutor.decodePersistedRareResourceEpoch(
                 Map.of("rare_resource_retries_used", "not-an-int")).isEmpty());
+    }
+
+    @Test
+    void rareEpochMarginPersistenceIsStrictAndLegacyMissingMeansZero() {
+        assertEquals(0, GoalExecutor.decodePersistedRareEpochMarginUsed(Map.of())
+                .orElseThrow());
+        assertEquals(3, GoalExecutor.decodePersistedRareEpochMarginUsed(
+                Map.of("rare_epoch_margin_used", "3")).orElseThrow());
+        assertTrue(GoalExecutor.decodePersistedRareEpochMarginUsed(
+                Map.of("rare_epoch_margin_used", "-1")).isEmpty());
+        assertTrue(GoalExecutor.decodePersistedRareEpochMarginUsed(
+                Map.of("rare_epoch_margin_used", "01")).isEmpty());
+        assertTrue(GoalExecutor.decodePersistedRareEpochMarginUsed(
+                Map.of("rare_epoch_margin_used", "not-an-int")).isEmpty());
+    }
+
+    @Test
+    void restoredMarginLedgerMustCoverEveryEpochBeyondThePerBatchRetry() {
+        // Legal states: margin inside the pool and no epoch beyond retry+margin coverage.
+        assertTrue(GoalExecutor.validRestoredRareEpochMargin(0, 0, 4));
+        assertTrue(GoalExecutor.validRestoredRareEpochMargin(1, 0, 4));
+        assertTrue(GoalExecutor.validRestoredRareEpochMargin(2, 1, 4));
+        assertTrue(GoalExecutor.validRestoredRareEpochMargin(5, 4, 4));
+        assertTrue(GoalExecutor.validRestoredRareEpochMargin(1, 4, 4));
+        // Overdraw or an epoch the margin ledger never paid for fails closed.
+        assertFalse(GoalExecutor.validRestoredRareEpochMargin(0, 5, 4));
+        assertFalse(GoalExecutor.validRestoredRareEpochMargin(0, -1, 4));
+        assertFalse(GoalExecutor.validRestoredRareEpochMargin(2, 0, 4));
+        assertFalse(GoalExecutor.validRestoredRareEpochMargin(2, 1, 0));
     }
 
     @Test
@@ -245,6 +276,27 @@ class GoalExecutorMiningCheckpointPolicyTest {
     }
 
     @Test
+    void marginEpochsRestoreOnlyWithTheirExactOpenDurableOwner() {
+        OreDigTask.RestoreMetadata openEpochTwo = restoreMetadata(true, 64, 2);
+        OreDigTask.RestoreMetadata openEpochThree = restoreMetadata(true, 64, 3);
+        // 64 targets → capacity 4 (2 regular + 2 capped margin); the durable epoch round-trips.
+        assertEquals(2, GoalExecutor.normalizeRestoredRareResourceEpoch(
+                2, Optional.of(openEpochTwo)).orElseThrow());
+        assertEquals(3, GoalExecutor.normalizeRestoredRareResourceEpoch(
+                3, Optional.of(openEpochThree)).orElseThrow());
+        // Any mismatch, capacity overflow, or missing owner fails closed.
+        assertTrue(GoalExecutor.normalizeRestoredRareResourceEpoch(
+                1, Optional.of(openEpochTwo)).isEmpty());
+        assertTrue(GoalExecutor.normalizeRestoredRareResourceEpoch(
+                4, Optional.of(restoreMetadata(true, 64, 4))).isEmpty());
+        assertTrue(GoalExecutor.normalizeRestoredRareResourceEpoch(
+                2, Optional.empty()).isEmpty());
+        // A one-batch mission (target 8) owns no margin: durable epoch two is out of capacity.
+        assertTrue(GoalExecutor.normalizeRestoredRareResourceEpoch(
+                2, Optional.of(restoreMetadata(true, 8, 2))).isEmpty());
+    }
+
+    @Test
     void rareEpochTimeoutConsumesOnlyTheExactPersistedWindow() {
         assertTrue(GoalExecutor.isLongRareResourceEpochTimeout(
                 restoreMetadata(true, 64, 0, false,
@@ -265,6 +317,19 @@ class GoalExecutorMiningCheckpointPolicyTest {
         assertFalse(GoalExecutor.isLongRareResourceEpochTimeout(
                 restoreMetadata(true, 64, 2, false,
                         MiningMissionBudget.ORE_DIG_HARD_WINDOW_TICKS * 2),
+                "ore_dig_timeout collected=7"));
+        // Margin epochs own their exact cumulative window inside the mission capacity of four.
+        assertTrue(GoalExecutor.isLongRareResourceEpochTimeout(
+                restoreMetadata(true, 64, 2, false,
+                        MiningMissionBudget.ORE_DIG_HARD_WINDOW_TICKS * 3),
+                "ore_dig_timeout collected=7"));
+        assertTrue(GoalExecutor.isLongRareResourceEpochTimeout(
+                restoreMetadata(true, 64, 3, false,
+                        MiningMissionBudget.ORE_DIG_HARD_WINDOW_TICKS * 4),
+                "ore_dig_timeout collected=7"));
+        assertFalse(GoalExecutor.isLongRareResourceEpochTimeout(
+                restoreMetadata(true, 64, 4, false,
+                        MiningMissionBudget.ORE_DIG_HARD_WINDOW_TICKS * 5),
                 "ore_dig_timeout collected=7"));
         assertFalse(GoalExecutor.isLongRareResourceEpochTimeout(
                 restoreMetadata(false, 64, 0, false,

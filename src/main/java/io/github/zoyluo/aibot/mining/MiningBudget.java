@@ -45,22 +45,40 @@ public record MiningBudget(
             MAX_RARE_RESOURCE_RETRIES_PER_BATCH;
     public static final int RARE_RESOURCE_EPOCHS_PER_BATCH =
             1 + MAX_RARE_RESOURCE_RETRIES_PER_BATCH;
+    /** Rare expeditions batch by eight target items; margin pools derive from this size. */
+    public static final int RARE_BATCH_SIZE = 8;
+    /**
+     * 36 格主背包是硬物理墙:pinned 64 任务的 bootstrap 携带(640 火把/228 木棍/72 食物
+     * /双 pool 石材/镐具)已把 boundary service 的工作格余量压到两格。每个 margin epoch 的
+     * 火把+木棍+食物约多占一格,超过两个 epoch 会让 rare service 的
+     * requiredWorkingFreeSlots 合约在数学上不可满足(margin 物资不可弃置)。
+     */
+    public static final int RARE_MISSION_EPOCH_MARGIN_CAP = 2;
+    /**
+     * F2 阶段3:钻石产量是随机的,单批 2 个 epoch 有 10–30% 概率挖不满配额,把整个任务
+     * 成功率压到 ~17–66%。任务级 margin 池让整个任务最多再抽 min(batchCount/2, cap) 个
+     * 有界 epoch(64 目标 → 2),粮食/火把/木棍在 bootstrap 一次性预置,不会变成无界续期。
+     */
+    public static final int DIAMOND_STACK_EPOCH_MARGIN = 2;
     public static final int RARE_EPOCH_FOOD_ALLOWANCE = 4;
     public static final int RARE_MISSION_FOOD_BUFFER = 8;
-    /** Pinned 64-diamond mission food: sixteen epochs plus an eight-unit safety buffer. */
+    /** Pinned 64-diamond mission food: eighteen funded epochs plus an eight-unit safety buffer. */
     public static final int RARE_BOOTSTRAP_FOOD =
-            8 * RARE_RESOURCE_EPOCHS_PER_BATCH * RARE_EPOCH_FOOD_ALLOWANCE
+            (8 * RARE_RESOURCE_EPOCHS_PER_BATCH + DIAMOND_STACK_EPOCH_MARGIN)
+                    * RARE_EPOCH_FOOD_ALLOWANCE
                     + RARE_MISSION_FOOD_BUFFER;
     public static final int RARE_SERVICE_FOOD_FLOOR = 4;
     public static final int RARE_RETRY_TORCHES = 40;
-    /** Eight batches own two forty-torch resource epochs each; descent is added separately. */
+    /** Sixteen regular plus two margin forty-torch epochs; descent is added separately. */
     public static final int DIAMOND_STACK_MIN_BOOTSTRAP_TORCHES =
-            8 * RARE_RESOURCE_EPOCHS_PER_BATCH * RARE_BATCH_TORCH_LIMIT;
+            (8 * RARE_RESOURCE_EPOCHS_PER_BATCH + DIAMOND_STACK_EPOCH_MARGIN)
+                    * RARE_BATCH_TORCH_LIMIT;
     public static final int DIAMOND_STACK_CHANNEL_REPAIR_STICKS =
-            8 * RARE_RESOURCE_EPOCHS_PER_BATCH * RARE_TUNNELING_SERVICE_TARGET
+            (8 * RARE_RESOURCE_EPOCHS_PER_BATCH + DIAMOND_STACK_EPOCH_MARGIN)
+                    * RARE_TUNNELING_SERVICE_TARGET
                     * STONE_PICKAXE_STICK_COST;
     public static final int DIAMOND_STACK_TARGET_TOOL_STICKS = 4;
-    /** Sixteen seven-pick channel pools plus two replacement iron-pick handles. */
+    /** Eighteen seven-pick channel pools plus two replacement iron-pick handles. */
     public static final int DIAMOND_STACK_BOOTSTRAP_STICKS =
             DIAMOND_STACK_CHANNEL_REPAIR_STICKS + DIAMOND_STACK_TARGET_TOOL_STICKS;
     /** Physical barricade/disposal reserve that no mining-tool repair may consume. */
@@ -100,7 +118,7 @@ public record MiningBudget(
 
     public static MiningBudget forQuota(int targetCount, boolean rareOre, int pickaxeTier) {
         int target = Math.max(1, targetCount);
-        int batch = rareOre ? 8 : 16;
+        int batch = rareOre ? RARE_BATCH_SIZE : 16;
         int batches = ceilDiv(target, batch);
         // Rare-ore tools should break the target blocks, not pay the bulk tunnelling bill. A stack
         // therefore carries three iron picks at most and uses cheap stone picks for branch growth.
@@ -139,8 +157,13 @@ public record MiningBudget(
                 : Math.min(12, Math.max(3, (picks - 1) * 3)))
                 : 0;
         int ironReplacementSticks = spareIngots / 3 * 2;
+        // Every funded epoch — the two regular epochs of each batch plus the bounded mission-level
+        // margin pool — is provisioned up front. Torches and sticks cannot be produced at diamond
+        // depth, so an unfunded margin epoch would silently become an unbounded refresh.
         int rareResourceEpochs = tunnelingPicks > 0
-                ? saturatedMultiply(batches, RARE_RESOURCE_EPOCHS_PER_BATCH) : 0;
+                ? saturatedAdd(
+                saturatedMultiply(batches, RARE_RESOURCE_EPOCHS_PER_BATCH),
+                rareMissionEpochMargin(batches)) : 0;
         int channelServiceSticks = saturatedMultiply(
                 rareResourceEpochs,
                 RARE_TUNNELING_SERVICE_TARGET * STONE_PICKAXE_STICK_COST);
@@ -173,17 +196,41 @@ public record MiningBudget(
     }
 
     public static int rareMissionFoodTarget(int batchCount) {
-        int epochFood = saturatedMultiply(
+        int fundedEpochs = saturatedAdd(
                 saturatedMultiply(Math.max(0, batchCount), RARE_RESOURCE_EPOCHS_PER_BATCH),
-                RARE_EPOCH_FOOD_ALLOWANCE);
+                rareMissionEpochMargin(batchCount));
+        int epochFood = saturatedMultiply(fundedEpochs, RARE_EPOCH_FOOD_ALLOWANCE);
         return saturatedAdd(epochFood, RARE_MISSION_FOOD_BUFFER);
     }
 
+    /**
+     * Bounded mission-level epoch margin: one extra resource epoch per two batches, physically
+     * capped by the 36-slot bootstrap-carry wall (64 targets → 2). The pool is shared by the
+     * whole mission and never refills; drawing is gated by GoalExecutor's durable
+     * {@code rare_epoch_margin_used} ledger.
+     */
+    public static int rareMissionEpochMargin(int batchCount) {
+        return Math.min(Math.max(0, batchCount) / 2, RARE_MISSION_EPOCH_MARGIN_CAP);
+    }
+
+    /** Exclusive per-batch resource-epoch bound once the mission margin pool is counted. */
+    public static int rareMissionResourceEpochCapacity(int batchCount) {
+        return RARE_RESOURCE_EPOCHS_PER_BATCH + rareMissionEpochMargin(batchCount);
+    }
+
+    /** Batch count implied by a durable rare mission target (rare batches are eight items). */
+    public static int rareMissionBatchCount(int missionTarget) {
+        return ceilDiv(Math.max(1, missionTarget), RARE_BATCH_SIZE);
+    }
+
     public static int rareServiceFoodMinimum(int resourceEpoch) {
-        if (resourceEpoch < 0 || resourceEpoch > MAX_RARE_RESOURCE_RETRIES_PER_BATCH) {
+        if (resourceEpoch < 0) {
             throw new IllegalArgumentException("invalid_rare_resource_epoch:" + resourceEpoch);
         }
-        int remainingEpochs = RARE_RESOURCE_EPOCHS_PER_BATCH - resourceEpoch;
+        // Margin epochs (>= 2) reuse the final regular epoch's floor: after this service the open
+        // batch still owns exactly one more bounded epoch of work, no matter how it was funded.
+        int clamped = Math.min(resourceEpoch, MAX_RARE_RESOURCE_RETRIES_PER_BATCH);
+        int remainingEpochs = RARE_RESOURCE_EPOCHS_PER_BATCH - clamped;
         return remainingEpochs * RARE_EPOCH_FOOD_ALLOWANCE + RARE_SERVICE_FOOD_FLOOR;
     }
 

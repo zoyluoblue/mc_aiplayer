@@ -146,8 +146,15 @@ class MiningServicePolicyTest {
         assertEquals(210, sealed.futureStickReserve());
         assertEquals(196, released.futureStickReserve());
         assertEquals(60, MiningBudget.RARE_BOOTSTRAP_STONE_LIKE);
+        // Mission-margin epochs reuse the released epoch-one shape; only the mission-derived
+        // capacity (2 regular + 2 capped margin for 64 targets) bounds the epoch argument.
+        assertEquals(released, MiningServiceTask.ServicePolicy.rareOreBatch(64, 0, 2));
+        assertEquals(released, MiningServiceTask.ServicePolicy.rareOreBatch(64, 0, 3));
         assertThrows(IllegalArgumentException.class,
-                () -> MiningServiceTask.ServicePolicy.rareOreBatch(64, 0, 2));
+                () -> MiningServiceTask.ServicePolicy.rareOreBatch(64, 0, 4));
+        // A one-batch mission owns no margin: epoch two stays impossible there.
+        assertThrows(IllegalArgumentException.class,
+                () -> MiningServiceTask.ServicePolicy.rareOreBatch(8, 0, 2));
     }
 
     @Test
@@ -168,11 +175,11 @@ class MiningServicePolicyTest {
                 MiningServiceTask.ServicePolicy.rareDescentKit(64);
 
         assertEquals(650, policy.channelToolUsableDurability());
-        assertEquals(72, policy.foodMinUnits());
-        assertEquals(640, policy.torchMinCount());
+        assertEquals(80, policy.foodMinUnits());
+        assertEquals(720, policy.torchMinCount());
         assertEquals(60, policy.emergencyBlocksReserved());
-        assertEquals(224, policy.futureStickReserve());
-        assertEquals(228, MiningBudget.DIAMOND_STACK_BOOTSTRAP_STICKS);
+        assertEquals(252, policy.futureStickReserve());
+        assertEquals(256, MiningBudget.DIAMOND_STACK_BOOTSTRAP_STICKS);
     }
 
     @Test

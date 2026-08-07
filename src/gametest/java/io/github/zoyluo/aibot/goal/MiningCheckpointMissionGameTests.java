@@ -305,14 +305,18 @@ public final class MiningCheckpointMissionGameTests implements FabricGameTest {
         // picks even though the branch channel is protected by the stone-pick pool below.
         giveItemToAtLeast(bot, Items.WOODEN_PICKAXE, 5);
         giveItemToAtLeast(bot, Items.IRON_INGOT, 6);
-        // Keep the enlarged 640-torch contract in scope without asking this sealed fixture to
-        // gather surface wood. The planner consumes these logs into target-coal handles, ordinary
-        // channel repairs and the sealed rare tail before reaching the coal OreDig task.
-        giveItemToAtLeast(bot, Items.STICK, 234);
+        // Keep the enlarged margin-funded 720-torch contract in scope without asking this sealed
+        // fixture to gather surface wood or mine detour stone before the coal OreDig it isolates.
+        // The larger torch pool grows the coal chain to twelve batches whose channel-repair heads
+        // need 56 picks x 3 = 168 stone-like, so the pre-margin 160 cobblestone is eight short;
+        // 192 covers it inside the same three slots. Logs shrink to one stack so the carry stays
+        // one slot above the pre-margin fixture (the margin sticks own that slot).
+        giveItemToAtLeast(bot, Items.STICK,
+                MiningBudget.DIAMOND_STACK_BOOTSTRAP_STICKS + 6);
         giveItemToAtLeast(bot, Items.OAK_LOG,
-                40 + EmergencyShelterTask.MAX_PLACEMENT_BLOCKS);
+                50 + EmergencyShelterTask.MAX_PLACEMENT_BLOCKS);
         giveItemToAtLeast(bot, Items.COOKED_BEEF, MiningBudget.RARE_BOOTSTRAP_FOOD);
-        giveItemToAtLeast(bot, Items.COBBLESTONE, 160);
+        giveItemToAtLeast(bot, Items.COBBLESTONE, 192);
         giveItemToAtLeast(bot, Items.CRAFTING_TABLE, 1);
         // target64 now owns a physical mission-local depot before the final descent. This
         // fixture isolates the ordinary coal channel-resupply contract, so provide the chest
@@ -442,14 +446,16 @@ public final class MiningCheckpointMissionGameTests implements FabricGameTest {
         giveItemToAtLeast(bot, Items.CRAFTING_TABLE, 1);
         giveItemToAtLeast(bot, Items.CHEST, 1);
         // Carry the surface shelter reserve in the slot previously occupied by one generic loot
-        // stack. The original exactly-four-working-slot capacity boundary therefore stays intact.
+        // stack. The margin-funded torch/stick pools claim two more slots than the pre-margin
+        // carry, so the crowded boundary is now exactly two working slots before the kit seals
+        // loot into the mission depot.
         Map<Item, Integer> carriedSupplies = Map.of(
                 Items.OAK_LOG, EmergencyShelterTask.MAX_PLACEMENT_BLOCKS,
                 Items.RAW_GOLD, 1);
         carriedSupplies.forEach((item, count) ->
                 giveItemToAtLeast(bot, item, count));
-        require(context, freeMainSlots(bot) == 4,
-                "crowded final-kit fixture must expose exactly four working slots, got "
+        require(context, freeMainSlots(bot) == 2,
+                "crowded final-kit fixture must expose exactly two working slots, got "
                         + freeMainSlots(bot));
 
         require(context, GoalExecutor.INSTANCE.submit(
@@ -509,7 +515,7 @@ public final class MiningCheckpointMissionGameTests implements FabricGameTest {
                 require(context, InventoryAction.countItem(bot, Items.STICK)
                                 >= MiningBudget.DIAMOND_STACK_BOOTSTRAP_STICKS
                                 && stoneLike >= MiningBudget.RARE_BOOTSTRAP_STONE_LIKE,
-                        "final descent started without sealed 228/60 reserve: sticks="
+                        "final descent started without sealed 284/60 reserve: sticks="
                                 + InventoryAction.countItem(bot, Items.STICK)
                                 + " stone_like=" + stoneLike);
                 require(context, "0".equals(checkpoint.get("rare_resource_retries_used")),
@@ -995,9 +1001,12 @@ public final class MiningCheckpointMissionGameTests implements FabricGameTest {
         giveItemToAtLeast(bot, Items.STONE_PICKAXE, 5);
         giveItemToAtLeast(bot, Items.IRON_PICKAXE, 3);
         giveItemToAtLeast(bot, Items.IRON_INGOT, 6);
-        giveItemToAtLeast(bot, Items.STICK, 204);
+        // Keep the fixture's original 24-stick craft deficit and log headroom relative to the
+        // margin-funded stick reserve so the plan still crafts locally instead of gathering.
+        giveItemToAtLeast(bot, Items.STICK,
+                MiningBudget.DIAMOND_STACK_BOOTSTRAP_STICKS - 24);
         giveItemToAtLeast(bot, Items.OAK_LOG,
-                40 + EmergencyShelterTask.MAX_PLACEMENT_BLOCKS);
+                56 + EmergencyShelterTask.MAX_PLACEMENT_BLOCKS);
         giveItemToAtLeast(bot, Items.COOKED_BEEF, MiningBudget.RARE_BOOTSTRAP_FOOD);
         giveItemToAtLeast(bot, Items.COBBLESTONE, 160);
         giveItemToAtLeast(bot, Items.FURNACE, 1);
@@ -3692,6 +3701,11 @@ public final class MiningCheckpointMissionGameTests implements FabricGameTest {
                     MissionRuntimeRecord epochOne = withOreResourceState(runtime, 0, 1, 1);
                     Map<String, String> controlled = new LinkedHashMap<>(
                             epochOne.active().checkpoint());
+                    // The 64-target mission owns a four-epoch margin pool; exhaust it so this
+                    // same-batch epoch-one failure exercises the terminal branch.
+                    controlled.put("rare_epoch_margin_used", String.valueOf(
+                            MiningBudget.rareMissionEpochMargin(
+                                    MiningBudget.rareMissionBatchCount(64))));
                     String encodedFace = face.getX() + "," + face.getY() + "," + face.getZ();
                     for (String prefix : Set.of("task.", "mining.")) {
                         controlled.put(prefix + "origin", encodedFace);
@@ -3792,6 +3806,147 @@ public final class MiningCheckpointMissionGameTests implements FabricGameTest {
             } else if (context.getTick() > 110) {
                 context.throwGameTestException(
                         "same-batch epoch-one torch failure did not terminate: "
+                                + checkpointSummary(checkpoint));
+            }
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 600)
+    public void epochOneTimeoutWithMissionMarginSurvivesAndDrawsOneEpoch(
+            TestContext context) {
+        ServiceFixture fixture = spawnServiceMiner(context, "RareMarginTimeoutGT");
+        AIPlayerEntity bot = fixture.bot();
+        giveDiamond64Readiness(bot);
+        Goal goal = new Goal.HaveItem(Items.DIAMOND, 64);
+        require(context, GoalExecutor.INSTANCE.submit(bot, goal),
+                "margin timeout goal setup failed");
+        AtomicBoolean forged = new AtomicBoolean();
+        int epochOneWindow = MiningMissionBudget.rareOreDigCumulativeHardWindowTicks(1);
+
+        context.runAtEveryTick(() -> {
+            MissionRuntimeRecord runtime = GoalExecutor.INSTANCE.captureRuntime(bot);
+            Map<String, String> checkpoint = runtime.active() == null
+                    ? Map.of() : runtime.active().checkpoint();
+            Object active = TaskManager.INSTANCE.getActive(bot).orElse(null);
+            if (!forged.get()) {
+                if (active instanceof OreDigTask
+                        && "MINE_ORE".equals(checkpoint.get("task_kind"))) {
+                    // Forge the F2 shape: epoch one (the per-batch retry) has consumed its exact
+                    // cumulative 48,000-tick window while the mission margin pool is untouched.
+                    MissionRuntimeRecord epochOne = withOreResourceState(runtime, 0, 1, 1);
+                    Map<String, String> exhausted = new LinkedHashMap<>(
+                            epochOne.active().checkpoint());
+                    for (String prefix : Set.of("task.", "mining.")) {
+                        exhausted.put(prefix + "budget_used",
+                                String.valueOf(epochOneWindow));
+                        exhausted.put(prefix + "last_progress_budget",
+                                String.valueOf(epochOneWindow));
+                    }
+                    TaskManager.INSTANCE.cancelIntentTasks(
+                            bot, "gametest_rare_margin_timeout");
+                    GoalExecutor.INSTANCE.unload(bot);
+                    GoalExecutor.INSTANCE.restoreRuntime(
+                            bot, withCheckpoint(epochOne, exhausted));
+                    forged.set(true);
+                } else if (context.getTick() > 200) {
+                    context.throwGameTestException(
+                            "margin timeout fixture never reached OreDig: "
+                                    + checkpointSummary(checkpoint));
+                }
+                return;
+            }
+
+            if ("MINING_SERVICE".equals(checkpoint.get("task_kind"))) {
+                require(context, "2".equals(checkpoint.get("rare_resource_retries_used"))
+                                && "2".equals(checkpoint.get("mining.resource_epoch"))
+                                && "0".equals(checkpoint.get("mining.torch_placements"))
+                                && "1".equals(checkpoint.get("rare_epoch_margin_used")),
+                        "epoch-one timeout did not atomically draw one margin epoch: "
+                                + checkpointSummary(checkpoint));
+                require(context, String.valueOf(epochOneWindow).equals(
+                                checkpoint.get("mining.budget_used")),
+                        "margin draw refreshed the monotonic OreDig hard budget: "
+                                + checkpointSummary(checkpoint));
+                require(context, "RARE_ORE_BATCH".equals(
+                                checkpoint.get("task.service_profile"))
+                                && "0".equals(checkpoint.get("task.service_boundary")),
+                        "margin draw did not insert the fresh boundary-zero rare service: "
+                                + checkpointSummary(checkpoint));
+                AIPlayerManager.INSTANCE.despawn(bot.getServer(), fixture.name());
+                context.complete();
+            } else if (GoalExecutor.INSTANCE.lastResult(bot).isPresent()
+                    || context.getTick() > 560) {
+                context.throwGameTestException(
+                        "epoch-one timeout with margin available terminated the mission: "
+                                + GoalExecutor.INSTANCE.lastResult(bot)
+                                .map(GoalResult::reason).orElse("no_result")
+                                + " " + checkpointSummary(checkpoint));
+            }
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 600)
+    public void epochTimeoutWithExhaustedMarginPoolStaysTerminal(TestContext context) {
+        ServiceFixture fixture = spawnServiceMiner(context, "RareMarginExhaustedGT");
+        AIPlayerEntity bot = fixture.bot();
+        giveDiamond64Readiness(bot);
+        Goal goal = new Goal.HaveItem(Items.DIAMOND, 64);
+        require(context, GoalExecutor.INSTANCE.submit(bot, goal),
+                "exhausted margin goal setup failed");
+        AtomicBoolean forged = new AtomicBoolean();
+        int epochOneWindow = MiningMissionBudget.rareOreDigCumulativeHardWindowTicks(1);
+        int marginPool = MiningBudget.rareMissionEpochMargin(
+                MiningBudget.rareMissionBatchCount(64));
+
+        context.runAtEveryTick(() -> {
+            MissionRuntimeRecord runtime = GoalExecutor.INSTANCE.captureRuntime(bot);
+            Map<String, String> checkpoint = runtime.active() == null
+                    ? Map.of() : runtime.active().checkpoint();
+            Object active = TaskManager.INSTANCE.getActive(bot).orElse(null);
+            if (!forged.get()) {
+                if (active instanceof OreDigTask
+                        && "MINE_ORE".equals(checkpoint.get("task_kind"))) {
+                    MissionRuntimeRecord epochOne = withOreResourceState(runtime, 0, 1, 1);
+                    Map<String, String> exhausted = new LinkedHashMap<>(
+                            epochOne.active().checkpoint());
+                    // Same timeout shape as the margin-draw test, but the durable mission ledger
+                    // proves every margin epoch has already been spent by earlier batches.
+                    exhausted.put("rare_epoch_margin_used", String.valueOf(marginPool));
+                    for (String prefix : Set.of("task.", "mining.")) {
+                        exhausted.put(prefix + "budget_used",
+                                String.valueOf(epochOneWindow));
+                        exhausted.put(prefix + "last_progress_budget",
+                                String.valueOf(epochOneWindow));
+                    }
+                    TaskManager.INSTANCE.cancelIntentTasks(
+                            bot, "gametest_rare_margin_exhausted");
+                    GoalExecutor.INSTANCE.unload(bot);
+                    GoalExecutor.INSTANCE.restoreRuntime(
+                            bot, withCheckpoint(epochOne, exhausted));
+                    forged.set(true);
+                } else if (context.getTick() > 200) {
+                    context.throwGameTestException(
+                            "exhausted margin fixture never reached OreDig: "
+                                    + checkpointSummary(checkpoint));
+                }
+                return;
+            }
+
+            require(context, !"MINING_SERVICE".equals(checkpoint.get("task_kind")),
+                    "exhausted margin pool still scheduled another rare service");
+            GoalResult result = GoalExecutor.INSTANCE.lastResult(bot).orElse(null);
+            if (result != null) {
+                require(context, result.reason() != null
+                                && result.reason().startsWith("ore_dig_timeout collected="),
+                        "exhausted margin timeout reported the wrong terminal reason: "
+                                + result.reason());
+                require(context, !GoalExecutor.INSTANCE.hasActivePlan(bot),
+                        "exhausted margin timeout retained an active mission");
+                AIPlayerManager.INSTANCE.despawn(bot.getServer(), fixture.name());
+                context.complete();
+            } else if (context.getTick() > 560) {
+                context.throwGameTestException(
+                        "exhausted margin timeout did not terminate: "
                                 + checkpointSummary(checkpoint));
             }
         });
@@ -5265,6 +5420,9 @@ public final class MiningCheckpointMissionGameTests implements FabricGameTest {
             // Legacy builds treated this as a mission-global debit. With no matching open
             // epoch-one rare batch it is stale history and must normalize to this batch's epoch 0.
             injected.put("rare_resource_retries_used", "1");
+            // The margin ledger is mission-scoped: unlike the batch epoch it must round-trip
+            // unchanged, otherwise a restart would refill the bounded F2 margin pool.
+            injected.put("rare_epoch_margin_used", "2");
             injected.put("replan_count", "2");
             injected.put("snap_steps", "7");
             injected.put("snap_target", "11");
@@ -5288,10 +5446,14 @@ public final class MiningCheckpointMissionGameTests implements FabricGameTest {
             require(context, "0".equals(actual.get("rare_resource_retries_used")),
                     "stale mission-global rare retry was not normalized to batch epoch zero: "
                             + checkpointSummary(actual));
+            require(context, "2".equals(actual.get("rare_epoch_margin_used")),
+                    "mission-scoped margin ledger did not round-trip unchanged: "
+                            + checkpointSummary(actual));
 
             Map<String, String> legacy = new LinkedHashMap<>(actual);
             legacy.remove("lifetime_replans");
             legacy.remove("rare_resource_retries_used");
+            legacy.remove("rare_epoch_margin_used");
             legacy.remove("replan_count");
             // A real legacy build wrote none of the snapshot namespace. Leaving any single
             // snap_ key behind (snap_dimension included) is a hybrid checkpoint that restore
@@ -5316,6 +5478,7 @@ public final class MiningCheckpointMissionGameTests implements FabricGameTest {
             require(context, "0".equals(migratedCheckpoint.get("lifetime_replans"))
                             && "0".equals(migratedCheckpoint.get(
                             "rare_resource_retries_used"))
+                            && "0".equals(migratedCheckpoint.get("rare_epoch_margin_used"))
                             && "0".equals(migratedCheckpoint.get("replan_count")),
                     "legacy checkpoint refreshed non-zero retry counters: "
                             + checkpointSummary(migratedCheckpoint));
@@ -5418,12 +5581,18 @@ public final class MiningCheckpointMissionGameTests implements FabricGameTest {
         giveItemToAtLeast(bot, Items.STONE_PICKAXE, 5);
         giveItemToAtLeast(bot, Items.WOODEN_PICKAXE, 5);
         giveItemToAtLeast(bot, Items.IRON_INGOT, 6);
-        giveItemToAtLeast(bot, Items.STICK, 234);
+        // Six sticks above the sealed mission reserve, mirroring the pre-margin 234 = 228 + 6.
+        // The margin-funded 720-torch pool grows the coal chain to twelve batches whose
+        // channel-repair heads need 56 picks x 3 = 168 stone-like: give 192 cobblestone (same
+        // three slots as the pre-margin 160) so no mine-stone detour precedes the coal OreDig,
+        // and one stack of logs still covers the ~62-log craft-plus-shelter wood demand.
+        giveItemToAtLeast(bot, Items.STICK,
+                MiningBudget.DIAMOND_STACK_BOOTSTRAP_STICKS + 6);
         giveItemToAtLeast(bot, Items.OAK_LOG,
-                40 + EmergencyShelterTask.MAX_PLACEMENT_BLOCKS);
+                50 + EmergencyShelterTask.MAX_PLACEMENT_BLOCKS);
         giveItemToAtLeast(bot, Items.COOKED_BEEF,
                 MiningBudget.RARE_BOOTSTRAP_FOOD);
-        giveItemToAtLeast(bot, Items.COBBLESTONE, 160);
+        giveItemToAtLeast(bot, Items.COBBLESTONE, 192);
         giveItemToAtLeast(bot, Items.CRAFTING_TABLE, 1);
         giveItemToAtLeast(bot, Items.CHEST, 1);
         return bot;

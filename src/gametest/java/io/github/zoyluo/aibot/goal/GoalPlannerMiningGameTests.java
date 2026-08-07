@@ -1114,22 +1114,28 @@ public final class GoalPlannerMiningGameTests implements FabricGameTest {
                 .filter(step -> step.kind() == GoalStep.Kind.MINE_ORE && !isDiamondStep(step))
                 .mapToInt(GoalStep::count)
                 .sum();
+        // The retry terms carry the eight per-batch retries plus the capped two-epoch mission
+        // margin pool (F2); bootstrap coal/services scale with the margin-funded 720-torch pool.
         require(context, outer.targetOreDigBatches() == 8
                         && outer.bootstrapOreDigBatches() >= 5
-                        && outer.retryOreDigBatches() == 8
+                        && outer.retryOreDigBatches() == 10
                         && outer.targetServiceCheckpoints() == 9
                         && outer.bootstrapServiceCheckpoints() >= 1
-                        && outer.retryServiceCheckpoints() == 8
-                        && ordinaryCapacityUpper == 179
-                        && outer.inventoryServiceCheckpoints() == 187
-                        && outer.serviceTicks() == 1_036_800
+                        && outer.retryServiceCheckpoints() == 10
+                        && ordinaryCapacityUpper == expectedCoal
+                        + bootstrapIron.getFirst().count()
+                        && outer.inventoryServiceCheckpoints() == 8 + ordinaryCapacityUpper
+                        && outer.serviceCheckpoints() == 9 + (expectedCoalBatches + 1)
+                        + 10 + 8 + ordinaryCapacityUpper
                         && outer.descents() >= 2
-                        && outer.auxiliaryTicks() == 499_200
-                        && outer.timeoutTicks() == 2_312_000
+                        && outer.auxiliaryTicks() >= 499_200
                         && outer.timeoutTicks() >= nominalStepWindows
                         + MiningMissionBudget.FROM_ZERO_BOOTSTRAP_MARGIN_TICKS
-                        && outer.timeoutTicks() <= 2_592_000,
-                "outer timeout omitted nominal bootstrap mining/service work: " + outer);
+                        && outer.timeoutTicks() <= 2_900_000,
+                "outer timeout omitted nominal bootstrap mining/service work: " + outer
+                        + " capacity_upper=" + ordinaryCapacityUpper
+                        + " expected_coal=" + expectedCoal
+                        + " nominal=" + nominalStepWindows);
         context.complete();
     }
 
@@ -1148,15 +1154,18 @@ public final class GoalPlannerMiningGameTests implements FabricGameTest {
                 .filter(step -> step.kind() == GoalStep.Kind.HUNT)
                 .toList();
         int cook = indexOf(plan, step -> step.kind() == GoalStep.Kind.COOK_FOOD);
-        require(context, hunts.stream().mapToInt(GoalStep::count).sum() == 35
+        require(context, hunts.stream().mapToInt(GoalStep::count).sum()
+                        == MiningBudget.RARE_BOOTSTRAP_FOOD - 37
                         && hunts.stream().allMatch(step -> step.count() <= 4),
-                "37 carried raw meat must leave an exact 35-meat hunt deficit: "
-                        + plan.describeSteps());
+                "37 carried raw meat must leave an exact "
+                        + (MiningBudget.RARE_BOOTSTRAP_FOOD - 37)
+                        + "-meat hunt deficit: " + plan.describeSteps());
         require(context, cook >= 0
                         && plan.steps().get(cook).count()
                         == MiningBudget.RARE_BOOTSTRAP_FOOD
                         && !plan.steps().get(cook).bestEffort(),
-                "carried raw meat must still cook the full 72-unit hard reserve: "
+                "carried raw meat must still cook the full "
+                        + MiningBudget.RARE_BOOTSTRAP_FOOD + "-unit hard reserve: "
                         + plan.describeSteps());
         context.complete();
     }
@@ -1546,7 +1555,10 @@ public final class GoalPlannerMiningGameTests implements FabricGameTest {
         prepared.put(Items.CRAFTING_TABLE, 1);
         prepared.put(Items.COBBLESTONE, 512);
         prepared.put(Items.STICK, 512);
-        prepared.put(Items.TORCH, 512);
+        // Keep the planned torch-craft deficit at its pre-margin scale (~150) so the shelter
+        // raw-log accounting these fixtures pin stays unchanged by the margin-funded pool.
+        prepared.put(Items.TORCH, 512 + MiningBudget.DIAMOND_STACK_EPOCH_MARGIN
+                * MiningBudget.RARE_BATCH_TORCH_LIMIT);
         prepared.put(Items.COOKED_BEEF, MiningBudget.RARE_BOOTSTRAP_FOOD);
         prepared.putAll(shelterWood);
         return Map.copyOf(prepared);

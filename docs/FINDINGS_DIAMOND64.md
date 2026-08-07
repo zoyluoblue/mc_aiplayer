@@ -151,7 +151,7 @@ Citation shorthand (as used in the source reports): `COT` = src/main/java/io/git
 - Trigger: hp in (8,10] with a single same-level hostile within 8 blocks in a tunnel → falls to EvadeTask which fails `no_valid_escape_route`, 40–80-tick cooldown loop while taking hits.
 - Smallest fix: widen underground shelter admission to hp ≤ retreatHp.
 
-**F29 — Acceptance harness verifies obsidian at 32, not the mission's 64** (major; evidence harness; from: evidence)
+**[已修·阶段9] F29 — Acceptance harness verifies obsidian at 32, not the mission's 64** (major; evidence harness; from: evidence)
 - Citations: MiningEvidenceAudit.java:34 (`OBSIDIAN_TARGET=32`), scenario `obsidian_half_stack_32_from_zero`; mining_acceptance_contract.sh:54-66; AIBotVerifySubcommand.java:1891-1907 (fixed 240,000-tick timeout).
 - Trigger: if the commitment is 64 obsidian, no existing verification attests it; timeout and thresholds are all calibrated to 32.
 - Smallest fix: either re-scope the mission to 32 or add a 64 scenario with rescaled timeout/thresholds.

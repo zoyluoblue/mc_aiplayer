@@ -259,6 +259,26 @@ NPE 崩掉 GameTest 调度器(`GameTestState.tickTests` 迭代中修改监听表
 
 ---
 
+## 阶段 9 · P3/F29 黑曜石 64 验收场景落地(2026-08-07)
+
+**完成**(32 契约保持封存不动,64 为其超集):
+- `MiningEvidenceAudit`:审计会话携带显式 `requiredCount`(旧入口保持 64 钻/32 曜阈值),
+  `Snapshot.passes()` 按会话配额判定 —— 64 承诺复用同一条物理证据链而非另起账本。
+- verify 场景:`obsidian_stack_64_controlled`(数量契约,进 verify all/mining 回归)、
+  `obsidian_stack_64_prepared`(10×7 池 70 源,物资按 64 合约缩放,超时 48,000 tick =
+  32 版单块速率翻倍)、`obsidian_stack_64_from_zero`(超时 316,800 = 240,000 + 增量
+  32 块 × 2,400 摊销;审计配额 64)。两个长跑层均显式 opt-in;封存的 32/钻石验收套件
+  与 PR CI 契约对不变。
+- evidence 链:新 target `obsidian64`(场景映射、≥64 物证阈值、wall-clock 上限 25,200 s
+  ——15 TPS 地板下 ~19% 余量,优于 32 契约的 12.5%)。
+- `docs/MINING_ACCEPTANCE.md` 记录 64 承诺口径与推导。
+
+**验证**:348 单测全绿;582 gametest 全绿;shell 语法校验通过。
+**提交**:`a6a01eb1`。认证长跑(20-seed 门禁对 64 同样适用)由用户择机启动:
+`bash scripts/evidence_run.sh --scenario obsidian_stack_64_from_zero`。
+
+---
+
 ## 待解决问题(滚动清单)
 
 | ID | 严重度 | 问题 | 状态 |
@@ -266,7 +286,7 @@ NPE 崩掉 GameTest 调度器(`GameTestState.tickTests` 迭代中修改监听表
 | P1 | major | 拾取恢复滞留活锁(高台掉落 / 同格 nudge 假进展 / 静默 NO_START)| **已修**(阶段 1) |
 | F1-F50 | 见报告 | 全链路调研发现清单,详见 [FINDINGS_DIAMOND64.md](FINDINGS_DIAMOND64.md);修复进度在该文件逐条标注 | 攻坚中 |
 | P2 | 待评估 | diamond64/obsidian64 全链路稳定性缺口 — 七子系统并行调研进行中(OreDig 恢复、Planner 批次、Executor 重规划预算、Obsidian 岩浆链、Descend 往返、生存中断恢复、预算/证据体系),产出后按影响排序逐项立项。 | 调研中 |
-| P3 | major | **黑曜石目标 32 → 64**:现有验收契约(`docs/MINING_ACCEPTANCE.md`)只定义了 `obsidian_half_stack_32`;用户目标是 64。需扩展 Goal/预算/验收场景到 64,并核对岩浆源池容量假设(单湖是否稳定供 64 块)。 | 待立项 |
+| P3 | major | 黑曜石目标 32 → 64:验收场景/审计/evidence 链已落地(阶段 9);岩浆源池容量假设(单湖稳定供 64)待 from-zero 实跑核对 | **已修**(阶段 9) |
 | P4 | note | **认证长跑成本**:from-zero 钻石 live plan 已声明 2,120,000 ticks(15 TPS ≈ 39 小时/run),20-seed 门禁是天级算力。本阶段交付"能力与稳定性 + 可复验入口",sealed 批量认证由用户择机启动(`scripts/evidence_batch.sh`)。 | 已知约束 |
 
 ---

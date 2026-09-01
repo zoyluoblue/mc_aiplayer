@@ -28,7 +28,6 @@ import net.minecraft.text.Text;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -161,9 +160,14 @@ public final class AIBotRestartHarnessCommand {
         MissionRuntimeRecord pausedRuntime = GoalExecutor.INSTANCE.captureRuntime(bot);
         MissionRecord pausedActive = pausedRuntime.active();
         Map<String, String> checkpoint = pausedActive == null ? Map.of() : pausedActive.checkpoint();
-        boolean exactShape = checkpoint.keySet().equals(Set.of(
-                CHECKPOINT_ORIGIN, CHECKPOINT_STARTED_TICK, CHECKPOINT_REVISION));
-        boolean nonDefaultCheckpoint = exactShape
+        // The mission checkpoint schema grew with Mining First plan state (hunt cursor, replan
+        // watermarks, postcondition fingerprints), so a frozen three-key shape can never hold
+        // again. Require the non-default intent instead, and carry the full staged map to
+        // phase 2 through a file next to the world save: it survives the two-JVM split and
+        // keeps the exact-restore comparison schema-agnostic.
+        boolean nonDefaultCheckpoint = checkpoint.containsKey(CHECKPOINT_ORIGIN)
+                && checkpoint.containsKey(CHECKPOINT_STARTED_TICK)
+                && checkpoint.containsKey(CHECKPOINT_REVISION)
                 && parseNonNegative(checkpoint.get(CHECKPOINT_REVISION)) >= 1
                 && checkpoint.get(CHECKPOINT_ORIGIN) != null
                 && !checkpoint.get(CHECKPOINT_ORIGIN).isBlank()
@@ -188,11 +192,8 @@ public final class AIBotRestartHarnessCommand {
 
         Map<String, String> expected = new LinkedHashMap<>();
         expected.put("mission_id", pausedActive.missionId());
-        expected.put("checkpoint_origin", checkpoint.get(CHECKPOINT_ORIGIN));
-        expected.put("checkpoint_started_tick", checkpoint.get(CHECKPOINT_STARTED_TICK));
-        expected.put("checkpoint_revision", checkpoint.get(CHECKPOINT_REVISION));
-        expected.put("checkpoint_size", String.valueOf(checkpoint.size()));
         expected.put("queue_count", String.valueOf(pausedRuntime.queue().size()));
+        boolean expectedPersisted = writeExpectedCheckpoint(source.getServer(), checkpoint);
         TaskBoard.INSTANCE.clear();
         TaskBoard.INSTANCE.postGlobal(PROBE_JOB_KIND, expected, "worker");
         Optional<Job> claimed = TaskBoard.INSTANCE.claimNext(bot, AIPlayerManager.INSTANCE.roles(bot));
@@ -204,11 +205,13 @@ public final class AIBotRestartHarnessCommand {
         BotPersistence.INSTANCE.saveAll(source.getServer());
         boolean exactAtSave = pausedActive.checkpoint().equals(
                 GoalExecutor.INSTANCE.captureRuntime(bot).active().checkpoint());
-        boolean ok = leaseClaimed && exactAtSave && BotPersistence.INSTANCE.lastSaveSucceeded();
+        boolean ok = expectedPersisted && leaseClaimed && exactAtSave
+                && BotPersistence.INSTANCE.lastSaveSucceeded();
         source.sendFeedback(() -> Text.literal("[AIBot Harness] restart-stage-check "
                 + (ok ? "PASS" : "FAIL")
                 + " checkpoint_non_default=" + nonDefaultCheckpoint
                 + " checkpoint_exact_at_save=" + exactAtSave
+                + " checkpoint_file_persisted=" + expectedPersisted
                 + " lease_claimed=" + leaseClaimed
                 + " mission_id=" + pausedActive.missionId()
                 + " revision=" + checkpoint.get(CHECKPOINT_REVISION)
@@ -223,8 +226,7 @@ public final class AIBotRestartHarnessCommand {
         MissionRuntimeRecord restored = bot == null ? MissionRuntimeRecord.empty()
                 : GoalExecutor.INSTANCE.captureRuntime(bot);
         MissionRecord active = restored.active();
-        Map<String, String> expectedCheckpoint = probeJob.map(AIBotRestartHarnessCommand::expectedCheckpoint)
-                .orElse(Map.of());
+        Map<String, String> expectedCheckpoint = readExpectedCheckpoint(source.getServer());
         boolean checkpointExact = active != null && active.checkpoint().equals(expectedCheckpoint);
         boolean missionIdExact = active != null && probeJob.isPresent()
                 && active.missionId().equals(probeJob.get().params().get("mission_id"));
@@ -325,15 +327,49 @@ public final class AIBotRestartHarnessCommand {
                 .findFirst();
     }
 
-    private static Map<String, String> expectedCheckpoint(Job job) {
-        Map<String, String> checkpoint = new LinkedHashMap<>();
-        checkpoint.put(CHECKPOINT_ORIGIN, job.params().get("checkpoint_origin"));
-        checkpoint.put(CHECKPOINT_STARTED_TICK, job.params().get("checkpoint_started_tick"));
-        checkpoint.put(CHECKPOINT_REVISION, job.params().get("checkpoint_revision"));
-        int expectedSize = parseNonNegative(job.params().get("checkpoint_size"));
-        return expectedSize == checkpoint.size() && !checkpoint.containsValue(null)
-                ? Map.copyOf(checkpoint)
-                : Map.of();
+    /**
+     * The staged checkpoint travels between the two JVMs as a sorted TSV file beside the world
+     * save (both phases run in the same harness run directory). This replaces the old
+     * three-job-params contract, which silently broke every time the mission checkpoint schema
+     * gained a key.
+     */
+    private static final String EXPECTED_CHECKPOINT_FILE = "aibot-restart-expected-checkpoint.tsv";
+
+    private static java.nio.file.Path expectedCheckpointPath(MinecraftServer server) {
+        return server.getSavePath(net.minecraft.util.WorldSavePath.ROOT)
+                .getParent().resolve(EXPECTED_CHECKPOINT_FILE);
+    }
+
+    private static boolean writeExpectedCheckpoint(MinecraftServer server, Map<String, String> checkpoint) {
+        java.nio.file.Path path = expectedCheckpointPath(server);
+        try {
+            StringBuilder encoded = new StringBuilder();
+            new java.util.TreeMap<>(checkpoint).forEach((key, value) ->
+                    encoded.append(key).append('\t').append(value).append('\n'));
+            java.nio.file.Files.writeString(path, encoded.toString());
+            return checkpoint.equals(readExpectedCheckpoint(server));
+        } catch (RuntimeException | java.io.IOException invalid) {
+            return false;
+        }
+    }
+
+    private static Map<String, String> readExpectedCheckpoint(MinecraftServer server) {
+        java.nio.file.Path path = expectedCheckpointPath(server);
+        try {
+            Map<String, String> decoded = new LinkedHashMap<>();
+            for (String line : java.nio.file.Files.readAllLines(path)) {
+                // Empty values are legitimate checkpoint state (for example an unset hunt
+                // surface anchor), so only a missing tab or a duplicate key invalidates a line.
+                int split = line.indexOf('\t');
+                if (split <= 0
+                        || decoded.put(line.substring(0, split), line.substring(split + 1)) != null) {
+                    return Map.of();
+                }
+            }
+            return decoded.isEmpty() ? Map.of() : java.util.Map.copyOf(decoded);
+        } catch (RuntimeException | java.io.IOException invalid) {
+            return Map.of();
+        }
     }
 
     private static int parseNonNegative(String value) {

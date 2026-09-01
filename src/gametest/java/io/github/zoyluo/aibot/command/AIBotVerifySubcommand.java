@@ -200,10 +200,12 @@ public final class AIBotVerifySubcommand {
     // from_zero 才是 capability manifest 绑定的最终用户承诺口径。两层都可能在能力未完成时诚实 FAIL。
     private static final List<String> MINING_ACCEPTANCE_PREPARED_SUITE = List.of(
             "diamond_stack_64_prepared",
-            "obsidian_half_stack_32_prepared");
+            "obsidian_half_stack_32_prepared",
+            "obsidian_stack_64_prepared");
     private static final List<String> MINING_ACCEPTANCE_FROM_ZERO_SUITE = List.of(
             "diamond_stack_64_from_zero",
-            "obsidian_half_stack_32_from_zero");
+            "obsidian_half_stack_32_from_zero",
+            "obsidian_stack_64_from_zero");
     private static final List<String> OPT_IN_LONG_MINING_FEATURES = List.of(
             "diamond_stack_64_prepared",
             "obsidian_half_stack_32_prepared",
@@ -4016,9 +4018,10 @@ public final class AIBotVerifySubcommand {
             }
 
             MiningEvidenceAudit.Snapshot facts = snapshot.orElseThrow();
-            boolean finalInventoryPass = facts.target() == MiningEvidenceAudit.Target.DIAMOND
-                    ? finalInventory >= DIAMOND_STACK_TARGET
-                    : finalInventory >= OBSIDIAN_HALF_STACK_TARGET;
+            // The audit session carries the scenario's own quota (diamond 64, obsidian 32/64);
+            // a per-scenario hardcode here would accept the wrong inventory floor for the
+            // 64-obsidian tier.
+            boolean finalInventoryPass = finalInventory >= facts.requiredCount();
             boolean provenancePass = facts.passes() && finalInventoryPass;
             if (result.pass() && !provenancePass) {
                 effective = Result.fail(result.feature(), "mining_provenance_postcondition_failed");

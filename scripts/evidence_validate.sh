@@ -175,7 +175,7 @@ validate_one() {
   harness_safe_id "$scenario" scenario 96 >/dev/null 2>&1 || { validation_fail unsafe_scenario; return 1; }
   if [[ "$schema" == 1 ]]; then
     case "$scenario" in
-      diamond_stack_64_from_zero|obsidian_half_stack_32_from_zero)
+      diamond_stack_64_from_zero|obsidian_half_stack_32_from_zero|obsidian_stack_64_from_zero)
         validation_fail legacy_mining_provenance_missing
         return 1
         ;;
@@ -405,7 +405,7 @@ EOF
     esac
   fi
   case "$scenario" in
-    diamond_stack_64_from_zero|obsidian_half_stack_32_from_zero)
+    diamond_stack_64_from_zero|obsidian_half_stack_32_from_zero|obsidian_stack_64_from_zero)
       [[ -n "$verify_timeout" && -n "$scenario_timeout" ]] || {
         validation_fail missing_mining_timeout_contract
         return 1
@@ -474,7 +474,7 @@ EOF
       [[ "$value" =~ ^[0-9]+$ ]] || { validation_fail malformed_mining_provenance_number; return 1; }
     done
     case "$scenario" in
-      diamond_stack_64_from_zero|obsidian_half_stack_32_from_zero)
+      diamond_stack_64_from_zero|obsidian_half_stack_32_from_zero|obsidian_stack_64_from_zero)
         [[ "$provenance_schema" == 2 ]] || { validation_fail invalid_mining_provenance_schema; return 1; }
         case "$provenance_verdict" in PASS|FAIL) ;; *) validation_fail invalid_mining_provenance_verdict; return 1 ;; esac
         provenance_record="$(python3 - "$canonical/server.log" "$scenario" <<'PY'
@@ -594,7 +594,7 @@ PY
         # provenance gate is non-PASS. This preserves the raw verifier claim without mislabelling
         # it as a scenario FAIL with contradictory pass counts.
         case "$scenario" in
-          diamond_stack_64_from_zero|obsidian_half_stack_32_from_zero) ;;
+          diamond_stack_64_from_zero|obsidian_half_stack_32_from_zero|obsidian_stack_64_from_zero) ;;
           *) validation_fail valid_summary_error_without_mining_provenance; return 1 ;;
         esac
         [[ "$schema" == 2 && "$provenance_schema" == 2 && "$provenance_verdict" != PASS \

@@ -30,6 +30,17 @@ public final class ObservableWorldQuery {
     }
 
     public static boolean canObserveBlock(AIPlayerEntity bot, BlockPos pos) {
+        return canObserveBlockWithin(bot, pos, 0);
+    }
+
+    /**
+     * Prey-grounding observation at surface-search range: the specific cells under a visible
+     * animal. Same fairness class as {@link #canObserveEntityWithin(AIPlayerEntity, Entity, int)}
+     * (a player looking at a distant cow sees the ground it stands on): the per-face raycasts
+     * and the strict capability bypass are unchanged, only the distance bound widens, and never
+     * below the configured perception radius. Ordinary block scans keep the base radius.
+     */
+    public static boolean canObserveBlockWithin(AIPlayerEntity bot, BlockPos pos, int range) {
         if (CapabilityRuntime.decide(bot, PrivilegedCapability.HIDDEN_BLOCK_SCAN,
                 "observable_block_query").allowed()) {
             return true;
@@ -44,7 +55,7 @@ public final class ObservableWorldQuery {
                     direction.getOffsetX() * 0.499D,
                     direction.getOffsetY() * 0.499D,
                     direction.getOffsetZ() * 0.499D);
-            if (canObserveFaceAfterPolicy(bot, pos, direction, face)) {
+            if (canObserveFaceAfterPolicy(bot, pos, direction, face, range)) {
                 return true;
             }
         }
@@ -106,8 +117,9 @@ public final class ObservableWorldQuery {
     private static boolean canObserveFaceAfterPolicy(AIPlayerEntity bot,
                                                       BlockPos pos,
                                                       Direction face,
-                                                      net.minecraft.util.math.Vec3d endpoint) {
-        int radius = Math.max(1, AIBotConfig.get().perception().radius());
+                                                      net.minecraft.util.math.Vec3d endpoint,
+                                                      int range) {
+        int radius = Math.max(Math.max(1, AIBotConfig.get().perception().radius()), range);
         if (bot.getEyePos().squaredDistanceTo(endpoint) > (double) radius * radius) {
             return false;
         }
@@ -129,7 +141,23 @@ public final class ObservableWorldQuery {
                 "observable_cell_query").allowed()) {
             return true;
         }
-        int radius = Math.max(1, AIBotConfig.get().perception().radius());
+        return canObserveCellWithinAfterPolicy(bot, pos, 0);
+    }
+
+    /**
+     * Prey-grounding cell observation at surface-search range; see
+     * {@link #canObserveBlockWithin(AIPlayerEntity, BlockPos, int)} for the fairness rationale.
+     */
+    public static boolean canObserveCellWithin(AIPlayerEntity bot, BlockPos pos, int range) {
+        if (CapabilityRuntime.decide(bot, PrivilegedCapability.HIDDEN_BLOCK_SCAN,
+                "observable_cell_query").allowed()) {
+            return true;
+        }
+        return canObserveCellWithinAfterPolicy(bot, pos, range);
+    }
+
+    private static boolean canObserveCellWithinAfterPolicy(AIPlayerEntity bot, BlockPos pos, int range) {
+        int radius = Math.max(Math.max(1, AIBotConfig.get().perception().radius()), range);
         if (bot.getEyePos().squaredDistanceTo(pos.toCenterPos()) > (double) radius * radius) {
             return false;
         }
@@ -146,6 +174,22 @@ public final class ObservableWorldQuery {
             return true;
         }
         int radius = Math.max(1, AIBotConfig.get().perception().radius());
+        return bot.squaredDistanceTo(entity) <= (double) radius * radius && bot.canSee(entity);
+    }
+
+    /**
+     * Live-fauna observation at surface-search range: a real player sees animals at render
+     * distance whenever line of sight holds, far beyond the interaction-scale radius that
+     * bounds block reads. The raycast stays, so terrain still hides herds; only the distance
+     * bound widens, and never below the configured perception radius. Block queries are
+     * unaffected, and the strict capability bypass stays exactly as it is.
+     */
+    public static boolean canObserveEntityWithin(AIPlayerEntity bot, Entity entity, int range) {
+        if (CapabilityRuntime.decide(bot, PrivilegedCapability.HIDDEN_BLOCK_SCAN,
+                "observable_entity_query").allowed()) {
+            return true;
+        }
+        int radius = Math.max(Math.max(1, AIBotConfig.get().perception().radius()), range);
         return bot.squaredDistanceTo(entity) <= (double) radius * radius && bot.canSee(entity);
     }
 }

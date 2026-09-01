@@ -63,6 +63,9 @@ public final class HuntTask extends AbstractTask implements CheckpointableTask {
     }
 
     private static final int SEARCH_RANGE = 64;        // 找猎物的扫描范围(动物分散→扩到 64 格,再走过去)
+    // 猎物视线与扫描范围对齐:真实玩家在渲染距离内、有视线就能看到动物,远超方块读取的
+    // 交互半径。canObserveEntityWithin 保留射线判定(地形仍会遮蔽畜群),只放宽距离上限。
+    private static final int PREY_SIGHT_RANGE = SEARCH_RANGE;
     private static final int MAX_ELAPSED = 3600;       // 3 分钟硬超时
     private static final int NO_PROGRESS_LIMIT = 400;  // 20s 无进展(没靠近/没掉肉)即失败
     private static final int PICKUP_RECOVERY_LIMIT = 240; // 可见掉落/在途拾取的物理恢复硬上限
@@ -129,6 +132,7 @@ public final class HuntTask extends AbstractTask implements CheckpointableTask {
     private int meatBaseline;
     private int collected;
     private int lastProgressTick;
+    private double bestApproachDistance = Double.MAX_VALUE;
     private int pickupGrace;
     private EntityType<?> targetPreyType;
     private Item targetExpectedRawMeat;
@@ -318,6 +322,18 @@ public final class HuntTask extends AbstractTask implements CheckpointableTask {
                 && !searchCursor.contains(dimension, feet.getX(), feet.getZ())) {
             fail("hunt_search_capacity_exhausted sectors=" + searchCursor.visitedCount());
             return;
+        }
+
+        // 接近进展:到当前猎物的距离相对历史最优单调改善 ≥4 格也算进展。远距目标从获取到
+        // 击杀的走位可能远超 NO_PROGRESS_LIMIT;只认掉肉/漫游会把进行中的长接近整个窗口
+        // 误杀(实测 44 格接近 ~390t 后刚开始攻击就被判无进展)。用历史最优而非相邻 tick
+        // 差值,追逐横跳无法刷表。
+        if (phase == Phase.APPROACH && target != null && target.isAlive()) {
+            double distance = bot.distanceTo(target);
+            if (bestApproachDistance - distance >= 4.0D) {
+                bestApproachDistance = distance;
+                lastProgressTick = elapsed;
+            }
         }
 
         // 无进展看门狗:长时间没靠近猎物/没掉肉 → 干净失败,交编排层(可能周围没动物了)。
@@ -520,6 +536,8 @@ public final class HuntTask extends AbstractTask implements CheckpointableTask {
         approachStuckPos = null;
         approachStuckTick = elapsed;
         lastProgressTick = elapsed;
+        bestApproachDistance = target == null
+                ? Double.MAX_VALUE : bot.distanceTo(target);
         SurfacePathStart start = startSafePreyApproach(bot, target);
         if (start == SurfacePathStart.UNREACHABLE) {
             rejectUnsafePrey(bot, target, "no_round_trip");
@@ -552,15 +570,17 @@ public final class HuntTask extends AbstractTask implements CheckpointableTask {
 
     private boolean isSafePreyPose(AIPlayerEntity bot, LivingEntity prey) {
         if (prey == null || !prey.isAlive()
-                || !ObservableWorldQuery.canObserveEntity(bot, prey)) {
+                || !ObservableWorldQuery.canObserveEntityWithin(bot, prey, PREY_SIGHT_RANGE)) {
             return false;
         }
         BlockPos feet = prey.getBlockPos();
         ServerWorld world = bot.getServerWorld();
+        // 猎物落点验证与猎物视线同距:看得见动物却看不到它踩的格子,远距目标会在第一步
+        // 就被 no_round_trip 拒掉,视觉与安全链自相矛盾。
         if (feet.getY() < surfaceFloorY(bot)
-                || !ObservableWorldQuery.canObserveCell(bot, feet)
-                || !ObservableWorldQuery.canObserveCell(bot, feet.up())
-                || !ObservableWorldQuery.canObserveBlock(bot, feet.down())) {
+                || !ObservableWorldQuery.canObserveCellWithin(bot, feet, PREY_SIGHT_RANGE)
+                || !ObservableWorldQuery.canObserveCellWithin(bot, feet.up(), PREY_SIGHT_RANGE)
+                || !ObservableWorldQuery.canObserveBlockWithin(bot, feet.down(), PREY_SIGHT_RANGE)) {
             return false;
         }
         Standability.clearCache();
@@ -1580,7 +1600,8 @@ public final class HuntTask extends AbstractTask implements CheckpointableTask {
                 .getEntitiesByClass(LivingEntity.class, box,
                         entity -> entity.isAlive() && entity != bot && isHuntable(entity))
                 .stream()
-                .filter(entity -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveEntity(bot, entity))
+                .filter(entity -> ObservableWorldQuery.canObserveEntityWithin(
+                        bot, entity, PREY_SIGHT_RANGE))
                 .filter(entity -> !wetPreyRejectedUntil.containsKey(entity.getUuid()))
                 .filter(entity -> !unsafePreyRejectedUntil.containsKey(entity.getUuid()))
                 .filter(entity -> !EpisodeMemory.INSTANCE.isExcluded(
@@ -1943,7 +1964,8 @@ public final class HuntTask extends AbstractTask implements CheckpointableTask {
                 .getEntitiesByClass(LivingEntity.class, bot.getBoundingBox().expand(SEARCH_RANGE),
                         entity -> entity.isAlive() && entity != bot && isHuntable(entity))
                 .stream()
-                .filter(entity -> io.github.zoyluo.aibot.mode.ObservableWorldQuery.canObserveEntity(bot, entity))
+                .filter(entity -> ObservableWorldQuery.canObserveEntityWithin(
+                        bot, entity, PREY_SIGHT_RANGE))
                 .toList()
                 .isEmpty();
     }

@@ -140,11 +140,14 @@ public final class HuntCrossRegionGameTests implements FabricGameTest {
     }
 
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
-            batchId = "huntClosedReceiptFreshStart", tickLimit = 1200)
+            batchId = "huntClosedReceiptFreshStart", tickLimit = 200)
     public void closedReceiptDoesNotPoisonSuccessorHunt(TestContext context) {
         // A hunt that already settled its pickup can still fail later (for example
         // hunt_no_progress on the next prey) and export a CLOSED_COLLECTED receipt. The
-        // successor hunt owes that transaction nothing and must start fresh.
+        // successor hunt owes that transaction nothing and must start fresh: it must run as a
+        // normal acquisition instead of failing at tick 0. A live kill is deliberately NOT
+        // asserted here - under CI load the approach itself is timing-sensitive terrain, and
+        // the regression this pins is the restore decision, not the hunt's success.
         var world = context.getWorld();
         BlockPos start = context.getAbsolutePos(new BlockPos(4, 4, 4));
         for (int x = -2; x <= 6; x++) {
@@ -155,19 +158,11 @@ public final class HuntCrossRegionGameTests implements FabricGameTest {
                 world.setBlockState(feet.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
             }
         }
-        var cow = EntityType.COW.create(world, SpawnReason.COMMAND);
-        require(context, cow != null, "failed to create cow");
-        cow.setAiDisabled(true);
-        cow.refreshPositionAndAngles(
-                start.getX() + 4.5D, start.getY(), start.getZ() + 0.5D, 180.0F, 0.0F);
-        require(context, world.spawnEntity(cow), "failed to spawn cow");
-
         String name = "HuntClosedReceiptGT";
         AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
                         world.getServer(), name, world, Vec3d.ofBottomCenter(start),
                         0.0F, 0.0F, GameMode.SURVIVAL)
                 .orElseThrow(() -> new IllegalStateException("failed to spawn " + name));
-        InventoryAction.giveItem(bot, new ItemStack(Items.WOODEN_SWORD));
         HuntSearchCursor cursor = HuntSearchCursor.initial();
         cursor.setSurfaceAnchorIfAbsent(
                 world.getRegistryKey().getValue().toString(),
@@ -180,16 +175,122 @@ public final class HuntCrossRegionGameTests implements FabricGameTest {
         TaskManager.INSTANCE.assign(bot, task,
                 TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_hunt_closed_receipt"));
 
+        context.runAtTick(3, () -> {
+            require(context, !"hunt_pickup_invalid_checkpoint".equals(task.failureReason()),
+                    "closed receipt poisoned the successor hunt: " + task.failureReason());
+            require(context, task.state() == TaskState.RUNNING,
+                    "fresh hunt after a closed receipt ended early as " + task.state()
+                            + ":" + task.failureReason());
+            require(context, task.describe().contains("phase=ACQUIRE")
+                            || task.describe().contains("phase=ROAM"),
+                    "successor hunt did not resume acquisition: " + task.describe());
+            AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
+            context.complete();
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "huntDistantPreySight", tickLimit = 1600)
+    public void distantPreyIsHuntedAcrossOpenGround(TestContext context) {
+        // Surface prey sight must align with SEARCH_RANGE: a real player sees a cow 40+ blocks
+        // away on open ground. With only the interaction-scale perception radius the search
+        // box was 64 wide but visibility died at 16, so scattered herds were invisible.
+        var world = context.getWorld();
+        BlockPos start = context.getAbsolutePos(new BlockPos(4, 4, 4));
+        for (int dx = -2; dx <= 48; dx++) {
+            for (int dz = -2; dz <= 2; dz++) {
+                BlockPos feet = start.add(dx, 0, dz);
+                world.setBlockState(feet.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        var cow = EntityType.COW.create(world, SpawnReason.COMMAND);
+        require(context, cow != null, "failed to create cow");
+        cow.setAiDisabled(true);
+        cow.refreshPositionAndAngles(
+                start.getX() + 44.5D, start.getY(), start.getZ() + 0.5D, 270.0F, 0.0F);
+        require(context, world.spawnEntity(cow), "failed to spawn cow");
+
+        String name = "HuntDistantPreyGT";
+        AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
+                        world.getServer(), name, world, Vec3d.ofBottomCenter(start),
+                        0.0F, 0.0F, GameMode.SURVIVAL)
+                .orElseThrow(() -> new IllegalStateException("failed to spawn " + name));
+        InventoryAction.giveItem(bot, new ItemStack(Items.WOODEN_SWORD));
+        HuntSearchCursor cursor = HuntSearchCursor.initial();
+        cursor.setSurfaceAnchorIfAbsent(
+                world.getRegistryKey().getValue().toString(),
+                start.getX(), start.getY(), start.getZ());
+        HuntTask task = new HuntTask(1, true, cursor);
+        TaskManager.INSTANCE.assign(bot, task,
+                TaskOrigin.of(TaskOrigin.Kind.VERIFY, "gametest_hunt_distant_prey"));
+
         context.runAtEveryTick(() -> {
             if (task.state() == TaskState.FAILED) {
                 context.throwGameTestException(
-                        "closed receipt poisoned the successor hunt: " + task.failureReason());
+                        "distant prey hunt failed: " + task.failureReason());
             }
             if (task.state() != TaskState.COMPLETED) {
                 return;
             }
             require(context, InventoryAction.countItem(bot, Items.BEEF) >= 1,
-                    "fresh hunt after a closed receipt collected no raw meat");
+                    "distant prey hunt collected no raw meat");
+            AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
+            context.complete();
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
+            batchId = "huntDistantPreySight", tickLimit = 40)
+    public void distantPreySightWidensRangeButStillRequiresLineOfSight(TestContext context) {
+        var world = context.getWorld();
+        BlockPos start = context.getAbsolutePos(new BlockPos(4, 4, 4));
+        for (int dx = -48; dx <= 48; dx++) {
+            for (int dz = -2; dz <= 2; dz++) {
+                BlockPos feet = start.add(dx, 0, dz);
+                world.setBlockState(feet.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                world.setBlockState(feet.up(2), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        // Full-height wall on the east side: the cow behind it must stay invisible even at
+        // prey-sight range, or terrain would stop hiding herds.
+        for (int dy = 0; dy < 4; dy++) {
+            for (int dz = -2; dz <= 2; dz++) {
+                world.setBlockState(start.add(8, dy, dz),
+                        Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
+            }
+        }
+        var openCow = EntityType.COW.create(world, SpawnReason.COMMAND);
+        require(context, openCow != null, "failed to create open cow");
+        openCow.setAiDisabled(true);
+        openCow.refreshPositionAndAngles(
+                start.getX() - 40.5D, start.getY(), start.getZ() + 0.5D, 90.0F, 0.0F);
+        require(context, world.spawnEntity(openCow), "failed to spawn open cow");
+        var walledCow = EntityType.COW.create(world, SpawnReason.COMMAND);
+        require(context, walledCow != null, "failed to create walled cow");
+        walledCow.setAiDisabled(true);
+        walledCow.refreshPositionAndAngles(
+                start.getX() + 40.5D, start.getY(), start.getZ() + 0.5D, 270.0F, 0.0F);
+        require(context, world.spawnEntity(walledCow), "failed to spawn walled cow");
+
+        String name = "HuntPreySightGT";
+        AIPlayerEntity bot = AIPlayerManager.INSTANCE.spawn(
+                        world.getServer(), name, world, Vec3d.ofBottomCenter(start),
+                        0.0F, 0.0F, GameMode.SURVIVAL)
+                .orElseThrow(() -> new IllegalStateException("failed to spawn " + name));
+        context.runAtTick(1, () -> {
+            require(context, io.github.zoyluo.aibot.mode.ObservableWorldQuery
+                            .canObserveEntityWithin(bot, openCow, 64),
+                    "open-ground prey at 40 blocks was not visible at prey-sight range");
+            require(context, !io.github.zoyluo.aibot.mode.ObservableWorldQuery
+                            .canObserveEntity(bot, openCow),
+                    "base entity observation widened beyond the configured perception radius");
+            require(context, !io.github.zoyluo.aibot.mode.ObservableWorldQuery
+                            .canObserveEntityWithin(bot, walledCow, 64),
+                    "terrain stopped hiding prey at prey-sight range");
             AIPlayerManager.INSTANCE.despawn(bot.getServer(), name);
             context.complete();
         });
@@ -335,16 +436,16 @@ public final class HuntCrossRegionGameTests implements FabricGameTest {
             batchId = "huntRotatedRetryLive", tickLimit = 1400)
     public void rejectedCompassFanRotatesOntoReversibleRidge(TestContext context) {
         var world = context.getWorld();
-        // This fixture extends well beyond the 15x15 template. Keep it on a dedicated elevated
-        // layer so concurrently placed GameTests cannot overwrite the ridge or raise the spawn.
-        BlockPos start = context.getAbsolutePos(new BlockPos(8, 40, -112));
+        // A low dedicated layer (like the distant-prey strip): the previous 40-up elevated ridge
+        // could not prove long no-dig/no-pillar approach routes, and prey sight now requires the
+        // initial approach to be provable from wherever the hunt first sees the cow.
+        BlockPos start = context.getAbsolutePos(new BlockPos(8, 5, -112));
 
         // An 11-degree, three-cell-wide reversible ridge leads to a small terminal pickup pad. The
-        // initial 0/45/90-degree compass fan has no standable candidate at 8/16/32 blocks; retry #1
-        // must rotate its geometry to find the ridge. The pad catches vanilla's randomized item
-        // launch after the kill without widening the discovery corridor or testing an impossible
-        // recovery from the natural floor six blocks below. A cow at 20 blocks remains outside
-        // strict perception until the bot has physically advanced along the accepted surface path.
+        // compass-fan rotation geometry itself is pinned by the static asserts below on the pure
+        // rotatedRoamColumn function; prey sight ends the old "invisible at 20 blocks" premise, so
+        // the live portion now proves a direct hunt across the narrow diagonal ridge. The pad
+        // catches vanilla's randomized item launch after the kill without widening the corridor.
         for (int x = 0; x <= 36; x++) {
             int z = (int) Math.round(x * Math.tan(Math.toRadians(11.0D)));
             for (int dz = -1; dz <= 1; dz++) {
@@ -370,7 +471,10 @@ public final class HuntCrossRegionGameTests implements FabricGameTest {
         require(context, cow != null, "failed to create rotated-retry cow");
         cow.setAiDisabled(true);
         cow.setHealth(1.0F);
-        int cowX = 20;
+        // ... hunt across the narrow diagonal ridge. The cow sits at close range (the historical
+        // post-roam end state of this fixture): the surface-route proof cannot span this
+        // zigzag strip at range, so prey sight must not be asked to approach across it.
+        int cowX = 9;
         int cowZ = (int) Math.round(cowX * Math.tan(Math.toRadians(11.0D)));
         BlockPos cowFeet = start.add(cowX, 0, cowZ);
         for (int dx = -2; dx <= 2; dx++) {

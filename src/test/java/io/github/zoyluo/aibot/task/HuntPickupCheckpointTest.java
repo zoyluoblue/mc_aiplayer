@@ -88,6 +88,27 @@ public class HuntPickupCheckpointTest {
                 10, 10, 20, 22, 2));
     }
 
+    @Test
+    void settlementRestoreAcceptsOnlyOpenTransactions() {
+        assertTrue(HuntPickupCheckpoint.settlementRestore(HuntTask.TransactionState.OPEN));
+        assertFalse(HuntPickupCheckpoint.settlementRestore(
+                HuntTask.TransactionState.CLOSED_COLLECTED));
+        assertFalse(HuntPickupCheckpoint.settlementRestore(
+                HuntTask.TransactionState.CLOSED_NO_RAW));
+        assertFalse(HuntPickupCheckpoint.settlementRestore(null));
+    }
+
+    @Test
+    void checkpointOnlyFailsClosedOnStructuralCorruption() {
+        // Unparseable payload with content = corruption; an absent checkpoint simply hunts fresh.
+        assertTrue(HuntPickupCheckpoint.checkpointStructurallyInvalid(
+                Map.of("task_schema", "1"), java.util.Optional.empty()));
+        assertFalse(HuntPickupCheckpoint.checkpointStructurallyInvalid(
+                Map.of(), java.util.Optional.empty()));
+        assertFalse(HuntPickupCheckpoint.checkpointStructurallyInvalid(
+                null, java.util.Optional.empty()));
+    }
+
     public static Map<String, String> openCheckpoint(String units) {
         Map<String, String> checkpoint = new LinkedHashMap<>();
         checkpoint.put("task_schema", "1");

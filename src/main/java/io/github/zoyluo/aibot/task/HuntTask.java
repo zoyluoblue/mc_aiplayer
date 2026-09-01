@@ -186,12 +186,11 @@ public final class HuntTask extends AbstractTask implements CheckpointableTask {
         this.maxElapsed = Math.max(MAX_ELAPSED, this.targetMeat * 480);
         Map<String, String> values = checkpoint == null ? Map.of() : checkpoint;
         Optional<RestoreMetadata> restored = inspectCheckpoint(values);
-        this.invalidCheckpoint = !values.isEmpty() && (restored.isEmpty()
-                || restored.orElseThrow().targetCount() != this.targetMeat
-                || restored.orElseThrow().requireFullQuota() != requireFullQuota);
+        this.invalidCheckpoint = HuntPickupCheckpoint.checkpointStructurallyInvalid(
+                values, restored);
         this.restoredPickup = invalidCheckpoint ? null : restored.orElse(null);
-        this.settlementOnly = restoredPickup != null
-                && restoredPickup.transactionState() == TransactionState.OPEN;
+        this.settlementOnly = HuntPickupCheckpoint.settlementRestore(restoredPickup == null
+                ? null : restoredPickup.transactionState());
     }
 
     @Override
@@ -226,10 +225,13 @@ public final class HuntTask extends AbstractTask implements CheckpointableTask {
             checkpointDirty = true;
             return;
         }
-        if (restoredPickup != null) {
+        if (settlementOnly) {
             restorePickup(bot);
             return;
         }
+        // A closed receipt carries no recoverable debt: the replan already re-derived this
+        // step's quota from live inventory, so fall through and hunt fresh instead of
+        // failing at tick 0 on a transaction that was already settled.
         CombatCore.equipMelee(bot);
         meatBaseline = HarvestCore.countInventoryItems(bot, RAW_MEATS);
         collected = 0;

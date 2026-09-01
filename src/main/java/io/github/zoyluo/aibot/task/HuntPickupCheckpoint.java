@@ -152,6 +152,28 @@ public final class HuntPickupCheckpoint {
                 || (long) currentPickupStat - pickupStatBaseline >= requiredUnits);
     }
 
+    /**
+     * Restore policy for a successor HuntTask: only an OPEN pickup transaction still carries
+     * recoverable physical debt. A CLOSED receipt means the transaction was already settled —
+     * the successor owes it nothing and must hunt fresh instead of failing at tick 0.
+     */
+    public static boolean settlementRestore(HuntTask.TransactionState state) {
+        return state == HuntTask.TransactionState.OPEN;
+    }
+
+    /**
+     * A checkpoint only fails closed on structural corruption (payload present but not
+     * decodable). Quota equality is deliberately not required: a mid-mission replan credits
+     * the raw meat already collected and re-issues the remainder (for example 4 -> 2), while
+     * the settlement consumes only the checkpoint's own baselines and bound drop units,
+     * never the successor quota. Requiring equality turned every quota-changing replan into
+     * a tick-0 hunt_pickup_invalid_checkpoint.
+     */
+    public static boolean checkpointStructurallyInvalid(
+            Map<String, String> values, Optional<?> restored) {
+        return values != null && !values.isEmpty() && restored.isEmpty();
+    }
+
     public static boolean bindDropUnits(
             Map<UUID, Integer> unitsById, UUID id, int units) {
         if (id == null || units <= 0 || units > MAX_BOUND_DROP_UNITS) {

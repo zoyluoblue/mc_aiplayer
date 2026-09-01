@@ -193,15 +193,28 @@ public final class HuntCrossRegionGameTests implements FabricGameTest {
             batchId = "huntDistantPreySight", tickLimit = 1600)
     public void distantPreyIsHuntedAcrossOpenGround(TestContext context) {
         // Surface prey sight must align with SEARCH_RANGE: a real player sees a cow well
-        // beyond the interaction-scale perception radius on open ground. The corridor is kept
-        // short-ish (28 blocks) and five cells wide so the surface-route proof stays robust
-        // wherever the batch places the structure; the sight contract only needs a distance
-        // clearly past the base radius, not the full 64.
+        // beyond the interaction-scale perception radius on open ground. The corridor is
+        // heightmap-anchored (flush with the natural surface, obstacles above cleared) so the
+        // surface-route proof cannot become marginal when the batch places the structure above
+        // or below the natural floor; the sight contract only needs a distance clearly past
+        // the base radius, not the full 64.
         var world = context.getWorld();
-        BlockPos start = context.getAbsolutePos(new BlockPos(4, 4, 4));
+        BlockPos origin = context.getAbsolutePos(new BlockPos(4, 0, 4));
+        int baseY = world.getTopY(
+                net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES,
+                origin.getX(), origin.getZ());
+        BlockPos start = origin.withY(baseY);
         for (int dx = -2; dx <= 32; dx++) {
             for (int dz = -2; dz <= 2; dz++) {
-                BlockPos feet = start.add(dx, 0, dz);
+                int x = start.getX() + dx;
+                int z = start.getZ() + dz;
+                int localTop = world.getTopY(
+                        net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, x, z);
+                for (int y = baseY + 1; y <= localTop + 3; y++) {
+                    world.setBlockState(new BlockPos(x, y, z),
+                            Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                }
+                BlockPos feet = new BlockPos(x, baseY, z);
                 world.setBlockState(feet.down(), Blocks.STONE.getDefaultState(), Block.NOTIFY_ALL);
                 world.setBlockState(feet, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
                 world.setBlockState(feet.up(), Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);

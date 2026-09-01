@@ -1108,18 +1108,29 @@ public final class CreateObsidianMissionRecoveryGameTests implements FabricGameT
                 .forEach(checkpoint::put);
         AtomicReference<CreateObsidianTask> taskRef = new AtomicReference<>();
         AtomicBoolean litBeforeMove = new AtomicBoolean();
-        context.runAtTick(1, () -> {
-            require(context, !world.isSkyVisible(fixture.start()) && !world.isSkyVisible(next),
-                    "dark search fixture still exposed its corridor to the sky");
-            require(context, world.getLightLevel(LightType.BLOCK, fixture.start()) < 8
-                            && world.getLightLevel(LightType.SKY, fixture.start()) < 8,
-                    "dark search fixture was not actually dark");
-            CreateObsidianTask task = new CreateObsidianTask(TARGET, Map.copyOf(checkpoint));
-            task.start(fixture.bot());
-            taskRef.set(task);
-        });
-
+        // Sky and block light under the fresh corridor roofs only settle once the light engine
+        // catches up with the fixture placement; under parallel batch load that can lag past
+        // a fixed tick. Gate on the observed darkness instead, so the assertions cannot race
+        // the engine.
+        AtomicBoolean started = new AtomicBoolean();
         context.runAtEveryTick(() -> {
+            if (!started.get()) {
+                if (world.isSkyVisible(fixture.start()) || world.isSkyVisible(next)
+                        || world.getLightLevel(LightType.BLOCK, fixture.start()) >= 8
+                        || world.getLightLevel(LightType.SKY, fixture.start()) >= 8) {
+                    return;
+                }
+                started.set(true);
+                require(context, !world.isSkyVisible(fixture.start()) && !world.isSkyVisible(next),
+                        "dark search fixture still exposed its corridor to the sky");
+                require(context, world.getLightLevel(LightType.BLOCK, fixture.start()) < 8
+                                && world.getLightLevel(LightType.SKY, fixture.start()) < 8,
+                        "dark search fixture was not actually dark");
+                CreateObsidianTask task = new CreateObsidianTask(TARGET, Map.copyOf(checkpoint));
+                task.start(fixture.bot());
+                taskRef.set(task);
+                return;
+            }
             CreateObsidianTask task = taskRef.get();
             if (task == null) {
                 return;

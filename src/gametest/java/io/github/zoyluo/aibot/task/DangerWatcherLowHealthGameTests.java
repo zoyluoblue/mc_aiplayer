@@ -365,7 +365,7 @@ public final class DangerWatcherLowHealthGameTests implements FabricGameTest {
     }
 
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE,
-            batchId = "dangerWatcherCombatEntomb", tickLimit = 40)
+            batchId = "dangerWatcherCombatEntomb", tickLimit = 60)
     public void healthyMeleeCombatIsNotPreemptedByUndergroundEntomb(TestContext context) {
         AIPlayerEntity bot = spawnOnPlatform(context, "CombatEntombGT", 2);
         BlockPos origin = bot.getBlockPos().toImmutable();
@@ -380,7 +380,16 @@ public final class DangerWatcherLowHealthGameTests implements FabricGameTest {
         }
         InventoryAction.giveItem(bot, new ItemStack(Items.WOODEN_SWORD, 1));
         InventoryAction.giveItem(bot, new ItemStack(Items.COBBLESTONE, 16));
-        context.runAtTick(1, () -> {
+        // Sky light under the fresh roof only drops once the light engine catches up with the
+        // fixture placement; under parallel batch load that can lag past tick 1 and made this
+        // fixture intermittently read as open sky on CI. Gate on the observed light instead of
+        // a fixed tick so the assertions cannot race the engine.
+        AtomicBoolean asserted = new AtomicBoolean();
+        context.runAtEveryTick(() -> {
+            if (asserted.get() || context.getWorld().isSkyVisible(origin)) {
+                return;
+            }
+            asserted.set(true);
             require(context, !context.getWorld().isSkyVisible(origin),
                     "combat-entomb fixture was not underground");
             ZombieEntity zombie = EntityType.ZOMBIE.create(context.getWorld(), SpawnReason.COMMAND);

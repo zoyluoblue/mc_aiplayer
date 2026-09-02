@@ -615,6 +615,24 @@ public final class PathExecutor {
                 && allNodesAtOrAbove(result, minimumY);
     }
 
+    /**
+     * A dig route whose corridor is its own walk-only return: every consecutive step is
+     * stair-shaped, so nothing on the way home needs fresh digging or pillaring. A dig path
+     * that drops more than one block cannot be walked back up, and digging on the return leg
+     * is exactly the debt the route contract exists to prevent.
+     */
+    public static boolean isReversibleStair(PathfindingResult result) {
+        Objects.requireNonNull(result, "result");
+        List<Node> stair = result.path();
+        for (int i = 1; i < stair.size(); i++) {
+            int rise = stair.get(i).pos().getY() - stair.get(i - 1).pos().getY();
+            if (rise < -1 || rise > 1) {
+                return false;
+            }
+        }
+        return !stair.isEmpty();
+    }
+
     public static RouteValidation validateRouteContract(
             PathfindingResult outbound,
             BlockPos requestedGoal,

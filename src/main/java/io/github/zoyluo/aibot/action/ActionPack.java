@@ -5,6 +5,7 @@ import io.github.zoyluo.aibot.log.BotLog;
 import io.github.zoyluo.aibot.log.LogCategory;
 import io.github.zoyluo.aibot.mode.FakePlayerMotion;
 import io.github.zoyluo.aibot.pathfinding.AStarPathfinder;
+import io.github.zoyluo.aibot.pathfinding.FailureReason;
 import io.github.zoyluo.aibot.pathfinding.PathExecutor;
 import io.github.zoyluo.aibot.pathfinding.PathfindingResult;
 import io.github.zoyluo.aibot.pathfinding.Standability;
@@ -187,6 +188,19 @@ public final class ActionPack {
                 PathExecutor.RouteContract.constrainedSurface(minimumY, returnAnchor));
     }
 
+    /**
+     * Contract-bound surface route whose outbound leg may dig through obstacles once the
+     * walk-only phase has no solution (a hunter digs a stair through a hill instead of
+     * rejecting the whole herd). The dig fallback stays above the same Y floor, and the
+     * return proof from the goal remains strictly walk-only: a dug stair is itself
+     * walk-only returnable, while a goal whose return needs fresh digging is still rejected.
+     */
+    public ActionResult startSurfaceDigFallbackPathTo(
+            BlockPos goal, int minimumY, BlockPos returnAnchor) {
+        return startPathTo(goal, false, true, 0,
+                PathExecutor.RouteContract.constrainedSurface(minimumY, returnAnchor));
+    }
+
     private ActionResult startPathTo(BlockPos goal, boolean canPillar,
                                      boolean allowDigFallback,
                                      int protectedStoneLikeReserve) {
@@ -231,11 +245,16 @@ public final class ActionPack {
         PathfindingResult result = routeContract.constrained()
                 ? walkFinder.findPathUncachedAtOrAbove(routeContract.minimumY())
                 : walkFinder.findPath();
+        boolean dugOutbound = false;
         if (!result.success() && allowDigFallback) {
-            PathfindingResult dig =
-                    new AStarPathfinder(world, from, goal, DIG_MAX_NODES, PATHFIND_MAX_MILLIS, canPillar, true).findPath();
+            AStarPathfinder digFinder = new AStarPathfinder(
+                    world, from, goal, DIG_MAX_NODES, PATHFIND_MAX_MILLIS, canPillar, true);
+            PathfindingResult dig = routeContract.constrained()
+                    ? digFinder.findPathUncachedAtOrAbove(routeContract.minimumY())
+                    : digFinder.findPath();
             if (dig.success()) {
                 result = dig;
+                dugOutbound = true;
             }
         }
         if (!result.success()) {
@@ -243,12 +262,25 @@ public final class ActionPack {
             nextPathfindTick = now + PATHFIND_FAILURE_COOLDOWN_TICKS;
             return ActionResult.failed("pathfinding_failed: " + result.reason());
         }
-        PathfindingResult returnProof = routeContract.requiresReturnProof()
-                ? new AStarPathfinder(
-                world, immutableGoal, routeContract.returnAnchor(),
-                WALK_MAX_NODES, PATHFIND_MAX_MILLIS, false, false)
-                .findPathUncachedAtOrAbove(routeContract.minimumY())
-                : null;
+        PathfindingResult returnProof = null;
+        if (routeContract.requiresReturnProof()) {
+            if (dugOutbound && PathExecutor.isReversibleStair(result)) {
+                // The pre-dig world cannot prove the walk-only return yet; the dug stair is
+                // itself that return, so derive the proof from the reversed outbound nodes.
+                java.util.List<io.github.zoyluo.aibot.pathfinding.Node> reversed =
+                        new java.util.ArrayList<>(result.path());
+                java.util.Collections.reverse(reversed);
+                returnProof = new PathfindingResult(
+                        reversed, true, FailureReason.NONE,
+                        result.nodesExplored(), result.elapsedMs(),
+                        result.resolvedGoal(), result.resolvedStart());
+            } else {
+                returnProof = new AStarPathfinder(
+                        world, immutableGoal, routeContract.returnAnchor(),
+                        WALK_MAX_NODES, PATHFIND_MAX_MILLIS, false, false)
+                        .findPathUncachedAtOrAbove(routeContract.minimumY());
+            }
+        }
         PathExecutor.RouteValidation validation = PathExecutor.validateRouteContract(
                 result, immutableGoal, routeContract, returnProof);
         if (!validation.accepted()) {

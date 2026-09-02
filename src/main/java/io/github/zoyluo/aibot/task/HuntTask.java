@@ -48,7 +48,7 @@ public final class HuntTask extends AbstractTask implements CheckpointableTask {
     public enum TransactionState { OPEN, CLOSED_COLLECTED, CLOSED_NO_RAW }
     private enum RoamResult { STARTED, RETRY, EXHAUSTED }
     private enum SurfacePathStart { STARTED, RETRY, UNREACHABLE }
-    private enum SurfaceRouteProof { SAFE, RETRY, UNREACHABLE }
+    enum SurfaceRouteProof { SAFE, RETRY, UNREACHABLE }
 
     private record AttackPoseSelection(
             BlockPos pose, BlockPos preyCell, SurfaceRouteProof proof) {
@@ -565,7 +565,9 @@ public final class HuntTask extends AbstractTask implements CheckpointableTask {
             return SurfacePathStart.STARTED;
         }
         return startExactSurfacePath(
-                bot, attackPose, surfaceFloorY(bot), returnAnchor);
+                bot, attackPose,
+                digBreakthroughFloor(bot.getBlockPos(), attackPose, surfaceFloorY(bot)),
+                returnAnchor, true);
     }
 
     private boolean isSafePreyPose(AIPlayerEntity bot, LivingEntity prey) {
@@ -589,9 +591,10 @@ public final class HuntTask extends AbstractTask implements CheckpointableTask {
 
     /**
      * Chooses a factual player stand near the current prey cell instead of pathing into a moving
-     * entity's own block. The chosen pose and the factual kill/drop cell must both have ordinary
-     * no-dig/no-pillar return routes, so a prey walking onto a cliff cannot manufacture a one-way
-     * pickup debt after the strike.
+     * entity's own block. The outbound leg may dig a near-level stair through terrain once
+     * walking has no route, while the chosen pose and the factual kill/drop cell must both keep
+     * ordinary no-dig/no-pillar return routes, so a prey walking onto a cliff cannot manufacture
+     * a one-way pickup debt after the strike.
      */
     private AttackPoseSelection selectSafeAttackPose(
             AIPlayerEntity bot, LivingEntity prey) {
@@ -621,8 +624,8 @@ public final class HuntTask extends AbstractTask implements CheckpointableTask {
                     || !isObservableStandCandidate(bot, candidate, current, floorY)) {
                 continue;
             }
-            SurfaceRouteProof outbound = proveRoundTripSurfaceRoute(
-                    bot.getServerWorld(), current, candidate, floorY);
+            SurfaceRouteProof outbound = provePreyApproachRoute(
+                    bot.getServerWorld(), current, candidate, floorY, null);
             if (outbound == SurfaceRouteProof.RETRY) {
                 retryObserved = true;
                 continue;
@@ -668,10 +671,13 @@ public final class HuntTask extends AbstractTask implements CheckpointableTask {
         if (candidate.getY() < floorY) {
             return false;
         }
+        // Pose cells are grounded at prey-sight range like the prey itself; the base radius
+        // here rejected every pose of a herd acquired 20-60 blocks out, and the distant-prey
+        // GameTest then only passed when a roam happened to close the distance first.
         if (!candidate.equals(current)
-                && (!ObservableWorldQuery.canObserveCell(bot, candidate)
-                || !ObservableWorldQuery.canObserveCell(bot, candidate.up())
-                || !ObservableWorldQuery.canObserveBlock(bot, candidate.down()))) {
+                && (!ObservableWorldQuery.canObserveCellWithin(bot, candidate, PREY_SIGHT_RANGE)
+                || !ObservableWorldQuery.canObserveCellWithin(bot, candidate.up(), PREY_SIGHT_RANGE)
+                || !ObservableWorldQuery.canObserveBlockWithin(bot, candidate.down(), PREY_SIGHT_RANGE))) {
             return false;
         }
         Standability.clearCache();
@@ -943,6 +949,62 @@ public final class HuntTask extends AbstractTask implements CheckpointableTask {
                         world, destination, returnAnchor, minimumY);
     }
 
+    /**
+     * Prey-approach contract: the outbound leg may dig a near-level stair through obstacles
+     * (walk-only first, dig fallback at most one block under the lower endpoint), while the
+     * return proof stays strictly no-dig. On natural hills the walk-only outbound rejected
+     * nearly every visible herd (no_round_trip) and starved whole missions; a dug stair is
+     * itself walk-only returnable, and the debt protection - never needing fresh digging on
+     * the way back - is unchanged. Deep trench crossings stay rejected: the A* prefers drop
+     * shortcuts there, and a reversible stair across a void is not something it will find.
+     * Every other route (surface returns, roams, pickup sweeps) stays strict.
+     */
+    static SurfaceRouteProof provePreyApproachRoute(
+            ServerWorld world, BlockPos origin, BlockPos destination,
+            int minimumY, BlockPos returnAnchor) {
+        SurfaceRouteProof outbound =
+                proveExactDigFallbackRoute(world, origin, destination, minimumY);
+        if (outbound != SurfaceRouteProof.SAFE) {
+            return outbound;
+        }
+        return returnAnchor == null ? SurfaceRouteProof.SAFE
+                : proveExactSurfaceRoute(
+                        world, destination, returnAnchor, minimumY);
+    }
+
+    /** Near-level breakthrough floor: at most one block under the lower endpoint. */
+    static int digBreakthroughFloor(BlockPos origin, BlockPos destination, int minimumY) {
+        return Math.max(minimumY,
+                Math.min(origin.getY(), destination.getY()) - 1);
+    }
+
+    private static SurfaceRouteProof proveExactDigFallbackRoute(
+            ServerWorld world, BlockPos origin, BlockPos destination, int minimumY) {
+        SurfaceRouteProof walk = proveExactSurfaceRoute(world, origin, destination, minimumY);
+        if (walk != SurfaceRouteProof.UNREACHABLE) {
+            return walk;
+        }
+        int digFloor = digBreakthroughFloor(origin, destination, minimumY);
+        Standability.clearCache();
+        PathfindingResult result = new AStarPathfinder(
+                world, origin, destination,
+                SURFACE_ROUTE_MAX_NODES, SURFACE_ROUTE_MAX_MILLIS,
+                false, true).findPathUncachedAtOrAbove(digFloor);
+        if (result.success()) {
+            // The dug corridor is itself the walk-only return route, but only when every
+            // step is stair-shaped: a dig path that drops more than one block cannot be
+            // walked back up, and digging on the way home is exactly the debt this
+            // contract exists to prevent.
+            return PathExecutor.isExactConstrainedRoute(result, origin, destination, digFloor)
+                    && PathExecutor.isReversibleStair(result)
+                    ? SurfaceRouteProof.SAFE : SurfaceRouteProof.UNREACHABLE;
+        }
+        return result.reason() == FailureReason.NO_START
+                || result.reason() == FailureReason.TIMEOUT
+                || result.reason() == FailureReason.SEARCH_LIMIT
+                ? SurfaceRouteProof.RETRY : SurfaceRouteProof.UNREACHABLE;
+    }
+
     private static SurfaceRouteProof proveExactSurfaceRoute(
             ServerWorld world, BlockPos origin, BlockPos destination, int minimumY) {
         Standability.clearCache();
@@ -968,10 +1030,19 @@ public final class HuntTask extends AbstractTask implements CheckpointableTask {
     private static SurfacePathStart startExactSurfacePath(
             AIPlayerEntity bot, BlockPos destination, int minimumY,
             BlockPos returnAnchor) {
+        return startExactSurfacePath(bot, destination, minimumY, returnAnchor, false);
+    }
+
+    /** Prey-approach variant: the executed outbound leg matches the dig-fallback proof. */
+    private static SurfacePathStart startExactSurfacePath(
+            AIPlayerEntity bot, BlockPos destination, int minimumY,
+            BlockPos returnAnchor, boolean digFallbackOutbound) {
         ServerWorld world = bot.getServerWorld();
         BlockPos origin = bot.getBlockPos();
-        SurfaceRouteProof proof = proveSurfaceRouteContract(
-                world, origin, destination, minimumY, returnAnchor);
+        SurfaceRouteProof proof = digFallbackOutbound
+                ? provePreyApproachRoute(world, origin, destination, minimumY, returnAnchor)
+                : proveSurfaceRouteContract(
+                        world, origin, destination, minimumY, returnAnchor);
         if (proof == SurfaceRouteProof.RETRY) {
             return SurfacePathStart.RETRY;
         }
@@ -980,6 +1051,9 @@ public final class HuntTask extends AbstractTask implements CheckpointableTask {
         }
         ActionResult result = returnAnchor == null
                 ? bot.getActionPack().startSurfacePathTo(destination, minimumY)
+                : digFallbackOutbound
+                ? bot.getActionPack().startSurfaceDigFallbackPathTo(
+                        destination, minimumY, returnAnchor)
                 : bot.getActionPack().startSurfacePathTo(
                         destination, minimumY, returnAnchor);
         if (result.isFailed()) {
@@ -1176,6 +1250,7 @@ public final class HuntTask extends AbstractTask implements CheckpointableTask {
         // statistics; only evidence produced after the swing that can own this target may settle
         // the transaction.
         captureTargetTransactionEvidence(bot);
+        float healthBeforeSwing = target == null ? Float.MAX_VALUE : target.getHealth();
         boolean struck = CombatCore.strikeIfReady(bot, target);
         // Vanilla death, kill statistics, and loot spawning are synchronous with the fatal attack.
         // Capture the fresh entity identity in this same task tick, but preserve the existing
@@ -1186,8 +1261,12 @@ public final class HuntTask extends AbstractTask implements CheckpointableTask {
                 == net.minecraft.entity.Entity.RemovalReason.KILLED)) {
             captureFreshTargetRawDropIds(bot);
         }
-        // 不再每 tick 刷 lastProgressTick:命中→掉肉会在 onTick 顶部刷新进度;真打不动(够不到/无敌)则靠
-        // NO_PROGRESS_LIMIT 兜底干净失败,而非"挥空也算进展"把任务拖到 maxElapsed。
+        // 只在挥砍实际掉血时刷 lastProgressTick。真实伤害意味着目标血量单调下降、连击终会击杀;
+        // 空挥循环(实测 126 刀不致死)与够不到都不刷新,由 NO_PROGRESS_LIMIT 干净收口而不是拖到
+        // maxElapsed;健康连击接在长接近之后也不再被 400t 窗口误杀(collected=0 肉还在地上)。
+        if (struck && target != null && target.getHealth() < healthBeforeSwing) {
+            lastProgressTick = elapsed;
+        }
     }
 
     /**

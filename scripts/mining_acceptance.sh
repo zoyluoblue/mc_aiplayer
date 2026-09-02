@@ -16,7 +16,7 @@ SENTINEL_SEEDS="$MINING_SENTINEL_SEEDS"
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/mining_acceptance.sh <controlled|prepared|from_zero> <diamond|obsidian|all>
+usage: scripts/mining_acceptance.sh <controlled|prepared|from_zero> <diamond|obsidian|obsidian64|all>
 
 Environment:
   AIBOT_MINING_SEEDS             diagnostic seeds (controlled/prepared only)
@@ -39,7 +39,7 @@ case "$TIER" in
   from_zero) DEFAULT_TIMEOUT= ;;
   *) usage; exit 2 ;;
 esac
-case "$TARGET" in diamond|obsidian|all) ;; *) usage; exit 2 ;; esac
+case "$TARGET" in diamond|obsidian|obsidian64|all) ;; *) usage; exit 2 ;; esac
 [[ "$RUNS" =~ ^[1-9][0-9]*$ && "$STARTUP_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || {
   printf '[mining-acceptance] runs/timeouts must be positive integers\n' >&2
   exit 2
@@ -53,20 +53,26 @@ case "$TIER" in
   controlled)
     DIAMOND_SCENARIO=diamond_stack_64_controlled
     OBSIDIAN_SCENARIO=obsidian_half_stack_32_controlled
+    OBSIDIAN64_SCENARIO=obsidian_stack_64_controlled
     ;;
   prepared)
     DIAMOND_SCENARIO=diamond_stack_64_prepared
     OBSIDIAN_SCENARIO=obsidian_half_stack_32_prepared
+    OBSIDIAN64_SCENARIO=obsidian_stack_64_prepared
     ;;
   from_zero)
     DIAMOND_SCENARIO=diamond_stack_64_from_zero
     OBSIDIAN_SCENARIO=obsidian_half_stack_32_from_zero
+    OBSIDIAN64_SCENARIO=obsidian_stack_64_from_zero
     ;;
 esac
 
 scenarios=()
 if [[ "$TARGET" == diamond || "$TARGET" == all ]]; then scenarios+=("$DIAMOND_SCENARIO"); fi
 if [[ "$TARGET" == obsidian || "$TARGET" == all ]]; then scenarios+=("$OBSIDIAN_SCENARIO"); fi
+# The user-mandated full-stack tier stays explicit: `all` keeps running the sealed
+# 32-contract pair only, exactly as the release gate certifies today.
+if [[ "$TARGET" == obsidian64 ]]; then scenarios+=("$OBSIDIAN64_SCENARIO"); fi
 
 cd "$ROOT"
 overall=0
@@ -116,6 +122,7 @@ if [[ "$TIER" == from_zero ]]; then
     TIMEOUT="$(timeout_for_scenario "$scenario")" || exit 2
     target=diamond
     [[ "$scenario" != obsidian_half_stack_32_from_zero ]] || target=obsidian
+    [[ "$scenario" != obsidian_stack_64_from_zero ]] || target=obsidian64
     printf '[mining-acceptance] tier=from_zero scenario=%s primary_seeds=%s sentinel_seeds=%s profile=strict_survival verify_timeout_seconds=%s\n' \
       "$scenario" "$PUBLIC_SEEDS" "$SENTINEL_SEEDS" "$TIMEOUT"
     primary_batch=""

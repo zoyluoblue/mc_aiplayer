@@ -981,9 +981,13 @@ public final class HuntTask extends AbstractTask implements CheckpointableTask {
     private static SurfaceRouteProof proveExactDigFallbackRoute(
             ServerWorld world, BlockPos origin, BlockPos destination, int minimumY) {
         SurfaceRouteProof walk = proveExactSurfaceRoute(world, origin, destination, minimumY);
-        if (walk != SurfaceRouteProof.UNREACHABLE) {
+        if (walk == SurfaceRouteProof.SAFE) {
             return walk;
         }
+        // RETRY must fall through too: on natural hillsides the walk-only search burns its whole
+        // node/time budget hunting for a way around and reports RETRY forever - the dig search
+        // straight through the hill is cheaper and decisive (from-zero evidence: walk RETRY
+        // starved every hunt while the dig proof never ran).
         int digFloor = digBreakthroughFloor(origin, destination, minimumY);
         Standability.clearCache();
         PathfindingResult result = new AStarPathfinder(

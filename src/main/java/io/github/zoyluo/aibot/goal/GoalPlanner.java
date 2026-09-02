@@ -1237,6 +1237,13 @@ public final class GoalPlanner {
         // 猎→烤闭环:凑够 target 个熟食/面包(高饱食、安全)。挖矿备粮用 FOOD_TARGET;
         // "去打猎/去搞点吃的"口语入口(Goal.Food)用指定量。
         // 没动物/没熔炉/没燃料时 GoalExecutor 跳过相应 best-effort 步(见 handleStepFailure),不阻断主目标。
+        /** Cooked units this plan already provisioned via hunt+cook (species unknown until the kill). */
+        private int provisionedFoodUnits;
+
+        private int plannedFoodUnits() {
+            return MiningFoodReserve.units(counts) + provisionedFoodUnits;
+        }
+
         private boolean ensureFoodTo(int target, int depth, Set<String> visiting) {
             return ensureFoodTo(target, depth, visiting, false);
         }
@@ -1245,7 +1252,7 @@ public final class GoalPlanner {
                                      int depth,
                                      Set<String> visiting,
                                      boolean bootstrapStonePickBeforeFurnace) {
-            int cooked = MiningFoodReserve.units(counts);
+            int cooked = plannedFoodUnits();
             if (cooked >= target) {
                 return true;
             }
@@ -1333,6 +1340,7 @@ public final class GoalPlanner {
                 consumeItems(RecipeRegistry.LOGS, logsForFuel);
             }
             addStep(GoalStep.cookFood(needCooked)); // 烤成熟肉(背包已有生肉也一并烤)
+            provisionedFoodUnits += needCooked;
             return true;
         }
 
@@ -1495,9 +1503,10 @@ public final class GoalPlanner {
                 return true;
             }
             if (item == Items.OBSIDIAN) {
-                // 黑曜石远征顺序是硬契约：先在地表备足食物、廉价掘进镐、封堵块和备用木棍；
-                // 再为桶单独取得 3 铁并物理返回地表找可见水源；最后才进入钻石镐深潜链。
-                // bucket recipe 会消费自己的 3 铁，后续铁镐/备用铁因此会被独立倒推，不能挪用桶铁。
+                // 黑曜石远征顺序是硬契约:先在地表备好初始口粮、廉价掘进镐、封堵块和备用木棍;
+                // 再为桶单独取得 3 铁并物理返回地表找可见水源;水桶到手后补齐完整食物配额
+                // (分期见 MiningBudget.obsidianExpeditionInitialFoodTarget);最后才进入钻石镐深潜链。
+                // bucket recipe 会消费自己的 3 铁,后续铁镐/备用铁因此会被独立倒推,不能挪用桶铁。
                 int missionTarget = saturatedAdd(
                         counts.getOrDefault(Items.OBSIDIAN, 0), missing);
                 ObsidianToolProvision toolProvision = obsidianToolProvision(missing);
@@ -1518,6 +1527,13 @@ public final class GoalPlanner {
                     initialOrePerceptionValid = false;
                     consumeItem(Items.BUCKET, 1);
                     counts.merge(Items.WATER_BUCKET, 1, Integer::sum);
+                }
+                // 分期备粮的第二段:取水远征已把 bot 带到另一片地表畜群,此处补齐完整远征
+                // 配额,然后才进入铁/钻石深潜链。preflight 的运行时食物门不变,仍要求足额。
+                if (!ensureMiningFoodReserveTo(
+                        MiningBudget.obsidianExpeditionFoodTarget(missionTarget),
+                        depth + 1, visiting, true)) {
+                    return false;
                 }
                 // Provision the ore-acquisition tool first. A raw-remaining=2 diamond/netherite
                 // pick is a valid tier but cannot mine the three diamonds needed for its own
@@ -1607,10 +1623,13 @@ public final class GoalPlanner {
             }
             int unresolvedBefore = unresolved.size();
             // 8 个熟食只够 prepared 短程;64 块黑曜石要跨 8 个 service 段,深层既不能猎食也
-            // 没有预置 depot 可取,断粮即 mining_service_food_reserve_depleted 无解。按任务量
-            // 缩放(公式与单测在 MiningBudget),小目标保持旧 8 单位地板。
+            // 没有预置 depot 可取,断粮即 mining_service_food_reserve_depleted 无解。完整配额
+            // (公式与单测在 MiningBudget)分期供给:此处只备 floor+buffer 的初始口粮,取水远征
+            // 把 bot 带到第二片地表畜群后再补齐——把 9 连猎全部压在出生点畜群上,5 个公开
+            // seed 全部耗尽死于 replan_same_step:hunt_no_progress。小目标全额本就 ≤ 初始量,
+            // 保持单门形态。
             if (!ensureMiningFoodReserveTo(
-                    MiningBudget.obsidianExpeditionFoodTarget(missionTarget),
+                    MiningBudget.obsidianExpeditionInitialFoodTarget(missionTarget),
                     depth + 1, visiting, true)
                     || unresolved.size() > unresolvedBefore) {
                 return false;

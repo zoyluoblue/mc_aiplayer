@@ -26,4 +26,19 @@ class ObsidianFoodBudgetTest {
         assertTrue(MiningBudget.obsidianExpeditionFoodTarget(64) <= 64,
                 "the mission ration must stay carriable in a single cooked-food stack");
     }
+
+    @Test
+    void initialRationIsStagedAtTheFloorBufferLevel() {
+        assertEquals(8, MiningBudget.obsidianExpeditionInitialFoodTarget(1));
+        assertEquals(8, MiningBudget.obsidianExpeditionInitialFoodTarget(8));
+        assertEquals(12, MiningBudget.obsidianExpeditionInitialFoodTarget(16));
+        assertEquals(12, MiningBudget.obsidianExpeditionInitialFoodTarget(32));
+        assertEquals(12, MiningBudget.obsidianExpeditionInitialFoodTarget(64));
+        assertEquals(MiningBudget.obsidianExpeditionFoodTarget(16),
+                MiningBudget.obsidianExpeditionInitialFoodTarget(16),
+                "small missions whose full ration fits the initial gate keep the single-gate shape");
+        assertTrue(MiningBudget.obsidianExpeditionInitialFoodTarget(64)
+                        < MiningBudget.obsidianExpeditionFoodTarget(64),
+                "long missions must stage: the spawn herd cannot be asked to feed nine hunts");
+    }
 }

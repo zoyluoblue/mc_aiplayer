@@ -34,9 +34,17 @@ class MiningPlanningSourceContractTest {
                         && preflight > targetTool && makeObsidian > preflight,
                 "HaveItem(OBSIDIAN) must bind one durability provision, acquire visible water, "
                         + "then provision acquisition and target tools before preflight");
-        assertTrue(planner.contains(
-                        "MiningBudget.obsidianExpeditionFoodTarget(missionTarget)"),
+        assertTrue(planner.contains("MiningBudget.obsidianExpeditionFoodTarget(missionTarget)"),
                 "obsidian food gate must scale with the mission target, not the flat floor");
+        assertTrue(planner.contains(
+                        "MiningBudget.obsidianExpeditionInitialFoodTarget(missionTarget)"),
+                "obsidian surface readiness must stage the initial ration at floor+buffer");
+        int stagedFullGate = planner.indexOf(
+                "MiningBudget.obsidianExpeditionFoodTarget(missionTarget)", acquireWater);
+        assertTrue(stagedFullGate > acquireWater && stagedFullGate < acquisitionTool,
+                "the full mission ration must be topped up after water acquisition and before "
+                        + "the iron/diamond descent - nine hunts at the spawn herd exhausted it "
+                        + "on every measured public seed");
         assertTrue(planner.contains("OBSIDIAN_EXPEDITION_STONE_PICKS = 4"));
         assertTrue(planner.contains("bootstrapStoneLikeTarget(targetCount)"));
         assertTrue(planner.contains("bootstrapStickTarget(targetCount)"));

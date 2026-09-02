@@ -106,10 +106,22 @@ public final class GoalPlannerMiningGameTests implements FabricGameTest {
 
         require(context, plan.success(), "unresolved=" + plan.unresolved());
         int obsidianRation = MiningBudget.obsidianExpeditionFoodTarget(32);
-        require(context, cook >= 0 && plan.steps().get(cook).count() == obsidianRation
-                        && !plan.steps().get(cook).bestEffort(),
-                "obsidian readiness must hard-gate the scaled " + obsidianRation
-                        + " cooked food: " + plan.describeSteps());
+        int initialRation = MiningBudget.obsidianExpeditionInitialFoodTarget(32);
+        List<GoalStep> cookSteps = plan.steps().stream()
+                .filter(step -> step.kind() == GoalStep.Kind.COOK_FOOD)
+                .toList();
+        int totalCooked = cookSteps.stream().mapToInt(GoalStep::count).sum();
+        require(context, !cookSteps.isEmpty()
+                        && cookSteps.get(0).count() == initialRation
+                        && totalCooked == obsidianRation
+                        && cookSteps.stream().noneMatch(GoalStep::bestEffort),
+                "obsidian readiness must stage the initial " + initialRation
+                        + " ration and top up to the scaled " + obsidianRation
+                        + " total: " + plan.describeSteps());
+        require(context, indexOfFrom(plan, acquireWater + 1,
+                        step -> step.kind() == GoalStep.Kind.COOK_FOOD) >= 0,
+                "the staged ration must complete after physical water acquisition: "
+                        + plan.describeSteps());
         List<GoalStep> obsidianHunts = plan.steps().stream()
                 .filter(step -> step.kind() == GoalStep.Kind.HUNT)
                 .toList();

@@ -118,6 +118,18 @@ public record MiningBudget(
                 segments * OBSIDIAN_FOOD_PER_SERVICE_SEGMENT + OBSIDIAN_FOOD_BUFFER);
     }
 
+    /**
+     * Initial surface ration: the mission quota is staged, not front-loaded. The plan tops up
+     * to {@link #obsidianExpeditionFoodTarget(int)} only after the water expedition, once the
+     * bot has physically moved to a second herd — nine consecutive hunts at the spawn herd
+     * exhausted it on every measured public seed (replan_same_step:hunt_no_progress). Small
+     * missions whose full target already fits keep the single-gate shape.
+     */
+    public static int obsidianExpeditionInitialFoodTarget(int missionTarget) {
+        return Math.min(obsidianExpeditionFoodTarget(missionTarget),
+                OBSIDIAN_EXPEDITION_FOOD_FLOOR + OBSIDIAN_FOOD_BUFFER);
+    }
+
     public MiningBudget {
         targetCount = Math.max(1, targetCount);
         batchSize = Math.max(1, batchSize);
